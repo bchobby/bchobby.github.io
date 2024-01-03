@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>令牌桶算法理解学习（限流算法） - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="令牌桶算法理解学习（限流算法）" />
+<meta property="og:description" content="令牌桶算法是网络流量整形（Traffic Shaping）和速率限制（Rate Limiting）中最常使用的一种算法。典型情况下，令牌桶算法用来控制发送到网络上的数据的数目，并允许突发数据的发送。
+用简单的话语来说就是限制流量，将其控制到某一平均值稳定输出，并可以在短时间内应对高额流量（短时高速率流量）的一种方法。
+需要注意的是，限速只是让他尽可能速率一致，是存在速率不稳定的情况的，只有在长期来看速率才是恒定的，而当令牌桶应对突发流量时会进行令牌桶内令牌的小号，理论上的峰值速率=令牌桶的容量&#43;恒定速率，举个例子，令牌桶的容量 为100MB，限制的速率为10MB/s，峰值速率则可以达到100&#43;10=110MB/s。
+b为桶的容量，r为单位时间内放入的令牌数量，以下图为例：
+在r=10，b=5时，即表明每1/r=0.1，每0.1秒投入一个令牌，而在到0.5秒时达到桶的极限容量5，在此刻继续投入令牌则无法维持，这些令牌将会被废弃，同时在此时若有5个指令同时想要去走令牌则可以同时取走令牌桶内的所有令牌，即为取走b=5个。
+注意：
+当b&gt;1时（桶的大小大于1个令牌时），任意1/r秒内最多可以取走b个令牌；而当b=1时（桶的大小就是1），每秒钟最多可以被取走r个令牌。 综上，令牌桶算法的总体流程大致分为如下三步：
+将令牌放入桶内：按照固定的速率放入令牌桶内，例如r=10，20，100等；获取令牌：任意请求只有在取得可用令牌才会被接收处理；令牌桶已满：当桶内令牌已满时，新加入的令牌会被丢弃或者拒绝接收。 与网络带宽分配相结合，可在一定程度上减少资源的浪费，同时可以根据不同优先级的业务来进行基于令牌桶的带宽分配改进方式，针对不同优先级的业务设定不同的业务权值，以此来自适应业务速率的变化，可通过业务权值的占用比例进行动态分配令牌资源，利用令牌桶嵌入漏桶机制实现对业务占用的带宽进行二次分配,根据业务优先级的高低对溢出的令牌实现依次填充,从而减少资源浪费。（源自论文：基于动态令牌桶的卫星网络带宽分配方法）
+卫星网络模型：一个GEO卫星，若干地面终端和网络控制中心NCC（Network Control Center）组成，地面终端则是经由SG（Satallite Gateway）连接到Internet网络。通过网络控制中心NCC来进行处理各个SG发来的带宽申请和分配新的贷款，上行链路由各个SG提供，下行链路则是数据流共享的信道。
+GEO卫星网络 令牌桶方法实现：令牌桶的填充速率R，令牌桶容量S（令牌桶所能容纳的最大令牌数），令牌桶的当前状态为x，表示当前对应令牌桶的深度，工作流程如下图：
+工作流程上，GEO卫星上的带宽资源被定义为n个令牌桶，当有业务传达到时，NCC处理由SG为每个业务发送的带宽请求并为其分配带宽，哥哥令牌桶为每个业务分配基本保证带宽，即为R1,R2,R3......Rn。调整R1,R2,R3......Rn的大小可以设定各个业务的保证带宽，需要注意，各个令牌桶的尺寸小于链路的信道容量，各个业务到达相应令牌桶后，根据数据包长度与令牌桶内数量来进行分配，若数据包长度小于令牌数，业务传送出去，令牌桶内令牌相应减少。而高优先级的业务将会优先进行放入。而由于令牌桶间仙姑独立，令牌桶无法动态借用空闲令牌，即空闲带宽无法进行有效利用，且令牌桶在填充过程中，令牌个数不会大于令牌桶容量，溢出令牌会丢失，也进一步造成了带宽资源的浪费。
+改进方法：将漏桶嵌入到令牌桶中,即每一个令牌桶连接一个漏桶,有几个优先级就有几个令牌桶。这样可以保证优先级为n的最小带宽,溢出桶用来存储溢出的令牌,借用令牌桶的动态带宽分配算法（Dynamic Bandwidth Allocation Algorithm with Token Bucket,DBAATB），原理下图：
+代码实现：
+acquire获取令牌的操作中，使用锁保护数据正确性，使用条件等待令牌足够才继续往下执行。
+bool CountSemaphore::acquire(unsigned long long count) { std::unique_lock&lt;std::mutex&gt; lck(m_mtx); if (count &gt; m_maxCount) { return false; } m_cv.wait(lck, [&amp;]() -&gt; bool { return m_updateCount &gt;= count; }); m_updateCount -= count; return true; } release增加令牌数量，并通知其他等待条件的线程继续执行。
+void CountSemaphore::release(unsigned long long count){ std::unique_lock&lt;std::mutex&gt; lck(m_mtx); auto tobeCount = m_updateCount &#43; count; if (tobeCount &gt; m_maxCount){ m_updateCount = m_maxCount; } else{ m_updateCount = tobeCount; } m_cv." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/cd4f9a310f1a7125bbcdbc535aff7ea7/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-10T21:35:26+08:00" />
+<meta property="article:modified_time" content="2023-12-10T21:35:26+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">令牌桶算法理解学习（限流算法）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p style="text-align:justify;">令牌桶算法是网络流量整形（Traffic Shaping）和速率限制（Rate Limiting）中最常使用的一种算法。典型情况下，令牌桶算法用来控制发送到网络上的数据的数目，并允许突发数据的发送。</p> 
+<p style="text-align:justify;">用简单的话语来说就是限制流量，将其控制到某一平均值稳定输出，并可以在短时间内应对高额流量（短时高速率流量）的一种方法。</p> 
+<p style="text-align:justify;">需要注意的是，限速只是让他尽可能速率一致，是存在速率不稳定的情况的，只有在长期来看速率才是恒定的，而当令牌桶应对突发流量时会进行令牌桶内令牌的小号，理论上的峰值速率=令牌桶的容量+恒定速率，举个例子，令牌桶的容量 为100MB，限制的速率为10MB/s，峰值速率则可以达到100+10=110MB/s。</p> 
+<p style="text-align:justify;"> </p> 
+<p class="img-center"><img alt="" height="308" src="https://images2.imgbox.com/de/94/3HXkE4ol_o.png" width="318"></p> 
+<p> b为桶的容量，r为单位时间内放入的令牌数量，以下图为例：</p> 
+<p class="img-center"><img alt="" height="207" src="https://images2.imgbox.com/a5/28/XjpNnsiK_o.png" width="911"></p> 
+<p>在r=10，b=5时，即表明每1/r=0.1，每0.1秒投入一个令牌，而在到0.5秒时达到桶的极限容量5，在此刻继续投入令牌则无法维持，这些令牌将会被废弃，同时在此时若有5个指令同时想要去走令牌则可以同时取走令牌桶内的所有令牌，即为取走b=5个。</p> 
+<blockquote> 
+ <p><strong>注意</strong>：</p> 
+ <ol><li>当b&gt;1时（桶的大小大于1个令牌时），任意1/r秒内最多可以取走b个令牌；</li><li>而当b=1时（桶的大小就是1），每秒钟最多可以被取走r个令牌。</li></ol> 
+</blockquote> 
+<p>综上，令牌桶算法的总体流程大致分为如下三步：</p> 
+<ol><li>将令牌放入桶内：按照固定的速率放入令牌桶内，例如r=10，20，100等；</li><li>获取令牌：任意请求只有在取得可用令牌才会被接收处理；</li><li>令牌桶已满：当桶内令牌已满时，新加入的令牌会被丢弃或者拒绝接收。</li></ol> 
+<blockquote> 
+ <p>与网络带宽分配相结合，可在一定程度上减少资源的浪费，同时可以根据不同优先级的业务来进行基于令牌桶的带宽分配改进方式，针对不同优先级的业务设定不同的业务权值，以此来自适应业务速率的变化，可通过业务权值的占用比例进行动态分配令牌资源，利用令牌桶嵌入漏桶机制实现对业务占用的带宽进行二次分配,根据业务优先级的高低对溢出的令牌实现依次填充,从而减少资源浪费。（源自论文：基于动态令牌桶的卫星网络带宽分配方法）</p> 
+</blockquote> 
+<p><strong>卫星网络模型</strong>：一个GEO卫星，若干地面终端和网络控制中心NCC（Network Control Center）组成，地面终端则是经由SG（Satallite Gateway）连接到Internet网络。通过网络控制中心NCC来进行处理各个SG发来的带宽申请和分配新的贷款，上行链路由各个SG提供，下行链路则是数据流共享的信道。</p> 
+<p class="img-center"><img alt="" height="297" src="https://images2.imgbox.com/a9/6a/c5ND7Bmt_o.png" width="518"></p> 
+<p style="text-align:center;"><span style="color:#a5a5a5;">GEO卫星网络 </span></p> 
+<p><strong>令牌桶方法实现</strong>：令牌桶的填充速率R，令牌桶容量S（令牌桶所能容纳的最大令牌数），令牌桶的当前状态为x，表示当前对应令牌桶的深度，工作流程如下图：</p> 
+<p class="img-center"><img alt="" height="364" src="https://images2.imgbox.com/c3/6e/mzH2ICRu_o.png" width="405"></p> 
+<p style="text-align:justify;">工作流程上，GEO卫星上的带宽资源被定义为n个令牌桶，当有业务传达到时，NCC处理由SG为每个业务发送的带宽请求并为其分配带宽，哥哥令牌桶为每个业务分配基本保证带宽，即为R1,R2,R3......Rn。调整R1,R2,R3......Rn的大小可以设定各个业务的保证带宽，需要注意，各个令牌桶的尺寸小于链路的信道容量，各个业务到达相应令牌桶后，根据数据包长度与令牌桶内数量来进行分配，若数据包长度小于令牌数，业务传送出去，令牌桶内令牌相应减少。而高优先级的业务将会优先进行放入。<strong>而由于令牌桶间仙姑独立，令牌桶无法动态借用空闲令牌，即空闲带宽无法进行有效利用，且令牌桶在填充过程中，令牌个数不会大于令牌桶容量，溢出令牌会丢失，也进一步造成了带宽资源的浪费</strong>。</p> 
+<p style="text-align:justify;"><strong>改进方法</strong>：将漏桶嵌入到令牌桶中,即每一个令牌桶连接一个漏桶,有几个优先级就有几个令牌桶。这样可以保证优先级为n的最小带宽,溢出桶用来存储溢出的令牌,<strong>借用令牌桶的动态带宽分配算法（Dynamic Bandwidth Allocation Algorithm with Token Bucket,DBAATB）</strong>，原理下图：</p> 
+<p class="img-center"><img alt="" height="449" src="https://images2.imgbox.com/15/e8/z7cnxw5v_o.png" width="462"></p> 
+<p> <strong>代码实现</strong>：</p> 
+<p>acquire获取令牌的操作中，使用锁保护数据正确性，使用条件等待令牌足够才继续往下执行。</p> 
+<pre><code class="language-cpp">bool CountSemaphore::acquire(unsigned long long count)
+{
+    std::unique_lock&lt;std::mutex&gt; lck(m_mtx);
+    if (count &gt; m_maxCount)
+    {
+        return false;
+    }
+    m_cv.wait(lck, [&amp;]() -&gt; bool { return m_updateCount &gt;= count; });
+    m_updateCount -= count;
+    return true;
+}</code></pre> 
+<p>release增加令牌数量，并通知其他等待条件的线程继续执行。</p> 
+<pre><code class="language-cpp">void CountSemaphore::release(unsigned long long count){
+    std::unique_lock&lt;std::mutex&gt; lck(m_mtx);
+    auto tobeCount = m_updateCount + count;
+    if (tobeCount &gt; m_maxCount){
+        m_updateCount = m_maxCount;
+    }
+    else{
+        m_updateCount = tobeCount;
+    }
+    m_cv.notify_all();
+}</code></pre> 
+<p>TokenSpeedLimiter是令牌桶的封装。包含令牌桶的限速速度，令牌的投递时间间隔和令牌桶的容量。提供开始和结束投递操作和获取令牌的操作。</p> 
+<pre><code class="language-cpp">void TokenSpeedLimiter::workingThread()
+{
+    auto lastTime = std::chrono::steady_clock::now();
+    while (m_runing)
+    {
+        // 延时定时投递
+        std::this_thread::sleep_for(std::chrono::milliseconds(m_deliveryIntervalMs));
+        // 计算投递时间差
+        auto curTime = std::chrono::steady_clock::now();
+        auto elapsedMs = std::chrono::duration&lt;double, std::milli&gt;(curTime - lastTime).count();
+        lastTime = curTime;
+        // 根据时间差计算投递令牌的数量(除以1000换算成毫秒投递数量，然后再乘以毫秒时间差)
+        auto tokens = m_limitSpeed * elapsedMs / 1000;
+        // 投递令牌
+        m_semaphore.release((unsigned long long)tokens);
+    }
+}</code></pre> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8f9a0ca353ea7fb2a3d142398e6557eb/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Kali Linux安装OpenVAS(GVM)及汉化</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/93773fa7c2749881c64a371f0503583a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">浅析不同NAND架构的差异与影响</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

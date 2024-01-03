@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>STM32关延时功能实现方式研究 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="STM32关延时功能实现方式研究" />
+<meta property="og:description" content="STM32常见延时实现方式研究 一、阻塞延时函数1. 循环延时（V1.0.0）代码（while形式）测试数据特点总结 2. SYSTICK非中断延时（V1.0.1）代码测试数据50us级延时500us级延时 特点总结 3. DWT延时（V1.0.2）代码测试数据50us级延时500us级延时 特点总结 二、非阻塞延时1. 无OS下非阻塞延时（==待更新==）2. OS下非阻塞延时（==暂无更新==） 接触过单片机的，肯定都用过延时函数，从while循环，到定时器延时，到systick延时，再到DWT延时等等。延时含义即从某一刻开始，到下一个某刻结束。 从 用途上来说，延时有 功能性和 非功能性之分。 功能性延时即 某些功能实现必须需要延时，如模拟IIC等；非功能性延时，是为了方便观察或记录现象而进行的延时，一般来说正式发布的时候可以去掉，如加入延时为了printf打印慢一点，非功能性延时通常不用很精确。 根据单片机延时时CPU的动作，分为阻塞延时和非阻塞延时。通俗理解就是 阻塞延时就是死等，CPU进入延时程序后，除了响应中断外啥也不干，就等延时时间到达。 非阻塞延时是指，进入延时后，CPU可以执 行除中断意外的其他功能。 根据延时时是否是靠中断计时，分为中断延时（定时器溢出中断）和非中断延时。 主控：STM32F407ZGT6（HSE：8MHz）
+库：STD标准库V1.8.0
+工具：RIGOL DS1104Z PLUS数字示波器
+各种延时函数测试标准：无论那种方式，mian函数中功能有RTC自动唤醒事件（1s唤醒），通过这些来模拟日常开发，每种延时方式开启后主要测试微秒us延时，毫秒ms延时因为有中断的存在会不准确，当然也有毫秒延时本身误差在。微妙延时会测试50微秒us级（&lt;100us）3组，500微秒us级（&lt;1000us）3组。毫秒延时会测试50毫秒ms级（&lt;100ms）5组，500ms级（&lt;1000us）3组。延时后翻转PB4脚电平，示波器测量电平翻转时间。
+提示：如果不想看数据测试客户以直接阅读结论（黄色字体）。
+一、阻塞延时函数 延时方式从阻塞方式到非阻塞方式，中断从无中断到有中断，准确性从粗略延时到精确延时。（本文持续更新，因此有些函数暂无）。
+延时函数版本号说明
+主版本号：1阻塞延时，2非阻塞延时
+次版本号：0非中断，1中断，
+修订号：
+开源协议、版权和免责声明：
+本文为原创，代码开源使用开源协议Apache-2.0，可以随意使用。请署名版权信息，格式：
+Copyright (c) 20021-2021, Logan(wangzhaoyangly@Foxmail.com)。本文数据只做参考，
+本人不对数据正确性和准确性做保证，由此产生问题本人概不负责。
+1. 循环延时（V1.0.0） 循环延时即在一个循环中让CPU做一些没有意义的工作来完成延时的目的。由于NOP空指令在不同架构的MCU上执行时间不一定，因此不使用NOP进行延时。循环延时和NOP指令延时本质是一样的。不过这个含税延时时间需要摸索，下面这样设置，实际扩大5倍。
+代码（while形式） void delay_while_us(uint16_t time) { uint16_t i = 0; while(time--) { i=168;//168MHz下 while(i--); } } 测试数据 5us延时，理论周期为10us，实际测试周期为50.8us，数据偏差&#43;408%。
+50us延时，理论周期为100us，实际测试周期为500.8us，数据偏差&#43;408%。
+这个数据已经说明问题了，微秒级延时很不准确。
+上面已经说明了，这个延时函数只适合粗略延时，其他量级数据也没有测试必要。
+特点总结 优点：实现简单" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/4a03af4776767e864b4a3f3bfae69741/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-03-29T16:16:21+08:00" />
+<meta property="article:modified_time" content="2021-03-29T16:16:21+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">STM32关延时功能实现方式研究</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-github-gist">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>STM32常见延时实现方式研究</h4> 
+ <ul><li><a href="#_13" rel="nofollow">一、阻塞延时函数</a></li><li><ul><li><a href="#1_V100_25" rel="nofollow">1. 循环延时（V1.0.0）</a></li><li><ul><li><a href="#while_27" rel="nofollow">代码（while形式）</a></li><li><a href="#_40" rel="nofollow">测试数据</a></li><li><a href="#_48" rel="nofollow">特点总结</a></li></ul> 
+   </li><li><a href="#2_SYSTICKV101_54" rel="nofollow">2. SYSTICK非中断延时（V1.0.1）</a></li><li><ul><li><a href="#_58" rel="nofollow">代码</a></li><li><a href="#_107" rel="nofollow">测试数据</a></li><li><ul><li><a href="#50us_108" rel="nofollow">50us级延时</a></li><li><a href="#500us_117" rel="nofollow">500us级延时</a></li></ul> 
+    </li><li><a href="#_127" rel="nofollow">特点总结</a></li></ul> 
+   </li><li><a href="#3_DWTV102_133" rel="nofollow">3. DWT延时（V1.0.2）</a></li><li><ul><li><a href="#_141" rel="nofollow">代码</a></li><li><a href="#_205" rel="nofollow">测试数据</a></li><li><ul><li><a href="#50us_206" rel="nofollow">50us级延时</a></li><li><a href="#500us_213" rel="nofollow">500us级延时</a></li></ul> 
+    </li><li><a href="#_224" rel="nofollow">特点总结</a></li></ul> 
+  </li></ul> 
+  </li><li><a href="#_231" rel="nofollow">二、非阻塞延时</a></li><li><ul><li><a href="#1_OS_234" rel="nofollow">1. 无OS下非阻塞延时（==待更新==）</a></li><li><a href="#2_OS_235" rel="nofollow">2. OS下非阻塞延时（==暂无更新==）</a></li></ul> 
+ </li></ul> 
+</div> 
+<br> 接触过单片机的，肯定都用过延时函数，从while循环，到定时器延时，到systick延时，再到DWT延时等等。延时含义即从某一刻开始，到下一个某刻结束。 
+<br> 从 
+<strong>用途</strong>上来说，延时有 
+<strong>功能性</strong>和 
+<strong>非功能性</strong>之分。 
+<strong>功能性延时</strong>即 
+<mark>某些功能实现必须需要延时</mark>，如模拟IIC等；非功能性延时，是为了方便观察或记录现象而进行的延时，一般来说正式发布的时候可以去掉，如加入延时为了printf打印慢一点，非功能性延时通常不用很精确。 
+<br> 根据单片机延时时CPU的动作，分为阻塞延时和非阻塞延时。通俗理解就是 
+<mark>阻塞延时就是死等</mark>，CPU进入延时程序后，除了响应中断外啥也不干，就等延时时间到达。 
+<strong>非阻塞延时</strong>是指，进入延时后，CPU可以执 
+<strong>行除中断意外的其他功能</strong>。 
+<br> 根据延时时是否是靠中断计时，分为中断延时（定时器溢出中断）和非中断延时。 
+<p></p> 
+<blockquote> 
+ <p>主控：STM32F407ZGT6（HSE：8MHz）<br> 库：STD标准库V1.8.0<br> 工具：RIGOL DS1104Z PLUS数字示波器<br> 各种延时函数测试标准：无论那种方式，mian函数中功能有RTC自动唤醒事件（1s唤醒），通过这些来模拟日常开发，每种延时方式开启后主要测试微秒us延时，毫秒ms延时因为有中断的存在会不准确，当然也有毫秒延时本身误差在。微妙延时会测试50微秒us级（&lt;100us）3组，500微秒us级（&lt;1000us）3组。毫秒延时会测试50毫秒ms级（&lt;100ms）5组，500ms级（&lt;1000us）3组。延时后翻转PB4脚电平，示波器测量电平翻转时间。</p> 
+</blockquote> 
+<p>提示：如果不想看数据测试客户以直接阅读结论（<mark>黄色字体</mark>）。</p> 
+<h2><a id="_13"></a>一、阻塞延时函数</h2> 
+<p>延时方式从阻塞方式到非阻塞方式，中断从无中断到有中断，准确性从粗略延时到精确延时。<mark>（本文持续更新，因此有些函数暂无）。</mark><br> <strong>延时函数版本号说明</strong></p> 
+<blockquote> 
+ <p>主版本号：1阻塞延时，2非阻塞延时<br> 次版本号：0非中断，1中断，<br> 修订号：</p> 
+</blockquote> 
+<p>开源协议、版权和免责声明：</p> 
+<blockquote> 
+ <p>本文为原创，代码开源使用开源协议<code>Apache-2.0</code>，可以随意使用。请署名版权信息，格式：<br> <code>Copyright (c) 20021-2021, Logan(wangzhaoyangly@Foxmail.com)</code>。本文数据只做参考，<br> 本人不对数据正确性和准确性做保证，由此产生问题本人概不负责。</p> 
+</blockquote> 
+<h3><a id="1_V100_25"></a>1. 循环延时（V1.0.0）</h3> 
+<p>循环延时即在一个循环中让CPU做一些没有意义的工作来完成延时的目的。由于NOP空指令在不同架构的MCU上执行时间不一定，因此不使用NOP进行延时。循环延时和NOP指令延时本质是一样的。不过这个含税延时时间需要摸索，下面这样设置，实际扩大5倍。</p> 
+<h4><a id="while_27"></a>代码（while形式）</h4> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> <span class="token function">delay_while_us</span><span class="token punctuation">(</span>uint16_t time<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	uint16_t i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	<span class="token keyword">while</span><span class="token punctuation">(</span>time<span class="token operator">--</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		i<span class="token operator">=</span><span class="token number">168</span><span class="token punctuation">;</span><span class="token comment">//168MHz下</span>
+		<span class="token keyword">while</span><span class="token punctuation">(</span>i<span class="token operator">--</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="_40"></a>测试数据</h4> 
+<p><img src="https://images2.imgbox.com/4e/ae/hsNiom6d_o.png" alt="在这里插入图片描述"><br> 5us延时，理论周期为10us，实际测试周期为50.8us，<strong>数据偏差+408%</strong>。<br> <img src="https://images2.imgbox.com/94/ef/ADu388lP_o.png" alt="在这里插入图片描述"><br> 50us延时，理论周期为100us，实际测试周期为500.8us，<strong>数据偏差+408%</strong>。<br> 这个数据已经说明问题了，微秒级延时很不准确。<br> 上面已经说明了，这个延时函数只适合粗略延时，其他量级数据也没有测试必要。</p> 
+<h4><a id="_48"></a>特点总结</h4> 
+<blockquote> 
+ <p>优点：实现简单<br> 缺点：延时不准确，针对不同单片机需要调整<br> 准确性：粗略定时<br> OS：理论可用，实际上由于OS多线程的原因，偏差更大。</p> 
+</blockquote> 
+<h3><a id="2_SYSTICKV101_54"></a>2. SYSTICK非中断延时（V1.0.1）</h3> 
+<p>正点原子的systick非中断延时，使用<mark>硬件定时器SYSTICK嘀嗒定时器</mark>，采用往LOAD寄存器里写值倒计时结束即延时结束，不占用额外定时器资源，不靠中断计时，但是还是阻塞方式延时，<strong>微秒级延时可以用于中断内</strong>，但是不建议在中断中使用毫秒级延时。<mark>可用于OS</mark>，但是需要改动，大多数OS的时钟节拍是靠SYSTICK的，采用<mark>时间摘取法</mark>，延时前后进行开中断和关中断，避免中断干扰。ticks 是延时 nus 需要等待的 SysTick 计数次数（也就是延时时间）， told 用于记录最近一次的 SysTick-&gt;VAL 值，然后 tnow 则是当前的SysTick-&gt;VAL 值，通过他们的对比累加，实现 SysTick 计数次数的统计，统计值存放在 tcnt 里面，然后通过对比 tcnt 和 ticks，来判断延时是否到达，从而达到不修改 SysTick 实现 nus 的延时，从而可以和 OS 共用一个 SysTick（用于OS请参考正点原子代码）。</p> 
+<h4><a id="_58"></a>代码</h4> 
+<pre><code class="prism language-c"><span class="token comment">/*注意systick的时钟来自AHB时钟（HCLK）8分频。一般配置系统时钟SYSCLK=AHB时钟HCLK。假设外部晶振为8MHz，然后倍频到168MHz，那么systick的时钟为21MHz，也就是systick的计数器VALMeizu减一，就代表时间过了1/21us=46.62ns（如果systick时钟源选择AHB时钟，则systick周期为1/168us=5.95ns）。所以fac_us=SystemCoreClock/8000000,意识是极端在系统时钟频率下1us需要多少个systick的周期，fac_ms同理，fac_ms=fac_us*1000。
+nus为要延时的us数，nus的值&lt;2^24/fac_us@fac_us=21 = 798915us
+mus为延时的ms数，范围为0-798ms*/</span>
+<span class="token macro property">#<span class="token directive keyword">define</span> fac_us SystemCoreClock/8000000 </span><span class="token comment">//us延时基数</span>
+<span class="token macro property">#<span class="token directive keyword">define</span> fac_ms fac_us*1000</span>
+<span class="token keyword">void</span> <span class="token function">delay_us</span><span class="token punctuation">(</span>u32 nus<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+ u32 temp<span class="token punctuation">;</span>
+ SysTick<span class="token operator">-&gt;</span>LOAD <span class="token operator">=</span> fac_us<span class="token operator">*</span>nus<span class="token punctuation">;</span>
+ SysTick<span class="token operator">-&gt;</span>VAL<span class="token operator">=</span><span class="token number">0X00</span><span class="token punctuation">;</span><span class="token comment">//清空计数器</span>
+ SysTick<span class="token operator">-&gt;</span>CTRL<span class="token operator">=</span><span class="token number">0X01</span><span class="token punctuation">;</span><span class="token comment">//使能，减到零是无动作，采用外部时钟源</span>
+ <span class="token keyword">do</span>
+ <span class="token punctuation">{<!-- --></span>
+  temp<span class="token operator">=</span>SysTick<span class="token operator">-&gt;</span>CTRL<span class="token punctuation">;</span><span class="token comment">//读取当前倒计数值</span>
+ <span class="token punctuation">}</span><span class="token keyword">while</span><span class="token punctuation">(</span><span class="token punctuation">(</span>temp<span class="token operator">&amp;</span><span class="token number">0x01</span><span class="token punctuation">)</span><span class="token operator">&amp;&amp;</span><span class="token punctuation">(</span><span class="token operator">!</span><span class="token punctuation">(</span>temp<span class="token operator">&amp;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token operator">&lt;&lt;</span><span class="token number">16</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//等待时间到达</span>
+     SysTick<span class="token operator">-&gt;</span>CTRL<span class="token operator">=</span><span class="token number">0x00</span><span class="token punctuation">;</span> <span class="token comment">//关闭计数器</span>
+    SysTick<span class="token operator">-&gt;</span>VAL <span class="token operator">=</span><span class="token number">0X00</span><span class="token punctuation">;</span> <span class="token comment">//清空计数器</span>
+<span class="token punctuation">}</span>
+<span class="token keyword">void</span> <span class="token function">delay_ms</span><span class="token punctuation">(</span>u16 nms<span class="token punctuation">)</span> <span class="token comment">//168MHz下nms&lt;=798ms</span>
+<span class="token punctuation">{<!-- --></span>
+ u32 temp<span class="token punctuation">;</span>
+ SysTick<span class="token operator">-&gt;</span>LOAD <span class="token operator">=</span> fac_ms<span class="token operator">*</span>nms<span class="token punctuation">;</span>
+ SysTick<span class="token operator">-&gt;</span>VAL<span class="token operator">=</span><span class="token number">0X00</span><span class="token punctuation">;</span><span class="token comment">//清空计数器</span>
+ SysTick<span class="token operator">-&gt;</span>CTRL<span class="token operator">=</span><span class="token number">0X01</span><span class="token punctuation">;</span><span class="token comment">//使能，减到零是无动作，采用外部时钟源</span>
+ <span class="token keyword">do</span>
+ <span class="token punctuation">{<!-- --></span>
+  temp<span class="token operator">=</span>SysTick<span class="token operator">-&gt;</span>CTRL<span class="token punctuation">;</span><span class="token comment">//读取当前倒计数值</span>
+ <span class="token punctuation">}</span><span class="token keyword">while</span><span class="token punctuation">(</span><span class="token punctuation">(</span>temp<span class="token operator">&amp;</span><span class="token number">0x01</span><span class="token punctuation">)</span><span class="token operator">&amp;&amp;</span><span class="token punctuation">(</span><span class="token operator">!</span><span class="token punctuation">(</span>temp<span class="token operator">&amp;</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token operator">&lt;&lt;</span><span class="token number">16</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//等待时间到达</span>
+    SysTick<span class="token operator">-&gt;</span>CTRL<span class="token operator">=</span><span class="token number">0x00</span><span class="token punctuation">;</span> <span class="token comment">//关闭计数器</span>
+    SysTick<span class="token operator">-&gt;</span>VAL <span class="token operator">=</span><span class="token number">0X00</span><span class="token punctuation">;</span> <span class="token comment">//清空计数器</span>
+<span class="token punctuation">}</span>
+<span class="token comment">//延时nms </span>
+<span class="token comment">//nms:0~65535</span>
+<span class="token keyword">void</span> <span class="token function">delay_ms</span><span class="token punctuation">(</span>u16 nms<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>	 	 
+	u8 repeat<span class="token operator">=</span>nms<span class="token operator">/</span><span class="token number">540</span><span class="token punctuation">;</span>						<span class="token comment">//这里用540,是考虑到某些客户可能超频使用,</span>
+											<span class="token comment">//比如超频到248M的时候,delay_xms最大只能延时541ms左右了</span>
+	u16 remain<span class="token operator">=</span>nms<span class="token operator">%</span><span class="token number">540</span><span class="token punctuation">;</span>
+	<span class="token keyword">while</span><span class="token punctuation">(</span>repeat<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">delay_xms</span><span class="token punctuation">(</span><span class="token number">540</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		repeat<span class="token operator">--</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">if</span><span class="token punctuation">(</span>remain<span class="token punctuation">)</span><span class="token function">delay_xms</span><span class="token punctuation">(</span>remain<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span> 
+</code></pre> 
+<h4><a id="_107"></a>测试数据</h4> 
+<h5><a id="50us_108"></a>50us级延时</h5> 
+<p><img src="https://images2.imgbox.com/11/48/5BnxX2ZW_o.png" alt="在这里插入图片描述"><br> 延时5us，理论周期10us，实际周期10.8us，<strong>数据偏差8%</strong>。<br> <img src="https://images2.imgbox.com/12/cc/cD2XFdNc_o.png" alt="在这里插入图片描述"><br> 延时50us，理论周期100us，实际周期100.0us，<strong>数据偏差0%</strong>。<img src="https://images2.imgbox.com/d2/fa/ywpWWpZr_o.png" alt="在这里插入图片描述"></p> 
+<p>延时80us，理论周期160us，实际周期162.0us，<strong>数据偏差1.25%</strong>。<br> <mark>结论：50us级延时偏差在0%-8%。</mark></p> 
+<h5><a id="500us_117"></a>500us级延时</h5> 
+<p><img src="https://images2.imgbox.com/3e/5e/7OS2K9oC_o.png" alt="在这里插入图片描述"><br> 延时200us，理论周期400us，实际周期400.0us，<strong>数据偏差0%</strong>。<br> <img src="https://images2.imgbox.com/2c/67/DKsoA023_o.png" alt="在这里插入图片描述"><br> 延时500us，理论周期1000us，实际周期1000.0us，<strong>数据偏差0%</strong>。<br> <img src="https://images2.imgbox.com/4e/af/fWr1ikZo_o.png" alt="在这里插入图片描述"><br> 延时800us，理论周期1600us，实际周期1600.0us，<strong>数据偏差0%</strong>。<br> <mark>结论：500us级延时偏差在0%是十分准确的，因为毫秒级延时以微秒延时为基础，因此毫秒级延时也是十分准确。</mark></p> 
+<h4><a id="_127"></a>特点总结</h4> 
+<blockquote> 
+ <p>优点：非中断，硬件计时，非常准确。<br> 缺点：占用硬件资源，不可嵌套（主函数使用毫秒延时，中断中使用微秒延时，如果在微秒延时时中断产生，进行微秒延时再次修改SYSTICK寄存器的值，因此会导致主函数毫秒延时不准确）。<br> 准确性：精确延时。<br> OS：理可用于OS，OS时需要开启SYSTICK中断。</p> 
+</blockquote> 
+<h3><a id="3_DWTV102_133"></a>3. DWT延时（V1.0.2）</h3> 
+<p>DWT外设用于系统调试及跟踪，DWT 中有剩余的计数器，它们典型地用于程序代码的“性能速写”（profiling）。通过编程它们，就可以让它们在计数器溢出时发出事件（以跟踪数据包的形式）。最典型地，就是使用 CYCCNT寄存器来测量执行某个任务所花的周期数，这也可以用作时间基准相关的目的（操作系统中统计 CPU使用率可以用到它）。<br> <img src="https://images2.imgbox.com/97/07/HfAsP4Hq_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/5b/1c/kPHJfI2a_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>适用范围：m3、m4、m7实测可用（m0不可用）。<br> 精度：1/内核频率(s)，1/168MHz=5.95ns。<br> 参考链接：<a href="https://www.firebbs.cn/forum.php?mod=viewthread&amp;tid=25100&amp;highlight=%E5%BB%B6%E6%97%B6" rel="nofollow">一种Cortex-M内核中的精确延时方法（ns级别）</a></p> 
+</blockquote> 
+<h4><a id="_141"></a>代码</h4> 
+<pre><code class="prism language-c"><span class="token comment">//.h</span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"stdio.h"</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"stm32f4xx_conf.h"</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"sys.h"</span></span>
+<span class="token macro property">#<span class="token directive keyword">include</span> <span class="token string">"core_cm4.h"</span></span>
+
+<span class="token macro property">#<span class="token directive keyword">define</span> DWT_CR *(__IO uint32_t *)0xE0001000         </span><span class="token comment">//DWT控制寄存器</span>
+<span class="token macro property">#<span class="token directive keyword">define</span> DWT_CYCCNT *(__IO uint32_t *)0xE0001004     </span><span class="token comment">//时钟周期寄存器</span>
+<span class="token macro property">#<span class="token directive keyword">define</span> DEM_CR *(__IO uint32_t *)0xE000EDFC         </span><span class="token comment">//内核调试控制寄存器，使能DWT外设，DEMCR的位24控制，写1使能</span>
+
+<span class="token macro property">#<span class="token directive keyword">define</span> DWT_CYCCNT_VAL (*(__IO uint32_t *)0xE0001004)</span>
+<span class="token macro property">#<span class="token directive keyword">define</span> DWT_CTRL (*(__IO uint32_t *)0xE0001000)</span>
+<span class="token macro property">#<span class="token directive keyword">define</span> DEM_CR_TRCENA (uint32_t)(1 &lt;&lt; 24)           </span><span class="token comment">//使能DWT外设</span>
+<span class="token macro property">#<span class="token directive keyword">define</span> DWT_CR_CYCCNTENA (uint32_t)(1 &lt;&lt; 0)         </span><span class="token comment">//启动CYCCNT计数器</span>
+
+<span class="token macro property">#<span class="token directive keyword">define</span> SYSCLK 168000000                            </span><span class="token comment">//系统时钟频率</span>
+<span class="token keyword">void</span> <span class="token function">DWT_Init</span><span class="token punctuation">(</span>uint32_t sys_clk_c<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">delay_dwt_us</span><span class="token punctuation">(</span>uint32_t nus<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token macro property">#<span class="token directive keyword">define</span> delay_dwt_ms(nms) delay_dwt_us(nms*1000)</span>
+<span class="token comment">//.c</span>
+<span class="token keyword">static</span> uint32_t sysclk <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">DWT_Init</span><span class="token punctuation">(</span>uint32_t sys_clk_c<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//使能SWT外设</span>
+    DEM_CR <span class="token operator">|</span><span class="token operator">=</span> DEM_CR_TRCENA<span class="token punctuation">;</span>
+    <span class="token comment">//CYCCNT寄存器清0</span>
+    DWT_CYCCNT <span class="token operator">=</span> <span class="token punctuation">(</span>uint32_t<span class="token punctuation">)</span><span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token comment">//使能CYCCNT</span>
+    DWT_CR <span class="token operator">|</span><span class="token operator">=</span> DWT_CR_CYCCNTENA<span class="token punctuation">;</span>
+    sysclk <span class="token operator">=</span> sys_clk_c<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">delay_dwt_us</span><span class="token punctuation">(</span>uint32_t nus<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    uint32_t ticks_start <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">,</span> ticks_end <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">,</span> tcnt <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+		DWT_CYCCNT <span class="token operator">=</span> <span class="token punctuation">(</span>uint32_t<span class="token punctuation">)</span><span class="token number">0</span><span class="token punctuation">;</span>
+    ticks_start <span class="token operator">=</span> DWT_CYCCNT_VAL<span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>sysclk<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">DWT_Init</span><span class="token punctuation">(</span>SYSCLK<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    tcnt <span class="token operator">=</span> <span class="token punctuation">(</span>nus <span class="token operator">*</span> <span class="token punctuation">(</span>sysclk <span class="token operator">/</span> <span class="token number">1000000</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    ticks_end <span class="token operator">=</span> ticks_start <span class="token operator">+</span> tcnt<span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>ticks_end <span class="token operator">&gt;</span> ticks_start<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">while</span> <span class="token punctuation">(</span>DWT_CYCCNT_VAL <span class="token operator">&lt;</span> ticks_end<span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+        <span class="token punctuation">}</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">else</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">while</span> <span class="token punctuation">(</span>DWT_CYCCNT_VAL <span class="token operator">&gt;=</span> ticks_end<span class="token punctuation">)</span>
+
+        <span class="token punctuation">{<!-- --></span>
+        <span class="token punctuation">}</span><span class="token punctuation">;</span>
+        <span class="token keyword">while</span> <span class="token punctuation">(</span>DWT_CYCCNT_VAL <span class="token operator">&lt;</span> ticks_end<span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+        <span class="token punctuation">}</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="_205"></a>测试数据</h4> 
+<h5><a id="50us_206"></a>50us级延时</h5> 
+<p><img src="https://images2.imgbox.com/41/a8/dextxylD_o.png" alt="在这里插入图片描述"><br> 延时5us，理论周期10us，实际周期10.6us，<strong>数据偏差6%</strong>。<br> <img src="https://images2.imgbox.com/75/6f/pGz4E8VP_o.png" alt="在这里插入图片描述"><br> 延时50us，理论周期100us，实际周期101.0us，<strong>数据偏差1%</strong>。<img src="https://images2.imgbox.com/90/42/vhGgZKdW_o.png" alt="在这里插入图片描述"><br> 延时80us，理论周期160us，实际周期160.0us，<strong>数据偏差0%</strong>。<br> <mark>结论：50us级延时偏差在0%-6%。</mark></p> 
+<h5><a id="500us_213"></a>500us级延时</h5> 
+<p><img src="https://images2.imgbox.com/04/0c/HjM8mW0k_o.png" alt="在这里插入图片描述"><br> 延时200us，理论周期400us，实际周期400.0us，<strong>数据偏差0%</strong>。</p> 
+<p><img src="https://images2.imgbox.com/44/46/NLajaf3u_o.png" alt="在这里插入图片描述"><br> 延时500us，理论周期1000us，实际周期1000.0us，<strong>数据偏差0%</strong>。<br> <img src="https://images2.imgbox.com/41/af/P8xGymCJ_o.png" alt="在这里插入图片描述"><br> 延时800us，理论周期1600us，实际周期1600.0us，<strong>数据偏差0%</strong>。<br> <mark>结论：500us级延时偏差在0%是十分准确的，因为毫秒级延时以微秒延时为基础，因此毫秒级延时也是十分准确。</mark><br> 注：50s级误差是基本一致的，无论是SYSTICK定时器还是DWT计时，误差都是一定的，在&gt;100us时是没有误差的，推测&lt;100us计时可能是示波器采样的因素。不过这个100us下不到10%的误差可以忽略不计，并且100us下，计时时间越接近于100us，误差越小，80us时误差就为0了，第一组测试数据5us延时有较大误差，我认为情有可原，是可以接收的。总的来说，<mark>硬件计时是十分准确的计时方式</mark>。</p> 
+<h4><a id="_224"></a>特点总结</h4> 
+<blockquote> 
+ <p>优点：非中断，硬件计时，非常准确，延时时间长（168MHZ下可达25s），<mark>可嵌套（最终延时时间大于等于需要延时时间）</mark>，<mark>可用于任何中断</mark>。<br> 缺点：占用硬件资源（但是这个资源是不用白不用的资源）<br> 准确性：精确延时。<br> OS：可用于OS，不占用OS心跳时钟。</p> 
+</blockquote> 
+<h2><a id="_231"></a>二、非阻塞延时</h2> 
+<p>本文主要讨论无OS下非阻塞延时函数实现，OS下有系统调度，线程可以挂起执行效率较高，如果有需要定时轮训的话还是需要用到非阻塞延时功能，思想是一样的。虽然这章是研究无OS下的非阻塞延时函数的，但在研究过程发现，在无OS下实现非阻塞延时，跟做个OS差不多，无OS下实现非阻塞延时照样会用到任务的概念，任务切换，任务状态等，跟OS下是一样的，但是OS下也会用到非阻塞延时。无OS下实现非阻塞延时实际上跟OS下的硬实时概念挺像的，不过应该称为硬延时，比如从系统运行初始化完成后开始，每50ms点亮一次LED灯，每100ms上传一次数据灯。本章就无OS下非阻塞延时就行研究讨论，后续可能会更新OS下的非阻塞延时。<br> <mark>非阻塞延时思想</mark>：使用定时器周期性中断产生定时时基，如10ms产生一次中断，然后在定时器中断函数中记录时间，while循环中根据时间执行相关任务，在任务A中判断是否到达执行任务时间，如果到达则执行，没有则调出判断任务B。实际上是将时间作为状态机状态来工作，何为<strong>有限状态机</strong>还请百度学习，不在本文讨论范围。</p> 
+<h3><a id="1_OS_234"></a>1. 无OS下非阻塞延时（<mark>待更新</mark>）</h3> 
+<h3><a id="2_OS_235"></a>2. OS下非阻塞延时（<mark>暂无更新</mark>）</h3> 
+<p>结语：由于水平有限，文中难免有错误之处，欢迎指正，也欢迎探讨交流。</p> 
+<blockquote> 
+ <p>联系方式：wangzhaoyangly@Foxmail.com<br> 第一次编辑日期：2021年3月29日<br> 最新更新日期：2021年3月29日</p> 
+</blockquote>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e689a6e986bb11b143122af8916d4a6e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">由于找不到MSVCR110.dll,无法继续执行代码...的解决方法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4ed80880af3d31f95dedf39f5eab7d41/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">PyTorch 矩阵乘法总结和运算符重载</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

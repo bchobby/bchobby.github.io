@@ -1,0 +1,1197 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>SpringBoot使用AOP统一处理日志 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="SpringBoot使用AOP统一处理日志" />
+<meta property="og:description" content="应用(记录用户操作日志): 有时候我们需要处理一些请求日志，或者对某些方法进行一些监控，如果出现例外情况应该进行怎么样的处理，现在，我们从spring boot中引入AOP 1、开发准备
+环境：idea、jdk 1.8、springboot、mysql 1.1 目录结构
+└─src └─main ├─java │ └─com │ └─example │ └─log │ │ LogApplication.java │ ├─annotation │ │ Log.java │ ├─aspect │ │ LogAspect.java │ ├─common │ │ ├─context │ │ │ BaseContext.java │ │ │ CallBack.java │ │ │ SpringContextHolder.java │ │ ├─enums │ │ │ Action.java │ │ └─utils │ │ CloseUtil.java │ │ ExceptionUtil.java │ │ FileUtil.java │ │ ServletUtil.java │ ├─controller │ │ LogController." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/79c655c2359639e2a143720595cd79c4/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-06-28T08:34:46+08:00" />
+<meta property="article:modified_time" content="2023-06-28T08:34:46+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">SpringBoot使用AOP统一处理日志</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <ul><li>应用(记录用户操作日志): 有时候我们需要处理一些请求日志，或者对某些方法进行一些监控，如果出现例外情况应该进行怎么样的处理，现在，我们从spring boot中引入AOP</li></ul> 
+<p>1、开发准备</p> 
+<pre><code>环境：idea、jdk 1.8、springboot、mysql
+</code></pre> 
+<p>1.1 目录结构</p> 
+<pre><code>└─src
+    └─main
+        ├─java
+        │  └─com
+        │      └─example
+        │          └─log
+        │              │  LogApplication.java
+        │              ├─annotation
+        │              │      Log.java
+        │              ├─aspect
+        │              │      LogAspect.java
+        │              ├─common
+        │              │  ├─context
+        │              │  │      BaseContext.java
+        │              │  │      CallBack.java
+        │              │  │      SpringContextHolder.java
+        │              │  ├─enums
+        │              │  │      Action.java
+        │              │  └─utils
+        │              │          CloseUtil.java
+        │              │          ExceptionUtil.java
+        │              │          FileUtil.java
+        │              │          ServletUtil.java
+        │              ├─controller
+        │              │      LogController.java
+        │              ├─domain
+        │              │      SysLog.java
+        │              ├─repository
+        │              │      LogRepository.java
+        │              └─service
+        │                  │  LogService.java
+        │                  └─impl
+        │                          LogServiceImpl.java
+        └─resources
+            │  application.yml
+            └─ip2region
+                    ip2region.db （注意这个文件，作用：转换IP地址来源）
+</code></pre> 
+<pre><code>resources/ip2region/ip2region.db 文件 下载：https://files.cnblogs.com/files/mmdz/ip2region.db.rar
+ 
+</code></pre> 
+<p>1.2 日志表<br> 准备sys_log日志表（mysql）</p> 
+<pre><code>DROP TABLE IF EXISTS `sys_log`;
+CREATE TABLE `sys_log` (
+  `id` char(20) NOT NULL COMMENT '编号',
+  `operator` varchar(255) DEFAULT NULL COMMENT '操作人',
+  `operation_time` datetime DEFAULT NULL COMMENT '操作时间',
+  `title` varchar(255) DEFAULT NULL COMMENT '编号',
+  `method` varchar(255) DEFAULT NULL COMMENT '方法',
+  `type` varchar(255) DEFAULT NULL COMMENT '请求方式',
+  `params` varchar(255) DEFAULT NULL COMMENT '参数',
+  `state` bit(1) DEFAULT NULL COMMENT '状态',
+  `action` varchar(255) DEFAULT NULL COMMENT '操作',
+  `request_ip` varchar(255) DEFAULT NULL COMMENT '请求ip',
+  `address` varchar(255) DEFAULT NULL COMMENT 'ip来源',
+  `browser` varchar(255) DEFAULT NULL COMMENT '浏览器',
+  `time` bigint(10) DEFAULT NULL COMMENT '请求耗时',
+  `error` text COMMENT '异常信息',
+  `system` varchar(255) DEFAULT NULL COMMENT '操作系统',
+  PRIMARY KEY (`id`) USING BTREE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 ROW_FORMAT=DYNAMIC;
+
+</code></pre> 
+<p>1.3 pom文件</p> 
+<pre><code>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd"&gt;
+    &lt;modelVersion&gt;4.0.0&lt;/modelVersion&gt;
+    &lt;parent&gt;
+        &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+        &lt;artifactId&gt;spring-boot-starter-parent&lt;/artifactId&gt;
+        &lt;version&gt;2.5.3&lt;/version&gt;
+        &lt;relativePath/&gt; &lt;!-- lookup parent from repository --&gt;
+    &lt;/parent&gt;
+    &lt;groupId&gt;com.example&lt;/groupId&gt;
+    &lt;artifactId&gt;log&lt;/artifactId&gt;
+    &lt;version&gt;0.0.1-SNAPSHOT&lt;/version&gt;
+    &lt;name&gt;log&lt;/name&gt;
+    &lt;description&gt;Demo project for Spring Boot&lt;/description&gt;
+    &lt;properties&gt;
+        &lt;java.version&gt;1.8&lt;/java.version&gt;
+        &lt;datasource.version&gt;3.3.1&lt;/datasource.version&gt;
+        &lt;mysql.version&gt;8.0.22&lt;/mysql.version&gt;
+        &lt;mybatis.plus.version&gt;3.4.3&lt;/mybatis.plus.version&gt;
+        &lt;swagger.version&gt;2.9.2&lt;/swagger.version&gt;
+        &lt;hutool.version&gt;5.5.7&lt;/hutool.version&gt;
+    &lt;/properties&gt;
+    &lt;dependencies&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-boot-starter-web&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+        &lt;!-- 切 面 编 程 --&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-boot-starter-aop&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+        &lt;!-- 数 据 库 操 作 框 架 --&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;com.baomidou&lt;/groupId&gt;
+            &lt;artifactId&gt;mybatis-plus-boot-starter&lt;/artifactId&gt;
+            &lt;version&gt;${mybatis.plus.version}&lt;/version&gt;
+        &lt;/dependency&gt;
+        &lt;!-- 数 据 库 连 接 工 具 --&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;mysql&lt;/groupId&gt;
+            &lt;artifactId&gt;mysql-connector-java&lt;/artifactId&gt;
+            &lt;version&gt;${mysql.version}&lt;/version&gt;
+            &lt;scope&gt;runtime&lt;/scope&gt;
+        &lt;/dependency&gt;
+        &lt;!-- 常 用 工 具 类 --&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;cn.hutool&lt;/groupId&gt;
+            &lt;artifactId&gt;hutool-all&lt;/artifactId&gt;
+            &lt;version&gt;${hutool.version}&lt;/version&gt;
+        &lt;/dependency&gt;
+        &lt;!-- Swagger UI 相关 --&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;io.springfox&lt;/groupId&gt;
+            &lt;artifactId&gt;springfox-swagger2&lt;/artifactId&gt;
+            &lt;version&gt;${swagger.version}&lt;/version&gt;
+            &lt;exclusions&gt;
+                &lt;exclusion&gt;
+                    &lt;groupId&gt;io.swagger&lt;/groupId&gt;
+                    &lt;artifactId&gt;swagger-annotations&lt;/artifactId&gt;
+                &lt;/exclusion&gt;
+                &lt;exclusion&gt;
+                    &lt;groupId&gt;io.swagger&lt;/groupId&gt;
+                    &lt;artifactId&gt;swagger-models&lt;/artifactId&gt;
+                &lt;/exclusion&gt;
+            &lt;/exclusions&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;io.springfox&lt;/groupId&gt;
+            &lt;artifactId&gt;springfox-swagger-ui&lt;/artifactId&gt;
+            &lt;version&gt;${swagger.version}&lt;/version&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;io.swagger&lt;/groupId&gt;
+            &lt;artifactId&gt;swagger-annotations&lt;/artifactId&gt;
+            &lt;version&gt;1.5.21&lt;/version&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;io.swagger&lt;/groupId&gt;
+            &lt;artifactId&gt;swagger-models&lt;/artifactId&gt;
+            &lt;version&gt;1.5.21&lt;/version&gt;
+        &lt;/dependency&gt;
+
+        &lt;!-- 解析客户端操作系统、浏览器信息 --&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;nl.basjes.parse.useragent&lt;/groupId&gt;
+            &lt;artifactId&gt;yauaa&lt;/artifactId&gt;
+            &lt;version&gt;5.23&lt;/version&gt;
+        &lt;/dependency&gt;
+        &lt;!-- 根据IP获取城市-Java调用“ip2region” --&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.lionsoul&lt;/groupId&gt;
+            &lt;artifactId&gt;ip2region&lt;/artifactId&gt;
+            &lt;version&gt;1.7.2&lt;/version&gt;
+        &lt;/dependency&gt;
+        &lt;!-- lombok --&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.projectlombok&lt;/groupId&gt;
+            &lt;artifactId&gt;lombok&lt;/artifactId&gt;
+            &lt;optional&gt;true&lt;/optional&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-boot-starter-test&lt;/artifactId&gt;
+            &lt;scope&gt;test&lt;/scope&gt;
+        &lt;/dependency&gt;
+    &lt;/dependencies&gt;
+
+    &lt;build&gt;
+        &lt;plugins&gt;
+            &lt;plugin&gt;
+                &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+                &lt;artifactId&gt;spring-boot-maven-plugin&lt;/artifactId&gt;
+                &lt;configuration&gt;
+                    &lt;excludes&gt;
+                        &lt;exclude&gt;
+                            &lt;groupId&gt;org.projectlombok&lt;/groupId&gt;
+                            &lt;artifactId&gt;lombok&lt;/artifactId&gt;
+                        &lt;/exclude&gt;
+                    &lt;/excludes&gt;
+                &lt;/configuration&gt;
+            &lt;/plugin&gt;
+        &lt;/plugins&gt;
+    &lt;/build&gt;
+&lt;/project&gt;
+</code></pre> 
+<p>1.4 application.yml</p> 
+<pre><code>spring:
+  datasource:
+    driver-class-name: com.mysql.jdbc.Driver
+    url: jdbc:mysql://127.0.0.1:3306/log?useUnicode=true&amp;characterEncoding=utf8&amp;useSSL=true&amp;serverTimezone=GMT
+    username: root
+    password: 123456
+</code></pre> 
+<p>2、编码<br> 2.1 domain包<br> SysLog（日志模型）</p> 
+<pre><code>
+package com.example.log.domain;
+
+import cn.hutool.core.util.ObjectUtil;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
+import com.example.log.common.enums.Action;
+import lombok.Data;
+
+import java.io.Serializable;
+import java.time.LocalDateTime;
+
+/**
+ * 日志模型
+ * */
+@Data
+@TableName("sys_log")
+public class SysLog implements Serializable {
+    /** 编号 */
+    @TableId("id")
+    private String id;
+    /** 操作人 */
+    @TableField("operator")
+    private String operator;
+    /** 操作时间 */
+    @TableField("operation_time")
+    private LocalDateTime operationTime;
+    /** 标题 */
+    @TableField("title")
+    private String title;
+    /** 请求方法 */
+    @TableField("method")
+    private String method;
+    /** 请求方式 */
+    @TableField("type")
+    private String type;
+    /** 请求参数 */
+    @TableField("params")
+    private String params;
+    /** 状态（是否成功） */
+    @TableField("state")
+    private Boolean state;
+    /** 操作类型 */
+    @TableField("action")
+    private Action action;
+    /** 请求ip */
+    @TableField("request_ip")
+    private String requestIp;
+    /** ip来源 */
+    @TableField("address")
+    private String address;
+    /** 浏览器 */
+    @TableField("browser")
+    private String browser;
+    /** 请求耗时 */
+    @TableField("time")
+    private Long time;
+    /** 异常信息 */
+    @TableField("error")
+    private byte[] error;
+    @TableField(exist = false)
+    private String exceptionDetailStr;
+    /** 系统 */
+    @TableField("`system`")
+    private String system;
+
+    public String getExceptionDetailStr() {
+        return new String(ObjectUtil.isNotNull(error) ? error : "".getBytes());
+    }
+}
+</code></pre> 
+<p>2.2 annotation包</p> 
+<pre><code>package com.example.log.annotation;
+
+import com.example.log.common.enums.Action;
+import java.lang.annotation.*;
+
+/**
+ * 日志 注解
+ * */
+@Documented
+@Retention(RetentionPolicy.RUNTIME)
+@Target({ElementType.TYPE, ElementType.METHOD})
+public @interface Log {
+
+    /**
+     * Title 默认输入
+     * */
+    String title() default "暂无标题";
+
+    /**
+     * Describe 默认输入
+     * */
+    String describe() default "暂无描述";
+
+    /**
+     * Action 操作类型
+     * */
+    Action action() default Action.QUERY;
+}
+
+</code></pre> 
+<p>2.3 common包<br> 2.3.1 enums<br> Action 日 志 分 类</p> 
+<pre><code>package com.example.log.common.enums;
+
+/**
+ * 日 志 分 类
+ */
+public enum Action {
+    /** 认证 */
+    AUTH,
+    /** 增 */
+    ADD,
+    /** 删 */
+    REMOVE,
+    /** 改 */
+    EDIT,
+    /** 查 */
+    QUERY,
+    /** 导入 */
+    IMPORT,
+    /** 导出 */
+    REPORT,
+    /** 上传 */
+    UPLOAD
+}
+
+</code></pre> 
+<p>2.3.2 context<br> CallBack</p> 
+<pre><code>package com.example.log.common.context;
+
+/**
+ * @Desc: TODO
+ *          针对某些初始化方法，在SpringContextHolder 初始化前时，&lt;br&gt;
+ *          提交一个 提交回调任务。&lt;br&gt;
+ *          在SpringContextHolder 初始化后，进行回调使用
+ */
+public interface CallBack {
+
+    /**
+     * 回调执行方法
+     */
+    void executor();
+
+    /**
+     * 本回调任务名称
+     * @return /
+     */
+    default String getCallBackName() {
+        return Thread.currentThread().getId() + ":" + this.getClass().getName();
+    }
+
+}
+</code></pre> 
+<p>SpringContextHolder</p> 
+<pre><code>package com.example.log.common.context;
+
+import org.springframework.context.ApplicationContext;
+import org.springframework.core.env.Environment;
+import java.util.ArrayList;
+import java.util.List;
+
+public class SpringContextHolder {
+
+    private static ApplicationContext applicationContext = null;
+    private static final List&lt;CallBack&gt; CALL_BACKS = new ArrayList&lt;&gt;();
+    private static boolean addCallback = true;
+
+    /**
+     * 针对 某些初始化方法，在SpringContextHolder 未初始化时 提交回调方法。
+     * 在SpringContextHolder 初始化后，进行回调使用
+     *
+     * @param callBack 回调函数
+     */
+    public synchronized static void addCallBacks(CallBack callBack) {
+        if (addCallback) {
+            SpringContextHolder.CALL_BACKS.add(callBack);
+        } else {
+            System.out.println("CallBack：" + callBack.getCallBackName() +" 已无法添加！立即执行");
+            callBack.executor();
+        }
+    }
+
+    /**
+     * 获取SpringBoot 配置信息
+     *
+     * @param property     属性key
+     * @param defaultValue 默认值
+     * @param requiredType 返回类型
+     * @return /
+     */
+    public static &lt;T&gt; T getProperties(String property, T defaultValue, Class&lt;T&gt; requiredType) {
+        T result = defaultValue;
+        try {
+            result = getBean(Environment.class).getProperty(property, requiredType);
+        } catch (Exception ignored) {}
+        return result;
+    }
+
+    /**
+     * 从静态变量applicationContext中取得Bean, 自动转型为所赋值对象的类型.
+     */
+    public static &lt;T&gt; T getBean(Class&lt;T&gt; requiredType) {
+        assertContextInjected();
+        return applicationContext.getBean(requiredType);
+    }
+
+    /**
+     * 检查ApplicationContext不为空.
+     */
+    private static void assertContextInjected() {
+        if (applicationContext == null) {
+            throw new IllegalStateException("applicaitonContext属性未注入, 请在applicationContext" +
+                    ".xml中定义SpringContextHolder或在SpringBoot启动类中注册SpringContextHolder.");
+        }
+    }
+
+}
+
+ 
+</code></pre> 
+<p>BaseContext</p> 
+<pre><code>package com.example.log.common.context;
+
+import com.example.log.common.utils.ServletUtil;
+import com.example.log.domain.SysLog;
+import com.example.log.common.enums.Action;
+import com.example.log.service.LogService;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
+
+import javax.annotation.Resource;
+import java.time.LocalDateTime;
+
+/**
+ * Base Context
+ */
+@Component
+public class BaseContext {
+
+    /**
+     * 日 志 服 务
+     */
+    @Resource
+    private LogService sysLogService;
+
+    /**
+     * 新增日志
+     *
+     * @param title  标题
+     * @param methodName 请求方法
+     * @param parameter 参数
+     * @param action 动作
+     * @param state  状态
+     * @param time   请求耗时
+     * @param error  异常
+     */
+    @Async
+    @Transactional(rollbackFor = Exception.class)
+    public void record(String title,
+                       String methodName,
+                       String parameter,
+                       Action action,
+                       Boolean state,
+                       Long time,
+                       byte[] error) {
+        SysLog sysLog = new SysLog();
+        sysLog.setOperator("");// 操作人
+        sysLog.setOperationTime(LocalDateTime.now());// 操作时间
+        sysLog.setTitle(title);//标题
+        sysLog.setMethod(methodName);// 请求方法
+        sysLog.setType(ServletUtil.getMethod());// 请求方式
+        sysLog.setParams(parameter);// 参数
+        sysLog.setState(state);// 状态（是否成功）
+        sysLog.setAction(action);// 操作类型
+        String ip = ServletUtil.getIp();
+        sysLog.setRequestIp(ServletUtil.getIp());// 请求ip
+        sysLog.setAddress(ServletUtil.getCityInfo(ip));// ip来源
+        sysLog.setBrowser(ServletUtil.getBrowser());// 浏览器
+        sysLog.setTime(time);// 请求耗时
+        sysLog.setError(error);// 异常信息
+        sysLog.setSystem(ServletUtil.getSystem());// 操作系统
+        sysLogService.save(sysLog);
+    }
+
+}
+
+</code></pre> 
+<p>2.3.3 utils<br> CloseUtil</p> 
+<pre><code>package com.example.log.common.utils;
+
+import java.io.Closeable;
+
+/**
+ * @Desc: TODO 用于关闭各种连接，缺啥补啥
+ */
+public class CloseUtil {
+
+    public static void close(Closeable closeable) {
+        if (null != closeable) {
+            try {
+                closeable.close();
+            } catch (Exception e) {
+                // 静默关闭
+            }
+        }
+    }
+
+    public static void close(AutoCloseable closeable) {
+        if (null != closeable) {
+            try {
+                closeable.close();
+            } catch (Exception e) {
+                // 静默关闭
+            }
+        }
+    }
+}
+
+</code></pre> 
+<p>ExceptionUtil</p> 
+<pre><code>package com.example.log.common.utils;
+
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+
+/**
+ * @Desc: TODO 将日志堆栈信息输出到文件
+ */
+public class ExceptionUtil {
+
+    public static String getMessage(Exception e) {
+        StringWriter sw = null;
+        PrintWriter pw = null;
+        try {
+            sw = new StringWriter();
+            pw = new PrintWriter(sw);
+            // 将出错的栈信息输出到printWriter中
+            e.printStackTrace(pw);
+            pw.flush();
+            sw.flush();
+        } finally {
+            if (sw != null) {
+                try {
+                    sw.close();
+                } catch (IOException e1) {
+                    e1.printStackTrace();
+                }
+            }
+            if (pw != null) {
+                pw.close();
+            }
+        }
+        return sw.toString();
+    }
+
+    /**
+     * 获取堆栈信息
+     */
+    public static String getStackTrace(Throwable throwable){
+        StringWriter sw = new StringWriter();
+        try (PrintWriter pw = new PrintWriter(sw)) {
+            throwable.printStackTrace(pw);
+            return sw.toString();
+        }
+    }
+}
+
+ 
+</code></pre> 
+<p>FileUtil</p> 
+<pre><code>package com.example.log.common.utils;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+
+/**
+ * @Desc: TODO File工具类，扩展 hutool 工具包
+ */
+public class FileUtil extends cn.hutool.core.io.FileUtil {
+
+    /**
+     * 系统临时目录
+     * &lt;br&gt;
+     * windows 包含路径分割符，但Linux 不包含,
+     * 在windows \\==\ 前提下，
+     * 为安全起见 同意拼装 路径分割符，
+     * &lt;pre&gt;
+     *       java.io.tmpdir
+     *       windows : C:\Users/xxx\AppData\Local\Temp\
+     *       linux: /temp
+     * &lt;/pre&gt;
+     */
+    public static final String SYS_TEM_DIR = System.getProperty("java.io.tmpdir") + File.separator;
+
+    /**
+     * inputStream 转 File
+     */
+    public static File inputStreamToFile(InputStream ins, String name){
+        File file = new File(SYS_TEM_DIR + name);
+        if (file.exists()) {
+            return file;
+        }
+        OutputStream os = null;
+        try {
+            os = new FileOutputStream(file);
+            int bytesRead;
+            int len = 8192;
+            byte[] buffer = new byte[len];
+            while ((bytesRead = ins.read(buffer, 0, len)) != -1) {
+                os.write(buffer, 0, bytesRead);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            CloseUtil.close(os);
+            CloseUtil.close(ins);
+        }
+        return file;
+    }
+
+}
+
+ 
+</code></pre> 
+<p>ServletUtil</p> 
+<pre><code>package com.example.log.common.utils;
+
+import cn.hutool.http.HttpUtil;
+import cn.hutool.json.JSONUtil;
+import com.example.log.common.context.SpringContextHolder;
+import nl.basjes.parse.useragent.UserAgent;
+import nl.basjes.parse.useragent.UserAgentAnalyzer;
+import org.lionsoul.ip2region.DataBlock;
+import org.lionsoul.ip2region.DbConfig;
+import org.lionsoul.ip2region.DbSearcher;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+import javax.servlet.http.HttpServletRequest;
+import java.io.File;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+
+/**
+ * Servlet 工具类
+ * */
+public class ServletUtil {
+
+    /**
+     * IP归属地查询
+     */
+    private static final String IP_URL = "http://whois.pconline.com.cn/ipJson.jsp?ip=%s&amp;json=true";
+    /**
+     * 用于IP定位转换
+     */
+    private static final String REGION = "内网IP|内网IP";
+
+    private static boolean ipLocal = false;
+    private static File file = null;
+    private static DbConfig config;
+    private static final UserAgentAnalyzer userAgentAnalyzer = UserAgentAnalyzer
+            .newBuilder()
+            .hideMatcherLoadStats()
+            .withCache(10000)
+            .withField(UserAgent.AGENT_NAME_VERSION)
+            .build();
+
+    static {
+        SpringContextHolder.addCallBacks(() -&gt; {
+            ipLocal = SpringContextHolder.getProperties("ip.local-parsing", false, Boolean.class);
+            if (ipLocal) {
+                /*
+                 * 此文件为独享 ，不必关闭
+                 */
+                String path = "ip2region/ip2region.db";
+                String name = "ip2region.db";
+                try {
+                    config = new DbConfig();
+                    file = FileUtil.inputStreamToFile(new ClassPathResource(path).getInputStream(), name);
+                } catch (Exception e) {
+                    e.printStackTrace();
+//                    log.error(e.getMessage(), e);
+                }
+            }
+        });
+    }
+
+    /**
+     * Describe: Request 客户端地址(获取ip地址)
+     *
+     * @return {@link String}
+     * */
+    public static String getIp() {
+        HttpServletRequest request = getRequest();
+        String ipAddress = request.getHeader("x-forwarded-for");
+        if (ipAddress == null || ipAddress.length() == 0 || "unknown".equalsIgnoreCase(ipAddress)) {
+            ipAddress = request.getHeader("Proxy-Client-IP");
+        }
+        if (ipAddress == null || ipAddress.length() == 0 || "unknown".equalsIgnoreCase(ipAddress)) {
+            ipAddress = request.getHeader("WL-Proxy-Client-IP");
+        }
+        if (ipAddress == null || ipAddress.length() == 0 || "unknown".equalsIgnoreCase(ipAddress)) {
+            ipAddress = request.getRemoteAddr();
+            if ("127.0.0.1".equals(ipAddress) || "0:0:0:0:0:0:0:1".equals(ipAddress)) {
+                // 根据网卡取本机配置的IP
+                try {
+                    ipAddress = InetAddress.getLocalHost().getHostAddress();
+                } catch (UnknownHostException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+        //对于通过多个代理的情况，第一个IP为客户端真实IP,多个IP按照','分割
+        if (ipAddress != null &amp;&amp; ipAddress.length() &gt; 15) { //"***.***.***.***".length() = 15
+            if (ipAddress.indexOf(",") &gt; 0) {
+                ipAddress = ipAddress.substring(0, ipAddress.indexOf(","));
+            }
+        }
+        return ipAddress;
+    }
+
+    /**
+     * 根据ip获取详细地址
+     */
+    public static String getCityInfo(String ip) {
+        if (ipLocal) {
+            return getLocalCityInfo(ip);
+        } else {
+            return getHttpCityInfo(ip);
+        }
+    }
+
+    /**
+     * 根据ip获取详细地址
+     */
+    public static String getHttpCityInfo(String ip) {
+        String api = String.format(IP_URL, ip);
+        cn.hutool.json.JSONObject object = JSONUtil.parseObj(HttpUtil.get(api));
+        return object.get("addr", String.class);
+    }
+
+    /**
+     * 根据ip获取详细地址
+     */
+    public static String getLocalCityInfo(String ip) {
+        try {
+            DataBlock dataBlock = new DbSearcher(config, file.getPath())
+                    .binarySearch(ip);
+            String region = dataBlock.getRegion();
+            String address = region.replace("0|", "");
+            char symbol = '|';
+            if (address.charAt(address.length() - 1) == symbol) {
+                address = address.substring(0, address.length() - 1);
+            }
+            return address.equals(REGION) ? "内网IP" : address;
+        } catch (Exception e) {
+//            log.error(e.getMessage(), e);
+            e.printStackTrace();
+        }
+        return "";
+    }
+
+    /**
+     * 获取 HttpServletRequest 对象
+     *
+     * @return {@link HttpServletRequest}
+     * */
+    private static HttpServletRequest getRequest(){
+        ServletRequestAttributes servletRequestAttributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        return servletRequestAttributes.getRequest();
+    }
+
+    /**
+     * Request 请求方法(类型)
+     *
+     * @return {@link String}
+     * */
+    public static String getMethod(){
+        return getRequest().getMethod();
+    }
+
+    /**
+     * Request 请求头
+     *
+     * @param name 名称
+     * @return {@link String}
+     * */
+    public static String getHeader(String name){
+        return getRequest().getHeader(name);
+    }
+
+    /**
+     * Request Agent
+     *
+     * @return {@link String}
+     * */
+    private static String getAgent(){
+        return getHeader("User-Agent");
+    }
+
+    /**
+     * Request 浏览器类型
+     *
+     * @return {@link String}
+     * */
+    public static String getBrowser(){
+        String browser = "";
+        String userAgent = getAgent();
+        if (userAgent.contains("Firefox")) browser = "火狐浏览器";
+        else if (userAgent.contains("Chrome")) browser = "谷歌浏览器";
+        else if (userAgent.contains("Trident")) browser = "IE 浏览器";
+        else browser = "你用啥浏览器";
+        UserAgent.ImmutableUserAgent parse = userAgentAnalyzer.parse(userAgent);
+        String value = parse.get(UserAgent.AGENT_NAME_VERSION).getValue();
+        return browser + "(" + value + ")";
+    }
+
+    /**
+     * Request 访问来源 ( 客户端类型 )
+     *
+     * @return {@link String}
+     * */
+    public static String getSystem(){
+        String userAgent = getAgent();
+        if (getAgent().toLowerCase().contains("windows" )) return "Windows";
+        else if (userAgent.toLowerCase().contains("mac" )) return "Mac";
+        else if (userAgent.toLowerCase().contains("x11" )) return "Unix";
+        else if (userAgent.toLowerCase().contains("android" )) return "Android";
+        else if (userAgent.toLowerCase().contains("iphone" )) return "IPhone";
+        else return "UnKnown, More-Info: " + userAgent;
+    }
+
+}
+
+</code></pre> 
+<p>2.4 aspect包（核心）<br> Log 实现 Aop 切面类</p> 
+<pre><code>package com.example.log.aspect;
+
+import cn.hutool.json.JSONUtil;
+import com.example.log.annotation.Log;
+import com.example.log.common.context.BaseContext;
+import com.example.log.common.enums.Action;
+import com.example.log.common.utils.ExceptionUtil;
+import org.aspectj.lang.JoinPoint;
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.AfterThrowing;
+import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.annotation.Aspect;
+import org.aspectj.lang.annotation.Pointcut;
+import org.aspectj.lang.reflect.MethodSignature;
+import org.springframework.stereotype.Component;
+
+import javax.annotation.Resource;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Log 实现 Aop 切面类
+ */
+@Aspect
+@Component
+public class LogAspect {
+
+    ThreadLocal&lt;Long&gt; currentTime = new ThreadLocal&lt;&gt;();
+
+    /**
+     * 基 础 上 下 文
+     */
+    @Resource
+    private BaseContext context;
+
+    /**
+     * 配置切入点（切 面 编 程）
+     */
+    @Pointcut("@annotation(com.example.log.annotation.Log) || @within(com.example.log.annotation.Log)")
+    public void logPointcut() {
+        // 该方法无方法体,主要为了让同类中其他方法使用此切入点
+    }
+
+    /**
+     * 处 理 系 统 日 志（配置环绕通知,使用在方法logPointcut()上注册的切入点）
+     *
+     * @param joinPoint join point for advice
+     */
+    @Around("logPointcut()")
+    public Object around(ProceedingJoinPoint joinPoint) throws Throwable {
+        Object result = null;
+        // 记录方法的执行时间
+        currentTime.set(System.currentTimeMillis());
+        // 执 行 方 法
+        result = joinPoint.proceed();
+        // 注解解析
+        Log annotation = getAnnotation(joinPoint);
+        String title = annotation.title();
+        Action action = annotation.action();
+        String describe = annotation.describe();
+        // 获取方法名
+        String methodName = getMethodName(joinPoint);
+        // 获取参数
+        String parameter = getParameterToJson((ProceedingJoinPoint) joinPoint);
+        // 请求耗时
+        Long time = System.currentTimeMillis() - currentTime.get();
+        currentTime.remove();
+
+        // 记 录 日 志
+        context.record(title, methodName, parameter, action, true, time, null);
+
+        return result;
+    }
+
+    /**
+     * 配置异常通知
+     *
+     * @param joinPoint join point for advice
+     * @param e         exception
+     */
+    @AfterThrowing(pointcut = "logPointcut()", throwing = "e")
+    public void logAfterThrowing(JoinPoint joinPoint, Throwable e) {
+        // 注解解析
+        Log annotation = getAnnotation((ProceedingJoinPoint) joinPoint);
+        String title = annotation.title();
+        Action action = annotation.action();
+        String describe = annotation.describe();
+        // 获取方法名
+        String methodName = getMethodName((ProceedingJoinPoint) joinPoint);
+        // 获取参数
+        String parameter = getParameterToJson((ProceedingJoinPoint) joinPoint);
+        // 请求耗时
+        Long time = System.currentTimeMillis() - currentTime.get();
+        currentTime.remove();
+        // 异常详细
+        byte[] exceptionDetail = ExceptionUtil.getStackTrace(e).getBytes();
+
+        // 记 录 日 志
+        context.record(title, methodName, parameter, action, false, time, exceptionDetail);
+    }
+
+    /**
+     * 获 取 注 解
+     */
+    public Log getAnnotation(ProceedingJoinPoint point) {
+        MethodSignature signature = (MethodSignature) point.getSignature();
+        Class&lt;? extends Object&gt; targetClass = point.getTarget().getClass();
+        Log targetLog = targetClass.getAnnotation(Log.class);
+        if (targetLog != null) {
+            return targetLog;
+        } else {
+            Method method = signature.getMethod();
+            Log log = method.getAnnotation(Log.class);
+            return log;
+        }
+    }
+
+    /**
+     * 获 取 方法名
+     */
+    public String getMethodName(ProceedingJoinPoint point) {
+        MethodSignature signature = (MethodSignature) point.getSignature();
+        // 方法路径
+        String methodName = point.getTarget().getClass().getName()+"."+signature.getName()+"()";
+        return methodName;
+    }
+
+    /**
+     * 获 取 参数（转换json格式）
+     */
+    public String getParameterToJson(ProceedingJoinPoint point) {
+        List&lt;Object&gt; argList = new ArrayList&lt;&gt;();
+        //参数值
+        Object[] argValues = point.getArgs();
+        //参数名称
+        String[] argNames = ((MethodSignature)point.getSignature()).getParameterNames();
+        if(argValues != null){
+            for (int i = 0; i &lt; argValues.length; i++) {
+                Map&lt;String, Object&gt; map = new HashMap&lt;&gt;();
+                String key = argNames[i];
+                map.put(key, argValues[i]);
+                argList.add(map);
+                map = null;
+            }
+        }
+        if (argList.size() == 0) {
+            return "";
+        }
+        return argList.size() == 1 ? JSONUtil.toJsonStr(argList.get(0)) : JSONUtil.toJsonStr(argList);
+    }
+}
+
+</code></pre> 
+<p>2.5 三层架构<br> 2.5.1 controller</p> 
+<pre><code>package com.example.log.controller;
+
+import cn.hutool.json.JSON;
+import cn.hutool.json.JSONObject;
+import cn.hutool.json.JSONUtil;
+import com.example.log.annotation.Log;
+import com.example.log.service.LogService;
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiOperation;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequiredArgsConstructor
+@RequestMapping("/api/logs")
+@Api(tags = "日志管理")
+public class LogController {
+
+    /** 使用@RequiredArgsConstructor 基于构造函数注入*/
+    private final LogService logService;
+
+    /**
+     * 查询日志列表
+     */
+    @GetMapping("list")
+    @ApiOperation(value = "查询日志")
+    public String list(){
+        return JSONUtil.parse(logService.list()).toString();
+    }
+
+    /**
+     * 测试
+     */
+    @GetMapping("demo")
+    @Log(title = "测试")
+    @ApiOperation(value = "测试")
+    public String demo(@RequestParam String param){
+        return param;
+    }
+
+}
+
+ 
+</code></pre> 
+<p>2.5.2 service</p> 
+<pre><code>package com.example.log.service;
+
+import com.baomidou.mybatisplus.extension.service.IService;
+import com.example.log.domain.SysLog;
+
+public interface LogService extends IService&lt;SysLog&gt; {
+
+}
+</code></pre> 
+<pre><code>package com.example.log.service.impl;
+
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.example.log.domain.SysLog;
+import com.example.log.repository.LogRepository;
+import com.example.log.service.LogService;
+import org.springframework.stereotype.Service;
+
+@Service
+public class LogServiceImpl extends ServiceImpl&lt;LogRepository, SysLog&gt; implements LogService {
+}
+
+</code></pre> 
+<p>2.5.2 repository</p> 
+<pre><code>package com.example.log.repository;
+
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.example.log.domain.SysLog;
+import org.apache.ibatis.annotations.Mapper;
+
+@Mapper
+public interface LogRepository extends BaseMapper&lt;SysLog&gt; {
+}
+
+</code></pre> 
+<p>3、测试</p> 
+<pre><code>新增测试 http://127.0.0.1:8080//api/logs/demo?param=123
+</code></pre> 
+<p><img src="https://images2.imgbox.com/a6/a5/wIxtdcwE_o.png" alt="在这里插入图片描述"></p> 
+<pre><code>查看数据 http://127.0.0.1:8080//api/logs/list
+</code></pre> 
+<p><img src="https://images2.imgbox.com/33/f6/Yfugjrju_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/77ed4aa7c4b5f60feec19ff659f106b5/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">高性能linux服务构建 1服务器安全运维</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8eeb9ef2a336edc9112c401832e648dd/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">iptables添加IP段白名单</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

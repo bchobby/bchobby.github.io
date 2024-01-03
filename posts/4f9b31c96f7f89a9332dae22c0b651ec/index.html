@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>sheng的学习笔记-IO多路复用，NIO,BIO,AIO - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="sheng的学习笔记-IO多路复用，NIO,BIO,AIO" />
+<meta property="og:description" content="基础概念 IO分为几种：同步阻塞的BIO，同步非阻塞的NIO，异步非阻塞AIO，IO多路复用，信号驱动IO（不常用）
+对于一个network IO，它会涉及到两个系统对象，一个是调用这个IO的process（Thread），另一个是系统内核。当一个read/recv读数据的操作发生时，该操作会经历两个阶段：
+（1）等待数据准备
+（2）将数据从内核拷贝到进程中
+BIO：同步并阻塞 服务端处理请求是串联的。也就是说如果这个请求被阻塞了，那么剩下的请求都要被阻塞``等待``上一个请求处理完成才行。所以，我们上面说，在 服务器读数据的时候，数据还没到（数据还没读到用户态），那么服务器被阻塞，然后其他客户端的请求也不能被处理。
+比如： 小明和小红两个人访问同一个服务，然后小明先点，但是数据没被处理完成，然后小红在进行发送请求，此时服务器就将小红的请求挂起，等待小明的处理完成在进行处理。 而且小明发了申请，服务器没有返回响应之前，小明也不能动，阻塞在那里等待到应答，才能继续做别的事情
+.
+NIO:同步非阻塞 用户线程发起IO请求后，立即返回；这时候可以干点别的，过一会再查，但需要不断地调用read，尝试读取socket中的数据，直到读取成功后，才继续处理接收的数据。
+虽然用户线程每次发起IO请求后可以立即返回，但是为了等到数据，仍需要不断地轮询、重复请求，消耗了大量的CPU的资源。一般很少直接使用这种模型，而是在其他IO模型中使用非阻塞IO这一特性。
+当用户进程发出read操作时，如果kernel中的数据还没准备好，那么它并不会block用户进程，而是立刻返回一个error。当用户进程接收到一个error，就会知道数据还没准备，于是用户就可以做点其他的，过一段时间，再次发送read操作，一旦kernel的数据准备好了，他就会立马把数据拷贝到了用户内存，然后返回。
+在这种非阻塞IO模式下，用户进程就不断的询问kernel的数据准备好了没，若没有，返回给 用户一个error，在两次询问期间，用户进程可以干点其他的，若数据准备好了，就直接拷贝，这个询问过程叫轮询。在拷贝数据整个过程，进程任仍然处于阻塞状态
+IO多路复用 一个线程内同时处理多个IO请求，这就是IO多路复用
+相当于select\epoll，这种IO方式也称为事件驱动IO，select\epoll的好处在于单个process就可以同时处理多个网络连接的IO。它的基本原理就是select\epoll这个function会不断的轮询所负责的所有socket，当某个socket有数据响应了，就通知用户进程。
+当用户进程调用了select，那么整个进程会被block，而同时，kernel会“监视”所有select负责的socket，当任何一个socket中的数据准备好了，select就会返回。这个时候用户进程再调用read操作，将数据从kernel拷贝到用户进程。
+这个图和blocking IO的图其实并没有太大的不同，事实上还更差一些。因为它不仅阻塞了还多需要使用两个系统调用(select和recvfrom)，而blocking IO只调用了一个系统调用(recvfrom)，当只有一个连接请求的时候，这个模型还不如阻塞IO效率高。但是，用select的优势在于它可以同时处理多个connection，而阻塞IO那里不能，我不管阻塞不阻塞，你所有的连接包括recv等操作，我都帮你监听着（以什么形式监听的呢？先不要考虑，下面会讲的~~），其中任何一个有变动（有链接，有数据），我就告诉你用户，那么你就可以去调用这个数据了，这就是他的NB之处。
+select模块及使用方法：select的优势在于处理多个连接，不适用于单个连接
+虽然上述方式允许单线程内处理多个IO请求，但是每个IO请求的过程还是阻塞的（在select函数上阻塞），平均时间甚至比同步阻塞IO模型还要长。如果用户线程只注册自己感兴趣的socket或者IO请求，然后去做自己的事情，等到数据到来时再进行处理，则可以提高CPU的利用率。以下是改良版：
+reactor设计模式，就是基于IO多路复用，可以参考
+https://blog.csdn.net/coldstarry/article/details/129433822
+AIO：异步IO 用户进程发起read操作之后，立刻就可以开始去做其它的事。而另一方面，从kernel的角度，当它受到一个asynchronous read之后，首先它会立刻返回，所以不会对用户进程产生任何block。然后，kernel操作系统会等待数据（阻塞）准备完成，然后将数据拷贝到用户内存，当这一切都完成之后，kernel会给用户进程发送一个signal，告诉它read操作完成了。
+貌似异步IO这个模型很牛~~但是你发现没有，这不是我们自己代码控制的，都是操作系统完成的，而python在copy数据这个阶段没有提供操纵操作系统的接口，所以用python没法实现这套异步IO机制，其他几个IO模型都没有解决第二阶段的阻塞（用户态和内核态之间copy数据），但是C语言是可以实现的，因为大家都知道C语言是最接近底层的，虽然我们用python实现不了，但是python仍然有异步的模块和框架（tornado、twstied，高并发需求的时候用），这些模块和框架很多都是用底层的C语言实现的，它帮我们实现了异步，你只要使用就可以了，但是你要知道这个异步是不是很好呀，不需要你自己等待了，操作系统帮你做了所有的事情，你就直接收数据就行了，就像你有一张银行卡，银行定期给你打钱一样。
+信号驱动IO 信号驱动IO: 内核将数据准备好的时候, 使用SIGIO信号通知应用程序进行IO操作
+通知应用程序处理IO, 是开始处理IO, 这个时候还是存在阻塞的，将数据从内核态拷贝进入到用户态的过程至少是阻塞住的 (应用程序将数据从内核态拷贝到用户态的过程是阻塞等待的, 和异步IO的区别) (此处是区分信号驱动IO和异步IO的关键所在)
+信号驱动IO, 我们提前在信号集合中设置好IO信号等待， 注册好对应的IO处理函数 handler，IO数据准备就绪后，会递交SIGIO信号，通知应用程序中断然后开始进行对应的IO处理逻辑. 但是通知处理IO的时候存在将数据从 内核空间拷贝到用户空间的过程，(而异步IO是数据拷贝完成之后内核再通知应用程序直接开始处理， 应用程序直接处理，不需要拷贝数据阻塞等待)
+各IO对比 参考文章
+https://blog.csdn.net/guorui_java/article/details/107081776
+https://www.cnblogs.com/zhangxiaoji/p/16152141.html
+https://zhuanlan.zhihu.com/p/555459665
+https://www.cnblogs.com/12345huangchun/p/10066840.html
+https://blog.csdn.net/leftfist/article/details/105020228" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/4f9b31c96f7f89a9332dae22c0b651ec/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-22T22:13:28+08:00" />
+<meta property="article:modified_time" content="2023-03-22T22:13:28+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">sheng的学习笔记-IO多路复用，NIO,BIO,AIO</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div class="kdocs-document"> 
+ <h2 style="">基础概念</h2> 
+ <p style="">IO分为几种：同步阻塞的BIO，同步非阻塞的NIO，异步非阻塞AIO，IO多路复用，信号驱动IO（不常用）</p> 
+ <p style="text-align:left;"><span class="kdocs-fontSize" style="font-size:9pt;">对于一个network IO，它会涉及到两个系统对象，一个是调用这个IO的process（Thread），另一个是系统内核。当一个read/recv读数据的操作发生时，该操作会经历两个阶段：</span></p> 
+ <p style="text-align:left;"><span class="kdocs-fontSize" style="font-size:9pt;">　　（1）等待数据准备</span></p> 
+ <p style="text-align:left;"><span class="kdocs-fontSize" style="font-size:9pt;">　　（2）将数据从内核拷贝到进程中</span></p> 
+ <p style=""></p> 
+ <h2 style="">BIO：同步并阻塞</h2> 
+ <p style="">服务端处理请求是串联的。也就是说如果这个请求被阻塞了，那么剩下的请求都要被阻塞``等待``上一个请求处理完成才行。所以，我们上面说，在 服务器读数据的时候，数据还没到（数据还没读到用户态），那么服务器被阻塞，然后其他客户端的请求也不能被处理。</p> 
+ <blockquote class="kdocs-blockquote" style="">
+   比如： 
+  <br>小明和小红两个人访问同一个服务，然后小明先点，但是数据没被处理完成，然后小红在进行发送请求，此时服务器就将小红的请求挂起，等待小明的处理完成在进行处理。 
+ </blockquote> 
+ <p style="">而且小明发了申请，服务器没有返回响应之前，小明也不能动，阻塞在那里等待到应答，才能继续做别的事情</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:839px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:50.536354%;height:0;"> 
+    <img src="https://images2.imgbox.com/23/d4/coXfdiFM_o.png" style="margin-left:;display:block;width:839px;margin-top:-50.536354%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1302px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:53.379417%;height:0;"> 
+    <img src="https://images2.imgbox.com/7b/8e/Hh4iSTFi_o.png" style="margin-left:;display:block;width:1302px;margin-top:-53.379417%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">.</p> 
+ <h2 style="">NIO:同步非阻塞</h2> 
+ <p style="">用户线程发起IO请求后，立即返回；这时候可以干点别的，过一会再查，但需要不断地调用read，尝试读取socket中的数据，直到读取成功后，才继续处理接收的数据。</p> 
+ <p style="">虽然用户线程每次发起IO请求后可以立即返回，但是为了等到数据，仍需要不断地轮询、重复请求，消耗了大量的CPU的资源。一般很少直接使用这种模型，而是在其他IO模型中使用非阻塞IO这一特性。</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1256px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:56.050957%;height:0;"> 
+    <img src="https://images2.imgbox.com/36/eb/tLdb3yOS_o.png" style="margin-left:;display:block;width:1256px;margin-top:-56.050957%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="text-align:left;"><span class="kdocs-fontSize" style="font-size:9pt;">当用户进程发出read操作时，如果kernel中的数据还没准备好，那么它并不会block用户进程，而是立刻返回一个error。当用户进程接收到一个error，就会知道数据还没准备，于是用户就可以做点其他的，过一段时间，再次发送read操作，一旦kernel的数据准备好了，他就会立马把数据拷贝到了用户内存，然后返回。</span></p> 
+ <p style="text-align:left;"><span class="kdocs-fontSize" style="font-size:9pt;">　　在这种非阻塞IO模式下，用户进程就不断的询问kernel的数据准备好了没，若没有，返回给 用户一个error，在两次询问期间，用户进程可以干点其他的，若数据准备好了，就直接拷贝，这个询问过程叫轮询。在拷贝数据整个过程，进程任仍然处于阻塞状态</span></p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:603px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:55.22388%;height:0;"> 
+    <img src="https://images2.imgbox.com/89/c0/qIRZ9q8e_o.png" style="margin-left:;display:block;width:603px;margin-top:-55.22388%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h2 style="text-align:left;"><span class="kdocs-bold" style="font-weight:bold;">IO多路复用</span></h2> 
+ <p style=""><span class="kdocs-bold" style="font-weight:bold;">一个线程内同时处理多个IO请求，这就是IO多路复用</span></p> 
+ <p style="text-align:left;"><span class="kdocs-fontSize" style="font-size:9pt;">相当于select\epoll，这种IO方式也称为事件驱动IO，select\epoll的好处在于单个process就可以同时处理多个网络连接的IO。它的基本原理就是select\epoll这个function会不断的轮询所负责的所有socket，当某个socket有数据响应了，就通知用户进程。</span></p> 
+ <p style="text-align:left;"><span class="kdocs-fontSize" style="font-size:9pt;">当用户进程调用了select，那么整个进程会被block，而同时，kernel会“监视”所有select负责的socket，当任何一个socket中的数据准备好了，select就会返回。这个时候用户进程再调用read操作，将数据从kernel拷贝到用户进程。</span></p> 
+ <p style="text-align:left;"><span class="kdocs-fontSize" style="font-size:9pt;">　　这个图和blocking IO的图其实并没有太大的不同，事实上还更差一些。因为它不仅阻塞了还多需要使用两个系统调用(select和recvfrom)，而blocking IO只调用了一个系统调用(recvfrom)，当只有一个连接请求的时候，这个模型还不如阻塞IO效率高。但是，用select的优势在于它<span class="kdocs-color" style="color:#C21C13;">可以同时处理多个connection</span>，而阻塞IO那里不能，我不管阻塞不阻塞，你所有的连接包括recv等操作，我都帮你监听着（以什么形式监听的呢？先不要考虑，下面会讲的~~），其中任何一个有变动（有链接，有数据），我就告诉你用户，那么你就可以去调用这个数据了，这就是他的NB之处。</span></p> 
+ <p style="text-align:left;"><span class="kdocs-fontSize" style="font-size:9pt;">　　select模块及使用方法：<span class="kdocs-color" style="color:#078654;">select的优势在于处理多个连接，不适用于单个连接</span></span></p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:900px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:52.333336%;height:0;"> 
+    <img src="https://images2.imgbox.com/74/91/jCH13OqB_o.png" style="margin-left:;display:block;width:900px;margin-top:-52.333336%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1350px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:59.555557%;height:0;"> 
+    <img src="https://images2.imgbox.com/9c/25/zRxpgHkX_o.png" style="margin-left:;display:block;width:1350px;margin-top:-59.555557%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">虽然上述方式允许单线程内处理多个IO请求，但是每个IO请求的过程还是阻塞的（在select函数上阻塞），平均时间甚至比同步阻塞IO模型还要长。如果<span class="kdocs-color" style="color:#C21C13;">用户线程只注册自己感兴趣的socket或者IO请求，然后去做自己的事情，等到数据到来时再进行处理，则可以提高CPU的利用率</span>。以下是改良版：</p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1872px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:46.581196%;height:0;"> 
+    <img src="https://images2.imgbox.com/cf/f8/cMoyW5vF_o.png" style="margin-left:;display:block;width:1872px;margin-top:-46.581196%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">reactor设计模式，就是基于IO多路复用，可以参考</p> 
+ <p style=""><a class="kdocs-link" style="color:#0A6CFF;" href="https://blog.csdn.net/coldstarry/article/details/129433822" target="_blank" rel="noopener noreferrer">https://blog.csdn.net/coldstarry/article/details/129433822</a></p> 
+ <p style=""></p> 
+ <h2 style="text-align:left;"><span class="kdocs-bold" style="font-weight:bold;">AIO：异步IO</span></h2> 
+ <p style="text-align:left;"><span class="kdocs-fontSize" style="font-size:9pt;">　　 用户进程发起read操作之后，立刻就可以开始去做其它的事。而另一方面，从kernel的角度，当它受到一个asynchronous read之后，首先它会立刻返回，所以不会对用户进程产生任何block。然后，kernel操作系统会等待数据（阻塞）准备完成，然后将数据拷贝到用户内存，当这一切都完成之后，kernel会给用户进程发送一个signal，告诉它read操作完成了。</span></p> 
+ <p style="text-align:left;"><span class="kdocs-fontSize" style="font-size:9pt;">　　貌似异步IO这个模型很牛~~但是你发现没有，这不是我们自己代码控制的，都是操作系统完成的，而python在copy数据这个阶段没有提供操纵操作系统的接口，所以用python没法实现这套异步IO机制，其他几个IO模型都没有解决第二阶段的阻塞（用户态和内核态之间copy数据），但是C语言是可以实现的，因为大家都知道C语言是最接近底层的，虽然我们用python实现不了，但是python仍然有异步的模块和框架（tornado、twstied，高并发需求的时候用），这些模块和框架很多都是用底层的C语言实现的，它帮我们实现了异步，你只要使用就可以了，但是你要知道这个异步是不是很好呀，不需要你自己等待了，操作系统帮你做了所有的事情，你就直接收数据就行了，就像你有一张银行卡，银行定期给你打钱一样。</span></p> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:889px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:49.043873%;height:0;"> 
+    <img src="https://images2.imgbox.com/4e/0b/sKMgOAdi_o.png" style="margin-left:;display:block;width:889px;margin-top:-49.043873%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style=""></p> 
+ <h2 style="text-align:left;"><span class="kdocs-bold" style="font-weight:bold;">信号驱动IO</span></h2> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1297px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:42.405552%;height:0;"> 
+    <img src="https://images2.imgbox.com/d2/95/w41Q20pi_o.png" style="margin-left:;display:block;width:1297px;margin-top:-42.405552%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="">信号驱动IO: 内核将数据准备好的时候, 使用SIGIO信号通知应用程序进行IO操作</p> 
+ <p style="">通知应用程序处理IO, 是开始处理IO, 这个时候还是存在阻塞的，将数据从内核态拷贝进入到用户态的过程至少是阻塞住的 (应用程序将数据从内核态拷贝到用户态的过程是阻塞等待的, 和异步IO的区别) (此处是区分信号驱动IO和异步IO的关键所在)</p> 
+ <p style="">信号驱动IO, 我们提前在信号集合中设置好IO信号等待， 注册好对应的IO处理函数 handler，IO数据准备就绪后，会递交SIGIO信号，通知应用程序中断然后开始进行对应的IO处理逻辑. 但是通知处理IO的时候存在将数据从 内核空间拷贝到用户空间的过程，(而异步IO是数据拷贝完成之后内核再通知应用程序直接开始处理， 应用程序直接处理，不需要拷贝数据阻塞等待)</p> 
+ <p style=""></p> 
+ <h2 style="">各IO对比</h2> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1398px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:40.915592%;height:0;"> 
+    <img src="https://images2.imgbox.com/b9/10/YVONapc9_o.png" style="margin-left:;display:block;width:1398px;margin-top:-40.915592%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <div class="kdocs-line-container" style="display:flex;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1259px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:46.544876%;height:0;"> 
+    <img src="https://images2.imgbox.com/b9/27/ew9eorRA_o.jpg" style="margin-left:;display:block;width:1259px;margin-top:-46.544876%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style=""></p> 
+ <p style=""></p> 
+ <p style="">参考文章</p> 
+ <p style=""><a class="kdocs-link" style="color:#0A6CFF;" href="https://blog.csdn.net/guorui_java/article/details/107081776" target="_blank" rel="noopener noreferrer">https://blog.csdn.net/guorui_java/article/details/107081776</a></p> 
+ <p style=""><a class="kdocs-link" style="color:#0A6CFF;" href="https://www.cnblogs.com/zhangxiaoji/p/16152141.html" rel="nofollow noopener noreferrer" target="_blank">https://www.cnblogs.com/zhangxiaoji/p/16152141.html</a></p> 
+ <p style=""><a class="kdocs-link" style="color:#0A6CFF;" href="https://zhuanlan.zhihu.com/p/555459665" rel="nofollow noopener noreferrer" target="_blank">https://zhuanlan.zhihu.com/p/555459665</a></p> 
+ <p style=""><a class="kdocs-link" style="color:#0A6CFF;" href="https://www.cnblogs.com/12345huangchun/p/10066840.html" rel="nofollow noopener noreferrer" target="_blank">https://www.cnblogs.com/12345huangchun/p/10066840.html</a></p> 
+ <p style=""><a class="kdocs-link" style="color:#0A6CFF;" href="https://blog.csdn.net/leftfist/article/details/105020228" target="_blank" rel="noopener noreferrer">https://blog.csdn.net/leftfist/article/details/105020228</a></p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/51a47bc43709994ad5eb63660d45736b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">git将文件或目录添加进了.gitignore文件，为什么不生效？</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/46f82124db32c193a9b18e8b15760808/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">短链接是怎么设计的？带你入门</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

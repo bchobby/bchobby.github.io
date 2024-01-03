@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>c&#43;&#43; 原子变量-Memory fence - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="c&#43;&#43; 原子变量-Memory fence" />
+<meta property="og:description" content="摘抄自：https://github.com/apache/brpc/blob/master/docs/cn/atomic_instructions.md#cacheline
+English version
+我们都知道多核编程常用锁避免多个线程在修改同一个数据时产生race condition。当锁成为性能瓶颈时，我们又总想试着绕开它，而不可避免地接触了原子指令。但在实践中，用原子指令写出正确的代码是一件非常困难的事，琢磨不透的race condition、ABA problem、memory fence很烧脑，这篇文章试图通过介绍SMP架构下的原子指令帮助大家入门。C&#43;&#43;11正式引入了原子指令，我们就以其语法描述。
+顾名思义，原子指令是对软件不可再分的指令，比如x.fetch_add(n)指原子地给x加上n，这个指令对软件要么没做，要么完成，不会观察到中间状态。常见的原子指令有：
+原子指令 (x均为std::atomic)作用x.load()返回x的值。x.store(n)把x设为n，什么都不返回。x.exchange(n)把x设为n，返回设定之前的值。x.compare_exchange_strong(expected_ref, desired)若x等于expected_ref，则设为desired，返回成功；否则把最新值写入expected_ref，返回失败。x.compare_exchange_weak(expected_ref, desired)相比compare_exchange_strong可能有spurious wakeup。x.fetch_add(n), x.fetch_sub(n)原子地做x &#43;= n, x-= n，返回修改之前的值。 你已经可以用这些指令做原子计数，比如多个线程同时累加一个原子变量，以统计这些线程对一些资源的操作次数。但是，这可能会有两个问题：
+这个操作没有你想象地快。如果你尝试通过看似简单的原子操作控制对一些资源的访问，你的程序有很大几率会crash。 Cacheline 没有任何竞争或只被一个线程访问的原子操作是比较快的，“竞争”指的是多个线程同时访问同一个cacheline。现代CPU为了以低价格获得高性能，大量使用了cache，并把cache分了多级。百度内常见的Intel E5-2620拥有32K的L1 dcache和icache，256K的L2 cache和15M的L3 cache。其中L1和L2 cache为每个核心独有，L3则所有核心共享。一个核心写入自己的L1 cache是极快的(4 cycles, ~2ns)，但当另一个核心读或写同一处内存时，它得确认看到其他核心中对应的cacheline。对于软件来说，这个过程是原子的，不能在中间穿插其他代码，只能等待CPU完成一致性同步，这个复杂的硬件算法使得原子操作会变得很慢，在E5-2620上竞争激烈时fetch_add会耗费700纳秒左右。访问被多个线程频繁共享的内存往往是比较慢的。比如像一些场景临界区看着很小，但保护它的spinlock性能不佳，因为spinlock使用的exchange, fetch_add等指令必须等待最新的cacheline，看上去只有几条指令，花费若干微秒并不奇怪。
+要提高性能，就要避免让CPU频繁同步cacheline。这不单和原子指令本身的性能有关，还会影响到程序的整体性能。最有效的解决方法很直白：尽量避免共享。
+一个依赖全局多生产者多消费者队列(MPMC)的程序难有很好的多核扩展性，因为这个队列的极限吞吐取决于同步cache的延时，而不是核心的个数。最好是用多个SPMC或多个MPSC队列，甚至多个SPSC队列代替，在源头就规避掉竞争。另一个例子是计数器，如果所有线程都频繁修改一个计数器，性能就会很差，原因同样在于不同的核心在不停地同步同一个cacheline。如果这个计数器只是用作打打日志之类的，那我们完全可以让每个线程修改thread-local变量，在需要时再合并所有线程中的值，性能可能有几十倍的差别。 一个相关的编程陷阱是false sharing：对那些不怎么被修改甚至只读变量的访问，由于同一个cacheline中的其他变量被频繁修改，而不得不经常等待cacheline同步而显著变慢了。多线程中的变量尽量按访问规律排列，频繁被其他线程修改的变量要放在独立的cacheline中。要让一个变量或结构体按cacheline对齐，可以include &lt;butil/macros.h&gt;后使用BAIDU_CACHELINE_ALIGNMENT宏，请自行grep brpc的代码了解用法。
+Memory fence 仅靠原子技术实现不了对资源的访问控制，即使简单如spinlock或引用计数，看上去正确的代码也可能会crash。这里的关键在于重排指令导致了读写顺序的变化。只要没有依赖，代码中在后面的指令就可能跑到前面去，编译器和CPU都会这么做。
+这么做的动机非常自然，CPU要尽量塞满每个cycle，在单位时间内运行尽量多的指令。如上节中提到的，访存指令在等待cacheline同步时要花费数百纳秒，最高效地自然是同时同步多个cacheline，而不是一个个做。一个线程在代码中对多个变量的依次修改，可能会以不同的次序同步到另一个线程所在的核心上。不同线程对数据的需求不同，按需同步也会导致cacheline的读序和写序不同。
+如果其中第一个变量扮演了开关的作用，控制对后续变量的访问。那么当这些变量被一起同步到其他核心时，更新顺序可能变了，第一个变量未必是第一个更新的，然而其他线程还认为它代表着其他变量有效，去访问了实际已被删除的变量，从而导致未定义的行为。比如下面的代码片段：
+// Thread 1 // bool ready was initialized to false p.init(); ready = true; // Thread2 if (ready) { p.bar(); } 从人的角度，这是对的，因为线程2在ready为true时才会访问p，按线程1的逻辑，此时p应该初始化好了。但对多核机器而言，这段代码可能难以正常运行：
+线程1中的ready = true可能会被编译器或cpu重排到p.init()之前，从而使线程2看到ready为true时，p仍然未初始化。这种情况同样也会在线程2中发生，p.bar()中的一些代码可能被重排到检查ready之前。即使没有重排，ready和p的值也会独立地同步到线程2所在核心的cache，线程2仍然可能在看到ready为true时看到未初始化的p。 注：x86/x64的load带acquire语意，store带release语意，上面的代码刨除编译器和CPU因素可以正确运行。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/c073edb665d4e70d4a9d68568cda7ff3/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-10-17T20:57:38+08:00" />
+<meta property="article:modified_time" content="2023-10-17T20:57:38+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">c&#43;&#43; 原子变量-Memory fence</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>摘抄自：<a href="https://github.com/apache/brpc/blob/master/docs/cn/atomic_instructions.md#cacheline">https://github.com/apache/brpc/blob/master/docs/cn/atomic_instructions.md#cacheline</a></p> 
+<p><a href="../en/atomic_instructions.md" rel="nofollow">English version</a></p> 
+<p>我们都知道多核编程常用锁避免多个线程在修改同一个数据时产生<a href="http://en.wikipedia.org/wiki/Race_condition" rel="nofollow">race condition</a>。当锁成为性能瓶颈时，我们又总想试着绕开它，而不可避免地接触了原子指令。但在实践中，用原子指令写出正确的代码是一件非常困难的事，琢磨不透的race condition、<a href="https://en.wikipedia.org/wiki/ABA_problem" rel="nofollow">ABA problem</a>、<a href="https://en.wikipedia.org/wiki/Memory_barrier" rel="nofollow">memory fence</a>很烧脑，这篇文章试图通过介绍<a href="http://en.wikipedia.org/wiki/Symmetric_multiprocessing" rel="nofollow">SMP</a>架构下的原子指令帮助大家入门。C++11正式引入了<a href="http://en.cppreference.com/w/cpp/atomic/atomic" rel="nofollow">原子指令</a>，我们就以其语法描述。</p> 
+<p>顾名思义，原子指令是<strong>对软件</strong>不可再分的指令，比如x.fetch_add(n)指原子地给x加上n，这个指令<strong>对软件</strong>要么没做，要么完成，不会观察到中间状态。常见的原子指令有：</p> 
+<table><thead><tr><th>原子指令 (x均为std::atomic)</th><th>作用</th></tr></thead><tbody><tr><td>x.load()</td><td>返回x的值。</td></tr><tr><td>x.store(n)</td><td>把x设为n，什么都不返回。</td></tr><tr><td>x.exchange(n)</td><td>把x设为n，返回设定之前的值。</td></tr><tr><td>x.compare_exchange_strong(expected_ref, desired)</td><td>若x等于expected_ref，则设为desired，返回成功；否则把最新值写入expected_ref，返回失败。</td></tr><tr><td>x.compare_exchange_weak(expected_ref, desired)</td><td>相比compare_exchange_strong可能有<a href="http://en.wikipedia.org/wiki/Spurious_wakeup" rel="nofollow">spurious wakeup</a>。</td></tr><tr><td>x.fetch_add(n), x.fetch_sub(n)</td><td>原子地做x += n, x-= n，返回修改之前的值。</td></tr></tbody></table> 
+<p>你已经可以用这些指令做原子计数，比如多个线程同时累加一个原子变量，以统计这些线程对一些资源的操作次数。但是，这可能会有两个问题：</p> 
+<ul><li>这个操作没有你想象地快。</li><li>如果你尝试通过看似简单的原子操作控制对一些资源的访问，你的程序有很大几率会crash。</li></ul> 
+<h2><a id="Cacheline_22"></a>Cacheline</h2> 
+<p>没有任何竞争或只被一个线程访问的原子操作是比较快的，“竞争”指的是多个线程同时访问同一个<a href="https://en.wikipedia.org/wiki/CPU_cache#Cache_entries" rel="nofollow">cacheline</a>。现代CPU为了以低价格获得高性能，大量使用了cache，并把cache分了多级。百度内常见的Intel E5-2620拥有32K的L1 dcache和icache，256K的L2 cache和15M的L3 cache。其中L1和L2 cache为每个核心独有，L3则所有核心共享。一个核心写入自己的L1 cache是极快的(4 cycles, ~2ns)，但当另一个核心读或写同一处内存时，它得确认看到其他核心中对应的cacheline。对于软件来说，这个过程是原子的，不能在中间穿插其他代码，只能等待CPU完成<a href="https://en.wikipedia.org/wiki/Cache_coherence" rel="nofollow">一致性同步</a>，这个复杂的硬件算法使得原子操作会变得很慢，在E5-2620上竞争激烈时fetch_add会耗费700纳秒左右。访问被多个线程频繁共享的内存往往是比较慢的。比如像一些场景临界区看着很小，但保护它的spinlock性能不佳，因为spinlock使用的exchange, fetch_add等指令必须等待最新的cacheline，看上去只有几条指令，花费若干微秒并不奇怪。</p> 
+<p>要提高性能，就要避免让CPU频繁同步cacheline。这不单和原子指令本身的性能有关，还会影响到程序的整体性能。最有效的解决方法很直白：<strong>尽量避免共享</strong>。</p> 
+<ul><li>一个依赖全局多生产者多消费者队列(MPMC)的程序难有很好的多核扩展性，因为这个队列的极限吞吐取决于同步cache的延时，而不是核心的个数。最好是用多个SPMC或多个MPSC队列，甚至多个SPSC队列代替，在源头就规避掉竞争。</li><li>另一个例子是计数器，如果所有线程都频繁修改一个计数器，性能就会很差，原因同样在于不同的核心在不停地同步同一个cacheline。如果这个计数器只是用作打打日志之类的，那我们完全可以让每个线程修改thread-local变量，在需要时再合并所有线程中的值，性能可能有<a href="bvar.md" rel="nofollow">几十倍的差别</a>。</li></ul> 
+<p>一个相关的编程陷阱是false sharing：对那些不怎么被修改甚至只读变量的访问，由于同一个cacheline中的其他变量被频繁修改，而不得不经常等待cacheline同步而显著变慢了。多线程中的变量尽量按访问规律排列，频繁被其他线程修改的变量要放在独立的cacheline中。要让一个变量或结构体按cacheline对齐，可以include &lt;butil/macros.h&gt;后使用BAIDU_CACHELINE_ALIGNMENT宏，请自行grep brpc的代码了解用法。</p> 
+<h2><a id="Memory_fence_33"></a>Memory fence</h2> 
+<p>仅靠原子技术实现不了对资源的访问控制，即使简单如<a href="https://en.wikipedia.org/wiki/Spinlock" rel="nofollow">spinlock</a>或<a href="https://en.wikipedia.org/wiki/Reference_counting" rel="nofollow">引用计数</a>，看上去正确的代码也可能会crash。这里的关键在于<strong>重排指令</strong>导致了读写顺序的变化。只要没有依赖，代码中在后面的指令就可能跑到前面去，<a href="http://preshing.com/20120625/memory-ordering-at-compile-time/" rel="nofollow">编译器</a>和<a href="https://en.wikipedia.org/wiki/Out-of-order_execution" rel="nofollow">CPU</a>都会这么做。</p> 
+<p>这么做的动机非常自然，CPU要尽量塞满每个cycle，在单位时间内运行尽量多的指令。如上节中提到的，访存指令在等待cacheline同步时要花费数百纳秒，最高效地自然是同时同步多个cacheline，而不是一个个做。一个线程在代码中对多个变量的依次修改，可能会以不同的次序同步到另一个线程所在的核心上。不同线程对数据的需求不同，按需同步也会导致cacheline的读序和写序不同。</p> 
+<p>如果其中第一个变量扮演了开关的作用，控制对后续变量的访问。那么当这些变量被一起同步到其他核心时，更新顺序可能变了，第一个变量未必是第一个更新的，然而其他线程还认为它代表着其他变量有效，去访问了实际已被删除的变量，从而导致未定义的行为。比如下面的代码片段：</p> 
+<pre><code class="prism language-c++">// Thread 1
+// bool ready was initialized to false
+p.init();
+ready = true;
+</code></pre> 
+<pre><code class="prism language-c++">// Thread2
+if (ready) {
+    p.bar();
+}
+</code></pre> 
+<p>从人的角度，这是对的，因为线程2在ready为true时才会访问p，按线程1的逻辑，此时p应该初始化好了。但对多核机器而言，这段代码可能难以正常运行：</p> 
+<ul><li>线程1中的ready = true可能会被编译器或cpu重排到p.init()之前，从而使线程2看到ready为true时，p仍然未初始化。这种情况同样也会在线程2中发生，p.bar()中的一些代码可能被重排到检查ready之前。</li><li>即使没有重排，ready和p的值也会独立地同步到线程2所在核心的cache，线程2仍然可能在看到ready为true时看到未初始化的p。</li></ul> 
+<p>注：x86/x64的load带acquire语意，store带release语意，上面的代码刨除编译器和CPU因素可以正确运行。</p> 
+<p>通过这个简单例子，你可以窥见原子指令编程的复杂性了吧。为了解决这个问题，CPU和编译器提供了<a href="http://en.wikipedia.org/wiki/Memory_barrier" rel="nofollow">memory fence</a>，让用户可以声明访存指令间的可见性(visibility)关系，boost和C++11对memory fence做了抽象，总结为如下几种<a href="http://en.cppreference.com/w/cpp/atomic/memory_order" rel="nofollow">memory order</a>.</p> 
+<table><thead><tr><th>memory order</th><th>作用</th></tr></thead><tbody><tr><td>memory_order_relaxed</td><td>没有fencing作用</td></tr><tr><td>memory_order_consume</td><td>后面依赖此原子变量的访存指令勿重排至此条指令之前</td></tr><tr><td>memory_order_acquire</td><td>后面访存指令勿重排至此条指令之前</td></tr><tr><td>memory_order_release</td><td>前面访存指令勿重排至此条指令之后。当此条指令的结果对其他线程可见后，之前的所有指令都可见</td></tr><tr><td>memory_order_acq_rel</td><td>acquire + release语意</td></tr><tr><td>memory_order_seq_cst</td><td>acq_rel语意外加所有使用seq_cst的指令有严格地全序关系</td></tr></tbody></table> 
+<p>有了memory order，上面的例子可以这么更正：</p> 
+<pre><code class="prism language-c++">// Thread1
+// std::atomic&lt;bool&gt; ready was initialized to false
+p.init();
+ready.store(true, std::memory_order_release);
+</code></pre> 
+<pre><code class="prism language-c++">// Thread2
+if (ready.load(std::memory_order_acquire)) {
+    p.bar();
+}
+</code></pre> 
+<p>线程2中的acquire和线程1的release配对，确保线程2在看到ready==true时能看到线程1 release之前所有的访存操作。</p> 
+<p>注意，memory fence不等于可见性，即使线程2恰好在线程1在把ready设置为true后读取了ready也不意味着它能看到true，因为同步cache是有延时的。memory fence保证的是可见性的顺序：“假如我看到了a的最新值，那么我一定也得看到b的最新值”。</p> 
+<p>一个相关问题是：如何知道看到的值是新还是旧？一般分两种情况：</p> 
+<ul><li>值是特殊的。比如在上面的例子中，ready=true是个特殊值，只要线程2看到ready为true就意味着更新了。只要设定了特殊值，读到或没有读到特殊值都代表了一种含义。</li><li>总是累加。一些场景下没有特殊值，那我们就用fetch_add之类的指令累加一个变量，只要变量的值域足够大，在很长一段时间内，新值和之前所有的旧值都会不相同，我们就能区分彼此了。</li></ul> 
+<p>原子指令的例子可以看boost.atomic的<a href="http://www.boost.org/doc/libs/1_56_0/doc/html/atomic/usage_examples.html" rel="nofollow">Example</a>，atomic的官方描述可以看<a href="http://en.cppreference.com/w/cpp/atomic/atomic" rel="nofollow">这里</a>。</p> 
+<h2><a id="waitfree__lockfree_99"></a>wait-free &amp; lock-free</h2> 
+<p>原子指令能为我们的服务赋予两个重要属性：<a href="http://en.wikipedia.org/wiki/Non-blocking_algorithm#Wait-freedom" rel="nofollow">wait-free</a>和<a href="http://en.wikipedia.org/wiki/Non-blocking_algorithm#Lock-freedom" rel="nofollow">lock-free</a>。前者指不管OS如何调度线程，每个线程都始终在做有用的事；后者比前者弱一些，指不管OS如何调度线程，至少有一个线程在做有用的事。如果我们的服务中使用了锁，那么OS可能把一个刚获得锁的线程切换出去，这时候所有依赖这个锁的线程都在等待，而没有做有用的事，所以用了锁就不是lock-free，更不会是wait-free。为了确保一件事情总在确定时间内完成，实时系统的关键代码至少是lock-free的。在百度广泛又多样的在线服务中，对时效性也有着严苛的要求，如果RPC中最关键的部分满足wait-free或lock-free，就可以提供更稳定的服务质量。事实上，brpc中的读写都是wait-free的，具体见<a href="io.md" rel="nofollow">IO</a>。</p> 
+<p>值得提醒的是，常见想法是lock-free或wait-free的算法会更快，但事实可能相反，因为：</p> 
+<ul><li>lock-free和wait-free必须处理更多更复杂的race condition和ABA problem，完成相同目的的代码比用锁更复杂。代码越多，耗时就越长。</li><li>使用mutex的算法变相带“后退”效果。后退(backoff)指出现竞争时尝试另一个途径以临时避免竞争，mutex出现竞争时会使调用者睡眠，使拿到锁的那个线程可以很快地独占完成一系列流程，总体吞吐可能反而高了。</li></ul> 
+<p>mutex导致低性能往往是因为临界区过大（限制了并发度），或竞争过于激烈（上下文切换开销变得突出）。lock-free/wait-free算法的价值在于其保证了一个或所有线程始终在做有用的事，而不是绝对的高性能。但在一种情况下lock-free和wait-free算法的性能多半更高：就是算法本身可以用少量原子指令实现。实现锁也是要用原子指令的，当算法本身用一两条指令就能完成的时候，相比额外用锁肯定是更快了。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ae1132767013bdbb3a4a6768f68421ef/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">利用Windows11的投屏功能将电脑屏幕内容扩展到电视上</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e191ffab8e68f9b556e788b80fa1adfb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">H265视频转码H264视频</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

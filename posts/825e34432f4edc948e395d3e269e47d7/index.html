@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>spark性能优化：数据倾斜调优 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="spark性能优化：数据倾斜调优" />
+<meta property="og:description" content="原博文出自于:　http://www.cnblogs.com/zlslch/p/6046276.html　感谢！
+调优概述 有的时候，我们可能会遇到大数据计算中一个最棘手的问题——数据倾斜，此时Spark作业的性能会比期望差很多。数据倾斜调优，就是使用各种技术方案解决不同类型的数据倾斜问题，以保证Spark作业的性能。
+数据倾斜是多么痛？！！！
+如果数据倾斜没有解决，完全没有可能进行性能调优，其他所有的调优手段都是一个笑话。数据倾斜是最能体现一个spark大数据工程师水平的性能调优问题。
+数据倾斜如果能够解决的话，代表对spark运行机制了如指掌。
+数据倾斜俩大直接致命后果
+1 数据倾斜直接会导致一种情况：OOM。
+2 运行速度慢,特别慢，非常慢，极端的慢，不可接受的慢。
+我们以100亿条数据为列子。个别Task(80亿条数据的那个Task)处理过度大量数据。导致拖慢了整个Job的执行时间。这可能导致该Task所在的机器OOM,或者运行速度非常慢。
+数据倾斜的原因
+在Shuffle阶段。同样Key的数据条数太多了。导致了某个key(上图中的80亿条)所在的Task数据量太大了。远远超过其他Task所处理的数据量。
+而这样的场景太常见了。二八定律可以证实这种场景。
+搞定数据倾斜需要
+1 搞定shuffle
+2 搞定业务场景
+3 搞定 cpu core的使用情况
+4 搞定OOM的根本原因等。
+所以搞定了数据倾斜需要对至少以上的原理了如指掌。所以搞定数据倾斜是关键中的关键。
+告诉大家一个屡试不爽的经验结论：一般情况下，OOM的原因都是数据倾斜。某个task任务数据量太大，GC的压力就很大。这比不了Kafka,因为kafka的内存是不经过JVM的。是基于Linux内核的Page.
+数据倾斜发生的原理 数据倾斜的原理很简单：在进行shuffle的时候，必须将各个节点上相同的key拉取到某个节点上的一个task来进行处理，比如按照key进行聚合或join等操作。此时如果某个key对应的数据量特别大的话，就会发生数据倾斜。比如大部分key对应10条数据，但是个别key却对应了100万条数据，那么大部分task可能就只会分配到10条数据，然后1秒钟就运行完了；但是个别task可能分配到了100万数据，要运行一两个小时。因此，整个Spark作业的运行进度是由运行时间最长的那个task决定的。
+因此出现数据倾斜的时候，Spark作业看起来会运行得非常缓慢，甚至可能因为某个task处理的数据量过大导致内存溢出。
+下图就是一个很清晰的例子：hello这个key，在三个节点上对应了总共7条数据，这些数据都会被拉取到同一个task中进行处理；而world和you这两个key分别才对应1条数据，所以另外两个task只要分别处理1条数据即可。此时第一个task的运行时间可能是另外两个task的7倍，而整个stage的运行速度也由运行最慢的那个task所决定。
+如何定位导致数据倾斜的代码 数据倾斜只会发生在shuffle过程中。这里给大家罗列一些常用的并且可能会触发shuffle操作的算子：distinct、groupByKey、reduceByKey、aggregateByKey、join、cogroup、repartition等。出现数据倾斜时，可能就是你的代码中使用了这些算子中的某一个所导致的。
+某个task执行特别慢的情况 首先要看的，就是数据倾斜发生在第几个stage中。
+如果是用yarn-client模式提交，那么本地是直接可以看到log的，可以在log中找到当前运行到了第几个stage；如果是用yarn-cluster模式提交，则可以通过Spark Web UI来查看当前运行到了第几个stage。此外，无论是使用yarn-client模式还是yarn-cluster模式，我们都可以在Spark Web UI上深入看一下当前这个stage各个task分配的数据量，从而进一步确定是不是task分配的数据不均匀导致了数据倾斜。
+比如下图中，倒数第三列显示了每个task的运行时间。明显可以看到，有的task运行特别快，只需要几秒钟就可以运行完；而有的task运行特别慢，需要几分钟才能运行完，此时单从运行时间上看就已经能够确定发生数据倾斜了。此外，倒数第一列显示了每个task处理的数据量，明显可以看到，运行时间特别短的task只需要处理几百KB的数据即可，而运行时间特别长的task需要处理几千KB的数据，处理的数据量差了10倍。此时更加能够确定是发生了数据倾斜。
+知道数据倾斜发生在哪一个stage之后，接着我们就需要根据stage划分原理，推算出来发生倾斜的那个stage对应代码中的哪一部分，这部分代码中肯定会有一个shuffle类算子。精准推算stage与代码的对应关系，需要对Spark的源码有深入的理解，这里我们可以介绍一个相对简单实用的推算方法：只要看到Spark代码中出现了一个shuffle类算子或者是Spark SQL的SQL语句中出现了会导致shuffle的语句（比如group by语句），那么就可以判定，以那个地方为界限划分出了前后两个stage。
+这里我们就以Spark最基础的入门程序——单词计数来举例，如何用最简单的方法大致推算出一个stage对应的代码。如下示例，在整个代码中，只有一个reduceByKey是会发生shuffle的算子，因此就可以认为，以这个算子为界限，会划分出前后两个stage。
+1、stage0，主要是执行从textFile到map操作，以及执行shuffle write操作。shuffle write操作，我们可以简单理解为对pairs RDD中的数据进行分区操作，每个task处理的数据中，相同的key会写入同一个磁盘文件内。
+2、stage1，主要是执行从reduceByKey到collect操作，stage1的各个task一开始运行，就会首先执行shuffle read操作。执行shuffle read操作的task，会从stage0的各个task所在节点拉取属于自己处理的那些key，然后对同一个key进行全局性的聚合或join等操作，在这里就是对key的value值进行累加。stage1在执行完reduceByKey算子之后，就计算出了最终的wordCounts RDD，然后会执行collect算子，将所有数据拉取到Driver上，供我们遍历和打印输出。
+val conf = new SparkConf() val sc = new SparkContext(conf) val lines = sc." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/825e34432f4edc948e395d3e269e47d7/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2018-04-10T14:19:53+08:00" />
+<meta property="article:modified_time" content="2018-04-10T14:19:53+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">spark性能优化：数据倾斜调优</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p style="margin-left:10px;">　原博文出自于:　　http://www.cnblogs.com/zlslch/p/6046276.html　　　　　　　感谢！</p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"><img alt="" class="has" src="https://images2.imgbox.com/29/dd/tgTt0d8A_o.png"></p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<h2><span style="color:#ff0000;">调优概述</span></h2> 
+<p style="margin-left:10px;">　　有的时候，我们可能会遇到大数据计算中一个最棘手的问题——数据倾斜，此时Spark作业的性能会比期望差很多。数据倾斜调优，就是使用各种技术方案解决不同类型的数据倾斜问题，以保证Spark作业的性能。</p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"><span style="color:#ff0000;">数据倾斜是多么痛？！！！</span></p> 
+<p style="margin-left:10px;">　　如果数据倾斜没有解决，完全没有可能进行性能调优，其他所有的调优手段都是一个笑话。<span style="color:#ff0000;">数据倾斜是最能体现一个spark大数据工程师水平的性能调优问题。</span></p> 
+<p style="margin-left:10px;">　　数据倾斜如果能够解决的话，代表对spark运行机制了如指掌。</p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"><span style="color:#ff0000;">数据倾斜俩大直接致命后果</span></p> 
+<p style="margin-left:10px;">　　1 数据倾斜直接会导致一种情况：OOM。</p> 
+<p style="margin-left:10px;">　　2 运行速度慢,特别慢，非常慢，极端的慢，不可接受的慢。</p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;">　　我们以100亿条数据为列子。个别Task(80亿条数据的那个Task)处理过度大量数据。导致拖慢了整个Job的执行时间。这可能导致该Task所在的机器OOM,或者运行速度非常慢。</p> 
+<p style="margin-left:10px;"><img alt="" class="has" src="https://images2.imgbox.com/8c/b9/6i5Gscpc_o.png"></p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"><span style="color:#ff0000;">数据倾斜的原因</span></p> 
+<p style="margin-left:10px;"> 　　在Shuffle阶段。同样Key的数据条数太多了。导致了某个key(上图中的80亿条)所在的Task数据量太大了。远远超过其他Task所处理的数据量。</p> 
+<p style="margin-left:10px;">而这样的场景太常见了。二八定律可以证实这种场景。</p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"><span style="color:#ff0000;">搞定数据倾斜需要</span></p> 
+<p style="margin-left:10px;">　　1 搞定shuffle</p> 
+<p style="margin-left:10px;">　　2 搞定业务场景</p> 
+<p style="margin-left:10px;">　　3 搞定 cpu core的使用情况</p> 
+<p style="margin-left:10px;">　　4 搞定OOM的根本原因等。</p> 
+<p style="margin-left:10px;">　　所以搞定了数据倾斜需要对至少以上的原理了如指掌。所以搞定数据倾斜是关键中的关键。</p> 
+<p style="margin-left:10px;">　　告诉大家一个屡试不爽的经验结论：一般情况下，OOM的原因都是数据倾斜。某个task任务数据量太大，GC的压力就很大。这比不了Kafka,因为kafka的内存是不经过JVM的。是基于Linux内核的Page.</p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<h2><span style="color:#ff0000;">数据倾斜发生的原理</span></h2> 
+<p style="margin-left:10px;">　　数据倾斜的原理很简单：在进行shuffle的时候，必须将各个节点上相同的key拉取到某个节点上的一个task来进行处理，比如按照key进行聚合或join等操作。此时如果某个key对应的数据量特别大的话，就会发生数据倾斜。比如大部分key对应10条数据，但是个别key却对应了100万条数据，那么大部分task可能就只会分配到10条数据，然后1秒钟就运行完了；但是个别task可能分配到了100万数据，要运行一两个小时。因此，整个Spark作业的运行进度是由运行时间最长的那个task决定的。<br> 　　因此出现数据倾斜的时候，Spark作业看起来会运行得非常缓慢，甚至可能因为某个task处理的数据量过大导致内存溢出。</p> 
+<p style="margin-left:10px;">　　下图就是一个很清晰的例子：hello这个key，在三个节点上对应了总共7条数据，这些数据都会被拉取到同一个task中进行处理；而world和you这两个key分别才对应1条数据，所以另外两个task只要分别处理1条数据即可。此时第一个task的运行时间可能是另外两个task的7倍，而整个stage的运行速度也由运行最慢的那个task所决定。</p> 
+<p style="margin-left:10px;"><img alt="" class="has" src="https://images2.imgbox.com/cd/40/a7zLgdOa_o.png"></p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<h2><span style="color:#ff0000;">如何定位导致数据倾斜的代码</span></h2> 
+<p style="margin-left:10px;">　　数据倾斜只会发生在shuffle过程中。这里给大家罗列一些常用的并且可能会触发shuffle操作的算子：distinct、groupByKey、reduceByKey、aggregateByKey、join、cogroup、repartition等。出现数据倾斜时，可能就是你的代码中使用了这些算子中的某一个所导致的。</p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<h3><span style="color:#ff0000;">某个task执行特别慢的情况</span></h3> 
+<p style="margin-left:10px;">　　首先要看的，就是数据倾斜发生在第几个stage中。<br> 　　如果是用yarn-client模式提交，那么本地是直接可以看到log的，可以在log中找到当前运行到了第几个stage；如果是用yarn-cluster模式提交，则可以通过Spark Web UI来查看当前运行到了第几个stage。此外，无论是使用yarn-client模式还是yarn-cluster模式，我们都可以在Spark Web UI上深入看一下当前这个stage各个task分配的数据量，从而进一步确定是不是task分配的数据不均匀导致了数据倾斜。<br> 　　比如下图中，倒数第三列显示了每个task的运行时间。明显可以看到，有的task运行特别快，只需要几秒钟就可以运行完；而有的task运行特别慢，需要几分钟才能运行完，此时单从运行时间上看就已经能够确定发生数据倾斜了。此外，倒数第一列显示了每个task处理的数据量，明显可以看到，运行时间特别短的task只需要处理几百KB的数据即可，而运行时间特别长的task需要处理几千KB的数据，处理的数据量差了10倍。此时更加能够确定是发生了数据倾斜。</p> 
+<p style="margin-left:10px;"><img alt="" class="has" src="https://images2.imgbox.com/7e/bc/jCvUGESs_o.png"></p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> 　　知道数据倾斜发生在哪一个stage之后，接着我们就需要根据stage划分原理，推算出来发生倾斜的那个stage对应代码中的哪一部分，这部分代码中肯定会有一个shuffle类算子。精准推算stage与代码的对应关系，需要对Spark的源码有深入的理解，这里我们可以介绍一个相对简单实用的推算方法：只要看到Spark代码中出现了一个shuffle类算子或者是Spark SQL的SQL语句中出现了会导致shuffle的语句（比如group by语句），那么就可以判定，以那个地方为界限划分出了前后两个stage。<br> 　　这里我们就以Spark最基础的入门程序——单词计数来举例，如何用最简单的方法大致推算出一个stage对应的代码。如下示例，在整个代码中，只有一个reduceByKey是会发生shuffle的算子，因此就可以认为，以这个算子为界限，会划分出前后两个stage。<br> 　　1、stage0，主要是执行从textFile到map操作，以及执行shuffle write操作。shuffle write操作，我们可以简单理解为对pairs RDD中的数据进行分区操作，每个task处理的数据中，相同的key会写入同一个磁盘文件内。<br> 　　2、stage1，主要是执行从reduceByKey到collect操作，stage1的各个task一开始运行，就会首先执行shuffle read操作。执行shuffle read操作的task，会从stage0的各个task所在节点拉取属于自己处理的那些key，然后对同一个key进行全局性的聚合或join等操作，在这里就是对key的value值进行累加。stage1在执行完reduceByKey算子之后，就计算出了最终的wordCounts RDD，然后会执行collect算子，将所有数据拉取到Driver上，供我们遍历和打印输出。</p> 
+<p style="margin-left:10px;"> </p> 
+<pre><code class="language-html hljs">val conf = new SparkConf()
+val sc = new SparkContext(conf)
+
+val lines = sc.textFile("hdfs://...")
+val words = lines.flatMap(_.split(" "))
+val pairs = words.map((_, 1))
+val wordCounts = pairs.reduceByKey(_ + _)
+
+wordCounts.collect().foreach(println(_))</code></pre> 
+<p style="margin-left:10px;">　　通过对单词计数程序的分析，希望能够让大家了解最基本的stage划分的原理，以及stage划分后shuffle操作是如何在两个stage的边界处执行的。然后我们就知道如何快速定位出发生数据倾斜的stage对应代码的哪一个部分了。比如我们在Spark Web UI或者本地log中发现，stage1的某几个task执行得特别慢，判定stage1出现了数据倾斜，那么就可以回到代码中定位出stage1主要包括了reduceByKey这个shuffle类算子，此时基本就可以确定是由educeByKey算子导致的数据倾斜问题。比如某个单词出现了100万次，其他单词才出现10次，那么stage1的某个task就要处理100万数据，整个stage的速度就会被这个task拖慢。</p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<h2>数据倾斜的解决方案</h2> 
+<h3>解决方案一：使用Hive ETL预处理数据</h3> 
+<p style="margin-left:10px;">　　方案适用场景：导致数据倾斜的是Hive表。如果该Hive表中的数据本身很不均匀（比如某个key对应了100万数据，其他key才对应了10条数据），而且业务场景需要频繁使用Spark对Hive表执行某个分析操作，那么比较适合使用这种技术方案。<br><br> 　　方案实现思路：此时可以评估一下，是否可以通过Hive来进行数据预处理（即通过Hive ETL预先对数据按照key进行聚合，或者是预先和其他表进行join），然后在Spark作业中针对的数据源就不是原来的Hive表了，而是预处理后的Hive表。此时由于数据已经预先进行过聚合或join操作了，那么在Spark作业中也就不需要使用原先的shuffle类算子执行这类操作了。<br><br> 　　方案实现原理：这种方案从根源上解决了数据倾斜，因为彻底避免了在Spark中执行shuffle类算子，那么肯定就不会有数据倾斜的问题了。但是这里也要提醒一下大家，这种方式属于治标不治本。因为毕竟数据本身就存在分布不均匀的问题，所以Hive ETL中进行group by或者join等shuffle操作时，还是会出现数据倾斜，导致Hive ETL的速度很慢。我们只是把数据倾斜的发生提前到了Hive ETL中，避免Spark程序发生数据倾斜而已。<br><br> 　　方案优点：实现起来简单便捷，效果还非常好，完全规避掉了数据倾斜，Spark作业的性能会大幅度提升。<br><br> 　　方案缺点：治标不治本，Hive ETL中还是会发生数据倾斜。<br><br> 　　方案实践经验：在一些Java系统与Spark结合使用的项目中，会出现Java代码频繁调用Spark作业的场景，而且对Spark作业的执行性能要求很高，就比较适合使用这种方案。将数据倾斜提前到上游的Hive ETL，每天仅执行一次，只有那一次是比较慢的，而之后每次Java调用Spark作业时，执行速度都会很快，能够提供更好的用户体验。<br><br> 　　项目实践经验：在美团·点评的交互式用户行为分析系统中使用了这种方案，该系统主要是允许用户通过Java Web系统提交数据分析统计任务，后端通过Java提交Spark作业进行数据分析统计。要求Spark作业速度必须要快，尽量在10分钟以内，否则速度太慢，用户体验会很差。所以我们将有些Spark作业的shuffle操作提前到了Hive ETL中，从而让Spark直接使用预处理的Hive中间表，尽可能地减少Spark的shuffle操作，大幅度提升了性能，将部分作业的性能提升了6倍以上。</p> 
+<h3>解决方案二：过滤少数导致倾斜的key</h3> 
+<p style="margin-left:10px;">　　方案适用场景：如果发现导致倾斜的key就少数几个，而且对计算本身的影响并不大的话，那么很适合使用这种方案。比如99%的key就对应10条数据，但是只有一个key对应了100万数据，从而导致了数据倾斜。<br><br> 　　方案实现思路：如果我们判断那少数几个数据量特别多的key，对作业的执行和计算结果不是特别重要的话，那么干脆就直接过滤掉那少数几个key。比如，在Spark SQL中可以使用where子句过滤掉这些key或者在Spark Core中对RDD执行filter算子过滤掉这些key。如果需要每次作业执行时，动态判定哪些key的数据量最多然后再进行过滤，那么可以使用sample算子对RDD进行采样，然后计算出每个key的数量，取数据量最多的key过滤掉即可。<br><br> 　　方案实现原理：将导致数据倾斜的key给过滤掉之后，这些key就不会参与计算了，自然不可能产生数据倾斜。<br><br> 　　方案优点：实现简单，而且效果也很好，可以完全规避掉数据倾斜。<br><br> 　　方案缺点：适用场景不多，大多数情况下，导致倾斜的key还是很多的，并不是只有少数几个。<br><br> 　　方案实践经验：在项目中我们也采用过这种方案解决数据倾斜。有一次发现某一天Spark作业在运行的时候突然OOM了，追查之后发现，是Hive表中的某一个key在那天数据异常，导致数据量暴增。因此就采取每次执行前先进行采样，计算出样本中数据量最大的几个key之后，直接在程序中将那些key给过滤掉。</p> 
+<h3>解决方案三：提高shuffle操作的并行度</h3> 
+<p style="margin-left:10px;">　　方案适用场景：如果我们必须要对数据倾斜迎难而上，那么建议优先使用这种方案，因为这是处理数据倾斜最简单的一种方案。<br><br> 　　方案实现思路：在对RDD执行shuffle算子时，给shuffle算子传入一个参数，比如reduceByKey(1000)，该参数就设置了这个shuffle算子执行时shuffle read task的数量。对于Spark SQL中的shuffle类语句，比如group by、join等，需要设置一个参数，即spark.sql.shuffle.partitions，该参数代表了shuffle read task的并行度，该值默认是200，对于很多场景来说都有点过小。<br><br> 　　方案实现原理：增加shuffle read task的数量，可以让原本分配给一个task的多个key分配给多个task，从而让每个task处理比原来更少的数据。举例来说，如果原本有5个key，每个key对应10条数据，这5个key都是分配给一个task的，那么这个task就要处理50条数据。而增加了shuffle read task以后，每个task就分配到一个key，即每个task就处理10条数据，那么自然每个task的执行时间都会变短了。具体原理如下图所示。<br><br> 　　方案优点：实现起来比较简单，可以有效缓解和减轻数据倾斜的影响。<br><br> 　　方案缺点：只是缓解了数据倾斜而已，没有彻底根除问题，根据实践经验来看，其效果有限。<br><br> 　　方案实践经验：该方案通常无法彻底解决数据倾斜，因为如果出现一些极端情况，比如某个key对应的数据量有100万，那么无论你的task数量增加到多少，这个对应着100万数据的key肯定还是会分配到一个task中去处理，因此注定还是会发生数据倾斜的。所以这种方案只能说是在发现数据倾斜时尝试使用的第一种手段，尝试去用嘴简单的方法缓解数据倾斜而已，或者是和其他方案结合起来使用。</p> 
+<p style="margin-left:10px;"><img alt="" class="has" src="https://images2.imgbox.com/3b/e6/nVU116F8_o.png"></p> 
+<p style="margin-left:10px;"> </p> 
+<h3>解决方案四：两阶段聚合（局部聚合+全局聚合）</h3> 
+<p style="margin-left:10px;">　　方案适用场景：对RDD执行reduceByKey等聚合类shuffle算子或者在Spark SQL中使用group by语句进行分组聚合时，比较适用这种方案。<br><br> 　　方案实现思路：这个方案的核心实现思路就是进行两阶段聚合。第一次是局部聚合，先给每个key都打上一个随机数，比如10以内的随机数，此时原先一样的key就变成不一样的了，比如(hello, 1) (hello, 1) (hello, 1) (hello, 1)，就会变成(1_hello, 1) (1_hello, 1) (2_hello, 1) (2_hello, 1)。接着对打上随机数后的数据，执行reduceByKey等聚合操作，进行局部聚合，那么局部聚合结果，就会变成了(1_hello, 2) (2_hello, 2)。然后将各个key的前缀给去掉，就会变成(hello,2)(hello,2)，再次进行全局聚合操作，就可以得到最终结果了，比如(hello, 4)。<br><br> 　　方案实现原理：将原本相同的key通过附加随机前缀的方式，变成多个不同的key，就可以让原本被一个task处理的数据分散到多个task上去做局部聚合，进而解决单个task处理数据量过多的问题。接着去除掉随机前缀，再次进行全局聚合，就可以得到最终的结果。具体原理见下图。<br><br> 　　方案优点：对于聚合类的shuffle操作导致的数据倾斜，效果是非常不错的。通常都可以解决掉数据倾斜，或者至少是大幅度缓解数据倾斜，将Spark作业的性能提升数倍以上。<br><br> 　　方案缺点：仅仅适用于聚合类的shuffle操作，适用范围相对较窄。如果是join类的shuffle操作，还得用其他的解决方案。</p> 
+<p style="margin-left:10px;"><img alt="" class="has" src="https://images2.imgbox.com/be/f2/rhQSLx2y_o.png"></p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<pre><code class="language-html hljs">// 第一步，给RDD中的每个key都打上一个随机前缀。
+JavaPairRDD&lt;String, Long&gt; randomPrefixRdd = rdd.mapToPair(
+        new PairFunction&lt;Tuple2&lt;Long,Long&gt;, String, Long&gt;() {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Tuple2&lt;String, Long&gt; call(Tuple2&lt;Long, Long&gt; tuple)
+                    throws Exception {
+                Random random = new Random();
+                int prefix = random.nextInt(10);
+                return new Tuple2&lt;String, Long&gt;(prefix + "_" + tuple._1, tuple._2);
+            }
+        });
+
+// 第二步，对打上随机前缀的key进行局部聚合。
+JavaPairRDD&lt;String, Long&gt; localAggrRdd = randomPrefixRdd.reduceByKey(
+        new Function2&lt;Long, Long, Long&gt;() {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Long call(Long v1, Long v2) throws Exception {
+                return v1 + v2;
+            }
+        });
+
+// 第三步，去除RDD中每个key的随机前缀。
+JavaPairRDD&lt;Long, Long&gt; removedRandomPrefixRdd = localAggrRdd.mapToPair(
+        new PairFunction&lt;Tuple2&lt;String,Long&gt;, Long, Long&gt;() {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Tuple2&lt;Long, Long&gt; call(Tuple2&lt;String, Long&gt; tuple)
+                    throws Exception {
+                long originalKey = Long.valueOf(tuple._1.split("_")[1]);
+                return new Tuple2&lt;Long, Long&gt;(originalKey, tuple._2);
+            }
+        });
+
+// 第四步，对去除了随机前缀的RDD进行全局聚合。
+JavaPairRDD&lt;Long, Long&gt; globalAggrRdd = removedRandomPrefixRdd.reduceByKey(
+        new Function2&lt;Long, Long, Long&gt;() {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Long call(Long v1, Long v2) throws Exception {
+                return v1 + v2;
+            }
+        });</code></pre> 
+<h3> </h3> 
+<h3>解决方案五：将reduce join转为map join</h3> 
+<p style="margin-left:10px;">　　方案适用场景：在对RDD使用join类操作，或者是在Spark SQL中使用join语句时，而且join操作中的一个RDD或表的数据量比较小（比如几百M或者一两G），比较适用此方案。<br><br> 　　方案实现思路：不使用join算子进行连接操作，而使用Broadcast变量与map类算子实现join操作，进而完全规避掉shuffle类的操作，彻底避免数据倾斜的发生和出现。将较小RDD中的数据直接通过collect算子拉取到Driver端的内存中来，然后对其创建一个Broadcast变量；接着对另外一个RDD执行map类算子，在算子函数内，从Broadcast变量中获取较小RDD的全量数据，与当前RDD的每一条数据按照连接key进行比对，如果连接key相同的话，那么就将两个RDD的数据用你需要的方式连接起来。<br><br> 　　方案实现原理：普通的join是会走shuffle过程的，而一旦shuffle，就相当于会将相同key的数据拉取到一个shuffle read task中再进行join，此时就是reduce join。但是如果一个RDD是比较小的，则可以采用广播小RDD全量数据+map算子来实现与join同样的效果，也就是map join，此时就不会发生shuffle操作，也就不会发生数据倾斜。具体原理如下图所示。<br><br> 　　方案优点：对join操作导致的数据倾斜，效果非常好，因为根本就不会发生shuffle，也就根本不会发生数据倾斜。<br><br> 　　方案缺点：适用场景较少，因为这个方案只适用于一个大表和一个小表的情况。毕竟我们需要将小表进行广播，此时会比较消耗内存资源，driver和每个Executor内存中都会驻留一份小RDD的全量数据。如果我们广播出去的RDD数据比较大，比如10G以上，那么就可能发生内存溢出了。因此并不适合两个都是大表的情况。</p> 
+<p style="margin-left:10px;"><img alt="" class="has" src="https://images2.imgbox.com/a3/2c/tKmcoKET_o.png"></p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<pre><code class="language-html hljs">// 首先将数据量比较小的RDD的数据，collect到Driver中来。
+List&lt;Tuple2&lt;Long, Row&gt;&gt; rdd1Data = rdd1.collect()
+// 然后使用Spark的广播功能，将小RDD的数据转换成广播变量，这样每个Executor就只有一份RDD的数据。
+// 可以尽可能节省内存空间，并且减少网络传输性能开销。
+final Broadcast&lt;List&lt;Tuple2&lt;Long, Row&gt;&gt;&gt; rdd1DataBroadcast = sc.broadcast(rdd1Data);
+
+// 对另外一个RDD执行map类操作，而不再是join类操作。
+JavaPairRDD&lt;String, Tuple2&lt;String, Row&gt;&gt; joinedRdd = rdd2.mapToPair(
+        new PairFunction&lt;Tuple2&lt;Long,String&gt;, String, Tuple2&lt;String, Row&gt;&gt;() {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Tuple2&lt;String, Tuple2&lt;String, Row&gt;&gt; call(Tuple2&lt;Long, String&gt; tuple)
+                    throws Exception {
+                // 在算子函数中，通过广播变量，获取到本地Executor中的rdd1数据。
+                List&lt;Tuple2&lt;Long, Row&gt;&gt; rdd1Data = rdd1DataBroadcast.value();
+                // 可以将rdd1的数据转换为一个Map，便于后面进行join操作。
+                Map&lt;Long, Row&gt; rdd1DataMap = new HashMap&lt;Long, Row&gt;();
+                for(Tuple2&lt;Long, Row&gt; data : rdd1Data) {
+                    rdd1DataMap.put(data._1, data._2);
+                }
+                // 获取当前RDD数据的key以及value。
+                String key = tuple._1;
+                String value = tuple._2;
+                // 从rdd1数据Map中，根据key获取到可以join到的数据。
+                Row rdd1Value = rdd1DataMap.get(key);
+                return new Tuple2&lt;String, String&gt;(key, new Tuple2&lt;String, Row&gt;(value, rdd1Value));
+            }
+        });
+
+// 这里得提示一下。
+// 上面的做法，仅仅适用于rdd1中的key没有重复，全部是唯一的场景。
+// 如果rdd1中有多个相同的key，那么就得用flatMap类的操作，在进行join的时候不能用map，而是得遍历rdd1所有数据进行join。
+// rdd2中每条数据都可能会返回多条join后的数据。</code></pre> 
+<h3> </h3> 
+<h3>解决方案六：采样倾斜key并分拆join操作</h3> 
+<p style="margin-left:10px;">　　方案适用场景：两个RDD/Hive表进行join的时候，如果数据量都比较大，无法采用“解决方案五”，那么此时可以看一下两个RDD/Hive表中的key分布情况。如果出现数据倾斜，是因为其中某一个RDD/Hive表中的少数几个key的数据量过大，而另一个RDD/Hive表中的所有key都分布比较均匀，那么采用这个解决方案是比较合适的。<br><br> 　　方案实现思路：<br><br> 　　1、对包含少数几个数据量过大的key的那个RDD，通过sample算子采样出一份样本来，然后统计一下每个key的数量，计算出来数据量最大的是哪几个key。<br> 　　2、然后将这几个key对应的数据从原来的RDD中拆分出来，形成一个单独的RDD，并给每个key都打上n以内的随机数作为前缀，而不会导致倾斜的大部分key形成另外一个RDD。<br> 　　3、接着将需要join的另一个RDD，也过滤出来那几个倾斜key对应的数据并形成一个单独的RDD，将每条数据膨胀成n条数据，这n条数据都按顺序附加一个0~n的前缀，不会导致倾斜的大部分key也形成另外一个RDD。<br> 　　4、再将附加了随机前缀的独立RDD与另一个膨胀n倍的独立RDD进行join，此时就可以将原先相同的key打散成n份，分散到多个task中去进行join了。<br> 　　5、而另外两个普通的RDD就照常join即可。<br> 　　6、最后将两次join的结果使用union算子合并起来即可，就是最终的join结果。<br><br> 　　方案实现原理：对于join导致的数据倾斜，如果只是某几个key导致了倾斜，可以将少数几个key分拆成独立RDD，并附加随机前缀打散成n份去进行join，此时这几个key对应的数据就不会集中在少数几个task上，而是分散到多个task进行join了。具体原理见下图。<br><br> 　　方案优点：对于join导致的数据倾斜，如果只是某几个key导致了倾斜，采用该方式可以用最有效的方式打散key进行join。而且只需要针对少数倾斜key对应的数据进行扩容n倍，不需要对全量数据进行扩容。避免了占用过多内存。<br><br> 　　方案缺点：如果导致倾斜的key特别多的话，比如成千上万个key都导致数据倾斜，那么这种方式也不适合。</p> 
+<p style="margin-left:10px;"><img alt="" class="has" src="https://images2.imgbox.com/20/d6/GR1SH5YS_o.png"></p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<p style="margin-left:10px;"> </p> 
+<pre><code class="language-html hljs">// 首先从包含了少数几个导致数据倾斜key的rdd1中，采样10%的样本数据。
+JavaPairRDD&lt;Long, String&gt; sampledRDD = rdd1.sample(false, 0.1);
+
+// 对样本数据RDD统计出每个key的出现次数，并按出现次数降序排序。
+// 对降序排序后的数据，取出top 1或者top 100的数据，也就是key最多的前n个数据。
+// 具体取出多少个数据量最多的key，由大家自己决定，我们这里就取1个作为示范。
+JavaPairRDD&lt;Long, Long&gt; mappedSampledRDD = sampledRDD.mapToPair(
+        new PairFunction&lt;Tuple2&lt;Long,String&gt;, Long, Long&gt;() {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Tuple2&lt;Long, Long&gt; call(Tuple2&lt;Long, String&gt; tuple)
+                    throws Exception {
+                return new Tuple2&lt;Long, Long&gt;(tuple._1, 1L);
+            }     
+        });
+JavaPairRDD&lt;Long, Long&gt; countedSampledRDD = mappedSampledRDD.reduceByKey(
+        new Function2&lt;Long, Long, Long&gt;() {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Long call(Long v1, Long v2) throws Exception {
+                return v1 + v2;
+            }
+        });
+JavaPairRDD&lt;Long, Long&gt; reversedSampledRDD = countedSampledRDD.mapToPair( 
+        new PairFunction&lt;Tuple2&lt;Long,Long&gt;, Long, Long&gt;() {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Tuple2&lt;Long, Long&gt; call(Tuple2&lt;Long, Long&gt; tuple)
+                    throws Exception {
+                return new Tuple2&lt;Long, Long&gt;(tuple._2, tuple._1);
+            }
+        });
+final Long skewedUserid = reversedSampledRDD.sortByKey(false).take(1).get(0)._2;
+
+// 从rdd1中分拆出导致数据倾斜的key，形成独立的RDD。
+JavaPairRDD&lt;Long, String&gt; skewedRDD = rdd1.filter(
+        new Function&lt;Tuple2&lt;Long,String&gt;, Boolean&gt;() {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Boolean call(Tuple2&lt;Long, String&gt; tuple) throws Exception {
+                return tuple._1.equals(skewedUserid);
+            }
+        });
+// 从rdd1中分拆出不导致数据倾斜的普通key，形成独立的RDD。
+JavaPairRDD&lt;Long, String&gt; commonRDD = rdd1.filter(
+        new Function&lt;Tuple2&lt;Long,String&gt;, Boolean&gt;() {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Boolean call(Tuple2&lt;Long, String&gt; tuple) throws Exception {
+                return !tuple._1.equals(skewedUserid);
+            } 
+        });
+
+// rdd2，就是那个所有key的分布相对较为均匀的rdd。
+// 这里将rdd2中，前面获取到的key对应的数据，过滤出来，分拆成单独的rdd，并对rdd中的数据使用flatMap算子都扩容100倍。
+// 对扩容的每条数据，都打上0～100的前缀。
+JavaPairRDD&lt;String, Row&gt; skewedRdd2 = rdd2.filter(
+         new Function&lt;Tuple2&lt;Long,Row&gt;, Boolean&gt;() {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Boolean call(Tuple2&lt;Long, Row&gt; tuple) throws Exception {
+                return tuple._1.equals(skewedUserid);
+            }
+        }).flatMapToPair(new PairFlatMapFunction&lt;Tuple2&lt;Long,Row&gt;, String, Row&gt;() {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Iterable&lt;Tuple2&lt;String, Row&gt;&gt; call(
+                    Tuple2&lt;Long, Row&gt; tuple) throws Exception {
+                Random random = new Random();
+                List&lt;Tuple2&lt;String, Row&gt;&gt; list = new ArrayList&lt;Tuple2&lt;String, Row&gt;&gt;();
+                for(int i = 0; i &lt; 100; i++) {
+                    list.add(new Tuple2&lt;String, Row&gt;(i + "_" + tuple._1, tuple._2));
+                }
+                return list;
+            }
+
+        });
+
+// 将rdd1中分拆出来的导致倾斜的key的独立rdd，每条数据都打上100以内的随机前缀。
+// 然后将这个rdd1中分拆出来的独立rdd，与上面rdd2中分拆出来的独立rdd，进行join。
+JavaPairRDD&lt;Long, Tuple2&lt;String, Row&gt;&gt; joinedRDD1 = skewedRDD.mapToPair(
+        new PairFunction&lt;Tuple2&lt;Long,String&gt;, String, String&gt;() {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Tuple2&lt;String, String&gt; call(Tuple2&lt;Long, String&gt; tuple)
+                    throws Exception {
+                Random random = new Random();
+                int prefix = random.nextInt(100);
+                return new Tuple2&lt;String, String&gt;(prefix + "_" + tuple._1, tuple._2);
+            }
+        })
+        .join(skewedUserid2infoRDD)
+        .mapToPair(new PairFunction&lt;Tuple2&lt;String,Tuple2&lt;String,Row&gt;&gt;, Long, Tuple2&lt;String, Row&gt;&gt;() {
+                        private static final long serialVersionUID = 1L;
+                        @Override
+                        public Tuple2&lt;Long, Tuple2&lt;String, Row&gt;&gt; call(
+                            Tuple2&lt;String, Tuple2&lt;String, Row&gt;&gt; tuple)
+                            throws Exception {
+                            long key = Long.valueOf(tuple._1.split("_")[1]);
+                            return new Tuple2&lt;Long, Tuple2&lt;String, Row&gt;&gt;(key, tuple._2);
+                        }
+                    });
+
+// 将rdd1中分拆出来的包含普通key的独立rdd，直接与rdd2进行join。
+JavaPairRDD&lt;Long, Tuple2&lt;String, Row&gt;&gt; joinedRDD2 = commonRDD.join(rdd2);
+
+// 将倾斜key join后的结果与普通key join后的结果，uinon起来。
+// 就是最终的join结果。
+JavaPairRDD&lt;Long, Tuple2&lt;String, Row&gt;&gt; joinedRDD = joinedRDD1.union(joinedRDD2);</code></pre> 
+<h3> </h3> 
+<h3>解决方案七：使用随机前缀和扩容RDD进行join</h3> 
+<p style="margin-left:10px;">　　方案适用场景：如果在进行join操作时，RDD中有大量的key导致数据倾斜，那么进行分拆key也没什么意义，此时就只能使用最后一种方案来解决问题了。<br><br> 　　方案实现思路：<br><br> 　　1、该方案的实现思路基本和“解决方案六”类似，首先查看RDD/Hive表中的数据分布情况，找到那个造成数据倾斜的RDD/Hive表，比如有多个key都对应了超过1万条数据。<br> 　　2、然后将该RDD的每条数据都打上一个n以内的随机前缀。<br> 　　3、同时对另外一个正常的RDD进行扩容，将每条数据都扩容成n条数据，扩容出来的每条数据都依次打上一个0~n的前缀。<br> 　　4、最后将两个处理后的RDD进行join即可。<br><br> 　　方案实现原理：将原先一样的key通过附加随机前缀变成不一样的key，然后就可以将这些处理后的“不同key”分散到多个task中去处理，而不是让一个task处理大量的相同key。该方案与“解决方案六”的不同之处就在于，上一种方案是尽量只对少数倾斜key对应的数据进行特殊处理，由于处理过程需要扩容RDD，因此上一种方案扩容RDD后对内存的占用并不大；而这一种方案是针对有大量倾斜key的情况，没法将部分key拆分出来进行单独处理，因此只能对整个RDD进行数据扩容，对内存资源要求很高。<br><br> 　　方案优点：对join类型的数据倾斜基本都可以处理，而且效果也相对比较显著，性能提升效果非常不错。<br><br> 　　方案缺点：该方案更多的是缓解数据倾斜，而不是彻底避免数据倾斜。而且需要对整个RDD进行扩容，对内存资源要求很高。<br><br> 　　方案实践经验：曾经开发一个数据需求的时候，发现一个join导致了数据倾斜。优化之前，作业的执行时间大约是60分钟左右；使用该方案优化之后，执行时间缩短到10分钟左右，性能提升了6倍。</p> 
+<pre><code class="language-html hljs">// 首先将其中一个key分布相对较为均匀的RDD膨胀100倍。
+JavaPairRDD&lt;String, Row&gt; expandedRDD = rdd1.flatMapToPair(
+        new PairFlatMapFunction&lt;Tuple2&lt;Long,Row&gt;, String, Row&gt;() {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Iterable&lt;Tuple2&lt;String, Row&gt;&gt; call(Tuple2&lt;Long, Row&gt; tuple)
+                    throws Exception {
+                List&lt;Tuple2&lt;String, Row&gt;&gt; list = new ArrayList&lt;Tuple2&lt;String, Row&gt;&gt;();
+                for(int i = 0; i &lt; 100; i++) {
+                    list.add(new Tuple2&lt;String, Row&gt;(0 + "_" + tuple._1, tuple._2));
+                }
+                return list;
+            }
+        });
+
+</code></pre> 
+<ol><li><span style="color:#000000;">// 其次，将另一个有数据倾斜key的RDD，每条数据都打上100以内的随机前缀。  </span></li><li><span style="color:#000000;">JavaPairRDD&lt;String, String&gt; mappedRDD = rdd2.mapToPair(  </span></li><li><span style="color:#000000;">        new PairFunction&lt;Tuple2&lt;Long,String&gt;, String, String&gt;() {  </span></li><li><span style="color:#000000;">            private static final long serialVersionUID = 1L;  </span></li><li><span style="color:#000000;">            @Override  </span></li><li><span style="color:#000000;">            public Tuple2&lt;String, String&gt; call(Tuple2&lt;Long, String&gt; tuple)  </span></li><li><span style="color:#000000;">                    throws Exception {  </span></li><li><span style="color:#000000;">                Random random = new Random();  </span></li><li><span style="color:#000000;">                int prefix = random.nextInt(100);  </span></li><li><span style="color:#000000;">                <strong>return</strong> new Tuple2&lt;String, String&gt;(prefix + <span style="color:#0000ff;">"_"</span> + tuple._1, tuple._2);  </span></li><li><span style="color:#000000;">            }  </span></li><li><span style="color:#000000;">        });  </span></li><li><span style="color:#000000;">  </span></li><li><span style="color:#000000;">// 将两个处理后的RDD进行join即可。  </span></li><li><span style="color:#000000;">JavaPairRDD&lt;String, Tuple2&lt;String, Row&gt;&gt; joinedRDD = mappedRDD.join(expandedRDD); </span></li></ol> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/97317ac215f9fa890c05abbc162746d7/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">SpringBoot错误处理机制以及自定义异常处理</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ff02defcfaa835207a4fef6185218931/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">利用Python Crypto生成RSA公钥私钥</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

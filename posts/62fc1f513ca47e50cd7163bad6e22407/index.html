@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【Docker consul的容器服务更新与发现】 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【Docker consul的容器服务更新与发现】" />
+<meta property="og:description" content="文章目录 一、Consul 的简介（1）什么是服务注册与发现（2）什么是consul 二、consul 部署1、consul服务器1. 建立 Consul 服务2. 查看集群信息3. 通过 http api 获取集群信息 2、registrator服务器1. 安装 Gliderlabs/Registrator2. 测试服务发现功能是否正常3. 验证 http 和 nginx 服务是否注册到 consul 3、consul-template1. 准备 template nginx 模板文件2. 编译安装nginx3. 配置 nginx4. 配置并启动 template5. 访问 template-nginx6. 增加一个 nginx 容器节点 4、consul 多节点 一、Consul 的简介 （1）什么是服务注册与发现 服务注册与发现是微服务架构中不可或缺的重要组件。起初服务都是单节点的，不保障高可用性，也不考虑服务的压力承载，服务之间调用单纯的通过接口访问。直到后来出现了多个节点的分布式架构，起初的解决手段是在服务前端负载均衡，这样前端必须要知道所有后端服务的网络位置，并配置在配置文件中。这里就会有几个问题：
+●如果需要调用后端服务A-N，就需要配置N个服务的网络位置，配置很麻烦
+●后端服务的网络位置变化，都需要改变每个调用者的配置
+既然有这些问题，那么服务注册与发现就是解决这些问题的。后端服务A-N可以把当前自己的网络位置注册到服务发现模块，服务发现就以K-V的方式记录下来，K一般是服务名，V就是IP:PORT。服务发现模块定时的进行健康检查，轮询查看这些后端服务能不能访问的了。前端在调用后端服务A-N的时候，就跑去服务发现模块问下它们的网络位置，然后再调用它们的服务。这样的方式就可以解决上面的问题了，前端完全不需要记录这些后端服务的网络位置，前端和后端完全解耦！
+解决什么问题？
+如果后端应用服务器集群节点数量很多，负载均衡器配置和管理会很麻烦的问题
+（负载均衡器的节点配置条目数量众多，后端节点的网络位置发生变化还需要修改所有使用这些后端节点的负载均衡器配置等问题）
+（2）什么是consul consul是google开源的一个使用go语言开发的服务管理软件。支持多数据中心、分布式高可用的、服务发现和配置共享。采用Raft算法，用来保证服务的高可用。内置了服务注册与发现框架、分布一致性协议实现、健康检查、Key/Value存储、多数据中心方案，不再需要依赖其他工具（比如ZooKeeper等）。服务部署简单，只有一个可运行的二进制的包。每个节点都需要运行agent，他有两种运行模式server 和 client。 每个数据中心官方建议需要3或5个server节点以保证数据安全，同时保证server-leader的选举能够正确的进行。
+●在client模式下，所有注册到当前节点的服务会被转发到server节点，本身是不持久化这些信息。
+●在server模式下，功能和client模式相似，唯一不同的是，它会把所有的信息持久化到本地，这样遇到故障，信息是可以被保留的。
+●server-leader是所有server节点的老大，它和其它server节点不同的是，它需要负责同步注册的信息给其它的server节点，同时也要负责各个节点的健康监测。
+consul 模式总结
+●client模板：负责转发注册信息给server节点，没有持久化能力
+●server模式：在server节点之间同步注册信息，持久化注册信息
+●server-leader节点：负责转发注册信息给其它server节点，对各节点健康检查
+consul提供的一些关键特性：
+服务注册与发现：consul通过DNS或者HTTP接口使服务注册和服务发现变的很容易，一些外部服务，例如saas提供的也可以一样注册。
+健康检查：健康检测使consul可以快速的告警在集群中的操作。和服务发现的集成，可以防止服务转发到故障的服务上面。
+Key/Value存储：一个用来存储动态配置的系统。提供简单的HTTP接口，可以在任何地方操作。
+多数据中心：无需复杂的配置，即可支持任意数量的区域。
+安装consul是用于服务注册，也就是容器本身的一些信息注册到consul里面，其他程序可以通过consul获取注册的相关服务信息，这就是服务注册与发现。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/62fc1f513ca47e50cd7163bad6e22407/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-07-27T16:45:58+08:00" />
+<meta property="article:modified_time" content="2023-07-27T16:45:58+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【Docker consul的容器服务更新与发现】</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-dracula">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#Consul__5" rel="nofollow">一、Consul 的简介</a></li><li><ul><li><a href="#1_6" rel="nofollow">（1）什么是服务注册与发现</a></li><li><a href="#2consul_19" rel="nofollow">（2）什么是consul</a></li></ul> 
+  </li><li><a href="#consul__44" rel="nofollow">二、consul 部署</a></li><li><ul><li><a href="#1consul_57" rel="nofollow">1、consul服务器</a></li><li><ul><li><a href="#1__Consul__58" rel="nofollow">1. 建立 Consul 服务</a></li><li><a href="#2__95" rel="nofollow">2. 查看集群信息</a></li><li><a href="#3__http_api__108" rel="nofollow">3. 通过 http api 获取集群信息</a></li></ul> 
+   </li><li><a href="#2registrator_120" rel="nofollow">2、registrator服务器</a></li><li><ul><li><a href="#1__GliderlabsRegistrator_125" rel="nofollow">1. 安装 Gliderlabs/Registrator</a></li><li><a href="#2__151" rel="nofollow">2. 测试服务发现功能是否正常</a></li><li><a href="#3__http__nginx__consul_162" rel="nofollow">3. 验证 http 和 nginx 服务是否注册到 consul</a></li></ul> 
+   </li><li><a href="#3consultemplate_176" rel="nofollow">3、consul-template</a></li><li><ul><li><a href="#1__template_nginx__184" rel="nofollow">1. 准备 template nginx 模板文件</a></li><li><a href="#2_nginx_213" rel="nofollow">2. 编译安装nginx</a></li><li><a href="#3__nginx_240" rel="nofollow">3. 配置 nginx</a></li><li><a href="#4__template_265" rel="nofollow">4. 配置并启动 template</a></li><li><a href="#5__templatenginx_282" rel="nofollow">5. 访问 template-nginx</a></li><li><a href="#6__nginx__305" rel="nofollow">6. 增加一个 nginx 容器节点</a></li></ul> 
+   </li><li><a href="#4consul__318" rel="nofollow">4、consul 多节点</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<hr> 
+<h2><a id="Consul__5"></a>一、Consul 的简介</h2> 
+<h3><a id="1_6"></a>（1）什么是服务注册与发现</h3> 
+<p><font size="4" face="微软雅黑"><b>服务注册与发现是微服务架构中不可或缺的重要组件。起初服务都是单节点的，不保障高可用性，也不考虑服务的压力承载，服务之间调用单纯的通过接口访问。直到后来出现了多个节点的分布式架构，起初的解决手段是在服务前端负载均衡，这样前端必须要知道所有后端服务的网络位置，并配置在配置文件中。这里就会有几个问题：</b></font></p> 
+<p><font size="4" face="微软雅黑"><b>●如果需要调用后端服务A-N，就需要配置N个服务的网络位置，配置很麻烦<br> ●后端服务的网络位置变化，都需要改变每个调用者的配置</b></font></p> 
+<p><font size="4" face="微软雅黑"><b>既然有这些问题，那么服务注册与发现就是解决这些问题的。后端服务A-N可以把当前自己的网络位置注册到服务发现模块，服务发现就以K-V的方式记录下来，K一般是服务名，V就是IP:PORT。服务发现模块定时的进行健康检查，轮询查看这些后端服务能不能访问的了。前端在调用后端服务A-N的时候，就跑去服务发现模块问下它们的网络位置，然后再调用它们的服务。这样的方式就可以解决上面的问题了，前端完全不需要记录这些后端服务的网络位置，前端和后端完全解耦！</b></font></p> 
+<p><font size="4" face="微软雅黑"><b>解决什么问题？</b></font></p> 
+<p><font size="4" face="微软雅黑"><b>如果后端应用服务器集群节点数量很多，负载均衡器配置和管理会很麻烦的问题<br> （负载均衡器的节点配置条目数量众多，后端节点的网络位置发生变化还需要修改所有使用这些后端节点的负载均衡器配置等问题）</b></font></p> 
+<h3><a id="2consul_19"></a>（2）什么是consul</h3> 
+<p><font size="4" face="微软雅黑"><b>consul是google开源的一个使用go语言开发的服务管理软件。支持多数据中心、分布式高可用的、服务发现和配置共享。采用Raft算法，用来保证服务的高可用。内置了服务注册与发现框架、分布一致性协议实现、健康检查、Key/Value存储、多数据中心方案，不再需要依赖其他工具（比如ZooKeeper等）。服务部署简单，只有一个可运行的二进制的包。每个节点都需要运行agent，他有两种运行模式server 和 client。 每个数据中心官方建议<mark>需要3或5个server节点以保证数据安全，同时保证server-leader的选举能够正确的进行。</mark></b></font></p> 
+<p><font size="4" face="微软雅黑"><b>●在client模式下，所有注册到当前节点的服务会被转发到server节点，<mark>本身是不持久化这些信息</mark>。<br> ●在server模式下，功能和client模式相似，唯一不同的是，它会把所有的信息持久化到本地，这样遇到故障，<mark>信息是可以被保留的</mark>。<br> ●server-leader是所有server节点的老大，它和其它server节点不同的是，它需要负责同步注册的信息给其它的server节点，同时也要负责各个节点的健康监测。</b></font></p> 
+<p><font size="4" face="微软雅黑"><b>consul 模式总结<br> ●client模板：负责转发注册信息给server节点，没有持久化能力<br> ●server模式：在server节点之间同步注册信息，持久化注册信息<br> ●server-leader节点：负责转发注册信息给其它server节点，对各节点健康检查</b></font></p> 
+<p><font size="4" face="微软雅黑"><b>consul提供的一些关键特性：</b></font></p> 
+<p><font size="4" face="微软雅黑"><b>服务注册与发现：consul通过DNS或者HTTP接口使服务注册和服务发现变的很容易，一些外部服务，例如saas提供的也可以一样注册。<br> 健康检查：健康检测使consul可以快速的告警在集群中的操作。和服务发现的集成，可以防止服务转发到故障的服务上面。<br> Key/Value存储：一个用来存储动态配置的系统。提供简单的HTTP接口，可以在任何地方操作。<br> 多数据中心：无需复杂的配置，即可支持任意数量的区域。</b></font><br> <img src="https://images2.imgbox.com/03/e1/vP0MIpMa_o.png" alt="在这里插入图片描述"></p> 
+<p><font size="4" face="微软雅黑"><b><mark>安装consul是用于服务注册，也就是容器本身的一些信息注册到consul里面，其他程序可以通过consul获取注册的相关服务信息，这就是服务注册与发现。</mark></b></font></p> 
+<h2><a id="consul__44"></a>二、consul 部署</h2> 
+<p><font size="4" face="微软雅黑"><b>准备环境</b></font></p> 
+<pre><code class="prism language-bash">consul服务器			<span class="token number">192.168</span>.102.10	运行consul服务、nginx服务、consul-template守护进程
+registrator服务器		<span class="token number">192.168</span>.102.20	运行registrator容器、运行nginx容器
+</code></pre> 
+<pre><code class="prism language-bash">systemctl stop firewalld.service
+setenforce <span class="token number">0</span>
+</code></pre> 
+<h3><a id="1consul_57"></a>1、consul服务器</h3> 
+<h4><a id="1__Consul__58"></a>1. 建立 Consul 服务</h4> 
+<pre><code class="prism language-bash"><span class="token function">mkdir</span> /opt/consul
+<span class="token function">cp</span> consul_0.9.2_linux_amd64.zip /opt/consul
+<span class="token builtin class-name">cd</span> /opt/consul
+<span class="token function">unzip</span> consul_0.9.2_linux_amd64.zip
+<span class="token function">mv</span> consul /usr/local/bin/
+</code></pre> 
+<p><img src="https://images2.imgbox.com/89/bb/6EyN0tYV_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/fd/d3/O5RHYdCr_o.png" alt="在这里插入图片描述"></p> 
+<p><font size="4" face="微软雅黑"><b>设置代理，在后台启动 consul 服务端</b></font></p> 
+<p><img src="https://images2.imgbox.com/eb/0f/j5RGhpTy_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-bash">consul agent <span class="token parameter variable">-server</span> <span class="token parameter variable">-bootstrap</span> <span class="token parameter variable">-ui</span> -data-dir<span class="token operator">=</span>/var/lib/consul-data <span class="token parameter variable">-bind</span><span class="token operator">=</span><span class="token number">192.168</span>.102.10 <span class="token parameter variable">-client</span><span class="token operator">=</span><span class="token number">0.0</span>.0.0 <span class="token parameter variable">-node</span><span class="token operator">=</span>consul-server01 <span class="token operator">&amp;&gt;</span> /var/log/consul.log <span class="token operator">&amp;</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/53/24/844Xmo4y_o.png" alt="在这里插入图片描述"><br> <font size="4" face="微软雅黑"><b>字段解释</b></font></p> 
+<pre><code class="prism language-bash">-server： 以server身份启动。默认是client。
+<span class="token parameter variable">-bootstrap</span> ：单节点运行才能设置，直接成为leader。用来控制一个server是否在bootstrap模式，在一个数据中心中只能有一个server处于bootstrap模式，当一个server处于 bootstrap模式时，可以自己选举为 server-leader。
+-bootstrap-expect<span class="token operator">=</span><span class="token number">2</span> ：集群要求的最少server数量，当低于这个数量，集群即失效。
+<span class="token parameter variable">-ui</span> ：指定开启 UI 界面，这样可以通过 http://localhost:8500/ui 这样的地址访问 consul 自带的 web UI 界面。
+-data-dir ：指定数据存储目录。
+<span class="token parameter variable">-bind</span> ：集群内部的通讯地址，集群内的所有节点到此地址都必须是可达的，默认是0.0.0.0。
+<span class="token parameter variable">-client</span> ：集群外部的通讯地址，指定 consul 绑定在哪个 client 地址上，这个地址提供 HTTP、DNS、RPC 等服务，默认是 <span class="token number">127.0</span>.0.1。
+<span class="token parameter variable">-node</span> ：节点在集群中的名称，在一个集群中必须是唯一的，默认是该节点的主机名。
+<span class="token parameter variable">-datacenter</span> ：指定数据中心名称，默认是dc1。
+</code></pre> 
+<h4><a id="2__95"></a>2. 查看集群信息</h4> 
+<pre><code class="prism language-bash"><span class="token comment">#查看members状态</span>
+consul members
+
+<span class="token comment">#查看集群状态</span>
+consul operator raft list-peers
+
+consul info <span class="token operator">|</span> <span class="token function">grep</span> leader
+</code></pre> 
+<p><img src="https://images2.imgbox.com/e7/3f/Cy8uZltQ_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="3__http_api__108"></a>3. 通过 http api 获取集群信息</h4> 
+<pre><code class="prism language-bash"><span class="token function">curl</span> <span class="token number">192.168</span>.102.10:8500/v1/status/peers 			<span class="token comment">#查看集群server成员</span>
+<span class="token function">curl</span> <span class="token number">192.168</span>.102.10:8500/v1/status/leader			<span class="token comment">#集群 server-leader</span>
+<span class="token function">curl</span> <span class="token number">192.168</span>.102.10:8500/v1/catalog/services			<span class="token comment">#注册的所有服务</span>
+<span class="token function">curl</span> <span class="token number">192.168</span>.102.10:8500/v1/catalog/nginx			<span class="token comment">#查看 nginx 服务信息</span>
+<span class="token function">curl</span> <span class="token number">192.168</span>.102.10:8500/v1/catalog/nodes			<span class="token comment">#集群节点详细信息</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/ec/db/ctdxgDU9_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="2registrator_120"></a>2、registrator服务器</h3> 
+<p><font size="4" face="微软雅黑"><b>容器服务自动加入 Nginx 集群</b></font></p> 
+<h4><a id="1__GliderlabsRegistrator_125"></a>1. 安装 Gliderlabs/Registrator</h4> 
+<p><font size="4" face="微软雅黑"><b>Gliderlabs/Registrator 可检查容器运行状态自动注册，还可注销 docker 容器的服务到服务配置中心。目前支持 Consul、Etcd 和 SkyDNS2。</b></font></p> 
+<pre><code class="prism language-bash"><span class="token function">docker</span> run <span class="token parameter variable">-d</span> <span class="token punctuation">\</span>
+<span class="token parameter variable">--name</span><span class="token operator">=</span>registrator <span class="token punctuation">\</span>
+<span class="token parameter variable">--net</span><span class="token operator">=</span>host <span class="token punctuation">\</span>
+<span class="token parameter variable">-v</span> /var/run/docker.sock:/tmp/docker.sock <span class="token punctuation">\</span>
+<span class="token parameter variable">--restart</span><span class="token operator">=</span>always <span class="token punctuation">\</span>
+gliderlabs/registrator:latest <span class="token punctuation">\</span>
+<span class="token parameter variable">--ip</span><span class="token operator">=</span><span class="token number">192.168</span>.102.20 <span class="token punctuation">\</span>
+consul://192.168.102.10:8500
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token parameter variable">--net</span><span class="token operator">=</span>host ：把运行的docker容器设定为host网络模式。
+<span class="token parameter variable">-v</span> /var/run/docker.sock:/tmp/docker.sock ：把宿主机的Docker守护进程<span class="token punctuation">(</span>Docker daemon<span class="token punctuation">)</span>默认监听的Unix域套接字挂载到容器中。
+<span class="token parameter variable">--restart</span><span class="token operator">=</span>always ：设置在容器退出时总是重启容器。
+<span class="token parameter variable">--ip</span> ：刚才把network指定了host模式，所以我们指定ip为宿主机的ip。
+consul ：指定consul服务器的IP和端口。
+</code></pre> 
+<p><font size="4" face="微软雅黑"><b>所有端口映射的网络信息都会写入到这个文件里面</b></font><br> <img src="https://images2.imgbox.com/98/15/OrzFxzQL_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="2__151"></a>2. 测试服务发现功能是否正常</h4> 
+<pre><code class="prism language-bash"><span class="token function">docker</span> run <span class="token parameter variable">-itd</span> -p:83:80 <span class="token parameter variable">--name</span> test-01 <span class="token parameter variable">-h</span> test01 nginx
+<span class="token function">docker</span> run <span class="token parameter variable">-itd</span> -p:84:80 <span class="token parameter variable">--name</span> test-02 <span class="token parameter variable">-h</span> test02 nginx
+<span class="token function">docker</span> run <span class="token parameter variable">-itd</span> -p:88:80 <span class="token parameter variable">--name</span> test-03 <span class="token parameter variable">-h</span> test03 httpd
+<span class="token function">docker</span> run <span class="token parameter variable">-itd</span> -p:89:80 <span class="token parameter variable">--name</span> test-04 <span class="token parameter variable">-h</span> test04 httpd
+</code></pre> 
+<p><img src="https://images2.imgbox.com/80/cb/RAVPpcLo_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="3__http__nginx__consul_162"></a>3. 验证 http 和 nginx 服务是否注册到 consul</h4> 
+<pre><code class="prism language-bash">浏览器中，输入 http://192.168.102.10:8500，在 Web 页面中“单击 NODES”，然后单击“consurl-server01”，会出现 <span class="token number">5</span> 个服务。
+</code></pre> 
+<p><img src="https://images2.imgbox.com/c4/ff/volVCJB9_o.png" alt="在这里插入图片描述"><br> <font size="4" face="微软雅黑"><b>在consul服务器使用curl测试连接服务器</b></font></p> 
+<pre><code class="prism language-bash"><span class="token function">curl</span> <span class="token number">192.168</span>.102.10:8500/v1/catalog/services 
+</code></pre> 
+<p><img src="https://images2.imgbox.com/d1/b5/OmMccTwc_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="3consultemplate_176"></a>3、consul-template</h3> 
+<p><font size="4" face="微软雅黑"><b>Consul-Template是基于Consul的自动替换配置文件的应用。Consul-Template是一个守护进程，用于实时查询Consul集群信息，并更新文件系统上任意数量的指定模板，生成配置文件。更新完成以后，可以选择运行 shell 命令执行更新操作，重新加载 Nginx。<br> </b></font></p> 
+<p><font size="4" face="微软雅黑"><b>Consul-Template可以查询Consul中的服务目录、Key、Key-values 等。这种强大的抽象功能和查询语言模板可以使 Consul-Template 特别适合动态的创建配置文件。例如：创建Apache/Nginx Proxy Balancers 、 Haproxy Backends等。</b></font></p> 
+<h4><a id="1__template_nginx__184"></a>1. 准备 template nginx 模板文件</h4> 
+<p><font size="4" face="微软雅黑"><b>在consul服务器上操作</b></font></p> 
+<pre><code class="prism language-bash"><span class="token function">vim</span> /opt/consul/nginx.ctmpl
+<span class="token comment">#定义nginx upstream一个简单模板</span>
+upstream http_backend <span class="token punctuation">{<!-- --></span>
+  <span class="token punctuation">{<!-- --></span><span class="token punctuation">{<!-- --></span>range <span class="token function">service</span> <span class="token string">"nginx"</span><span class="token punctuation">}</span><span class="token punctuation">}</span>
+   server <span class="token punctuation">{<!-- --></span><span class="token punctuation">{<!-- --></span>.Address<span class="token punctuation">}</span><span class="token punctuation">}</span>:<span class="token punctuation">{<!-- --></span><span class="token punctuation">{<!-- --></span>.Port<span class="token punctuation">}</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+   <span class="token punctuation">{<!-- --></span><span class="token punctuation">{<!-- --></span>end<span class="token punctuation">}</span><span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">#定义一个server，监听8000端口，反向代理到upstream</span>
+server <span class="token punctuation">{<!-- --></span>
+    listen <span class="token number">8080</span><span class="token punctuation">;</span>
+    server_name localhost <span class="token number">192.168</span>.102.10<span class="token punctuation">;</span>
+    access_log /var/log/nginx/dz.com-access.log<span class="token punctuation">;</span>							<span class="token comment">#修改日志路径</span>
+    index index.html index.php<span class="token punctuation">;</span>
+    location / <span class="token punctuation">{<!-- --></span>
+        proxy_set_header HOST <span class="token variable">$host</span><span class="token punctuation">;</span>
+        proxy_set_header X-Real-IP <span class="token variable">$remote_addr</span><span class="token punctuation">;</span>
+        proxy_set_header Client-IP <span class="token variable">$remote_addr</span><span class="token punctuation">;</span>
+        proxy_set_header X-Forwarded-For <span class="token variable">$proxy_add_x_forwarded_for</span><span class="token punctuation">;</span>
+        proxy_pass http://http_backend<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="2_nginx_213"></a>2. 编译安装nginx</h4> 
+<pre><code class="prism language-bash">yum <span class="token parameter variable">-y</span> <span class="token function">install</span> pcre-devel zlib-devel openssl-devel gcc gcc-c++ <span class="token function">make</span>
+
+<span class="token function">useradd</span> <span class="token parameter variable">-M</span> <span class="token parameter variable">-s</span> /sbin/nologin nginx
+</code></pre> 
+<p><font size="4" face="微软雅黑"><b>给nginx的压缩包进行解压编译安装</b></font></p> 
+<pre><code class="prism language-bash"><span class="token function">tar</span> zxvf nginx-1.12.0.tar.gz <span class="token parameter variable">-C</span> /opt/
+
+<span class="token builtin class-name">cd</span> nginx-1.24.0/
+./configure <span class="token punctuation">\</span>
+<span class="token parameter variable">--prefix</span><span class="token operator">=</span>/usr/local/nginx <span class="token punctuation">\</span>
+<span class="token parameter variable">--user</span><span class="token operator">=</span>nginx <span class="token punctuation">\</span>
+<span class="token parameter variable">--group</span><span class="token operator">=</span>nginx <span class="token punctuation">\</span>
+--with-http_stub_status_module
+
+<span class="token function">make</span> <span class="token operator">&amp;&amp;</span> <span class="token function">make</span> <span class="token function">install</span>
+</code></pre> 
+<p><font size="4" face="微软雅黑"><b>设置路径</b></font></p> 
+<pre><code class="prism language-bash"><span class="token function">ln</span> <span class="token parameter variable">-s</span> /usr/local/nginx/sbin/nginx /usr/local/sbin/
+</code></pre> 
+<h4><a id="3__nginx_240"></a>3. 配置 nginx</h4> 
+<pre><code class="prism language-bash"><span class="token function">vim</span> /usr/local/nginx/conf/nginx.conf
+<span class="token punctuation">..</span><span class="token punctuation">..</span><span class="token punctuation">..</span>
+http <span class="token punctuation">{<!-- --></span>
+     include       mime.types<span class="token punctuation">;</span>
+     include  vhost/*.conf<span class="token punctuation">;</span>       				<span class="token comment">#添加虚拟主机目录</span>
+     default_type  application/octet-stream<span class="token punctuation">;</span>
+<span class="token punctuation">..</span><span class="token punctuation">..</span><span class="token punctuation">..</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/5a/cc/bKiw30Gn_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-bash">//创建虚拟主机目录
+<span class="token function">mkdir</span> /usr/local/nginx/conf/vhost
+
+//创建日志文件目录
+<span class="token function">mkdir</span> /var/log/nginx
+
+//启动nginx
+nginx
+</code></pre> 
+<p><img src="https://images2.imgbox.com/2a/13/GlnTXnaq_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="4__template_265"></a>4. 配置并启动 template</h4> 
+<pre><code class="prism language-bash"><span class="token function">unzip</span> consul-template_0.19.3_linux_amd64.zip <span class="token parameter variable">-d</span> /opt/
+<span class="token builtin class-name">cd</span> /opt/
+<span class="token function">mv</span> consul-template /usr/local/bin/
+</code></pre> 
+<p><font size="4" face="微软雅黑"><b>在前台启动 template 服务，启动后不要按 ctrl+c 中止 consul-template 进程。</b></font><br> <img src="https://images2.imgbox.com/da/ca/BWcJm33N_o.png" alt="在这里插入图片描述"></p> 
+<p><font size="4" face="微软雅黑"><b>另外打开一个终端查看生成配置文件</b></font></p> 
+<p><img src="https://images2.imgbox.com/05/5a/KNcWLNam_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="5__templatenginx_282"></a>5. 访问 template-nginx</h4> 
+<pre><code class="prism language-bash"><span class="token function">docker</span> <span class="token function">ps</span> <span class="token parameter variable">-a</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/21/5e/fiMIgHVo_o.png" alt="在这里插入图片描述"></p> 
+<p><font size="4" face="微软雅黑"><b>在test1上进行写入文件内容</b></font><br> <img src="https://images2.imgbox.com/f0/9e/bAiagGDD_o.png" alt="在这里插入图片描述"></p> 
+<p><font size="4" face="微软雅黑"><b>在test2上进行写入文件内容</b></font></p> 
+<p><img src="https://images2.imgbox.com/24/0e/JXaKXE2x_o.png" alt="在这里插入图片描述"></p> 
+<p><font size="4" face="微软雅黑"><b>浏览器访问：http://192.168.102.10:8000/ ，并不断刷新。</b></font></p> 
+<p><img src="https://images2.imgbox.com/57/57/kDvGqfjP_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="6__nginx__305"></a>6. 增加一个 nginx 容器节点</h4> 
+<p><font size="4" face="微软雅黑"><b>（1）增加一个 nginx 容器节点，测试服务发现及配置更新功能。</b></font><br> <img src="https://images2.imgbox.com/40/66/wPVzqiH7_o.png" alt="在这里插入图片描述"></p> 
+<p><font size="4" face="微软雅黑"><b>（2）查看/usr/local/nginx/conf/vhost/kgc.conf 文件内容</b></font></p> 
+<p><img src="https://images2.imgbox.com/2e/2b/i3n0xFDx_o.png" alt="在这里插入图片描述"></p> 
+<p><font size="4" face="微软雅黑"><b>（3）查看三台 nginx 容器日志，请求正常轮询到各个容器节点上</b></font></p> 
+<p><img src="https://images2.imgbox.com/10/9c/mQvr8AYG_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="4consul__318"></a>4、consul 多节点</h3> 
+<p><font size="4" face="微软雅黑"><b>添加一台已有docker环境的服务器192.168.80.12/24加入已有的群集中</b></font></p> 
+<pre><code class="prism language-bash">consul agent <span class="token punctuation">\</span>
+<span class="token parameter variable">-server</span> <span class="token punctuation">\</span>
+<span class="token parameter variable">-ui</span> <span class="token punctuation">\</span>
+-data-dir<span class="token operator">=</span>/var/lib/consul-data <span class="token punctuation">\</span>
+<span class="token parameter variable">-bind</span><span class="token operator">=</span><span class="token number">192.168</span>.80.12 <span class="token punctuation">\</span>
+<span class="token parameter variable">-client</span><span class="token operator">=</span><span class="token number">0.0</span>.0.0 <span class="token punctuation">\</span>
+<span class="token parameter variable">-node</span><span class="token operator">=</span>consul-server02 <span class="token punctuation">\</span>
+-enable-script-checks<span class="token operator">=</span>true  <span class="token punctuation">\</span>
+<span class="token parameter variable">-datacenter</span><span class="token operator">=</span>dc1  <span class="token punctuation">\</span>
+<span class="token parameter variable">-join</span> <span class="token number">192.168</span>.80.15 <span class="token operator">&amp;&gt;</span> /var/log/consul.log <span class="token operator">&amp;</span>
+</code></pre> 
+<p><font size="4" face="微软雅黑"><b>-enable-script-checks=true ：设置检查服务为可用<br> -datacenter : 数据中心名称<br> -join ：加入到已有的集群中</b></font></p> 
+<pre><code class="prism language-bash">consul members
+Node             Address             Status  Type    Build  Protocol  DC
+consul-server01  <span class="token number">192.168</span>.80.15:8301  alive   server  <span class="token number">0.9</span>.2  <span class="token number">2</span>         dc1
+consul-server02  <span class="token number">192.168</span>.80.12:8301  alive   server  <span class="token number">0.9</span>.2  <span class="token number">2</span>         dc1
+
+
+consul operator raft list-peers
+Node             ID                  Address             State     Voter  RaftProtocol
+consul-server01  <span class="token number">192.168</span>.80.15:8300  <span class="token number">192.168</span>.80.15:8300  leader    <span class="token boolean">true</span>   <span class="token number">2</span>
+consul-server02  <span class="token number">192.168</span>.80.12:8300  <span class="token number">192.168</span>.80.12:8300  follower  <span class="token boolean">true</span>   <span class="token number">2</span>
+</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6f1f07c3e25de9215fdf0c89175441c6/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">vue的Element组件上传文件el-upload上传成功后清空</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/58c8f58b8cb8c0aff0484a84ebe0cf04/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Flink回撤流</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

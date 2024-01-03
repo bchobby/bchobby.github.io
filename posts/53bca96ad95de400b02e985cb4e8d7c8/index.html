@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>druid&#43;mybatis 多数据源及读写分离的处理 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="druid&#43;mybatis 多数据源及读写分离的处理" />
+<meta property="og:description" content="现如今复杂的业务系统，一般会将数据库按业务拆开，比如产品系统的数据库放在product db中，订单系统的数据库放在order db中...，然后，如果量大了，可能每个库还要考虑做读、写分离，以进一步提高系统性能，下面就来看看如何处理：
+核心思路：配置多个数据源，然后利用RoutingDataSource结合AOP来动态切不同的库。
+存在一下几个问题：
+1、配置文件中，多数据源的配置节点如何设计？
+#yml文件中进行如下配置 druid: type: com.alibaba.druid.pool.DruidDataSource study: master: #study库的主库名 url: jdbc:mysql://localhost:3306/study?useSSL=false&amp;characterEncoding=UTF-8&amp;autoReconnect=true&amp;zeroDateTimeBehavior=convertToNull&amp;useUnicode=true driver-class-name: com.mysql.cj.jdbc.Driver username: root password: 1234 #加密很好 initial-size: 5 min-idle: 1 max-active: 20 test-on-borrow: true slave: #study库的从库名 url: jdbc:mysql://localhost:3306/study_slave?useSSL=false&amp;characterEncoding=UTF-8&amp;autoReconnect=true&amp;zeroDateTimeBehavior=convertToNull&amp;useUnicode=true driver-class-name: com.mysql.cj.jdbc.Driver username: root password: A1b2c3@def.com initial-size: 5 min-idle: 1 max-active: 20 test-on-borrow: true product: master: #product库的主库名 url: jdbc:mysql://localhost:3306/product?useSSL=false&amp;characterEncoding=UTF-8&amp;autoReconnect=true&amp;zeroDateTimeBehavior=convertToNull&amp;useUnicode=true driver-class-name: com.mysql.cj.jdbc.Driver username: root password: 1234 #加密 initial-size: 5 min-idle: 1 max-active: 20 test-on-borrow: true slave: #product库的从库 url: jdbc:mysql://localhost:3306/product_slave?" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/53bca96ad95de400b02e985cb4e8d7c8/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-10T16:06:17+08:00" />
+<meta property="article:modified_time" content="2023-03-10T16:06:17+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">druid&#43;mybatis 多数据源及读写分离的处理</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>现如今复杂的业务系统，一般会将数据库按业务拆开，比如产品系统的数据库放在product db中，订单系统的数据库放在order db中...，然后，如果量大了，可能每个库还要考虑做读、写分离，以进一步提高系统性能，下面就来看看如何处理：</p> 
+<p>核心思路：配置多个数据源，然后利用RoutingDataSource结合AOP来动态切不同的库。</p> 
+<p> 存在一下几个问题：</p> 
+<p>  1、配置文件中，多数据源的配置节点如何设计？</p> 
+<pre class="has"><code class="language-java">#yml文件中进行如下配置
+druid:
+    type: com.alibaba.druid.pool.DruidDataSource
+    study:
+      master: #study库的主库名
+        url: jdbc:mysql://localhost:3306/study?useSSL=false&amp;characterEncoding=UTF-8&amp;autoReconnect=true&amp;zeroDateTimeBehavior=convertToNull&amp;useUnicode=true
+        driver-class-name: com.mysql.cj.jdbc.Driver
+        username: root
+        password: 1234 #加密很好
+        initial-size: 5
+        min-idle: 1
+        max-active: 20
+        test-on-borrow: true
+      slave: #study库的从库名
+        url: jdbc:mysql://localhost:3306/study_slave?useSSL=false&amp;characterEncoding=UTF-8&amp;autoReconnect=true&amp;zeroDateTimeBehavior=convertToNull&amp;useUnicode=true
+        driver-class-name: com.mysql.cj.jdbc.Driver
+        username: root
+        password: A1b2c3@def.com
+        initial-size: 5
+        min-idle: 1
+        max-active: 20
+        test-on-borrow: true
+    product:
+      master: #product库的主库名
+        url: jdbc:mysql://localhost:3306/product?useSSL=false&amp;characterEncoding=UTF-8&amp;autoReconnect=true&amp;zeroDateTimeBehavior=convertToNull&amp;useUnicode=true
+        driver-class-name: com.mysql.cj.jdbc.Driver
+        username: root
+        password: 1234 #加密
+        initial-size: 5
+        min-idle: 1
+        max-active: 20
+        test-on-borrow: true
+      slave: #product库的从库
+        url: jdbc:mysql://localhost:3306/product_slave?useSSL=false&amp;characterEncoding=UTF-8&amp;autoReconnect=true&amp;zeroDateTimeBehavior=convertToNull&amp;useUnicode=true
+        driver-class-name: com.mysql.cj.jdbc.Driver
+        username: root
+        password: 1234
+        initial-size: 5
+        min-idle: 1
+        max-active: 20
+        test-on-borrow: true</code></pre> 
+<p>上面的配置写法供参数，如果slave节点数要扩展，按这个格式，改造成slave1,slave2... 自行扩展。</p> 
+<pre class="has"><code class="language-java">package com.aspire.sh.db.config;
+
+import com.aspire.sh.db.datasource.DbContextHolder;
+import com.aspire.sh.db.datasource.MasterSlaveRoutingDataSource;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceBuilder;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
+import org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource;
+import org.springframework.transaction.annotation.EnableTransactionManagement;
+
+import javax.sql.DataSource;
+import java.util.HashMap;
+import java.util.Map;
+
+
+@Configuration
+@EnableTransactionManagement
+public class DataSourceConfiguration {
+
+    @Value("${druid.type}")
+    private Class&lt;? extends DataSource&gt; dataSourceType;
+
+    @Bean(name = "studyMasterDataSource")
+    @ConfigurationProperties(prefix = "druid.study.master")
+    public DataSource studyMasterDataSource() {
+        return DataSourceBuilder.create().type(dataSourceType).build();
+    }
+
+    @Bean(name = "studySlaveDataSource")
+    @ConfigurationProperties(prefix = "druid.study.slave")
+    public DataSource studySlaveDataSource1() {
+        return DataSourceBuilder.create().type(dataSourceType).build();
+    }
+
+    @Bean(name = "productMasterDataSource")
+    @ConfigurationProperties(prefix = "druid.product.master")
+    public DataSource productMasterDataSource() {
+        return DataSourceBuilder.create().type(dataSourceType).build();
+    }
+
+    @Bean(name = "productSlaveDataSource")
+    @ConfigurationProperties(prefix = "druid.product.slave")
+    public DataSource productSlaveDataSource1() {
+        return DataSourceBuilder.create().type(dataSourceType).build();
+    }
+
+    @Bean(name = "dataSource")
+    @Primary
+    public AbstractRoutingDataSource dataSource() {
+        MasterSlaveRoutingDataSource proxy = new MasterSlaveRoutingDataSource();
+        Map&lt;Object, Object&gt; targetDataResources = new HashMap&lt;&gt;();
+        targetDataResources.put(DbContextHolder.DbType.PRODUCT_MASTER, productMasterDataSource());
+        targetDataResources.put(DbContextHolder.DbType.PRODUCT_SLAVE, productSlaveDataSource1());
+        targetDataResources.put(DbContextHolder.DbType.STUDY_MASTER, studyMasterDataSource());
+        targetDataResources.put(DbContextHolder.DbType.STUDY_SLAVE, studySlaveDataSource1());
+        proxy.setDefaultTargetDataSource(productMasterDataSource());
+        proxy.setTargetDataSources(targetDataResources);
+        proxy.afterPropertiesSet();
+        return proxy;
+    }
+
+}</code></pre> 
+<p>注：@Primary一定要在动态数据源上，否则事务回滚无效！</p> 
+<p>3、根据什么来切换db?</p> 
+<p>a、用约定的方法前缀，比如：get/query/list开头的约定为读从库，其它为主库，但是这样还要考虑不同业务库的切换（即：何时切换到product库，何时切换到order库，可以再用不同的Scanner来处理，略复杂）</p> 
+<p>b、用自定义注解来处理，比如 @ProductMaster注解，表示切换到product的master库，这样同时把业务库，以及主还是从，一次性解决了，推荐这种。</p> 
+<p><img alt="" class="has" src="https://images2.imgbox.com/90/bf/J948dQDl_o.png"></p> 
+<p>这里，我定义了4个注解，代表product，study二个库的主及从。</p> 
+<p>4、aop在哪里拦截,如何拦截？</p> 
+<p>service层和mapper层都可以拦截，推荐在服务层拦截，否则如果一个业务方法里，即有读又有写，还得考虑如果遇到事务，要考虑的东西更多。</p> 
+<p>当然，如果拦截特定的注解，就不用过多考虑在哪个层，只认注解就行（当然，注解还是建议打在服务层上）。</p> 
+<p>dubbo-starter的一个小坑：spring boot中，只有managed bean才能用aop拦截，而dubbo-starter中的@service注解不是spring中的注解（是阿里package下的自定义注解），生成的service provider实例，aop拦截不到，解决办法，再加一个注解让spring认识它.</p> 
+<p>Aop拦截类的参考代码如下：</p> 
+<pre class="has"><code class="language-java">package com.aspire.sh.db.aspect;
+
+import com.aspire.sh.db.annotation.ProductMaster;
+import com.aspire.sh.db.annotation.ProductSlave;
+import com.aspire.sh.db.annotation.StudyMaster;
+import com.aspire.sh.db.annotation.StudySlave;
+import com.aspire.sh.db.datasource.DbContextHolder;
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.annotation.Aspect;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.core.Ordered;
+import org.springframework.stereotype.Component;
+
+
+@Aspect
+@Component 
+public class MasterSlaveAspect implements Ordered {
+
+    public static final Logger logger = LoggerFactory.getLogger(MasterSlaveAspect.class);
+
+
+    /**
+     * 切换到product主库
+     *
+     * @param proceedingJoinPoint
+     * @param productMaster
+     * @return
+     * @throws Throwable
+     */
+    @Around("@annotation(productMaster)")
+    public Object proceed(ProceedingJoinPoint proceedingJoinPoint, ProductMaster productMaster) throws Throwable {
+        try {
+            logger.info("set database connection to product-master only");
+            DbContextHolder.setDbType(DbContextHolder.DbType.PRODUCT_MASTER);
+            Object result = proceedingJoinPoint.proceed();
+            return result;
+        } finally {
+            DbContextHolder.clearDbType();
+            logger.info("restore database connection");
+        }
+    }
+
+
+    /**
+     * 切换到product从库
+     *
+     * @param proceedingJoinPoint
+     * @param productSlave
+     * @return
+     * @throws Throwable
+     */
+    @Around("@annotation(productSlave)")
+    public Object proceed(ProceedingJoinPoint proceedingJoinPoint, ProductSlave productSlave) throws Throwable {
+        try {
+            logger.info("set database connection to product-slave only");
+            DbContextHolder.setDbType(DbContextHolder.DbType.PRODUCT_SLAVE);
+            Object result = proceedingJoinPoint.proceed();
+            return result;
+        } finally {
+            DbContextHolder.clearDbType();
+            logger.info("restore database connection");
+        }
+    }
+
+    /**
+     * 切换到study主库
+     *
+     * @param proceedingJoinPoint
+     * @param studyMaster
+     * @return
+     * @throws Throwable
+     */
+    @Around("@annotation(studyMaster)")
+    public Object proceed(ProceedingJoinPoint proceedingJoinPoint, StudyMaster studyMaster) throws Throwable {
+        try {
+            logger.info("set database connection to study-master only");
+            DbContextHolder.setDbType(DbContextHolder.DbType.STUDY_MASTER);
+            Object result = proceedingJoinPoint.proceed();
+            return result;
+        } finally {
+            DbContextHolder.clearDbType();
+            logger.info("restore database connection");
+        }
+    }
+
+    /**
+     * 切换到study从库
+     *
+     * @param proceedingJoinPoint
+     * @param studySlave
+     * @return
+     * @throws Throwable
+     */
+    @Around("@annotation(studySlave)")
+    public Object proceed(ProceedingJoinPoint proceedingJoinPoint, StudySlave studySlave) throws Throwable {
+        try {
+            logger.info("set database connection to study-slave only");
+            DbContextHolder.setDbType(DbContextHolder.DbType.STUDY_SLAVE);
+            Object result = proceedingJoinPoint.proceed();
+            return result;
+        } finally {
+            DbContextHolder.clearDbType();
+            logger.info("restore database connection");
+        }
+    }
+
+    @Override
+    public int getOrder() {
+        return 0;
+    }
+}</code></pre> 
+<p>5、其它事项</p> 
+<p>启用类上，一定要排除spring-boot自带的datasource配置，即：</p> 
+<pre class="has"><code class="language-java">@SpringBootApplication(exclude = {DataSourceAutoConfiguration.class})
+@EnableAspectJAutoProxy
+@ComponentScan("com.aspire.sh")
+@MapperScan(basePackages = "com.aspire.sh.dao.mapper")
+public class ServiceProvider {
+    public static void main(String[] args) {
+        SpringApplication.run(ServiceProvider.class, args);
+    }
+}</code></pre> 
+<p>6、日志中如何输出格式化且带参数值的sql?</p> 
+<p>是不是更友好！</p> 
+<p>方法：加一个mybtais的拦截器即可  (代码块在最前面)</p> 
+<p>这里面还用了hibernate的一个小工具，用于格式化sql(代码块在最前面)</p> 
+<p>接下来，把这个拦截器配置在mybatis-config.xml里</p> 
+<pre class="has"><code class="language-java">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;!DOCTYPE configuration PUBLIC "-//mybatis.org//DTD Config 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-config.dtd"&gt;
+&lt;configuration&gt;
+    &lt;settings&gt;
+        &lt;setting name="cacheEnabled" value="true"/&gt;
+    &lt;/settings&gt;
+
+    &lt;plugins&gt;
+        &lt;plugin interceptor="com.aspire.sh.db.interceptor.MybatisInterceptor"&gt;
+        &lt;/plugin&gt;
+    &lt;/plugins&gt;
+
+&lt;/configuration&gt;</code></pre> 
+<p>最后在application.yml里指定mybatis-config.xml所在的路径：</p> 
+<p><img alt="" class="has" src="https://images2.imgbox.com/30/06/HXBkaPRh_o.png" width="600"></p> 
+<p></p> 
+<p>注意：包路径可能会有些差异com.cnblogs.yjmyzz与com.aspire.sh二者取其一</p> 
+<p></p> 
+<p></p> 
+<p><strong>实现方式二：</strong></p> 
+<p>在pom.xml中增加相关依赖：</p> 
+<p></p> 
+<pre><code>        &lt;!-- aop --&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-boot-starter-aop&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-context-support&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+        &lt;!-- mysql --&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;mysql&lt;/groupId&gt;
+            &lt;artifactId&gt;mysql-connector-java&lt;/artifactId&gt;
+            &lt;scope&gt;runtime&lt;/scope&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-jdbc&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+        &lt;!-- druid --&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;com.alibaba&lt;/groupId&gt;
+            &lt;artifactId&gt;druid-spring-boot-starter&lt;/artifactId&gt;
+            &lt;version&gt;1.1.10&lt;/version&gt;
+        &lt;/dependency&gt;
+        &lt;!--如果不添加此依赖，自定义druid属性则会绑定失败--&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;log4j&lt;/groupId&gt;
+            &lt;artifactId&gt;log4j&lt;/artifactId&gt;
+            &lt;version&gt;1.2.17&lt;/version&gt;
+        &lt;/dependency&gt;
+        &lt;!-- mybatis --&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.mybatis.spring.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;mybatis-spring-boot-starter&lt;/artifactId&gt;
+            &lt;version&gt;1.3.2&lt;/version&gt;
+        &lt;/dependency&gt;
+        &lt;!-- slf4j --&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.slf4j&lt;/groupId&gt;
+            &lt;artifactId&gt;slf4j-api&lt;/artifactId&gt;
+        &lt;/dependency&gt;</code></pre> 
+<p><strong>2、配置application.yml </strong></p> 
+<pre><code>server:
+  port: 8818
+spring:
+  application:
+    name: read-write-separationp
+  aop:
+    proxy-target-class: true
+    auto: true
+  datasource:
+    type: com.alibaba.druid.pool.DruidDataSourceC3P0Adapter
+    druid:
+      master:
+        url: jdbc:mysql://207.148.33.32:3306/captain?useSSL=true&amp;characterEncoding=UTF-8&amp;serverTimezone=UTC
+        username: captainLii
+        password: Captain@1689
+      slave:
+        url: jdbc:mysql://45.32.120.84:3306/captain?useSSL=true&amp;characterEncoding=UTF-8&amp;serverTimezone=UTC
+        username: captainLii
+        password: Captain@1689
+      # 配置初始化大小（默认0）、最小、最大（默认8）
+      initial-size: 1
+      min-idle: 1
+      max-active: 20
+      # 配置获取连接等待超时的时间
+      max-wait: 60000
+      # 是否缓存preparedStatement，也就是PSCache。PSCache对支持游标的数据库性能提升巨大。 默认为false
+      pool-prepared-statements: true
+      # 要启用PSCache，必须配置大于0，当大于0时，poolPreparedStatements自动触发修改为true。
+      max-open-prepared-statements: 20
+      # 配置间隔多久才进行一次检测，检测需要关闭的空闲连接，单位是毫秒
+      time-between-eviction-runs-millis: 60000
+      # 配置一个连接在池中最小和最大生存的时间，单位是毫秒
+      min-evictable-idle-time-millis: 300000
+      max-evictable-idle-time-millis: 900000
+      # 用来检测连接是否有效的sql，要求是一个查询语句，常用select 'x'。
+      # 如果validationQuery为null，testOnBorrow、testOnReturn、testWhileIdle都不会起作用。
+      validation-query: SELECT 'X'
+      # 申请连接时执行validationQuery检测连接是否有效 默认为true
+      test-on-borrow: true
+      # 归还连接时执行validationQuery检测连接是否有效 默认为false
+      test-on-return: false
+      # 申请连接的时候检测，如果空闲时间大于timeBetweenEvictionRunsMillis，执行validationQuery检测连接是否有效。
+      test-while-idle: true
+
+# Mybatis
+mybatis:
+  mapper-locations: classpath:mapping/*.xml
+  type-aliases-package: com.captain.readwriteseparation.entity</code></pre> 
+<p></p> 
+<p><strong>3、 定义数据源枚举类</strong></p> 
+<p></p> 
+<pre><code class="language-java">package com.captain.readwriteseparation.dbconfig;
+
+/**
+ * @author 
+ * @description 数据源枚举
+ */
+public enum DataSourceTypeEnum {
+    master("master"), slave("slave");
+    private String value;
+
+    DataSourceTypeEnum(String value) {
+        this.value = value;
+    }
+
+    public String getValue() {
+        return value;
+    }
+}
+</code></pre> 
+<p>4、设置获取数据源</p> 
+<pre><code class="language-java">package com.aspire.sh.dbconfig;
+
+/**
+ * @description 设置获取数据源
+ */
+public class DataSourceHolder {
+    private static final ThreadLocal contextHolder = new ThreadLocal&lt;&gt;();
+
+    /**
+     * 设置数据源
+     *
+     * @param dbTypeEnum
+     */
+    public static void setDbType(DataSourceTypeEnum dbTypeEnum) {
+        contextHolder.set(dbTypeEnum.getValue());
+    }
+
+    /**
+     * 取得当前数据源
+     *
+     * @return
+     */
+    public static String getDbType() {
+        return (String) contextHolder.get();
+    }
+
+    /**
+     * 清除上下文数据
+     */
+    public static void clearDbType() {
+        contextHolder.remove();
+    }
+}</code></pre> 
+<p> 5、数据源切换(切入点和切面)</p> 
+<pre><code class="language-java">package com.captain.readwriteseparation.dbconfig;
+
+import org.aspectj.lang.annotation.Aspect;
+import org.aspectj.lang.annotation.Before;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+/**
+ * @author splendor.s
+ * @description 数据源切换(切入点和切面)
+ */
+@Aspect
+@Component
+public class DataSourceAop {
+    static Logger logger = LoggerFactory.getLogger(DataSourceAop.class);
+
+    @Before("execution(* com.captain.readwriteseparation.mapper.*.insert*(..)) || execution(* com.captain.readwriteseparation.mapper.*.update*(..)) || execution(* com.captain.readwriteseparation.mapper.*.delete*(..))")
+    public void setWriteDataSourceType() {
+        DataSourceHolder.setDbType(DataSourceTypeEnum.master);
+        logger.info("change -------- write ------------");
+    }
+
+    @Before("execution(* com.captain.readwriteseparation.mapper.*.select*(..)) || execution(* com.captain.readwriteseparation.mapper.*.count*(..))")
+    public void setReadDataSourceType() {
+        DataSourceHolder.setDbType(DataSourceTypeEnum.slave);
+        logger.info("change -------- read ------------");
+    }
+
+}</code></pre> 
+<h4>6、动态数据源决策</h4> 
+<pre><code class="language-java">package com.captain.readwriteseparation.dbconfig;
+
+import org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource;
+
+/**
+ * @authorsplendor.s
+ * @description 动态数据源决策
+ */
+public class DynamicDataSource extends AbstractRoutingDataSource {
+    @Override
+    protected Object determineCurrentLookupKey() {
+        return  DataSourceHolder.getDbType();
+    }
+}
+</code></pre> 
+<h4>7、数据库（源）配置</h4> 
+<pre><code class="language-java">package com.aspire.sh.dbconfig;
+
+import com.alibaba.druid.spring.boot.autoconfigure.DruidDataSourceBuilder;
+import com.alibaba.druid.support.http.StatViewServlet;
+import com.alibaba.druid.support.http.WebStatFilter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
+import org.springframework.boot.web.servlet.ServletRegistrationBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
+
+import javax.sql.DataSource;
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * @author splendor.s
+ * @description 数据库（源）配置
+ */
+@Configuration
+public class DruidDataSourceConfig {
+    static Logger logger = LoggerFactory.getLogger(DruidDataSourceConfig.class);
+
+    @Value("${spring.datasource.type}")
+    private Class&lt;? extends DataSource&gt; dataSourceType;
+
+    @Bean
+    public ServletRegistrationBean staViewServlet() {
+        ServletRegistrationBean&lt;StatViewServlet&gt; bean = new ServletRegistrationBean&lt;&gt;(new StatViewServlet(), "/druid/*");
+        Map&lt;String, String&gt; initParams = new HashMap&lt;&gt;();
+        //设置servlet初始化参数
+        initParams.put("loginUsername", "admin");//登陆名
+        initParams.put("loginPassword", "123456");//密码
+        initParams.put("allow", "");//默认就是允许所有访问
+        initParams.put("deny", "192.168.10.17");//拒绝相对应的id访问
+        //加载到容器中
+        bean.setInitParameters(initParams);
+        return bean;
+    }
+
+    @Bean
+    public FilterRegistrationBean filterRegistrationBean() {
+        FilterRegistrationBean filterRegistrationBean = new FilterRegistrationBean(new WebStatFilter());
+        filterRegistrationBean.addUrlPatterns("/*");
+        filterRegistrationBean.addInitParameter("exclusions", "*.js,*.gif,*.jpg,*.png,*.css,*.ico," + "/druid/*");
+        return filterRegistrationBean;
+    }
+
+    @Bean(name = "master")
+    @ConfigurationProperties(prefix = "spring.datasource.druid.master")
+    public DataSource master() {
+        logger.info("-------------------- master init ---------------------");
+        return DruidDataSourceBuilder.create().build();
+    }
+
+    @Bean(name = "slave")
+    @ConfigurationProperties(prefix = "spring.datasource.druid.slave")
+    public DataSource slaveOne() {
+        logger.info("-------------------- slave init ---------------------");
+        return DruidDataSourceBuilder.create().build();
+    }
+
+    // slave 多个时，可进行负载（另行处理）
+
+    @Bean
+    @Primary
+    public DataSource multipleDataSource(@Qualifier("master") DataSource master,
+                                         @Qualifier("slave") DataSource slave) {
+        DynamicDataSource dynamicDataSource = new DynamicDataSource();
+        Map&lt;Object, Object&gt; targetDataSources = new HashMap&lt;&gt;();
+        targetDataSources.put(DataSourceTypeEnum.master.getValue(), master);
+        targetDataSources.put(DataSourceTypeEnum.slave.getValue(), slave);
+        dynamicDataSource.setTargetDataSources(targetDataSources);
+        dynamicDataSource.setDefaultTargetDataSource(slave);
+        return dynamicDataSource;
+    }
+
+}
+</code></pre> 
+<h4>8、配置事务管理</h4> 
+<pre><code class="language-java">package com.aspire.sh.dbconfig;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.transaction.annotation.EnableTransactionManagement;
+import javax.sql.DataSource;
+import javax.annotation.Resource;
+
+/**
+ * @author splendor.s
+ * @description 事务控制
+ */
+@Configuration
+@EnableTransactionManagement
+public class DataSourceTransactionManager extends DataSourceTransactionManagerAutoConfiguration {
+
+    static Logger logger = LoggerFactory.getLogger(DataSourceTransactionManager.class);
+
+    @Resource(name = "master")
+    private DataSource dataSource;
+
+    /**
+     * 自定义事务
+     * MyBatis自动参与到spring事务管理中，无需额外配置，只要org.mybatis.spring.SqlSessionFactoryBean引用的数据源与DataSourceTransactionManager引用的数据源一致即可，否则事务管理会不起作用。
+     *
+     * @return
+     */
+    @Bean(name = "transactionManager")
+    public org.springframework.jdbc.datasource.DataSourceTransactionManager transactionManagers() {
+        logger.info("-------------------- transactionManager init ---------------------");
+        return new org.springframework.jdbc.datasource.DataSourceTransactionManager(dataSource);
+    }
+}
+</code></pre> 
+<p></p> 
+<p><strong>实现方式三：</strong></p> 
+<p>这里配置了4个数据源，1个master，2两个slave，1个路由数据源。前3个数据源都是为了生成第4个数据源，而且后续我们只用这最后一个路由数据源。</p> 
+<pre><code>
+/**
+ * 关于数据源配置，参考SpringBoot官方文档第79章《Data Access》
+ * 79. Data Access
+ * 79.1 Configure a Custom DataSource
+ * 79.2 Configure Two DataSources
+ * 这里配置了4个数据源，1个master，2两个slave，1个路由数据源。前3个数据源都是为了生成第4个数据源，而且后续我们只用这最后一个路由数据源。
+ */
+
+@Configuration
+public class DataSourceConfig {
+
+    @Bean
+    @ConfigurationProperties("spring.datasource.master")
+    public DataSource masterDataSource() {
+        return DataSourceBuilder.create().build();
+    }
+
+    @Bean
+    @ConfigurationProperties("spring.datasource.slave1")
+    public DataSource slave1DataSource() {
+        return DataSourceBuilder.create().build();
+    }
+
+    @Bean
+    @ConfigurationProperties("spring.datasource.slave2")
+    public DataSource slave2DataSource() {
+        return DataSourceBuilder.create().build();
+    }
+
+    @Bean
+    public DataSource myRoutingDataSource(@Qualifier("masterDataSource") DataSource masterDataSource,
+                                          @Qualifier("slave1DataSource") DataSource slave1DataSource,
+                                          @Qualifier("slave2DataSource") DataSource slave2DataSource) {
+        Map&lt;Object, Object&gt; targetDataSources = new HashMap&lt;&gt;();
+        targetDataSources.put(DBTypeEnum.MASTER, masterDataSource);
+        targetDataSources.put(DBTypeEnum.SLAVE1, slave1DataSource);
+        targetDataSources.put(DBTypeEnum.SLAVE2, slave2DataSource);
+        MyRoutingDataSource myRoutingDataSource = new MyRoutingDataSource();
+        myRoutingDataSource.setDefaultTargetDataSource(masterDataSource);
+        myRoutingDataSource.setTargetDataSources(targetDataSources);
+        return myRoutingDataSource;
+    }
+
+}
+</code></pre> 
+<p><strong>配置Mybatis指定数据源</strong></p> 
+<pre><code>/**
+ * 由于Spring容器中现在有4个数据源，所以我们需要为事务管理器和MyBatis手动指定一个明确的数据源。
+ */
+@EnableTransactionManagement
+@Configuration
+public class MyBatisConfig {
+
+    @Resource(name = "myRoutingDataSource")
+    private DataSource myRoutingDataSource;
+
+    @Bean
+    public SqlSessionFactory sqlSessionFactory() throws Exception {
+        SqlSessionFactoryBean sqlSessionFactoryBean = new SqlSessionFactoryBean();
+        sqlSessionFactoryBean.setDataSource(myRoutingDataSource);
+        sqlSessionFactoryBean.setMapperLocations(new PathMatchingResourcePatternResolver().getResources("classpath:mapper/*.xml"));
+        return sqlSessionFactoryBean.getObject();
+    }
+
+    @Bean
+    public PlatformTransactionManager platformTransactionManager() {
+        return new DataSourceTransactionManager(myRoutingDataSource);
+    }
+}
+</code></pre> 
+<p><strong>定义一个枚举类来代表这三个数据源</strong></p> 
+<pre><code>
+
+/**
+ * 定义一个枚举来代表这三个数据源
+ */
+public enum DBTypeEnum {
+    MASTER, SLAVE1, SLAVE2;
+}
+</code></pre> 
+<p><strong>通过<code>ThreadLocal</code>将数据源绑定到每个线程上下文中</strong></p> 
+<pre><code>/**
+ * 通过ThreadLocal将数据源设置到每个线程上下文中
+ */
+public class DBContextHolder {
+
+    private static final ThreadLocal&lt;DBTypeEnum&gt; contextHolder = new ThreadLocal&lt;&gt;();
+
+    private static final AtomicInteger counter = new AtomicInteger(-1);
+
+    public static void set(DBTypeEnum dbType) {
+        contextHolder.set(dbType);
+    }
+
+    public static DBTypeEnum get() {
+        return contextHolder.get();
+    }
+
+    public static void master() {
+        set(DBTypeEnum.MASTER);
+        System.out.println("切换到master");
+    }
+
+    public static void slave() {
+        //  轮询
+        int index = counter.getAndIncrement() % 2;
+        if (counter.get() &gt; 9999) {
+            counter.set(-1);
+        }
+        if (index == 0) {
+            set(DBTypeEnum.SLAVE1);
+            System.out.println("切换到slave1");
+        }else {
+            set(DBTypeEnum.SLAVE2);
+            System.out.println("切换到slave2");
+        }
+    }
+
+}
+</code></pre> 
+<p><strong>通过Aop的前置通知来设置要使用的路由key（数据源）</strong></p> 
+<pre><code>/**
+ * 默认情况下，所有的查询都走从库，插入/修改/删除走主库。我们通过方法名来区分操作类型（CRUD）
+ *
+ */
+@Aspect
+@Component
+public class DataSourceAop {
+
+    @Pointcut("!@annotation(huaxin.annotation.Master) " +
+            "&amp;&amp; (execution(* huaxin.service.*.select*(..)) " +
+            "|| execution(* huaxin.service..*.find*(..)))")
+    public void readPointcut() {
+
+    }
+
+    @Pointcut("@annotation(huaxin.annotation.Master) " +
+            "|| execution(* huaxin.service..*.save*(..)) " +
+            "|| execution(* huaxin.service..*.add*(..)) " +
+            "|| execution(* huaxin.service..*.update*(..)) " +
+            "|| execution(* huaxin.service..*.edit*(..)) " +
+            "|| execution(* huaxin..*.delete*(..)) " +
+            "|| execution(* huaxin..*.remove*(..))")
+    public void writePointcut() {
+
+    }
+
+    @Before("readPointcut()")
+    public void read() {
+        DBContextHolder.slave();
+    }
+
+    @Before("writePointcut()")
+    public void write() {
+        DBContextHolder.master();
+    }
+
+
+    /**
+     * 另一种写法：if...else...  判断哪些需要读从数据库，其余的走主数据库
+     */
+//    @Before("execution(* com.cjs.example.service.impl.*.*(..))")
+//    public void before(JoinPoint jp) {
+//        String methodName = jp.getSignature().getName();
+//
+//        if (StringUtils.startsWithAny(methodName, "get", "select", "find")) {
+//            DBContextHolder.slave();
+//        }else {
+//            DBContextHolder.master();
+//        }
+//    }
+}
+</code></pre> 
+<p><strong>获取当前线程上绑定的路由key</strong></p> 
+<pre><code>/**
+ * 获取路由key
+ */
+public class MyRoutingDataSource extends AbstractRoutingDataSource {
+    @Nullable
+    @Override
+    protected Object determineCurrentLookupKey() {
+        return DBContextHolder.get();
+    }
+}
+</code></pre> 
+<p><strong>特殊情况下我们需要强制读主库，针对这种情况，我们定义一个注解，用该注解标注的就读主库</strong></p> 
+<pre><code>public @interface Master {}
+</code></pre> 
+<p><strong>给查询所有添加@Master注解</strong></p> 
+<p><strong>启动入口加上@MapperScan("xx.xx")</strong></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/599faa5b162a9e0791201d26d8fd69f2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">错误解决：These dependencies were not found: core-js/modules/es.array.push.js</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/168e3d411b5c33a671f1defbf69f1b10/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">K8s：通过Velero实现集群备份和恢复</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

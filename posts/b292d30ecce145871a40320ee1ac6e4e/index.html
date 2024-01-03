@@ -1,0 +1,1016 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Android事件传递流程 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Android事件传递流程" />
+<meta property="og:description" content="##启动服务
+在系统启动时候，会启动多个服务，其中包括InputManagerService
+inputManager = new InputManagerService(context); 看看InputManagerService构造方法
+public InputManagerService(Context context) { this.mContext = context; this.mHandler = new InputManagerHandler(DisplayThread.get().getLooper()); .... mPtr = nativeInit(this, mContext, mHandler.getLooper().getQueue()); //mPtr是NativeInputManager的实例 .... } 构造方法中比较重要的是nativeInit，对应在com_android_server_input_InputManagerService.cpp中执行
+static jlong nativeInit(JNIEnv* env, jclass /* clazz */, jobject serviceObj, jobject contextObj, jobject messageQueueObj) { sp&lt;MessageQueue&gt; messageQueue = android_os_MessageQueue_getMessageQueue(env, messageQueueObj); if (messageQueue == NULL) { jniThrowRuntimeException(env, &#34;MessageQueue is not initialized.&#34;); return 0; } NativeInputManager* im = new NativeInputManager(contextObj, serviceObj, messageQueue-&gt;getLooper()); im-&gt;incStrong(0); return reinterpret_cast&lt;jlong&gt;(im); } 上述主要完成NativeInputManager初始化，并返回NativeInputManager实例对象，继续分析NativeInputManager构造函数，同样在com_android_server_input_InputManagerService." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/b292d30ecce145871a40320ee1ac6e4e/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2018-05-19T17:49:41+08:00" />
+<meta property="article:modified_time" content="2018-05-19T17:49:41+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Android事件传递流程</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>##启动服务<br> 在系统启动时候，会启动多个服务，其中包括InputManagerService</p> 
+<pre><code>inputManager = new InputManagerService(context);
+</code></pre> 
+<p>看看InputManagerService构造方法</p> 
+<pre><code>public InputManagerService(Context context) {
+        this.mContext = context;
+        this.mHandler = new InputManagerHandler(DisplayThread.get().getLooper());
+
+        ....
+        mPtr = nativeInit(this, mContext, mHandler.getLooper().getQueue());  //mPtr是NativeInputManager的实例
+	....
+
+}
+</code></pre> 
+<p>构造方法中比较重要的是nativeInit，对应在com_android_server_input_InputManagerService.cpp中执行</p> 
+<pre><code>static jlong nativeInit(JNIEnv* env, jclass /* clazz */,
+        jobject serviceObj, jobject contextObj, jobject messageQueueObj) {
+    sp&lt;MessageQueue&gt; messageQueue = android_os_MessageQueue_getMessageQueue(env, messageQueueObj);
+    if (messageQueue == NULL) {
+        jniThrowRuntimeException(env, "MessageQueue is not initialized.");
+        return 0;
+    }
+
+    NativeInputManager* im = new NativeInputManager(contextObj, serviceObj,
+            messageQueue-&gt;getLooper());
+    im-&gt;incStrong(0);
+    return reinterpret_cast&lt;jlong&gt;(im);
+}
+</code></pre> 
+<p>上述主要完成NativeInputManager初始化，并返回NativeInputManager实例对象，继续分析NativeInputManager构造函数，同样在com_android_server_input_InputManagerService.cpp文件中</p> 
+<pre><code>NativeInputManager::NativeInputManager(jobject contextObj,
+        jobject serviceObj, const sp&lt;Looper&gt;&amp; looper) :
+        mLooper(looper), mInteractive(true) {
+    JNIEnv* env = jniEnv();
+
+    mContextObj = env-&gt;NewGlobalRef(contextObj);
+    mServiceObj = env-&gt;NewGlobalRef(serviceObj);
+
+    {
+        AutoMutex _l(mLock);
+        mLocked.systemUiVisibility = ASYSTEM_UI_VISIBILITY_STATUS_BAR_VISIBLE;
+        mLocked.pointerSpeed = 0;
+        mLocked.pointerGesturesEnabled = true;
+        mLocked.showTouches = false;
+        mLocked.pointerCapture = false;
+    }
+    mInteractive = true;
+
+    sp&lt;EventHub&gt; eventHub = new EventHub();  // A. 构造EventHub，EventHub用来监听/dev/input目录下文件节点的变化
+    mInputManager = new InputManager(eventHub, this, this);  // B. 构造InputManager对象
+}
+</code></pre> 
+<p>上面分为两个主要步骤，A和B</p> 
+<p>##构造EventHub</p> 
+<pre><code>static const char *DEVICE_PATH = "/dev/input";
+
+EventHub::EventHub(void) :
+        mBuiltInKeyboardId(NO_BUILT_IN_KEYBOARD), mNextDeviceId(1), mControllerNumbers(),
+        mOpeningDevices(0), mClosingDevices(0),
+        mNeedToSendFinishedDeviceScan(false),
+        mNeedToReopenDevices(false), mNeedToScanDevices(true),
+        mPendingEventCount(0), mPendingEventIndex(0), mPendingINotify(false) {
+    acquire_wake_lock(PARTIAL_WAKE_LOCK, WAKE_LOCK_ID);
+
+    mEpollFd = epoll_create(EPOLL_SIZE_HINT);   // ......
+    LOG_ALWAYS_FATAL_IF(mEpollFd &lt; 0, "Could not create epoll instance.  errno=%d", errno);
+
+    mINotifyFd = inotify_init();  // ......
+    int result = inotify_add_watch(mINotifyFd, DEVICE_PATH, IN_DELETE | IN_CREATE);   // ......
+    LOG_ALWAYS_FATAL_IF(result &lt; 0, "Could not register INotify for %s.  errno=%d",
+            DEVICE_PATH, errno);
+
+    struct epoll_event eventItem;
+    memset(&amp;eventItem, 0, sizeof(eventItem));
+    eventItem.events = EPOLLIN;
+    eventItem.data.u32 = EPOLL_ID_INOTIFY;
+    result = epoll_ctl(mEpollFd, EPOLL_CTL_ADD, mINotifyFd, &amp;eventItem);   // ......
+    LOG_ALWAYS_FATAL_IF(result != 0, "Could not add INotify to epoll instance.  errno=%d", errno);
+
+    int wakeFds[2];
+    result = pipe(wakeFds);
+    LOG_ALWAYS_FATAL_IF(result != 0, "Could not create wake pipe.  errno=%d", errno);
+
+    mWakeReadPipeFd = wakeFds[0];
+    mWakeWritePipeFd = wakeFds[1];
+
+    result = fcntl(mWakeReadPipeFd, F_SETFL, O_NONBLOCK);
+    LOG_ALWAYS_FATAL_IF(result != 0, "Could not make wake read pipe non-blocking.  errno=%d",
+            errno);
+
+    result = fcntl(mWakeWritePipeFd, F_SETFL, O_NONBLOCK);
+    LOG_ALWAYS_FATAL_IF(result != 0, "Could not make wake write pipe non-blocking.  errno=%d",
+            errno);
+
+    eventItem.data.u32 = EPOLL_ID_WAKE;
+    result = epoll_ctl(mEpollFd, EPOLL_CTL_ADD, mWakeReadPipeFd, &amp;eventItem);
+    LOG_ALWAYS_FATAL_IF(result != 0, "Could not add wake read pipe to epoll instance.  errno=%d",
+            errno);
+
+    int major, minor;
+    getLinuxRelease(&amp;major, &amp;minor);
+    // EPOLLWAKEUP was introduced in kernel 3.5
+    mUsingEpollWakeup = major &gt; 3 || (major == 3 &amp;&amp; minor &gt;= 5);
+}
+
+</code></pre> 
+<p>EventHub中有一个比较重要的方法，getEvents()，该方法会不断读取/dev/input目录下的文件节点的变化，如果没有发生变化，则该方法一直处于阻塞状态</p> 
+<pre><code>size_t EventHub::getEvents(int timeoutMillis, RawEvent* buffer, size_t bufferSize) {
+    ALOG_ASSERT(bufferSize &gt;= 1);
+
+    AutoMutex _l(mLock);
+
+    struct input_event readBuffer[bufferSize];
+
+    RawEvent* event = buffer;
+    size_t capacity = bufferSize;
+    bool awoken = false;
+    for (;;) {
+        nsecs_t now = systemTime(SYSTEM_TIME_MONOTONIC);
+
+        // Reopen input devices if needed.
+        if (mNeedToReopenDevices) {
+            mNeedToReopenDevices = false;
+
+            ALOGI("Reopening all input devices due to a configuration change.");
+
+            closeAllDevicesLocked();
+            mNeedToScanDevices = true;
+            break; // return to the caller before we actually rescan
+        }
+
+        // Report any devices that had last been added/removed.
+        while (mClosingDevices) {
+            Device* device = mClosingDevices;
+            ALOGV("Reporting device closed: id=%d, name=%s\n",
+                 device-&gt;id, device-&gt;path.string());
+            mClosingDevices = device-&gt;next;
+            event-&gt;when = now;
+            event-&gt;deviceId = device-&gt;id == mBuiltInKeyboardId ? BUILT_IN_KEYBOARD_ID : device-&gt;id;
+            event-&gt;type = DEVICE_REMOVED;
+            event += 1;
+            delete device;
+            mNeedToSendFinishedDeviceScan = true;
+            if (--capacity == 0) {
+                break;
+            }
+        }
+
+        if (mNeedToScanDevices) {
+            mNeedToScanDevices = false;
+            scanDevicesLocked();
+            mNeedToSendFinishedDeviceScan = true;
+        }
+
+        while (mOpeningDevices != NULL) {
+            Device* device = mOpeningDevices;
+            ALOGV("Reporting device opened: id=%d, name=%s\n",
+                 device-&gt;id, device-&gt;path.string());
+            mOpeningDevices = device-&gt;next;
+            event-&gt;when = now;
+            event-&gt;deviceId = device-&gt;id == mBuiltInKeyboardId ? 0 : device-&gt;id;
+            event-&gt;type = DEVICE_ADDED;
+            event += 1;
+            mNeedToSendFinishedDeviceScan = true;
+            if (--capacity == 0) {
+                break;
+            }
+        }
+
+        if (mNeedToSendFinishedDeviceScan) {
+            mNeedToSendFinishedDeviceScan = false;
+            event-&gt;when = now;
+            event-&gt;type = FINISHED_DEVICE_SCAN;
+            event += 1;
+            if (--capacity == 0) {
+                break;
+            }
+        }
+
+        // Grab the next input event.
+        bool deviceChanged = false;
+        while (mPendingEventIndex &lt; mPendingEventCount) {
+            const struct epoll_event&amp; eventItem = mPendingEventItems[mPendingEventIndex++];
+            if (eventItem.data.u32 == EPOLL_ID_INOTIFY) {
+                if (eventItem.events &amp; EPOLLIN) {
+                    mPendingINotify = true;
+                } else {
+                    ALOGW("Received unexpected epoll event 0x%08x for INotify.", eventItem.events);
+                }
+                continue;
+            }
+
+            if (eventItem.data.u32 == EPOLL_ID_WAKE) {
+                if (eventItem.events &amp; EPOLLIN) {
+                    ALOGV("awoken after wake()");
+                    awoken = true;
+                    char buffer[16];
+                    ssize_t nRead;
+                    do {
+                        nRead = read(mWakeReadPipeFd, buffer, sizeof(buffer));
+                    } while ((nRead == -1 &amp;&amp; errno == EINTR) || nRead == sizeof(buffer));
+                } else {
+                    ALOGW("Received unexpected epoll event 0x%08x for wake read pipe.",
+                            eventItem.events);
+                }
+                continue;
+            }
+
+            ssize_t deviceIndex = mDevices.indexOfKey(eventItem.data.u32);
+            if (deviceIndex &lt; 0) {
+                ALOGW("Received unexpected epoll event 0x%08x for unknown device id %d.",
+                        eventItem.events, eventItem.data.u32);
+                continue;
+            }
+
+            Device* device = mDevices.valueAt(deviceIndex);
+            if (eventItem.events &amp; EPOLLIN) {
+                int32_t readSize = read(device-&gt;fd, readBuffer,
+                        sizeof(struct input_event) * capacity);     //.........
+                if (readSize == 0 || (readSize &lt; 0 &amp;&amp; errno == ENODEV)) {
+                    // Device was removed before INotify noticed.
+                    ALOGW("could not get event, removed? (fd: %d size: %" PRId32
+                            " bufferSize: %zu capacity: %zu errno: %d)\n",
+                            device-&gt;fd, readSize, bufferSize, capacity, errno);
+                    deviceChanged = true;
+                    closeDeviceLocked(device);
+                } else if (readSize &lt; 0) {
+                    if (errno != EAGAIN &amp;&amp; errno != EINTR) {
+                        ALOGW("could not get event (errno=%d)", errno);
+                    }
+                } else if ((readSize % sizeof(struct input_event)) != 0) {
+                    ALOGE("could not get event (wrong size: %d)", readSize);
+                } else {
+                    int32_t deviceId = device-&gt;id == mBuiltInKeyboardId ? 0 : device-&gt;id;
+
+                    size_t count = size_t(readSize) / sizeof(struct input_event);
+                    for (size_t i = 0; i &lt; count; i++) {
+                        struct input_event&amp; iev = readBuffer[i];
+                        ALOGV("%s got: time=%d.%06d, type=%d, code=%d, value=%d",
+                                device-&gt;path.string(),
+                                (int) iev.time.tv_sec, (int) iev.time.tv_usec,
+                                iev.type, iev.code, iev.value);
+
+                        // Some input devices may have a better concept of the time
+                        // when an input event was actually generated than the kernel
+                        // which simply timestamps all events on entry to evdev.
+                        // This is a custom Android extension of the input protocol
+                        // mainly intended for use with uinput based device drivers.
+                        if (iev.type == EV_MSC) {
+                            if (iev.code == MSC_ANDROID_TIME_SEC) {
+                                device-&gt;timestampOverrideSec = iev.value;
+                                continue;
+                            } else if (iev.code == MSC_ANDROID_TIME_USEC) {
+                                device-&gt;timestampOverrideUsec = iev.value;
+                                continue;
+                            }
+                        }
+                        if (device-&gt;timestampOverrideSec || device-&gt;timestampOverrideUsec) {
+                            iev.time.tv_sec = device-&gt;timestampOverrideSec;
+                            iev.time.tv_usec = device-&gt;timestampOverrideUsec;
+                            if (iev.type == EV_SYN &amp;&amp; iev.code == SYN_REPORT) {
+                                device-&gt;timestampOverrideSec = 0;
+                                device-&gt;timestampOverrideUsec = 0;
+                            }
+                            ALOGV("applied override time %d.%06d",
+                                    int(iev.time.tv_sec), int(iev.time.tv_usec));
+                        }
+
+                        // Use the time specified in the event instead of the current time
+                        // so that downstream code can get more accurate estimates of
+                        // event dispatch latency from the time the event is enqueued onto
+                        // the evdev client buffer.
+                        //
+                        // The event's timestamp fortuitously uses the same monotonic clock
+                        // time base as the rest of Android.  The kernel event device driver
+                        // (drivers/input/evdev.c) obtains timestamps using ktime_get_ts().
+                        // The systemTime(SYSTEM_TIME_MONOTONIC) function we use everywhere
+                        // calls clock_gettime(CLOCK_MONOTONIC) which is implemented as a
+                        // system call that also queries ktime_get_ts().
+                        event-&gt;when = nsecs_t(iev.time.tv_sec) * 1000000000LL
+                                + nsecs_t(iev.time.tv_usec) * 1000LL;
+                        ALOGV("event time %" PRId64 ", now %" PRId64, event-&gt;when, now);
+
+                        // Bug 7291243: Add a guard in case the kernel generates timestamps
+                        // that appear to be far into the future because they were generated
+                        // using the wrong clock source.
+                        //
+                        // This can happen because when the input device is initially opened
+                        // it has a default clock source of CLOCK_REALTIME.  Any input events
+                        // enqueued right after the device is opened will have timestamps
+                        // generated using CLOCK_REALTIME.  We later set the clock source
+                        // to CLOCK_MONOTONIC but it is already too late.
+                        //
+                        // Invalid input event timestamps can result in ANRs, crashes and
+                        // and other issues that are hard to track down.  We must not let them
+                        // propagate through the system.
+                        //
+                        // Log a warning so that we notice the problem and recover gracefully.
+                        if (event-&gt;when &gt;= now + 10 * 1000000000LL) {
+                            // Double-check.  Time may have moved on.
+                            nsecs_t time = systemTime(SYSTEM_TIME_MONOTONIC);
+                            if (event-&gt;when &gt; time) {
+                                ALOGW("An input event from %s has a timestamp that appears to "
+                                        "have been generated using the wrong clock source "
+                                        "(expected CLOCK_MONOTONIC): "
+                                        "event time %" PRId64 ", current time %" PRId64
+                                        ", call time %" PRId64 ".  "
+                                        "Using current time instead.",
+                                        device-&gt;path.string(), event-&gt;when, time, now);
+                                event-&gt;when = time;
+                            } else {
+                                ALOGV("Event time is ok but failed the fast path and required "
+                                        "an extra call to systemTime: "
+                                        "event time %" PRId64 ", current time %" PRId64
+                                        ", call time %" PRId64 ".",
+                                        event-&gt;when, time, now);
+                            }
+                        }
+			//.........
+                        event-&gt;deviceId = deviceId;
+                        event-&gt;type = iev.type;
+                        event-&gt;code = iev.code;
+                        event-&gt;value = iev.value;
+                        event += 1;
+                        capacity -= 1;
+                    }
+                    if (capacity == 0) {
+                        // The result buffer is full.  Reset the pending event index
+                        // so we will try to read the device again on the next iteration.
+                        mPendingEventIndex -= 1;
+                        break;
+                    }
+                }
+            } else if (eventItem.events &amp; EPOLLHUP) {
+                ALOGI("Removing device %s due to epoll hang-up event.",
+                        device-&gt;identifier.name.string());
+                deviceChanged = true;
+                closeDeviceLocked(device);
+            } else {
+                ALOGW("Received unexpected epoll event 0x%08x for device %s.",
+                        eventItem.events, device-&gt;identifier.name.string());
+            }
+        }
+
+        // readNotify() will modify the list of devices so this must be done after
+        // processing all other events to ensure that we read all remaining events
+        // before closing the devices.
+        if (mPendingINotify &amp;&amp; mPendingEventIndex &gt;= mPendingEventCount) {
+            mPendingINotify = false;
+            readNotifyLocked();  //.........
+            deviceChanged = true;
+        }
+
+        // Report added or removed devices immediately.
+        if (deviceChanged) {
+            continue;
+        }
+
+        // Return now if we have collected any events or if we were explicitly awoken.
+        if (event != buffer || awoken) {
+            break;
+        }
+
+        // Poll for events.  Mind the wake lock dance!
+        // We hold a wake lock at all times except during epoll_wait().  This works due to some
+        // subtle choreography.  When a device driver has pending (unread) events, it acquires
+        // a kernel wake lock.  However, once the last pending event has been read, the device
+        // driver will release the kernel wake lock.  To prevent the system from going to sleep
+        // when this happens, the EventHub holds onto its own user wake lock while the client
+        // is processing events.  Thus the system can only sleep if there are no events
+        // pending or currently being processed.
+        //
+        // The timeout is advisory only.  If the device is asleep, it will not wake just to
+        // service the timeout.
+        mPendingEventIndex = 0;
+
+        mLock.unlock(); // release lock before poll, must be before release_wake_lock
+        release_wake_lock(WAKE_LOCK_ID);
+
+        int pollResult = epoll_wait(mEpollFd, mPendingEventItems, EPOLL_MAX_EVENTS, timeoutMillis);   // 将会一直处于阻塞状态，直到/dev/input目录下有节点发生变化
+
+        acquire_wake_lock(PARTIAL_WAKE_LOCK, WAKE_LOCK_ID);
+        mLock.lock(); // reacquire lock after poll, must be after acquire_wake_lock
+
+        if (pollResult == 0) {
+            // Timed out.
+            mPendingEventCount = 0;
+            break;
+        }
+
+        if (pollResult &lt; 0) {
+            // An error occurred.
+            mPendingEventCount = 0;
+
+            // Sleep after errors to avoid locking up the system.
+            // Hopefully the error is transient.
+            if (errno != EINTR) {
+                ALOGW("poll failed (errno=%d)\n", errno);
+                usleep(100000);
+            }
+        } else {
+            // Some events occurred.
+            mPendingEventCount = size_t(pollResult);
+        }
+    }
+
+    // All done, return the number of events we read.
+    return event - buffer;
+}
+</code></pre> 
+<p>##InputReader和InputDispatcher读取和分发<br> InputReader类负责从上述EventHub的getEvent读取节点变化，并由InputDispatcher分发给上层，这里主要涉及到以下几个类：<br> InputDispatcher<br> InputReader<br> InputDispatcherThread<br> InputReaderThread<br> InputListener</p> 
+<p>###InputReader和InputDispatcher的启动<br> 继续回到 InputManager.cpp 的构造方法</p> 
+<pre><code>InputManager::InputManager(
+        const sp&lt;EventHubInterface&gt;&amp; eventHub,
+        const sp&lt;InputReaderPolicyInterface&gt;&amp; readerPolicy,
+        const sp&lt;InputDispatcherPolicyInterface&gt;&amp; dispatcherPolicy) {
+    mDispatcher = new InputDispatcher(dispatcherPolicy);
+    mReader = new InputReader(eventHub, readerPolicy, mDispatcher);
+    initialize();
+}
+
+
+void InputManager::initialize() {
+    mReaderThread = new InputReaderThread(mReader);
+    mDispatcherThread = new InputDispatcherThread(mDispatcher);
+}
+
+</code></pre> 
+<p>上述初始化完成之后，回到SystemServer，此时程序会一直往下走</p> 
+<pre><code>inputManager.setWindowManagerCallbacks(wm.getInputMonitor());
+inputManager.start();
+
+
+
+public void start() {
+        Slog.i(TAG, "Starting input manager");
+        nativeStart(mPtr);  // 上述构造方法中，已经直到mPtr是NativeInputManager的实例
+    ....
+}
+
+</code></pre> 
+<p>上述nativeStart是com_android_server_input_InputManagerService.cpp中方法</p> 
+<pre><code>static void nativeStart(JNIEnv* env, jclass /* clazz */, jlong ptr) {
+    NativeInputManager* im = reinterpret_cast&lt;NativeInputManager*&gt;(ptr);
+
+    status_t result = im-&gt;getInputManager()-&gt;start();   // InputManager.cpp start方法
+    if (result) {
+        jniThrowRuntimeException(env, "Input manager could not be started.");
+    }
+}
+
+</code></pre> 
+<p><strong>InputManager.cpp#start</strong></p> 
+<pre><code>status_t InputManager::start() {
+    status_t result = mDispatcherThread-&gt;run("InputDispatcher", PRIORITY_URGENT_DISPLAY);
+    if (result) {
+        ALOGE("Could not start InputDispatcher thread due to error %d.", result);
+        return result;
+    }
+
+    result = mReaderThread-&gt;run("InputReader", PRIORITY_URGENT_DISPLAY);
+    if (result) {
+        ALOGE("Could not start InputReader thread due to error %d.", result);
+
+        mDispatcherThread-&gt;requestExit();
+        return result;
+    }
+
+    return OK;
+}
+
+</code></pre> 
+<p>上述mDispatcherThread-&gt;run和mReaderThread-&gt;run会分别执行对应的threadLoop方法，这里涉及到android中的threadLoop知识点，后续做详细介绍<br> <strong>InputReader.cpp</strong></p> 
+<pre><code>bool InputReaderThread::threadLoop() {
+    mReader-&gt;loopOnce();
+    return true;
+}
+
+</code></pre> 
+<p><strong>loopOnce</strong></p> 
+<pre><code>void InputReader::loopOnce() {
+    int32_t oldGeneration;
+    int32_t timeoutMillis;
+    bool inputDevicesChanged = false;
+    Vector&lt;InputDeviceInfo&gt; inputDevices;
+    { // acquire lock
+        AutoMutex _l(mLock);
+
+        oldGeneration = mGeneration;
+        timeoutMillis = -1;
+
+        uint32_t changes = mConfigurationChangesToRefresh;
+        if (changes) {
+            mConfigurationChangesToRefresh = 0;
+            timeoutMillis = 0;
+            refreshConfigurationLocked(changes);
+        } else if (mNextTimeout != LLONG_MAX) {
+            nsecs_t now = systemTime(SYSTEM_TIME_MONOTONIC);
+            timeoutMillis = toMillisecondTimeoutDelay(now, mNextTimeout);
+        }
+    } // release lock
+
+    size_t count = mEventHub-&gt;getEvents(timeoutMillis, mEventBuffer, EVENT_BUFFER_SIZE);   // getEvent获取节点的变化
+
+    { // acquire lock
+        AutoMutex _l(mLock);
+        mReaderIsAliveCondition.broadcast();
+
+        if (count) {
+            processEventsLocked(mEventBuffer, count);   // 到这里
+        }
+
+        if (mNextTimeout != LLONG_MAX) {
+            nsecs_t now = systemTime(SYSTEM_TIME_MONOTONIC);
+            if (now &gt;= mNextTimeout) {
+#if DEBUG_RAW_EVENTS
+                ALOGD("Timeout expired, latency=%0.3fms", (now - mNextTimeout) * 0.000001f);
+#endif
+                mNextTimeout = LLONG_MAX;
+                timeoutExpiredLocked(now);
+            }
+        }
+
+        if (oldGeneration != mGeneration) {
+            inputDevicesChanged = true;
+            getInputDevicesLocked(inputDevices);
+        }
+    } // release lock
+
+    // Send out a message that the describes the changed input devices.
+    if (inputDevicesChanged) {
+        mPolicy-&gt;notifyInputDevicesChanged(inputDevices);
+    }
+
+    // Flush queued events out to the listener.
+    // This must happen outside of the lock because the listener could potentially call
+    // back into the InputReader's methods, such as getScanCodeState, or become blocked
+    // on another thread similarly waiting to acquire the InputReader lock thereby
+    // resulting in a deadlock.  This situation is actually quite plausible because the
+    // listener is actually the input dispatcher, which calls into the window manager,
+    // which occasionally calls into the input reader.
+    mQueuedListener-&gt;flush();
+}
+</code></pre> 
+<p><strong>processEventsLocked</strong></p> 
+<pre><code>void InputReader::processEventsLocked(const RawEvent* rawEvents, size_t count) {
+    for (const RawEvent* rawEvent = rawEvents; count;) {
+        int32_t type = rawEvent-&gt;type;
+        size_t batchSize = 1;
+        if (type &lt; EventHubInterface::FIRST_SYNTHETIC_EVENT) {
+            int32_t deviceId = rawEvent-&gt;deviceId;
+            while (batchSize &lt; count) {
+                if (rawEvent[batchSize].type &gt;= EventHubInterface::FIRST_SYNTHETIC_EVENT
+                        || rawEvent[batchSize].deviceId != deviceId) {
+                    break;
+                }
+                batchSize += 1;
+            }
+#if DEBUG_RAW_EVENTS
+            ALOGD("BatchSize: %d Count: %d", batchSize, count);
+#endif
+            processEventsForDeviceLocked(deviceId, rawEvent, batchSize);   // 到这里
+        } else {
+            switch (rawEvent-&gt;type) {
+            case EventHubInterface::DEVICE_ADDED:
+                addDeviceLocked(rawEvent-&gt;when, rawEvent-&gt;deviceId);  // 增加节点
+                break;
+            case EventHubInterface::DEVICE_REMOVED:
+                removeDeviceLocked(rawEvent-&gt;when, rawEvent-&gt;deviceId);  // 删除节点
+                break;
+            case EventHubInterface::FINISHED_DEVICE_SCAN:
+                handleConfigurationChangedLocked(rawEvent-&gt;when);  // 节点发生变化
+                break;
+            default:
+                ALOG_ASSERT(false); // can't happen
+                break;
+            }
+        }
+        count -= batchSize;
+        rawEvent += batchSize;
+    }
+}
+
+</code></pre> 
+<p><strong>processEventsForDeviceLocked</strong></p> 
+<pre><code>void InputReader::processEventsForDeviceLocked(int32_t deviceId,
+        const RawEvent* rawEvents, size_t count) {
+    ssize_t deviceIndex = mDevices.indexOfKey(deviceId);
+    if (deviceIndex &lt; 0) {
+        ALOGW("Discarding event for unknown deviceId %d.", deviceId);
+        return;
+    }
+
+    InputDevice* device = mDevices.valueAt(deviceIndex);
+    if (device-&gt;isIgnored()) {
+        //ALOGD("Discarding event for ignored deviceId %d.", deviceId);
+        return;
+    }
+
+    device-&gt;process(rawEvents, count);  // 到这里
+</code></pre> 
+<p><strong>InputDevice#process</strong></p> 
+<pre><code>void InputDevice::process(const RawEvent* rawEvents, size_t count) {
+    // Process all of the events in order for each mapper.
+    // We cannot simply ask each mapper to process them in bulk because mappers may
+    // have side-effects that must be interleaved.  For example, joystick movement events and
+    // gamepad button presses are handled by different mappers but they should be dispatched
+    // in the order received.
+    size_t numMappers = mMappers.size();
+    for (const RawEvent* rawEvent = rawEvents; count != 0; rawEvent++) {
+#if DEBUG_RAW_EVENTS
+        ALOGD("Input event: device=%d type=0x%04x code=0x%04x value=0x%08x when=%lld",
+                rawEvent-&gt;deviceId, rawEvent-&gt;type, rawEvent-&gt;code, rawEvent-&gt;value,
+                rawEvent-&gt;when);
+#endif
+
+        if (mDropUntilNextSync) {
+            if (rawEvent-&gt;type == EV_SYN &amp;&amp; rawEvent-&gt;code == SYN_REPORT) {
+                mDropUntilNextSync = false;
+#if DEBUG_RAW_EVENTS
+                ALOGD("Recovered from input event buffer overrun.");
+#endif
+            } else {
+#if DEBUG_RAW_EVENTS
+                ALOGD("Dropped input event while waiting for next input sync.");
+#endif
+            }
+        } else if (rawEvent-&gt;type == EV_SYN &amp;&amp; rawEvent-&gt;code == SYN_DROPPED) {
+            ALOGI("Detected input event buffer overrun for device %s.", getName().string());
+            mDropUntilNextSync = true;
+            reset(rawEvent-&gt;when);
+        } else {
+            for (size_t i = 0; i &lt; numMappers; i++) {
+                InputMapper* mapper = mMappers[i];
+                mapper-&gt;process(rawEvent);   // 到这里
+            }
+        }
+        --count;
+    }
+}
+
+InputMapper根据具体的按键类型，会调用不同的InputMapper ，比如：SwitchInputMapper耳机拔插的switch类型，KeyboardInputMapper物理按键，电源键，音量键等
+
+void KeyboardInputMapper::process(const RawEvent* rawEvent) {
+    switch (rawEvent-&gt;type) {
+    case EV_KEY: {
+        int32_t scanCode = rawEvent-&gt;code;
+        int32_t usageCode = mCurrentHidUsage;
+        mCurrentHidUsage = 0;
+
+        if (isKeyboardOrGamepadKey(scanCode)) {
+            processKey(rawEvent-&gt;when, rawEvent-&gt;value != 0, scanCode, usageCode);   // 到这里，调用到processKey
+        }
+        break;
+    }
+    case EV_MSC: {
+        if (rawEvent-&gt;code == MSC_SCAN) {
+            mCurrentHidUsage = rawEvent-&gt;value;
+        }
+        break;
+    }
+    case EV_SYN: {
+        if (rawEvent-&gt;code == SYN_REPORT) {
+            mCurrentHidUsage = 0;
+        }
+    }
+    }
+}
+
+</code></pre> 
+<pre><code>void KeyboardInputMapper::processKey(nsecs_t when, bool down, int32_t scanCode,
+        int32_t usageCode) {
+    int32_t keyCode;
+    int32_t keyMetaState;
+    uint32_t policyFlags;
+
+    if (getEventHub()-&gt;mapKey(getDeviceId(), scanCode, usageCode, mMetaState,
+                              &amp;keyCode, &amp;keyMetaState, &amp;policyFlags)) {
+        keyCode = AKEYCODE_UNKNOWN;
+        keyMetaState = mMetaState;
+        policyFlags = 0;
+    }
+
+    if (down) {
+        // Rotate key codes according to orientation if needed.
+        if (mParameters.orientationAware &amp;&amp; mParameters.hasAssociatedDisplay) {
+            keyCode = rotateKeyCode(keyCode, mOrientation);
+        }
+
+        // Add key down.
+        ssize_t keyDownIndex = findKeyDown(scanCode);
+        if (keyDownIndex &gt;= 0) {
+            // key repeat, be sure to use same keycode as before in case of rotation
+            keyCode = mKeyDowns.itemAt(keyDownIndex).keyCode;
+        } else {
+            // key down
+            if ((policyFlags &amp; POLICY_FLAG_VIRTUAL)
+                    &amp;&amp; mContext-&gt;shouldDropVirtualKey(when,
+                            getDevice(), keyCode, scanCode)) {
+                return;
+            }
+            if (policyFlags &amp; POLICY_FLAG_GESTURE) {
+                mDevice-&gt;cancelTouch(when);
+            }
+
+            mKeyDowns.push();
+            KeyDown&amp; keyDown = mKeyDowns.editTop();
+            keyDown.keyCode = keyCode;
+            keyDown.scanCode = scanCode;
+        }
+
+        mDownTime = when;
+    } else {
+        // Remove key down.
+        ssize_t keyDownIndex = findKeyDown(scanCode);
+        if (keyDownIndex &gt;= 0) {
+            // key up, be sure to use same keycode as before in case of rotation
+            keyCode = mKeyDowns.itemAt(keyDownIndex).keyCode;
+            mKeyDowns.removeAt(size_t(keyDownIndex));
+        } else {
+            // key was not actually down
+            ALOGI("Dropping key up from device %s because the key was not down.  "
+                    "keyCode=%d, scanCode=%d",
+                    getDeviceName().string(), keyCode, scanCode);
+            return;
+        }
+    }
+
+    if (updateMetaStateIfNeeded(keyCode, down)) {
+        // If global meta state changed send it along with the key.
+        // If it has not changed then we'll use what keymap gave us,
+        // since key replacement logic might temporarily reset a few
+        // meta bits for given key.
+        keyMetaState = mMetaState;
+    }
+
+    nsecs_t downTime = mDownTime;
+
+    // Key down on external an keyboard should wake the device.
+    // We don't do this for internal keyboards to prevent them from waking up in your pocket.
+    // For internal keyboards, the key layout file should specify the policy flags for
+    // each wake key individually.
+    // TODO: Use the input device configuration to control this behavior more finely.
+    if (down &amp;&amp; getDevice()-&gt;isExternal() &amp;&amp; !isMediaKey(keyCode)) {
+        policyFlags |= POLICY_FLAG_WAKE;
+    }
+
+    if (mParameters.handlesKeyRepeat) {
+        policyFlags |= POLICY_FLAG_DISABLE_KEY_REPEAT;
+    }
+
+    NotifyKeyArgs args(when, getDeviceId(), mSource, policyFlags,
+            down ? AKEY_EVENT_ACTION_DOWN : AKEY_EVENT_ACTION_UP,
+            AKEY_EVENT_FLAG_FROM_SYSTEM, keyCode, scanCode, keyMetaState, downTime);
+    getListener()-&gt;notifyKey(&amp;args);  //最终将获取到的事件传递到getListener()-&gt;notifyKey方法中
+}
+
+</code></pre> 
+<p>上面getListener()会返回InputListener.cpp类型对象，所以就到了InputListener.cpp#notifyKey方法中</p> 
+<p>void QueuedInputListener::notifyKey(const NotifyKeyArgs* args) {<!-- --><br> mArgsQueue.push(new NotifyKeyArgs(*args));<br> }</p> 
+<p>可以看到，最终只是添加到了mArgsQueue集合中<br> Vector&lt;NotifyArgs*&gt; mArgsQueue;</p> 
+<pre><code>mQueuedListener-&gt;flush();  这个就会将mArgsQueue集合中保存的事件传递给InputDispatcher.cpp中
+InputListener.cpp#flush
+
+void QueuedInputListener::flush() {
+    size_t count = mArgsQueue.size();
+    for (size_t i = 0; i &lt; count; i++) {
+        NotifyArgs* args = mArgsQueue[i];
+        args-&gt;notify(mInnerListener);
+        delete args;
+    }
+    mArgsQueue.clear();
+}
+
+</code></pre> 
+<pre><code>void NotifyKeyArgs::notify(const sp&lt;InputListenerInterface&gt;&amp; listener) const {
+    listener-&gt;notifyKey(this);
+}
+
+</code></pre> 
+<p>这里的listener是什么？ 重新看下InputReader.cpp的构造函数</p> 
+<pre><code>InputReader::InputReader(const sp&lt;EventHubInterface&gt;&amp; eventHub,
+        const sp&lt;InputReaderPolicyInterface&gt;&amp; policy,
+        const sp&lt;InputListenerInterface&gt;&amp; listener) :
+        mContext(this), mEventHub(eventHub), mPolicy(policy),
+        mGlobalMetaState(0), mGeneration(1),
+        mDisableVirtualKeysTimeout(LLONG_MIN), mNextTimeout(LLONG_MAX),
+        mConfigurationChangesToRefresh(0) {
+    mQueuedListener = new QueuedInputListener(listener);
+
+    { // acquire lock
+        AutoMutex _l(mLock);
+
+        refreshConfigurationLocked(0);
+        updateGlobalMetaStateLocked();
+    } // release lock
+}
+</code></pre> 
+<p>上述构造InputReader是在InputManager.cpp中构造的</p> 
+<pre><code>InputManager::InputManager(
+        const sp&lt;EventHubInterface&gt;&amp; eventHub,
+        const sp&lt;InputReaderPolicyInterface&gt;&amp; readerPolicy,
+        const sp&lt;InputDispatcherPolicyInterface&gt;&amp; dispatcherPolicy) {
+    mDispatcher = new InputDispatcher(dispatcherPolicy);
+    mReader = new InputReader(eventHub, readerPolicy, mDispatcher);
+    initialize();
+}
+</code></pre> 
+<p>所以上述listener就是InputDispatcher.cpp实例对象</p> 
+<p>回到InputDispatcher.cpp中</p> 
+<pre><code>void InputDispatcher::notifyKey(const NotifyKeyArgs* args) {
+#if DEBUG_INBOUND_EVENT_DETAILS
+    ALOGD("notifyKey - eventTime=%lld, deviceId=%d, source=0x%x, policyFlags=0x%x, action=0x%x, "
+            "flags=0x%x, keyCode=0x%x, scanCode=0x%x, metaState=0x%x, downTime=%lld",
+            args-&gt;eventTime, args-&gt;deviceId, args-&gt;source, args-&gt;policyFlags,
+            args-&gt;action, args-&gt;flags, args-&gt;keyCode, args-&gt;scanCode,
+            args-&gt;metaState, args-&gt;downTime);
+#endif
+    if (!validateKeyEvent(args-&gt;action)) {
+        return;
+    }
+
+    uint32_t policyFlags = args-&gt;policyFlags;
+    int32_t flags = args-&gt;flags;
+    int32_t metaState = args-&gt;metaState;
+    if ((policyFlags &amp; POLICY_FLAG_VIRTUAL) || (flags &amp; AKEY_EVENT_FLAG_VIRTUAL_HARD_KEY)) {
+        policyFlags |= POLICY_FLAG_VIRTUAL;
+        flags |= AKEY_EVENT_FLAG_VIRTUAL_HARD_KEY;
+    }
+    if (policyFlags &amp; POLICY_FLAG_FUNCTION) {
+        metaState |= AMETA_FUNCTION_ON;
+    }
+
+    policyFlags |= POLICY_FLAG_TRUSTED;
+
+    int32_t keyCode = args-&gt;keyCode;
+    if (metaState &amp; AMETA_META_ON &amp;&amp; args-&gt;action == AKEY_EVENT_ACTION_DOWN) {
+        int32_t newKeyCode = AKEYCODE_UNKNOWN;
+        if (keyCode == AKEYCODE_DEL) {
+            newKeyCode = AKEYCODE_BACK;
+        } else if (keyCode == AKEYCODE_ENTER) {
+            newKeyCode = AKEYCODE_HOME;
+        }
+        if (newKeyCode != AKEYCODE_UNKNOWN) {
+            AutoMutex _l(mLock);
+            struct KeyReplacement replacement = {keyCode, args-&gt;deviceId};
+            mReplacedKeys.add(replacement, newKeyCode);
+            keyCode = newKeyCode;
+            metaState &amp;= ~(AMETA_META_ON | AMETA_META_LEFT_ON | AMETA_META_RIGHT_ON);
+        }
+    } else if (args-&gt;action == AKEY_EVENT_ACTION_UP) {
+        // In order to maintain a consistent stream of up and down events, check to see if the key
+        // going up is one we've replaced in a down event and haven't yet replaced in an up event,
+        // even if the modifier was released between the down and the up events.
+        AutoMutex _l(mLock);
+        struct KeyReplacement replacement = {keyCode, args-&gt;deviceId};
+        ssize_t index = mReplacedKeys.indexOfKey(replacement);
+        if (index &gt;= 0) {
+            keyCode = mReplacedKeys.valueAt(index);
+            mReplacedKeys.removeItemsAt(index);
+            metaState &amp;= ~(AMETA_META_ON | AMETA_META_LEFT_ON | AMETA_META_RIGHT_ON);
+        }
+    }
+
+    KeyEvent event;
+    event.initialize(args-&gt;deviceId, args-&gt;source, args-&gt;action,
+            flags, keyCode, args-&gt;scanCode, metaState, 0,
+            args-&gt;downTime, args-&gt;eventTime);
+
+    mPolicy-&gt;interceptKeyBeforeQueueing(&amp;event, /*byref*/ policyFlags);   // 此处会回调到InputMonitor中
+
+    bool needWake;
+    { // acquire lock
+        mLock.lock();
+
+        if (shouldSendKeyToInputFilterLocked(args)) {
+            mLock.unlock();
+
+            policyFlags |= POLICY_FLAG_FILTERED;
+            if (!mPolicy-&gt;filterInputEvent(&amp;event, policyFlags)) {
+                return; // event was consumed by the filter
+            }
+
+            mLock.lock();
+        }
+
+        int32_t repeatCount = 0;
+        KeyEntry* newEntry = new KeyEntry(args-&gt;eventTime,
+                args-&gt;deviceId, args-&gt;source, policyFlags,
+                args-&gt;action, flags, keyCode, args-&gt;scanCode,
+                metaState, repeatCount, args-&gt;downTime);
+
+        needWake = enqueueInboundEventLocked(newEntry);
+        mLock.unlock();
+    } // release lock
+
+    if (needWake) {
+        mLooper-&gt;wake();
+    }
+}
+
+</code></pre> 
+<p><strong>InputMonitor#interceptKeyBeforeQueueing</strong></p> 
+<pre><code>@Override
+    public int interceptKeyBeforeQueueing(KeyEvent event, int policyFlags) {
+        return mService.mPolicy.interceptKeyBeforeQueueing(event, policyFlags);
+    }
+
+</code></pre> 
+<p>这里就到了PhoneWindowManager#interceptKeyBeforeQueueing中</p> 
+<p><font color="#4585bb" size="5">专注技术分享，包括Java，python，AI人工智能，Android分享，不定期更新学习视频，欢迎关注</font><br> <img src="https://images2.imgbox.com/12/94/0qYCKsap_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f35cd68c1ba6dc55bd61146b20bae1b2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">GoLang激活码</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/90a0e037e3c99d71d220aa7aeb01732e/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【C#】最完整的IIS添加WCF配置</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

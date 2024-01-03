@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>点云配准ICP&amp;NDT - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="点云配准ICP&amp;NDT" />
+<meta property="og:description" content="NDT 简介 很多匹配算法需要在两帧数据之间进行特征匹配，例如ICP中会进行点到点、点到线、点到面的特征匹配，特征匹配的效果最终决定了点云配准的效果，而NDT不需要进行特征匹配。NDT是将第一帧点云转换至栅格地图，每个栅格计算其中点的正态分布，因此将第一帧点云转换为一个个栅格表示的分段连续可导的概率密度函数，使用正态分布概率密度函数描述点云的局部性质。然后将第二帧点云投影至栅格地图中，计算出第二帧点云在栅格地图中的概率，通过牛顿法找到最佳匹配位姿，使得第二帧点云投影至栅格地图后概率最大化，最终完成点云配准。
+NDT的步骤可分为：建立第一帧点云的栅格地图，牛顿法迭代使得第二帧点云投影至栅格地图得到的概率最大化。
+NDT优点：不需要进行点云之间的特征匹配，避免了特征匹配中出现的问题，例如点云噪声、物体移动、点云重合度对特征匹配的影响。使用正态分布概率密度函数描述点云的局部性质，因此所有导数都可以通过解析法求解，因此计算结果准确并且比较快。
+建立栅格地图 NDT通过一系列栅格描述的本地点云正态分布描述整个点云的分布。首先将第一帧点云分割为等大的栅格，对于包含一定数量点的栅格，计算栅格内点坐标的均值以及方差，最终可以获得本栅格内点云的正态分布：
+因此每个栅格描述了栅格中任意位置的概率密度。
+实现细节 由于栅格地图将整个点云进行了离散化，在栅格与栅格之间会出现不连续的现象，可能会造成误差。为了避免离散化的影响，NDT会同时建立四个栅格地图，彼此相互错位半个栅格的长度，这四个栅格地图会同时参与计算，最终结果为四个栅格地图计算结果的和。
+计算栅格地图内协方差矩阵时，为了避免协方差矩阵出现奇异性，如果协方差矩阵较大特征值远大于较小的特征值，则将较大特征值进行减小，最终计算得到协方差矩阵。
+扫描匹配 首先根据里程计或者匀速运动模型得到先验位姿，根据先验位姿将第二帧点云投影至栅格地图中，对于第二帧点云中每个点，根据它所在的栅格计算概率密度，最终通过求和得到第二帧点云在栅格地图中的概率密度，点云位姿作为参数块，使用牛顿法找到这个概率密度的最大值，最终得到后验位姿。
+由于使用正态分布概率密度函数描述点云的局部性质，因此概率密度函数的导数和偏导数可以通过解析法进行求解，所以可以计算出牛顿法中所需要的海塞矩阵和雅克比矩阵。
+牛顿法迭代公式推导 第二帧点云在栅格地图中的概率密度为：
+对概率密度取负号，通过牛顿法找到最小值。对于牛顿法每次迭代，需要求解增量方程：
+因此需要求解海塞矩阵和雅克比矩阵，得到增量后更新位姿，不断迭代，直到增量位姿小于一定阈值，说明收敛。
+对于点云中一点，他在栅格内关于均值的坐标为：
+因此这个点的概率密度为：
+通过链式求导，概率密度关于位姿的导数等于概率密度关于点激光点局部坐标的导数乘以激光点局部坐标有关位姿的导数，因此可得到雅克比矩阵
+其中，激光点局部坐标有关位姿的导数为：
+海塞矩阵:
+NDT算法特点： 不需要进行点云之间的特征匹配，避免了特征匹配中出现的问题。使用正态分布概率密度函数描述点云的局部性质，因此所有导数都可以通过解析法求解，因此计算结果准确并且比较快。可能存在的问题：点云是否可以通过局部正态分布描述？ ICP 简介 ICP通过迭代的方式，通过优化相对位姿，不断减小两帧点云之间点到点的距离，直到迭代收敛，最终计算出两帧点云的相对位姿。ICP分为特征匹配、位姿优化两个步骤。
+由于无法像视觉SLAM提供准确的特征匹配关系，因此对于基于激光点云的经典ICP来说，使用点到点的最近距离进行特征匹配。使用ICP算法配准源点云和目标点云，对于源点云中每个点，找到它在目标点云中最近的点，如果这两个点的距离小于阈值，则将这两个点作为匹配点，计算出所有匹配点之后，最终可以获得源点云与目标点云的匹配关系。
+获得两点云的匹配点之后，构建非线性最小二乘问题，参数块是两点云之间的相对位姿，残差是所有匹配点之间的距离的和，可以通过优化或者解析的方法计算最优位姿变换（例如基于SVD的解析方法），并不断进行特征匹配、位姿优化的迭代，直到满足收敛条件，最终计算出两点云的相对位姿。
+位姿优化 公式推导思想 首先计算两点云的去质心坐标点云，然后两点云的旋转由去质心坐标点云求解，两点云的位移由经过旋转后的质心坐标求解，因此将将旋转和位移的求解分割为两个步骤。
+详细推导 对于点云中每个匹配特征点，代价函数为：
+由于两帧点云完成匹配后相互重合，因此两点云的质心坐标是相同的，因此首先计算两点云的质心坐标，然后计算出质心坐标下的两个点云
+所以代价函数就成为质心坐标下的两点云匹配点的和：
+所以将最小二乘问题转换为两步，首先根据质心坐标下的代价函数求得相对姿态，然后相对位置就是经过相对姿态变换后两点云坐标的差
+计算
+对H矩阵进行SVD分解，计算
+如果行列式为1，说明X为相对姿态，然后求得相对位姿
+SVD公式推导 思想 最后代价函数可转换为旋转矩阵与去质心坐标矩阵乘积的迹，由定理可知，正定矩阵的迹要大于任意正交矩阵乘以正定矩阵的迹，因此找到旋转矩阵R，可转换为正定矩阵的行驶，就求得了所需要的旋转矩阵。
+对H矩阵进行SVD分解，取正交矩阵为SVD分解后的矩阵，然后回带，会发现转换为了正定矩阵的形式。
+详细推导 质心坐标系下代价函数可写为
+可以看到，最小化代价函数等价于最大化
+通过对H的SVD分解，可以得到
+因此令R等于
+即可求得非线性最小二乘问题的最小值
+TODO：如何理解通过SVD求最大值？
+ICP和NDT算法之间的优劣 ICP相比NDT，更容易受到初值误差的影响，当初始误差较大时，ICP更容易出现无法计算位姿的情况。
+NDT相比ICP，旋转误差更大。因此ICP对旋转的约束更强，NDT对初始误差的健壮性更强。[1]
+NDT的匹配速度要比ICP块，NDT的时间复杂度为O(N)，其时间复杂度与点云的数量成正比，ICP的时间复杂度是O(NlogN)，即通过KD树进行查找的时间复杂度。
+由于ICP是进行点云中点到点的匹配，而NDT是将点云转换为分段连续的正态分布函数，因此NDT对动态物体干扰的抵抗力更强。
+由于NDT对初始误差的敏感度较低，因此当速度较快时，运动方程无法提供准确的先验位姿，此时NDT的效果要由于ICP。
+当环境中缺少垂直特征时，NDT相比ICP会提供更好的约束，原因是NDT使用栅格正态分布描述点云的局部性质，因此稀少的垂直特征可以体系在某些栅格的正态分布中，而ICP使用点云之间点到点的匹配，垂直点特征的影响会被大面积水平点特征减弱。[2]
+[1]Evaluation_of_3D_registration_reliability_and_speed_-_A_comparison_of_ICP_and_NDT
+[2]3D Scan Registration Based Localization for Autonomous Vehicles – A Comparison of NDT and ICP under Realistic Conditions" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/84d122f80c333867cf803ba4dc52c94f/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-09-12T23:34:40+08:00" />
+<meta property="article:modified_time" content="2022-09-12T23:34:40+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">点云配准ICP&amp;NDT</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="NDT_0"></a>NDT</h2> 
+<h4><a id="_1"></a>简介</h4> 
+<p>很多匹配算法需要在两帧数据之间进行特征匹配，例如ICP中会进行点到点、点到线、点到面的特征匹配，特征匹配的效果最终决定了点云配准的效果，而NDT不需要进行特征匹配。NDT是将第一帧点云转换至栅格地图，每个栅格计算其中点的正态分布，因此将第一帧点云转换为一个个栅格表示的分段连续可导的概率密度函数，使用正态分布概率密度函数描述点云的局部性质。然后将第二帧点云投影至栅格地图中，计算出第二帧点云在栅格地图中的概率，通过牛顿法找到最佳匹配位姿，使得第二帧点云投影至栅格地图后概率最大化，最终完成点云配准。<br> NDT的步骤可分为：建立第一帧点云的栅格地图，牛顿法迭代使得第二帧点云投影至栅格地图得到的概率最大化。<br> NDT优点：不需要进行点云之间的特征匹配，避免了特征匹配中出现的问题，例如点云噪声、物体移动、点云重合度对特征匹配的影响。使用正态分布概率密度函数描述点云的局部性质，因此所有导数都可以通过解析法求解，因此计算结果准确并且比较快。</p> 
+<h4><a id="_5"></a>建立栅格地图</h4> 
+<p>NDT通过一系列栅格描述的本地点云正态分布描述整个点云的分布。首先将第一帧点云分割为等大的栅格，对于包含一定数量点的栅格，计算栅格内点坐标的均值以及方差，最终可以获得本栅格内点云的正态分布：<img src="https://images2.imgbox.com/3e/54/tXAHeIzG_o.png" alt="在这里插入图片描述"><br> 因此每个栅格描述了栅格中任意位置的概率密度。</p> 
+<h6><a id="_8"></a>实现细节</h6> 
+<p>由于栅格地图将整个点云进行了离散化，在栅格与栅格之间会出现不连续的现象，可能会造成误差。为了避免离散化的影响，NDT会同时建立四个栅格地图，彼此相互错位半个栅格的长度，这四个栅格地图会同时参与计算，最终结果为四个栅格地图计算结果的和。<br> 计算栅格地图内协方差矩阵时，为了避免协方差矩阵出现奇异性，如果协方差矩阵较大特征值远大于较小的特征值，则将较大特征值进行减小，最终计算得到协方差矩阵。</p> 
+<h4><a id="_11"></a>扫描匹配</h4> 
+<p>首先根据里程计或者匀速运动模型得到先验位姿，根据先验位姿将第二帧点云投影至栅格地图中，对于第二帧点云中每个点，根据它所在的栅格计算概率密度，最终通过求和得到第二帧点云在栅格地图中的概率密度，点云位姿作为参数块，使用牛顿法找到这个概率密度的最大值，最终得到后验位姿。<br> 由于使用正态分布概率密度函数描述点云的局部性质，因此概率密度函数的导数和偏导数可以通过解析法进行求解，所以可以计算出牛顿法中所需要的海塞矩阵和雅克比矩阵。</p> 
+<h6><a id="_14"></a>牛顿法迭代公式推导</h6> 
+<p>第二帧点云在栅格地图中的概率密度为：<br> <img src="https://images2.imgbox.com/d4/bd/yIwzpKBU_o.png" alt="在这里插入图片描述"><br> 对概率密度取负号，通过牛顿法找到最小值。对于牛顿法每次迭代，需要求解增量方程：<br> <img src="https://images2.imgbox.com/34/69/mrb0asbT_o.png" alt="在这里插入图片描述"><br> 因此需要求解海塞矩阵和雅克比矩阵，得到增量后更新位姿，不断迭代，直到增量位姿小于一定阈值，说明收敛。<br> 对于点云中一点，他在栅格内关于均值的坐标为：<br> <img src="https://images2.imgbox.com/8f/7c/9V7uXDTe_o.png" alt="在这里插入图片描述"><br> 因此这个点的概率密度为：<br> <img src="https://images2.imgbox.com/20/d2/srAsbFiF_o.png" alt="在这里插入图片描述"><br> 通过链式求导，概率密度关于位姿的导数等于概率密度关于点激光点局部坐标的导数乘以激光点局部坐标有关位姿的导数，因此可得到雅克比矩阵<br> <img src="https://images2.imgbox.com/5b/77/078oOmEB_o.png" alt="在这里插入图片描述"><br> 其中，激光点局部坐标有关位姿的导数为：<br> <img src="https://images2.imgbox.com/8b/ab/ECaparLE_o.png" alt="在这里插入图片描述"><br> 海塞矩阵:<br> <img src="https://images2.imgbox.com/83/f2/5TUlDKV3_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/2b/e2/xUUSw4FX_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="NDT_32"></a>NDT算法特点：</h4> 
+<ol><li>不需要进行点云之间的特征匹配，避免了特征匹配中出现的问题。</li><li>使用正态分布概率密度函数描述点云的局部性质，因此所有导数都可以通过解析法求解，因此计算结果准确并且比较快。</li><li>可能存在的问题：点云是否可以通过局部正态分布描述？</li></ol> 
+<h2><a id="ICP_38"></a>ICP</h2> 
+<h4><a id="_39"></a>简介</h4> 
+<p>ICP通过迭代的方式，通过优化相对位姿，不断减小两帧点云之间点到点的距离，直到迭代收敛，最终计算出两帧点云的相对位姿。ICP分为特征匹配、位姿优化两个步骤。<br> 由于无法像视觉SLAM提供准确的特征匹配关系，因此对于基于激光点云的经典ICP来说，使用点到点的最近距离进行特征匹配。使用ICP算法配准源点云和目标点云，对于源点云中每个点，找到它在目标点云中最近的点，如果这两个点的距离小于阈值，则将这两个点作为匹配点，计算出所有匹配点之后，最终可以获得源点云与目标点云的匹配关系。<br> 获得两点云的匹配点之后，构建非线性最小二乘问题，参数块是两点云之间的相对位姿，残差是所有匹配点之间的距离的和，可以通过优化或者解析的方法计算最优位姿变换（例如基于SVD的解析方法），并不断进行特征匹配、位姿优化的迭代，直到满足收敛条件，最终计算出两点云的相对位姿。</p> 
+<h4><a id="_43"></a>位姿优化</h4> 
+<h6><a id="_44"></a>公式推导思想</h6> 
+<p>首先计算两点云的去质心坐标点云，然后两点云的旋转由去质心坐标点云求解，两点云的位移由经过旋转后的质心坐标求解，因此将将旋转和位移的求解分割为两个步骤。</p> 
+<h6><a id="_46"></a>详细推导</h6> 
+<p>对于点云中每个匹配特征点，代价函数为：<br> <img src="https://images2.imgbox.com/6a/3c/iskZ2OLX_o.png" alt="在这里插入图片描述"><br> 由于两帧点云完成匹配后相互重合，因此两点云的质心坐标是相同的，因此首先计算两点云的质心坐标，然后计算出质心坐标下的两个点云</p> 
+<p><img src="https://images2.imgbox.com/7a/d9/5bIBr2nm_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/60/39/H4F9hpHG_o.png" alt="在这里插入图片描述"><br> 所以代价函数就成为质心坐标下的两点云匹配点的和：<br> <img src="https://images2.imgbox.com/ec/92/MctbpLQw_o.png" alt="在这里插入图片描述"><br> 所以将最小二乘问题转换为两步，首先根据质心坐标下的代价函数求得相对姿态，然后相对位置就是经过相对姿态变换后两点云坐标的差<br> <img src="https://images2.imgbox.com/b4/b3/1vFHqMnJ_o.png" alt="在这里插入图片描述"><br> 计算<br> <img src="https://images2.imgbox.com/1c/a1/lLVaGJtH_o.png" alt="在这里插入图片描述"><br> 对H矩阵进行SVD分解，计算<br> <img src="https://images2.imgbox.com/0a/c8/BlxC9Dzl_o.png" alt="在这里插入图片描述"><br> 如果行列式为1，说明X为相对姿态，然后求得相对位姿</p> 
+<h6><a id="SVD_62"></a>SVD公式推导</h6> 
+<h6><a id="_63"></a>思想</h6> 
+<p>最后代价函数可转换为旋转矩阵与去质心坐标矩阵乘积的迹，由定理可知，正定矩阵的迹要大于任意正交矩阵乘以正定矩阵的迹，因此找到旋转矩阵R，可转换为正定矩阵的行驶，就求得了所需要的旋转矩阵。<br> 对H矩阵进行SVD分解，取正交矩阵为SVD分解后的矩阵，然后回带，会发现转换为了正定矩阵的形式。</p> 
+<h6><a id="_66"></a>详细推导</h6> 
+<p>质心坐标系下代价函数可写为<br> <img src="https://images2.imgbox.com/d8/23/r4ZzPfnM_o.png" alt="在这里插入图片描述"><br> 可以看到，最小化代价函数等价于最大化<br> <img src="https://images2.imgbox.com/2e/a4/6kPvNQL1_o.png" alt="在这里插入图片描述"><br> 通过对H的SVD分解，可以得到<br> <img src="https://images2.imgbox.com/87/69/thf1Jnzv_o.png" alt="在这里插入图片描述"><br> 因此令R等于<br> <img src="https://images2.imgbox.com/44/14/H5dpSsNd_o.png" alt="在这里插入图片描述"><br> 即可求得非线性最小二乘问题的最小值<br> <img src="https://images2.imgbox.com/0b/0f/TEpa5k7C_o.png" alt="在这里插入图片描述"></p> 
+<p>TODO：如何理解通过SVD求最大值？</p> 
+<h2><a id="ICPNDT_80"></a>ICP和NDT算法之间的优劣</h2> 
+<p>ICP相比NDT，更容易受到初值误差的影响，当初始误差较大时，ICP更容易出现无法计算位姿的情况。<br> NDT相比ICP，旋转误差更大。因此ICP对旋转的约束更强，NDT对初始误差的健壮性更强。[1]<br> NDT的匹配速度要比ICP块，NDT的时间复杂度为O(N)，其时间复杂度与点云的数量成正比，ICP的时间复杂度是O(NlogN)，即通过KD树进行查找的时间复杂度。<br> 由于ICP是进行点云中点到点的匹配，而NDT是将点云转换为分段连续的正态分布函数，因此NDT对动态物体干扰的抵抗力更强。<br> 由于NDT对初始误差的敏感度较低，因此当速度较快时，运动方程无法提供准确的先验位姿，此时NDT的效果要由于ICP。<br> 当环境中缺少垂直特征时，NDT相比ICP会提供更好的约束，原因是NDT使用栅格正态分布描述点云的局部性质，因此稀少的垂直特征可以体系在某些栅格的正态分布中，而ICP使用点云之间点到点的匹配，垂直点特征的影响会被大面积水平点特征减弱。[2]</p> 
+<blockquote> 
+ <p>[1]Evaluation_of_3D_registration_reliability_and_speed_-_A_comparison_of_ICP_and_NDT<br> [2]3D Scan Registration Based Localization for Autonomous Vehicles – A Comparison of NDT and ICP under Realistic Conditions</p> 
+</blockquote> 
+<p>ICP要求点云的完全重合，这一假设会受到现实各种因素的影响。</p> 
+<h4><a id="_92"></a>点云配准不利因素</h4> 
+<ul><li>初始值误差</li><li>点云的不重合度</li><li>动态物体</li></ul> 
+<h2><a id="ICP_97"></a>传统ICP及其变体的比较</h2> 
+<h5><a id="ICP_98"></a>传统ICP的缺陷</h5> 
+<p>由于经典ICP计算点云中点到点的距离，因此最小二乘期望的是两个点云的完全重合，然而现实环境中由于遮挡关系，两帧点云往往不是完全重合的，可能两帧点云只存在一部分的点是完全重合。由于点云实际上是现实几何环境的离散化表示，同时点云受到噪声的影响，即便在同一平面，离散化得到的点云也不可能完全相同，因此使用点到点的距离无法准确描述点云之间的配准问题。<br> 点到面、点到线的距离解决了离散化问题。由于点云中的平面只提供了平面法向的约束，因此计算点到面的距离，只考虑平面法向约束，而避免了平面切向方向的影响。</p> 
+<h2><a id="ICPGICPNICP_102"></a>改进的ICP——GICP和NICP</h2> 
+<p>GICP是以概率的视角解决ICP问题，通过求解最大似然，求解出两点云的相对位姿，GICP充分地考虑了点附近的结构信息，因此可以在非线性优化过程中避免很多错误的匹配。<br> GICP的基本流程与ICP基本相同，首先通过<strong>KD树寻找欧式距离最小的点</strong>作为两点云之间的匹配。通过高斯分布的概率模型来描述每个激光点，计算出激光点的协方差矩阵，然后通过最大似然，构建出相应的非线性最小二乘问题，根据匹配点的各自的协方差，误差函数的距离进行加权，也就是通过协方差矩阵构建出的马氏距离，描述非线性最小二乘的误差。</p> 
+<h4><a id="_105"></a>计算协方差矩阵</h4> 
+<p>通过KD树，找到该点附近的激光点，首先计算出激光点的均值，然后再计算协方差矩阵，由于GICP基于平面假设，认为点云是在连续平面上的离散采样，因此会对计算出的协方差矩阵进行SVD分解，通过修改奇异值为[1,1,小量]，将该点的协方差矩阵修改为满足平面分布的协方差矩阵.</p> 
+<h4><a id="_108"></a>最大化似然，求解非线性最小二乘</h4> 
+<h4><a id="_110"></a>优点</h4> 
+<p>由于GICP充分考虑了点的局部平面性质，对于两对匹配激光点，通过其各自协方差矩阵的加权，只会在法线方向提供约束，也就是两点之间法线方向的距离会有较大的权重，平面方向权重很小。并且对于错误匹配点对，根据各自的协方差在非线性优化中加权，得到的权重较小，从而避免了错误匹配点对在非线性优化的影响，例如两个匹配点对各自的平面是相互垂直的，属于错误匹配，因此通过非线性优化加权，得到的权重较小。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/44e2bed5c56acb1cc8bf4ed07e42274c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">LDPC编解码初探</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e9652eeb19de53a7766f049f6d5e2477/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Mybatis底层源码分析（最详细的版本）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

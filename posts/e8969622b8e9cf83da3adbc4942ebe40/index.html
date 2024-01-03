@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>platform架构完成，在应用层通过ioctl控制LED灯流水，当按键KEY1按下让风扇转动 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="platform架构完成，在应用层通过ioctl控制LED灯流水，当按键KEY1按下让风扇转动" />
+<meta property="og:description" content="实现过程：
+驱动代码:
+#include &lt;linux/init.h&gt; #include &lt;linux/module.h&gt; #include &lt;linux/of_gpio.h&gt; #include &lt;linux/of_irq.h&gt; #include &lt;linux/interrupt.h&gt; #include &lt;linux/fs.h&gt; #include &lt;linux/uaccess.h&gt; #include &lt;linux/list.h&gt; #include &lt;linux/stddef.h&gt; #include &lt;linux/spinlock.h&gt; #include &lt;asm/current.h&gt; #include &lt;uapi/linux/wait.h&gt; #include &lt;linux/cdev.h&gt; #include &lt;linux/slab.h&gt; #include &lt;linux/poll.h&gt; #include &lt;linux/platform_device.h&gt; #include &lt;linux/mod_devicetable.h&gt; // 开关灯命令码 #define LED1 _IOW(&#39;a&#39;, 1, int) #define LED2 _IOW(&#39;a&#39;, 2, int) #define LED3 _IOW(&#39;a&#39;, 3, int) struct cdev *cdev; // 驱动设备对象 dev_t devno; // 设备号 unsigned int major = 0; // 动态态指定主设备号 unsigned int minor = 0; // 次设备号 struct class *cls; // 目录信息 struct device *dev; // 设备节点信息 struct device_node *led_node, *interrupt_node, *fnode; // 灯节点,中断节点，灯节点的子节点 struct gpio_desc *gpio_num[4] = {0}; // gpio编号 char *led[4] = {&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/e8969622b8e9cf83da3adbc4942ebe40/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-29T17:07:55+08:00" />
+<meta property="article:modified_time" content="2023-03-29T17:07:55+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">platform架构完成，在应用层通过ioctl控制LED灯流水，当按键KEY1按下让风扇转动</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p> 实现过程：</p> 
+<p>驱动代码:</p> 
+<pre><code class="hljs">#include &lt;linux/init.h&gt;
+#include &lt;linux/module.h&gt;
+#include &lt;linux/of_gpio.h&gt;
+#include &lt;linux/of_irq.h&gt;
+#include &lt;linux/interrupt.h&gt;
+#include &lt;linux/fs.h&gt;
+#include &lt;linux/uaccess.h&gt;
+#include &lt;linux/list.h&gt;
+#include &lt;linux/stddef.h&gt;
+#include &lt;linux/spinlock.h&gt;
+#include &lt;asm/current.h&gt;
+#include &lt;uapi/linux/wait.h&gt;
+#include &lt;linux/cdev.h&gt;
+#include &lt;linux/slab.h&gt;
+#include &lt;linux/poll.h&gt;
+#include &lt;linux/platform_device.h&gt;
+#include &lt;linux/mod_devicetable.h&gt;
+
+// 开关灯命令码
+#define LED1 _IOW('a', 1, int)
+#define LED2 _IOW('a', 2, int)
+#define LED3 _IOW('a', 3, int)
+
+struct cdev *cdev;      // 驱动设备对象
+dev_t devno;            // 设备号
+unsigned int major = 0; // 动态态指定主设备号
+unsigned int minor = 0; // 次设备号
+
+struct class *cls;  // 目录信息
+struct device *dev; // 设备节点信息
+
+struct device_node *led_node, *interrupt_node, *fnode; // 灯节点,中断节点，灯节点的子节点
+struct gpio_desc *gpio_num[4] = {0};                   // gpio编号
+char *led[4] = {"led1", "led2", "led3", "fan"};        // 键名
+struct resource *res;                                  // 设备资源
+int irq_num;                                           // 按键中断号
+int i, ret;
+
+// 中断处理函数
+irqreturn_t irq_handler(int irq_num, void *arg)
+{
+    gpiod_set_value(gpio_num[3], !gpiod_get_value(gpio_num[3]));
+    return IRQ_HANDLED;
+}
+
+int mycdev_open(struct inode *inode, struct file *file)
+{
+    printk("%s:%s:%d\n", __FILE__, __func__, __LINE__);
+    return 0;
+}
+
+long mycdev_ioctl(struct file *file, unsigned int cmd, unsigned long args)
+{
+    switch (cmd)
+    {
+    case LED1:
+        gpiod_set_value(gpio_num[0], !gpiod_get_value(gpio_num[0]));
+        break;
+    case LED2:
+        gpiod_set_value(gpio_num[1], !gpiod_get_value(gpio_num[1]));
+        break;
+    case LED3:
+        gpiod_set_value(gpio_num[2], !gpiod_get_value(gpio_num[2]));
+        break;
+    default:
+        break;
+    }
+    return 0;
+}
+int mycdev_close(struct inode *inode, struct file *file)
+{
+    printk("%s:%s:%d\n", __FILE__, __func__, __LINE__);
+    return 0;
+}
+const struct file_operations fops = {
+    .open = mycdev_open,
+    .unlocked_ioctl = mycdev_ioctl,
+    .release = mycdev_close,
+};
+
+int pdrv_probe(struct platform_device *pdev)
+{
+    printk("设备安装\n");
+    // 1.分配对象
+    cdev = cdev_alloc();
+    if (cdev == NULL)
+    {
+        printk("分配对象空间失败\n");
+        ret = -ENOMEM;
+        goto ERR1;
+    }
+    printk("分配对象空间成功\n");
+    // 2.初始化驱动对象
+    cdev_init(cdev, &amp;fops);
+    // 申请设备号，动态申请
+    ret = alloc_chrdev_region(&amp;devno, minor, 3, "mycdev");
+    if (ret)
+    {
+        printk("动态申请设备号失败\n");
+        goto ERR2;
+    }
+    major = MAJOR(devno); // 获取主设备号
+    minor = MINOR(devno); // 获取次设备号
+
+    // 3.注册对象
+    ret = cdev_add(cdev, MKDEV(major, minor), 3);
+    if (ret)
+    {
+        printk("驱动对象注册进内核失败\n");
+        goto ERR3;
+    }
+    printk("驱动对象注册进内核成功\n");
+    // 向上提交目录
+    cls = class_create(THIS_MODULE, "mycdev");
+    if (IS_ERR(cls))
+    {
+        printk("向上提交目录失败\n");
+        goto ERR4;
+    }
+    printk("向上提交目录成功\n");
+    // 4.向上提交设备节点
+    for (i = 0; i &lt; 3; i++)
+    {
+        dev = device_create(cls, NULL, MKDEV(major, i), NULL, "mycdev%d", i);
+        if (IS_ERR(dev))
+        {
+            printk("向上提交节点信息失败\n");
+            goto ERR5;
+        }
+    }
+    printk("向上提交设备节点成功\n");
+
+    irq_num = platform_get_irq(pdev, 0);
+    if (irq_num &lt; 0)
+    {
+        printk("获取中断资源失败\n");
+        return -ENODATA;
+    }
+    printk("获取中断资源:%d\n", irq_num);
+    request_irq(irq_num, irq_handler, IRQF_TRIGGER_FALLING, "myirq", NULL);
+    printk("注册中断号成功\n");
+
+    for (i = 0; i &lt; 4; i++)
+    {
+        // 解析编号
+        gpio_num[i] = gpiod_get_from_of_node(pdev-&gt;dev.of_node, led[i], 0, GPIOD_OUT_LOW, NULL);
+        if (IS_ERR(gpio_num[i]))
+        {
+            printk("解析编号gpio_num%d失败\n", i);
+            return PTR_ERR(gpio_num[i]);
+        }
+        printk("解析编号gpio_num%d成功\n", i);
+    }
+    return 0;
+
+ERR5:
+    // 将前面提交成功的设备信息销毁
+    for (--i; i &gt;= 0; i--)
+    {
+        device_destroy(cls, MKDEV(major, i));
+    }
+    // 销毁目录
+    class_destroy(cls);
+ERR4:
+    cdev_del(cdev);
+ERR3:
+    unregister_chrdev_region(MKDEV(major, minor), 3);
+ERR2:
+    kfree(cdev);
+ERR1:
+    return 0;
+}
+
+int pdrv_remove(struct platform_device *pdev)
+{
+    // 释放资源
+    printk("设备卸载\n");
+    for (i = 0; i &lt; 4; i++)
+    {
+        gpiod_set_value(gpio_num[i], 0);
+    }
+
+    for (i = 0; i &lt; 4; i++)
+    {
+        gpiod_put(gpio_num[i]);
+    }
+    free_irq(irq_num, NULL);
+
+    for (i = 0; i &lt; 3; i++)
+    {
+        device_destroy(cls, MKDEV(major, i));
+    }
+    class_destroy(cls);
+    cdev_del(cdev);
+    unregister_chrdev_region(MKDEV(major, minor), 3);
+    kfree(cdev);
+    return 0;
+}
+
+struct of_device_id oftable[] = {
+    {.compatible = "hqyj,platform"},
+    {}, // 防止越界
+};
+
+// 初始化驱动对象
+struct platform_driver pdrv = {
+    .probe = pdrv_probe,
+    .remove = pdrv_remove,
+    .driver = {
+        .name = "mppdev",
+        .of_match_table = oftable,
+    },
+};
+// 一键宏注册销毁对象
+module_platform_driver(pdrv);
+MODULE_LICENSE("GPL");</code></pre> 
+<p> </p> 
+<p>应用层代码：</p> 
+<pre><code class="hljs">#include &lt;stdio.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;sys/stat.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;sys/ioctl.h&gt;
+#include &lt;unistd.h&gt;
+
+// 灯号命令码
+#define LED1 _IOW('a', 1, int)
+#define LED2 _IOW('a', 2, int)
+#define LED3 _IOW('a', 3, int)
+
+int main(int argc, const char *argv[])
+{
+    int fd;
+    fd = open("/dev/mycdev0", O_RDWR);
+    if (fd &lt; 0)
+    {
+        printf("打开失败\n");
+        return -1;
+    }
+    while (1)
+    {
+        ioctl(fd, LED1);
+        usleep(200000);
+        ioctl(fd, LED2);
+        usleep(200000);
+        ioctl(fd, LED3);
+        usleep(200000);
+    };
+    close(fd);
+    return 0;
+}</code></pre> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c6dd01f184eba2b19c00ad7e33910502/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">CAN总线 标准帧/扩展帧滤波器设置</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8cc496de3b36d12d5c64faa791321c4b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">两篇2023 ICLR多模态论文分享(模态互补性对多模态鲁棒性影响 与 对多模表示学习有效的单模学习)</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

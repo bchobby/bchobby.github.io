@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>2312llvm,06即时编译 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="2312llvm,06即时编译" />
+<meta property="og:description" content="即时编译器 LLVM即时(即时)编译器是基于函数的动态翻译引擎.
+术语来自即时制造,即工厂按需制造或购买物资,而不放入仓库.在编译过程中,该比喻也很合适,因为即时编译器不会存储二进制程序到磁盘,而是在需要时才开始编译.
+即时策略的优势,在于知道运行程序的精确的机器和微架构.这让即时系统可对特定处理器微调代码.
+而且,有的编译器只有在运行时才知道其输入,因而只能实现即时系统.
+如,GPU驱动即时编译着色语言,互联网浏览器处理js等.
+了解LLVM即时引擎基础 LLVM即时编译器是基于函数的,因为它一次可编译单个函数.这定义了编译器的工作粒度,对即时系统来说这是个重要决定.
+通过按需编译函数,编译器只会处理当前程序调用中实际用到的函数.如,你的程序有多个函数,但启动时设置了错误的命令行参数,基于函数的即时系统只会编译那个打印帮助消息的函数,而不是该程序.
+即时引擎,在运行时编译且执行LLVMIR函数.在编译阶段,即时引擎会用LLVM生成目标相关的二进制指令组成的二进制数据块.
+它返回编译后的可执行的函数指针.
+一篇有趣的博客文章对比了即时编译的开源方法.
+LLVM作为静态编译器比即时系统更加有名,因为在即时编译过程中,每趟消耗的时间是很重要的,这都算程序执行的成本.
+和GCC相似,LLVM基础架构更注重支持慢而强的优化,而不是对构建有竞争力的即时系统很重要的快而弱的优化.
+即时系统不值得浪费大量时间去优化仅执行几次的程序片段.
+介绍执行引擎 LLVM即时系统有个支持执行LLVM模块的执行引擎.在&lt;llvm_source&gt;/include/llvm/ExecutionEngine/ExecutionEngine.h中定义ExecutionEngine类.
+设计它通过即时系统或解释器执行.一般,一个执行引擎负责管理执行用户程序,分析要运行的程序片段,采取合理动作来执行它.
+要即时编译,必须要有执行管理器来协调编译策略,(一次一个片段)运行用户程序.就LLVM的ExecutionEngine类而言,它把执行部分抛回给用户.
+可运行编译管线,产生内存中的代码,但由你决定是否执行此代码.
+除了有待执行LLVM模块,引擎支持下面几个场景:
+1,懒(lazy)编译:调用函数时,引擎才编译它.关闭懒编译后,一旦请求函数指针,引擎就编译它们.
+2,编译外部全局变量:包括解析当前LLVM模块的外部实体符号并分配内存.
+3,与运行时动态加载共享对象(DSO)一样,通过dlsym查找和解析外部符号.
+LLVM实现了两个执行引擎:llvm::JIT类和llvm::MCJIT类.ExecutionEngine::EngineBuilder()方法根据IR模块参数,实例化一个ExecutionEngine对象.
+接着,ExecutionEngine::create()方法创建一个即时或MCJIT实例,两者实现截然不同.
+注意,解释器实现了一个非传统策略来执行硬件平台(主机平台)不原生地支持的用户代码.如,LLVMIR是x86平台上的用户代码,因为x86处理器不能直接执行LLVMIR.
+不同于即时编译器,解释器任务是读取每条指令,解码并执行它们,在软件中,模仿了物理处理器.
+尽管解释器省去了启动编译器,翻译用户代码时间,它们往往慢得多.
+管理内存 一般,即时引擎在运行时由ExecutionManager类,写二进制数据块进内存.随后,就可跳转到分配的内存区域(即调用ExecutionManager返回给你的函数指针),来执行这些指令了.
+这里,对很多普通任务,如分配内存,释放内存,为加载库提供空间,和内存权限管理,管理内存很重要.
+即时和MCJIT类都实现了自定义管理内存类,从RTDyldMemoryManager基类继承而来.
+ExecutionEngine用户也可提供自定义的RTDyldMemoryManager子类,来指定在哪放置不同的即时组件.
+可在&lt;llvm_source&gt;/include/llvm/ExecutionEngine/RTDyldMemoryManager.h文件中找该接口.
+如,RTDyldMemoryManager类声明了如下方法:
+1,allocateCodeSection()和allocateDataSection():这些方法分配内存,来保存给定大小和对齐的可执行代码和数据.
+管理内存用户可通过内部节标识追踪已分配的节.
+2,getSymbolAddress():返回当前链接的库中可获得的符号的地址.注意这不是用来取即时编译生成的符号.
+调用时,必须提供一个std::string实例以保存符号的名字.
+3,finalizeMemory():应该在加载完对象时调用,然后终于可设置内存权限了.如,不能在调用它前,运行生成代码.
+它直接定向到MCJIT用户而不是即时用户.
+尽管用户可提供自定义管理内存实现,JITMemoryManager和SectionMemoryManager分别是即时和MCJIT的默认子类.
+llvm::即时基础结构 即时类和它的框架代表旧引擎,它是用LLVM生成代码的不同部分实现的.LLVM3.5之后,就要移除它.尽管该引擎大部分是目标无关的,每个目标必须为它的具体指令实现二进制指令输出.
+把数据块写到内存 即时类通过MachineCodeEmitter类的JITCodeEmitter子类,输出二进制指令.MachineCodeEmitter类用来输出机器代码,它和新的机器代码(MachineCode,MC)框架没有关联,尽管旧,它依然存在并支持即时类的功能.
+局限是只支持多个目标,且对支持目标,不支持所有目标特性.
+MachineCodeEmitter类的方法,方便下列任务:
+1,为当前要发射的函数分配空间
+2,写二进制数据块到内存缓冲(emitByte(),emitWordLE(),emitWordBE(),emitAlignment(),等)
+3,追踪当前缓冲地址(就是下一条发射指令位置的指针)
+4,添加与此缓冲内的指令地址相关联的重定向
+由参与发射代码过程JITCodeEmitter类写字节到内存.由JITCodeEmitter的子类,实现相关的即时功能和管理.
+JITCodeEmitter是相当简单的,只是写字节到缓冲,而JITEmitter有下列改进:
+1,特化的管理内存器,JITMemoryManager.
+2,(JITResolver)解决者实例,跟踪和解决未编译函数的调用点.对懒编译函数至关重要.
+使用JITMemoryManager JITMemoryManager类(见&lt;llvm_source&gt;/include/llvm/ExecutionEngine/JITMemoryManager.h)实现了低级内存处理,并为前面提及的类提供缓冲.
+除了来自RTDyldMemoryManager的方法,它提供具体如allocateGlobal()等方法来协助即时类,为单个全局变量分配内存;
+而startFunctionBody(),按读/写可执行标记分配内存时,创建调用即时来发射指令.
+内部,JITMemoryManager类使用JITSlabAllocatorslab分配器(&lt;llvm_source&gt;/lib/ExecutionEngine/即时/JITMemoryManager.cpp)和MemoryBlock单元(&lt;llvm_source&gt;/include/llvm/Support/Memory.h).
+发射目标代码 每个目标都实现一个叫&lt;Target&gt;CodeEmitter(见&lt;llvm_source&gt;/lib/Target/&lt;Target&gt;CodeEmitter.cpp)的机器函数趟,它按数据块编码指令,并用JITCodeEmitter写到内存.
+如,MipsCodeEmitter遍历所有函数基本块,对每个(MI)机器指令,调用emitInstruction():
+(...) MCE.startFunction(MF); for (MachineFunction::iterator MBB = MF." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/63ec91e71a0623a7cc6133258dc9e858/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-22T18:01:07+08:00" />
+<meta property="article:modified_time" content="2023-12-22T18:01:07+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">2312llvm,06即时编译</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a><code>即时</code>编译器</h2> 
+<p><code>LLVM即时(即时)</code>编译器是基于<code>函数</code>的<code>动态翻译引擎</code>.</p> 
+<p>术语来自<code>即时</code>制造,即工厂<code>按需</code>制造或购买物资,而不放入<code>仓库</code>.在<code>编译</code>过程中,该比喻也很合适,因为<code>即时</code>编译器不会<code>存储</code>二进制程序到<code>磁盘</code>,而是在需要时才开始<code>编译</code>.</p> 
+<p><code>即时</code>策略的<code>优势</code>,在于知道<code>运行程序</code>的精确的<code>机器和微架构</code>.这让<code>即时</code>系统可对<code>特定</code>处理器<code>微调</code>代码.<br> 而且,有的编译器只有在<code>运行时</code>才知道其<code>输入</code>,因而只能实现<code>即时</code>系统.</p> 
+<p>如,<code>GPU</code>驱动即时编译<code>着色语言</code>,互联网浏览器处理<code>js</code>等.</p> 
+<h2><a id="LLVM_11"></a>了解<code>LLVM</code>即时引擎基础</h2> 
+<p><code>LLVM</code>即时编译器是基于<code>函数</code>的,因为它一次可编译<code>单个函数</code>.这定义了编译器的<code>工作粒度</code>,对<code>即时</code>系统来说这是个<code>重要</code>决定.</p> 
+<p>通过<code>按需</code>编译<code>函数</code>,编译器只会处理当前程序调用中<code>实际用到</code>的函数.如,你的程序有<code>多个函数</code>,但启动时<code>设置</code>了错误的<code>命令行参数</code>,基于函数的<code>即时</code>系统只会<code>编译</code>那个打印<code>帮助消息</code>的函数,而不是<code>该程序</code>.</p> 
+<p><code>即时</code>引擎,在<code>运行时</code>编译且执行<code>LLVMIR</code>函数.在编译阶段,<code>即时</code>引擎会用<code>LLVM</code>生成<code>目标相关</code>的<code>二进制指令</code>组成的<code>二进制数据块</code>.</p> 
+<p>它返回编译后的<code>可执行的函数指针</code>.</p> 
+<p>一篇<a href="http://eli.thegreenplace.net/2014/01/15/some-thoughts-on-llvm-vs-libjit" rel="nofollow">有趣</a>的博客文章对比了<code>即时</code>编译的开源方法.</p> 
+<p><code>LLVM</code>作为<code>静态</code>编译器比<code>即时</code>系统更加有名,因为在<code>即时</code>编译过程中,<code>每趟</code>消耗的<code>时间</code>是很重要的,这都算程序<code>执行</code>的<code>成本</code>.</p> 
+<p>和<code>GCC</code>相似,<code>LLVM</code>基础架构更注重支持<code>慢而强</code>的优化,而不是对构建有竞争力的<code>即时</code>系统很重要的<code>快而弱</code>的优化.</p> 
+<p><code>即时</code>系统不值得浪费<code>大量时间</code>去优化仅执行<code>几次</code>的<code>程序片段</code>.</p> 
+<h2><a id="_29"></a>介绍执行引擎</h2> 
+<p><code>LLVM</code>即时系统有个支持执行<code>LLVM</code>模块的<code>执行引擎</code>.在<code>&lt;llvm_source&gt;/include/llvm/ExecutionEngine/ExecutionEngine.h</code>中定义<code>ExecutionEngine</code>类.<br> 设计它通过<code>即时</code>系统或<code>解释器</code>执行.一般,一个<code>执行引擎</code>负责管理执行<code>用户程序</code>,分析要运行的<code>程序片段</code>,采取合理动作来<code>执行</code>它.</p> 
+<p>要<code>即时</code>编译,必须要有<code>执行</code>管理器来<code>协调</code>编译策略,(一次一个<code>片段</code>)<code>运行</code>用户程序.就<code>LLVM</code>的<code>ExecutionEngine</code>类而言,它把<code>执行部分</code>抛回给用户.</p> 
+<p>可运行<code>编译管线</code>,产生<code>内存</code>中的<code>代码</code>,但由你决定是否<code>执行</code>此代码.</p> 
+<p>除了有待执行<code>LLVM</code>模块,<code>引擎</code>支持下面几个场景:<br> 1,懒<code>(lazy)</code>编译:调用<code>函数</code>时,<code>引擎</code>才编译它.关闭<code>懒编译</code>后,一旦请求<code>函数指针</code>,引擎就<code>编译</code>它们.<br> 2,编译<code>外部全局变量</code>:包括解析当前<code>LLVM</code>模块的外部实体符号并<code>分配内存</code>.<br> 3,与运行时动态加载共享对象<code>(DSO)</code>一样,通过<code>dlsym</code>查找和解析<code>外部符号</code>.</p> 
+<p><code>LLVM</code>实现了两个执行引擎:<code>llvm::JIT</code>类和<code>llvm::MCJIT</code>类.<code>ExecutionEngine::EngineBuilder()</code>方法根据<code>IR</code>模块参数,实例化一个<code>ExecutionEngine</code>对象.<br> 接着,<code>ExecutionEngine::create()</code>方法创建一个<code>即时</code>或<code>MCJIT</code>实例,两者实现截然不同.</p> 
+<p>注意,<code>解释器</code>实现了一个<code>非传统</code>策略来执行<code>硬件平台(主机平台)</code>不原生地支持的<code>用户代码</code>.如,<code>LLVMIR</code>是<code>x86</code>平台上的<code>用户代码</code>,因为<code>x86</code>处理器不能直接执行<code>LLVMIR</code>.</p> 
+<p>不同于<code>即时</code>编译器,<code>解释器</code>任务是<code>读取</code>每条指令,<code>解码</code>并执行<code>它们</code>,在<code>软件</code>中,模仿了<code>物理</code>处理器.</p> 
+<p>尽管<code>解释器</code>省去了<code>启动</code>编译器,翻译<code>用户代码</code>时间,它们往往<code>慢得多</code>.</p> 
+<h2><a id="_52"></a>管理内存</h2> 
+<p>一般,<code>即时</code>引擎在运行时由<code>ExecutionManager</code>类,写<code>二进制</code>数据块进内存.随后,就可跳转到<code>分配</code>的<code>内存区域</code>(即调用<code>ExecutionManager</code>返回给你的<code>函数指针</code>),来执行<code>这些指令</code>了.</p> 
+<p>这里,对很多<code>普通任务</code>,如<code>分配内存,释放内存,为加载库提供空间,和内存权限管理</code>,<code>管理内存</code>很重要.</p> 
+<p><code>即时</code>和<code>MCJIT</code>类都实现了自定义<code>管理内存类</code>,从<code>RTDyldMemoryManager</code>基类<code>继承</code>而来.<br> <code>ExecutionEngine</code>用户也可提供自定义的<code>RTDyldMemoryManager</code>子类,来指定在哪<code>放置</code>不同的<code>即时</code>组件.</p> 
+<p>可在<code>&lt;llvm_source&gt;/include/llvm/ExecutionEngine/RTDyldMemoryManager.h</code>文件中找<code>该接口</code>.</p> 
+<p>如,<code>RTDyldMemoryManager</code>类声明了如下方法:<br> 1,<code>allocateCodeSection()</code>和<code>allocateDataSection()</code>:这些方法<code>分配</code>内存,来<code>保存</code>给定大小和对齐的<code>可执行代码和数据</code>.<br> <code>管理内存</code>用户可通过内部<code>节</code>标识<code>追踪</code>已分配的<code>节</code>.<br> 2,<code>getSymbolAddress()</code>:返回当前<code>链接的库</code>中可获得的<code>符号</code>的地址.注意这不是用来取<code>即时</code>编译生成的<code>符号</code>.<br> 调用时,必须提供一个<code>std::string</code>实例以保存<code>符号</code>的名字.</p> 
+<p>3,<code>finalizeMemory()</code>:应该在加载完<code>对象</code>时调用,然后终于可设置<code>内存权限</code>了.如,不能在<code>调用</code>它前,运行<code>生成代码</code>.<br> 它直接定向到<code>MCJIT</code>用户而不是<code>即时</code>用户.</p> 
+<p>尽管用户可提供自定义<code>管理内存</code>实现,<code>JITMemoryManager</code>和<code>SectionMemoryManager</code>分别是<code>即时</code>和<code>MCJIT</code>的<code>默认子类</code>.</p> 
+<h2><a id="llvm_74"></a><code>llvm::即时</code>基础结构</h2> 
+<p><code>即时</code>类和<code>它的框架</code>代表旧引擎,它是用<code>LLVM</code>生成代码的<code>不同部分</code>实现的.<code>LLVM3.5</code>之后,就要移除它.尽管<code>该引擎</code>大部分是<code>目标无关</code>的,每个<code>目标</code>必须为它的<code>具体指令</code>实现<code>二进制指令输出</code>.</p> 
+<h2><a id="_78"></a>把数据块写到内存</h2> 
+<p><code>即时</code>类通过<code>MachineCodeEmitter</code>类的<code>JITCodeEmitter</code>子类,输出<code>二进制指令</code>.<code>MachineCodeEmitter</code>类用来输出<code>机器代码</code>,它和新的机器代码<code>(MachineCode,MC)</code>框架没有关联,尽管旧,它依然存在并支持<code>即时</code>类的功能.</p> 
+<p><code>局限</code>是只支持<code>多个</code>目标,且对支持目标,不支持所有<code>目标特性</code>.</p> 
+<p><code>MachineCodeEmitter</code>类的方法,方便<code>下列任务</code>:</p> 
+<p>1,为当前要发射的<code>函数</code>分配空间<br> 2,写<code>二进制数据块</code>到<code>内存缓冲</code>(<code>emitByte(),emitWordLE(),emitWordBE(),emitAlignment()</code>,等)<br> 3,追踪当前<code>缓冲地址</code>(就是<code>下一条发射指令</code>位置的指针)<br> 4,添加与<code>此缓冲</code>内的<code>指令地址</code>相关联的重定向<br> 由参与<code>发射代码</code>过程<code>JITCodeEmitter</code>类写字节到<code>内存</code>.由<code>JITCodeEmitter</code>的<code>子类</code>,实现相关的<code>即时</code>功能和管理.</p> 
+<p><code>JITCodeEmitter</code>是相当简单的,只是写<code>字节</code>到缓冲,而<code>JITEmitter</code>有下列改进:<br> 1,特化的管理内存器,<code>JITMemoryManager</code>.<br> 2,<code>(JITResolver)</code>解决者实例,<code>跟踪和解决</code>未编译函数的<code>调用点</code>.对<code>懒编译函数</code>至关重要.</p> 
+<h2><a id="JITMemoryManager_96"></a>使用<code>JITMemoryManager</code></h2> 
+<p><code>JITMemoryManager</code>类(见<code>&lt;llvm_source&gt;/include/llvm/ExecutionEngine/JITMemoryManager.h</code>)实现了<code>低级</code>内存处理,并为前面提及的类提供<code>缓冲</code>.</p> 
+<p>除了来自<code>RTDyldMemoryManager</code>的方法,它提供具体如<code>allocateGlobal()</code>等方法来协助<code>即时</code>类,为单个<code>全局变量</code>分配内存;<br> 而<code>startFunctionBody()</code>,按<code>读/写</code>可执行<code>标记</code>分配内存时,创建调用<code>即时</code>来发射指令.</p> 
+<p>内部,<code>JITMemoryManager</code>类使用<code>JITSlabAllocatorslab</code>分配器(<code>&lt;llvm_source&gt;/lib/ExecutionEngine/即时/JITMemoryManager.cpp</code>)和<code>MemoryBlock</code>单元(<code>&lt;llvm_source&gt;/include/llvm/Support/Memory.h</code>).</p> 
+<h2><a id="_105"></a>发射目标代码</h2> 
+<p><code>每个目标</code>都实现一个叫<code>&lt;Target&gt;CodeEmitter</code>(见<code>&lt;llvm_source&gt;/lib/Target/&lt;Target&gt;CodeEmitter.cpp</code>)的机器函数<code>趟</code>,它按<code>数据块</code>编码指令,并用<code>JITCodeEmitter</code>写到内存.</p> 
+<p>如,<code>MipsCodeEmitter</code>遍历所有<code>函数基本块</code>,对每个<code>(MI)</code>机器指令,调用<code>emitInstruction()</code>:</p> 
+<pre><code class="prism language-cpp"><span class="token punctuation">(</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span>
+MCE<span class="token punctuation">.</span><span class="token function">startFunction</span><span class="token punctuation">(</span>MF<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">for</span> <span class="token punctuation">(</span>MachineFunction<span class="token double-colon punctuation">::</span>iterator MBB <span class="token operator">=</span> MF<span class="token punctuation">.</span><span class="token function">begin</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> E <span class="token operator">=</span> MF<span class="token punctuation">.</span><span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> MBB <span class="token operator">!=</span> E<span class="token punctuation">;</span> <span class="token operator">++</span>MBB<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  MCE<span class="token punctuation">.</span><span class="token function">StartMachineBasicBlock</span><span class="token punctuation">(</span>MBB<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">for</span> <span class="token punctuation">(</span>MachineBasicBlock<span class="token double-colon punctuation">::</span>instr_iterator I <span class="token operator">=</span> MBB<span class="token operator">-&gt;</span><span class="token function">instr_begin</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> E <span class="token operator">=</span> MBB<span class="token operator">-&gt;</span><span class="token function">instr_end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> I <span class="token operator">!=</span> E<span class="token punctuation">;</span><span class="token punctuation">)</span>
+<span class="token function">emitInstruction</span><span class="token punctuation">(</span><span class="token operator">*</span>I<span class="token operator">++</span><span class="token punctuation">,</span> <span class="token operator">*</span>MBB<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token punctuation">(</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span>
+</code></pre> 
+<p><code>MIPS32</code>是固定<code>4字节</code>长度的<code>ISA</code>,因此<code>emitInstruction()</code>实现<code>很简单</code>.</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">void</span> <span class="token class-name">MipsCodeEmitter</span><span class="token double-colon punctuation">::</span><span class="token function">emitInstruction</span><span class="token punctuation">(</span>MachineBasicBlock<span class="token double-colon punctuation">::</span>instr_iterator MI<span class="token punctuation">,</span> MachineBasicBlock <span class="token operator">&amp;</span>MBB<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+  MCE<span class="token punctuation">.</span><span class="token function">processDebugLoc</span><span class="token punctuation">(</span>MI<span class="token operator">-&gt;</span><span class="token function">getDebugLoc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">emitWord</span><span class="token punctuation">(</span><span class="token function">getBinaryCodeForInstr</span><span class="token punctuation">(</span><span class="token operator">*</span>MI<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token operator">++</span>NumEmitted<span class="token punctuation">;</span>  <span class="token comment">//跟踪`mi`发射的#</span>
+  <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><code>emitWord()</code>方法是包装<code>JITCodeEmitter</code>,<code>getBinaryCodeForInstr()</code>是<code>TableGen</code>通过解读<code>.td</code>文件中的<code>指令编码</code>描述,为<code>每个目标</code>生成的.</p> 
+<p><code>&lt;Target&gt;CodeEmitter</code>类还必须实现<code>自定义</code>方法以编码<code>操作数和其它目标相关的实体</code>.</p> 
+<p>如,在<code>MIPS</code>中,内存操作数必须使用<code>getMemEncoding()</code>方法来正确编码(见<code>&lt;llvm_source&gt;/lib/Target/Mips/MipsInstrInfo.td</code>):</p> 
+<pre><code class="prism language-cpp">def mem <span class="token operator">:</span> Operand<span class="token operator">&lt;</span>iPTR<span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token punctuation">(</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span>
+  let MIOperandInfo <span class="token operator">=</span> <span class="token punctuation">(</span>ops ptr_rc<span class="token punctuation">,</span> simm16<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  let EncoderMethod <span class="token operator">=</span> <span class="token string">"getMemEncoding"</span><span class="token punctuation">;</span>
+  <span class="token punctuation">(</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>因此,<code>MipsCodeEmitter</code>必须实现<code>MipsCodeEmitter::getMemEncoding()</code>方法以符合该<code>TableGen</code>描述.代码输出器和<code>即时</code>框架关系:</p> 
+<pre><code class="prism language-cpp">MipsCodeEmitter
+MachineCodeEmitter
+两个代码发射器
+
+ARMCodeEmitter
+JITCodeEmitter
+JITEmitter
+
+RTDyldMemoryManager
+JITMemoryManager
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token comment">//内存管理器.</span>
+</code></pre> 
+<h2><a id="_159"></a>目标信息</h2> 
+<p>为了支持<code>即时</code>编译,<code>每个目标</code>还必须提供一个<code>TargetJITInfo</code>的子类(见<code>include/llvm/Target/TargetJITInfo.h</code>),如<code>MipsJITInfo</code>或<code>X86JITInfo</code>.</p> 
+<p><code>TargetJITInfo</code>类为通用<code>即时</code>功能提供了接口,需要<code>每个目标</code>实现它们.下面,看这些函数的一些示例:</p> 
+<p>1,为了让执行引擎<code>重编译</code>函数,或许因为修改了它,每个<code>目标</code>要实现<code>TargetJITInfo::replaceMachineCodeForFunction()</code>方法,用跳转<code>指令</code>或<code>调用</code>新版本函数<code>修补</code>原先函数的<code>位置</code>.<br> 对<code>自修改代码</code>,这是必需的.</p> 
+<p>2,类似<code>动态链接器</code>,<code>TargetJITInfo::relocate()</code>方法<code>修补</code>当前<code>发射函数</code>中的每个<code>符号</code>引用至<code>正确内存地址</code>.<br> 3,<code>TargetJITInfo::emitFunctionStub()</code>方法发射一个<code>桩</code>:在<code>给定地址</code>调用<code>另一个</code>函数的<code>函数</code>.每个<code>目标</code>还要用发射的桩的<code>字节大小和对齐</code>提供自定义的<code>TargetJITInfo::StubLayout</code>信息.<br> <code>JITEmitter</code>用此<code>桩信息</code>在发射它前,为<code>新桩</code>分配空间.</p> 
+<p>虽然<code>TargetJITInfo</code>方法的<code>目的</code>不是<code>发射</code>如生成<code>函数体</code>等普通指令,但是它们仍要为<code>生成桩</code>发射<code>特定指令</code>,并调用新的<code>内存位置</code>.</p> 
+<p>然而,当创建<code>即时</code>框架后,没有可依赖的<code>接口</code>来更易<code>发射</code>在<code>MachineBasicBlock</code>之外的<code>单独指令</code>.这是今天<code>MCInsts</code>为<code>MCJIT</code>做的事情.<br> 没有<code>MCInsts</code>,旧的<code>即时</code>框架强制目标<code>手工</code>编码<code>指令</code>.</p> 
+<p>为了表示<code>&lt;Target&gt;JITInfo</code>实现,如何需要<code>手工</code>发射指令,看看<code>MipsJITInfo::emitFunctionStub()</code>的代码(见<code>&lt;llvm_source&gt;/lib/Target/Mips/MipsJITInfo.cpp</code>),它用以下代码生成<code>4条</code>指令:<br> <code>...</code></p> 
+<pre><code class="prism language-cpp"><span class="token comment">// lui $t9, %hi(EmittedAddr)</span>
+<span class="token comment">// addiu $t9, $t9, %lo(EmittedAddr)</span>
+<span class="token comment">// jalr $t8, $t9</span>
+<span class="token comment">// nop</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>IsLittleEndian<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+JCE<span class="token punctuation">.</span><span class="token function">emitWordLE</span><span class="token punctuation">(</span><span class="token number">0xf</span> <span class="token operator">&lt;&lt;</span> <span class="token number">26</span> <span class="token operator">|</span> <span class="token number">25</span> <span class="token operator">&lt;&lt;</span> <span class="token number">16</span> <span class="token operator">|</span> Hi<span class="token punctuation">)</span><span class="token punctuation">;</span>
+JCE<span class="token punctuation">.</span><span class="token function">emitWordLE</span><span class="token punctuation">(</span><span class="token number">9</span> <span class="token operator">&lt;&lt;</span> <span class="token number">26</span> <span class="token operator">|</span> <span class="token number">25</span> <span class="token operator">&lt;&lt;</span> <span class="token number">21</span> <span class="token operator">|</span> <span class="token number">25</span> <span class="token operator">&lt;&lt;</span> <span class="token number">16</span> <span class="token operator">|</span> Lo<span class="token punctuation">)</span><span class="token punctuation">;</span>
+JCE<span class="token punctuation">.</span><span class="token function">emitWordLE</span><span class="token punctuation">(</span><span class="token number">25</span> <span class="token operator">&lt;&lt;</span> <span class="token number">21</span> <span class="token operator">|</span> <span class="token number">24</span> <span class="token operator">&lt;&lt;</span> <span class="token number">11</span> <span class="token operator">|</span> <span class="token number">9</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+JCE<span class="token punctuation">.</span><span class="token function">emitWordLE</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+</code></pre> 
+<h2><a id="_192"></a>学习如何使用<code>即时</code>类</h2> 
+<p><code>即时</code>是一个在<code>&lt;llvm_source&gt;/lib/ExecutionEngine/JIT/JIT.h</code>中声明的<code>ExecutionEngine</code>子类.<code>即时</code>类是借助<code>即时</code>基础结构的<code>编译函数入口</code>.</p> 
+<p><code>ExecutionEngine::create()</code>方法用默认<code>JITMemoryManager</code>,调用<code>即时::createJIT()</code>.接着,<code>即时</code>构造器执行下面的任务:<br> 1,创建<code>JITEmitter</code>实例<br> 2,<code>初化</code>目标信息对象<br> 3,为<code>生成代码</code>添加<code>趟</code><br> 4,添加<code>最后</code>运行的<code>&lt;Target&gt;CodeEmitter</code>趟</p> 
+<p><code>引擎</code>保存了一个<code>趟管理器</code>对象,每当请求<code>即时</code>编译函数时,来<code>调用</code>生成代码及<code>即时</code>发射<code>趟</code>.</p> 
+<p>目的是取<code>Sum</code>函数,且用<code>即时</code>系统用<code>运行时参数</code>,计算<code>两个</code>不同加数.如下步骤:<br> 1,首先,创建一个叫<code>sum-jit.cpp</code>的新文件.要包含<code>即时</code>执行引擎的<code>资源</code>:</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/ExecutionEngine/JIT.h"</span></span>
+</code></pre> 
+<p>2,包含涉及读写<code>LLVM位码</code>,<code>环境接口</code>等其它的<code>头文件</code>,并导入<code>LLVMnamespace</code>:</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/ADT/OwningPtr.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/Bitcode/ReaderWriter.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/IR/LLVMContext.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/IR/Module.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/Support/FileSystem.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/Support/MemoryBuffer.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/Support/ManagedStatic.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/Support/raw_ostream.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/Support/system_error.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/Support/TargetSelect.h"</span></span>
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> llvm<span class="token punctuation">;</span>
+</code></pre> 
+<p>3,<code>InitializeNativeTarget()</code>方法安装<code>主机目标</code>,确保可链接<code>即时</code>将用到的<code>目标库</code>.和往常一样,每个线程需要一个<code>LLVMContext</code>环境对象和一个<code>MemoryBuffer</code>对象,以从磁盘读取<code>位码</code>文件,如下:</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">InitializeNativeTarget</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    LLVMContext Context<span class="token punctuation">;</span>
+    std<span class="token double-colon punctuation">::</span>string ErrorMessage<span class="token punctuation">;</span>
+    OwningPtr<span class="token operator">&lt;</span>MemoryBuffer<span class="token operator">&gt;</span> Buffer<span class="token punctuation">;</span>
+</code></pre> 
+<p>4,用<code>getFile()</code>方法从<code>磁盘</code>读文件,如下:</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">MemoryBuffer</span><span class="token double-colon punctuation">::</span><span class="token function">getFile</span><span class="token punctuation">(</span><span class="token string">"./sum.bc"</span><span class="token punctuation">,</span> Buffer<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">errs</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"sum.bc not found\n"</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>5,<code>ParseBitcodeFile</code>函数从<code>MemoryBuffer</code>读取数据,并生成相应<code>LLVMModule</code>类:</p> 
+<pre><code class="prism language-cpp">Module <span class="token operator">*</span>M <span class="token operator">=</span> <span class="token function">ParseBitcodeFile</span><span class="token punctuation">(</span>Buffer<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Context<span class="token punctuation">,</span> <span class="token operator">&amp;</span>ErrorMessage<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>M<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">errs</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> ErrorMessage <span class="token operator">&lt;&lt;</span> <span class="token string">"\n"</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>6,调用<code>EngineBuilder</code>工厂创建一个<code>ExecutionEngine</code>实例,再调用其<code>create</code>方法,如下:</p> 
+<pre><code class="prism language-cpp">OwningPtr<span class="token operator">&lt;</span>ExecutionEngine<span class="token operator">&gt;</span> <span class="token function">EE</span><span class="token punctuation">(</span><span class="token function">EngineBuilder</span><span class="token punctuation">(</span>M<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">create</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>默认创建<code>即时</code>执行引擎,且是<code>即时</code>的设置点;它间接调用创建<code>JITEmitter</code>,<code>JITManager</code>的<code>即时</code>构造器,并<code>初化</code>所有<code>生成代码</code>和<code>目标相关</code>的<code>发射趟</code>.</p> 
+<p>此刻,尽管引擎是<code>LLVMModule</code>相关,但还没有<code>编译</code>函数.<br> 为了<code>编译</code>函数,还需要<code>调用</code>取本地<code>即时</code>编译的<code>函数指针</code>的<code>getPointerToFunction()</code>.如果未曾<code>即时</code>编译过<code>该函数</code>,就<code>即时</code>编译它并返回<code>函数指针</code>.流程:</p> 
+<pre><code class="prism language-cpp"><span class="token function">getPointerToFunction</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token class-name">JIT</span><span class="token double-colon punctuation">::</span><span class="token function">runJITOnFunctionUnlocked</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+MipsCodeEmitter<span class="token double-colon punctuation">::</span>emitInstruction
+JIT pending
+<span class="token class-name">JIT</span><span class="token double-colon punctuation">::</span><span class="token function">jitTheFunction</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+MipsCodeEmitter<span class="token double-colon punctuation">::</span>runOnFunction
+functions
+<span class="token class-name">PassManager</span><span class="token double-colon punctuation">::</span><span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+CodeGen Passes
+</code></pre> 
+<p>7,通过<code>getFunction()</code>方法,取表示<code>sum</code>函数的函数<code>IR</code>对象:</p> 
+<pre><code class="prism language-cpp">Function <span class="token operator">*</span>SumFn <span class="token operator">=</span> M<span class="token operator">-&gt;</span><span class="token function">getFunction</span><span class="token punctuation">(</span><span class="token string">"sum"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>这里,触发了<code>即时</code>编译:</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">int</span> <span class="token punctuation">(</span><span class="token operator">*</span>Sum<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">,</span> <span class="token keyword">int</span><span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">int</span> <span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">,</span> <span class="token keyword">int</span><span class="token punctuation">)</span><span class="token punctuation">)</span> EE<span class="token operator">-&gt;</span><span class="token function">getPointerToFunction</span><span class="token punctuation">(</span>SumFn<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>你要<code>适当</code>转换类型到<code>匹配该函数</code>的<code>函数指针类型</code>.<code>Sum</code>函数的<code>LLVM</code>定义原型是<code>i32@sum(i32%a,i32%b)</code>,因此用<code>int(*)(int,int)</code>C原型.</p> 
+<p>另一个选项是考虑调用<code>getPointerToFunctionOrStub()</code>而不是<code>getPointerToFunction()</code>的<code>懒编译</code>.如果<code>目标函数</code>还没有编译且开启<code>懒编译</code>,则生成一个<code>桩函数</code>,并返回<code>它的指针</code>.</p> 
+<p>桩是一个包含,稍后修改它就可<code>跳转/调用</code>实际函数的<code>占位符</code>的<code>简单函数</code>.<br> 8,接着,根据<code>Sum</code>所指向的<code>即时</code>编译了的<code>函数</code>,调用原始<code>Sum</code>函数,如下:</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">int</span> res <span class="token operator">=</span> <span class="token function">Sum</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">outs</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"Sum result: "</span> <span class="token operator">&lt;&lt;</span> res <span class="token operator">&lt;&lt;</span> <span class="token string">"\n"</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>用<code>懒编译</code>时,<code>Sum</code>调用<code>桩函数(a)</code>,它(<code>a</code>)会用一个<code>编译回调</code>函数来<code>即时</code>编译<code>实际函数</code>.然后修改<code>桩</code>以<code>重定向</code>到<code>实际函数</code>,并执行它.</p> 
+<p>除非<code>改变</code>了原始的<code>Module</code>中的<code>Sum</code>函数,不会<code>再次编译</code>该函数.</p> 
+<p>9,再次调用<code>Sum</code>来<code>计算</code>下个结果,如下:</p> 
+<pre><code class="prism language-cpp">res <span class="token operator">=</span> <span class="token function">Sum</span><span class="token punctuation">(</span>res<span class="token punctuation">,</span> <span class="token number">6</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">outs</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"Sum result: "</span> <span class="token operator">&lt;&lt;</span> res <span class="token operator">&lt;&lt;</span> <span class="token string">"\n"</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>懒编译中,因为在第一次调用<code>Sum</code>时已编译了<code>原始函数</code>,<code>第二次</code>调用会<code>直接执行</code>原生函数.</p> 
+<p>10,成功用<code>即时</code>编译的<code>Sum</code>函数<code>计算</code>了两次加法.现在,释放<code>执行引擎</code>分配的<code>保存函数代码的内存</code>,调用<code>llvm_shutdown()</code>函数并返回:</p> 
+<pre><code class="prism language-cpp">    EE<span class="token operator">-&gt;</span><span class="token function">freeMachineCodeForFunction</span><span class="token punctuation">(</span>SumFn<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">llvm_shutdown</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>要编译并链接<code>sum-jit.cpp</code>,可如下:</p> 
+<pre><code class="prism language-cpp">$ clang<span class="token operator">++</span> sum<span class="token operator">-</span>jit<span class="token punctuation">.</span>cpp <span class="token operator">-</span>g <span class="token operator">-</span>O3 <span class="token operator">-</span>rdynamic <span class="token operator">-</span>fno<span class="token operator">-</span>rtti $<span class="token punctuation">(</span>llvm<span class="token operator">-</span>config <span class="token operator">--</span>cppflags <span class="token operator">--</span>ldflags <span class="token operator">--</span>libs jit native irreader<span class="token punctuation">)</span> <span class="token operator">-</span>o sum<span class="token operator">-</span>jit
+</code></pre> 
+<p>或,用前面的<code>Makefile</code>,添加<code>-rdynamic</code>选项,并更改<code>llvm-config</code>调用以使用前面<code>命令行</code>指定的库.<br> 尽管<code>该示例</code>不用<code>外部函数</code>,<code>-rdynamic</code>选项是重要的,它保证运行时解析<code>外部函数</code>.</p> 
+<p>运行该示例并查看输出:</p> 
+<pre><code class="prism language-cpp">$ <span class="token punctuation">.</span><span class="token operator">/</span>sum<span class="token operator">-</span>jit
+Sum result<span class="token operator">:</span> <span class="token number">9</span>
+Sum result<span class="token operator">:</span> <span class="token number">15</span>
+</code></pre> 
+<h2><a id="_321"></a>通用值</h2> 
+<p>在前例中,为了用<code>C风格</code>函数去<code>调用</code>该函数,把返回的<code>函数指针</code>转换为<code>恰当的原型</code>.然而,当处理<code>多个</code>函数且带<code>众多的签名和参数类型</code>时,需要<code>更灵活</code>方法去执行它们.</p> 
+<p><code>执行引擎</code>提供了另一个调用<code>即时</code>编译的<code>函数</code>的方法.不需要提前调用<code>getPointerToFunction()</code>,<code>runFunction()</code>方法编译并用<code>GenericValue</code>向量决定<code>函数参数</code>来运行函数.</p> 
+<p>在<code>&lt;llvm_source&gt;/include/llvm/ExecutionEngine/GenericValue.h</code>中定义<code>GenericValuestruct</code>,它可保存<code>任意常见类型</code>.</p> 
+<p>修改前例,用<code>runFunction()</code>而不是<code>getPointerToFunction()</code>加转换类型.<br> 首先,创建<code>sum-jit-gv.cpp</code>文件,并保存该新版本,在<code>开头</code>添加<code>GenericValue</code>头文件:</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/ExecutionEngine/GenericValue.h"</span></span>
+</code></pre> 
+<p>从<code>sum-jit.cpp</code>复制其余的内容,关注修改部分.在初化<code>SumFn</code>函数指针后,创建<code>GenericValue</code>向量类型的<code>FnArgs</code>,并用<code>APInt</code>接口(<code>&lt;llvm_source&gt;/include/llvm/ADT/APInt.h</code>)填充<code>整数值</code>.根据<code>sum(i32%a,i32%b)</code>函数原型,用两个<code>32</code>位长度的整数<code>填充</code>:</p> 
+<pre><code class="prism language-cpp"><span class="token punctuation">(</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span>
+Function <span class="token operator">*</span>SumFn <span class="token operator">=</span> m<span class="token operator">-&gt;</span><span class="token function">getFunction</span><span class="token punctuation">(</span><span class="token string">"sum"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+std<span class="token double-colon punctuation">::</span>vector<span class="token operator">&lt;</span>GenericValue<span class="token operator">&gt;</span> <span class="token function">FnArgs</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+FnArgs<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">.</span>IntVal <span class="token operator">=</span> <span class="token function">APInt</span><span class="token punctuation">(</span><span class="token number">32</span><span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+FnArgs<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span>IntVal <span class="token operator">=</span> <span class="token function">APInt</span><span class="token punctuation">(</span><span class="token number">32</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>用<code>函数变量</code>和<code>参数向量</code>调用<code>runFunction()</code>.这样,会<code>即时</code>编译并<code>执行</code>函数.相应结果也是<code>i32</code>位可访问的<code>GenericValue</code>.</p> 
+<pre><code class="prism language-cpp">GenericValue Res <span class="token operator">=</span> EE<span class="token operator">-&gt;</span><span class="token function">runFunction</span><span class="token punctuation">(</span>SumFn<span class="token punctuation">,</span> FnArgs<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">outs</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"Sum result: "</span> <span class="token operator">&lt;&lt;</span> Res<span class="token punctuation">.</span>IntVal <span class="token operator">&lt;&lt;</span> <span class="token string">"\n"</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>重复相同的过程,执行第二个加法:</p> 
+<pre><code class="prism language-cpp">FnArgs<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">.</span>IntVal <span class="token operator">=</span> Res<span class="token punctuation">.</span>IntVal<span class="token punctuation">;</span>
+FnArgs<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span>IntVal <span class="token operator">=</span> <span class="token function">APInt</span><span class="token punctuation">(</span><span class="token number">32</span><span class="token punctuation">,</span> <span class="token number">6</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+Res <span class="token operator">=</span> EE<span class="token operator">-&gt;</span><span class="token function">runFunction</span><span class="token punctuation">(</span>SumFn<span class="token punctuation">,</span> FnArgs<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">outs</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"Sum result: "</span> <span class="token operator">&lt;&lt;</span> Res<span class="token punctuation">.</span>IntVal <span class="token operator">&lt;&lt;</span> <span class="token string">"\n"</span><span class="token punctuation">;</span>
+<span class="token punctuation">(</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span>
+</code></pre> 
+<h2><a id="llvmMCJIT_359"></a><code>llvm::MCJIT</code>框架</h2> 
+<p><code>MCJIT</code>类是<code>LLVM</code>新的<code>即时</code>实现.<code>MC</code>提供了<code>统一</code>的<code>指令表达</code>方式,且为<code>汇编器,反汇编器,汇编打印器</code>和<code>MCJIT</code>所共享的<code>一个框架</code>.</p> 
+<p><code>MC</code>库的<code>第一个优势</code>在,目标只需要指定一次<code>指令的编码</code>,因为所有<code>子系统</code>都会得到<code>此信息</code>.因此,编写<code>LLVM</code>后端时,如果实现了目标的<code>发射目标代码</code>功能,也就实现了<code>即时</code>功能.</p> 
+<p>将在<code>LLVM3.5</code>之后删除<code>llvm::即时</code>,并完全替换为<code>llvm::MCJIT</code>框架.那么,为何学习旧<code>即时</code>呢?虽然它们是<code>不同实现</code>,但是<code>ExecutionEngine</code>类是<code>通用</code>的,大部分<code>概念</code>是两者<code>共有</code>的.</p> 
+<h2><a id="MCJIT_367"></a><code>MCJIT</code>引擎</h2> 
+<p>和旧<code>即时</code>引擎相同,调用<code>ExecutionEngine::create()</code>创建<code>MCJIT</code>引擎.它调用执行<code>MCJIT</code>构造器的<code>MCJIT::createJIT()</code>.</p> 
+<p>在<code>&lt;llvm_source&gt;/lib/ExecutionEngine/MCJIT/MCJIT.h</code>文件中声明<code>MCJIT</code>类.在<code>&lt;llvm_source&gt;/lib/ExecutionEngine/MCJIT/MCJIT.cpp</code>文件中实现<code>createJIT()</code>方法和<code>MCJIT</code>构造器.</p> 
+<p><code>MCJIT</code>构造器创建一个<code>SectionMemoryManager</code>实例,添加<code>LLVM</code>模块到它内部的<code>OwningModuleContainer</code>,<code>模块容器</code>,并初化<code>目标信息</code>.</p> 
+<h2><a id="_375"></a>模块的状态</h2> 
+<p><code>MCJIT</code>类为创建<code>引擎</code>时,为初始<code>LLVM</code>模块实例,插入的表示<code>模块编译阶段</code>的<code>指定状态</code>.如下:<br> 1,<code>Added</code>:模块集,还<code>未编译</code>但已添加到<code>执行引擎</code>了.允许<code>模块</code>为<code>其它模块</code>暴露<code>函数定义</code>,直到<code>必需</code>时,才编译它们.</p> 
+<p>2,<code>Loaded</code>:模块,已<code>即时</code>编译,但未准备好<code>执行</code>.还没有<code>重定向</code>,还未授权<code>内存页</code>.<code>愿意</code>在内存中<code>重映射</code>已<code>即时</code>编译函数的<code>用户</code>,用<code>loaded</code>状态模块,也许可避免<code>重编译</code>.</p> 
+<p>3,<code>Finalized</code>:模块包含已准备好<code>执行的函数</code>.在此状态下,因为已<code>重定向</code>,不能重映射<code>函数</code>了.</p> 
+<p><code>即时</code>和<code>MCJIT</code>的一个<code>主要区别</code>就在于<code>模块状态</code>.在<code>MCJIT</code>中,在请求<code>符号</code>地址(<code>函数和全局变量</code>)前,<code>整个模块</code>必须就绪<code>(finalized)</code>.</p> 
+<p><code>MCJIT::finalizeObject()</code>函数,把<code>已添加模块</code>转换为<code>已加载</code>模块,接着转为<code>终止化</code>.<br> 首先,它调用<code>generateCodeForModule()</code>生成<code>已加载</code>模块.<br> 接着,通过<code>finalizeLoadedModules()</code>方法,<code>终止化</code>所有模块.</p> 
+<p>不像旧<code>即时</code>,<code>MCJIT::getPointerToFunction()</code>函数要求在调用之前<code>模块对象</code>已就绪.因此,必须在使用前调用<code>MCJIT::finalizeObject()</code>.</p> 
+<p><code>LLVM3.4</code>添加的新方法取消了<code>该限制</code>,当使用<code>MCJIT</code>时,<code>getFunctionAddress()</code>淘汰了<code>getPointerToFunction()</code>方法.</p> 
+<p>在请求<code>符号</code>地址前,<code>该新方法</code>不调用<code>finalizeObject()</code>,就<code>加载</code>并终止化模块.</p> 
+<p>注意,在旧<code>即时</code>中,<code>执行引擎</code>单独<code>即时</code>编译及<code>执行</code>各个函数.在<code>MCJIT</code>中,在执行<code>函数</code>前必须<code>即时</code>编译<code>整个模块(所有函数)</code>.</p> 
+<p>因为<code>编译粒度</code>变大了,不能再说它是<code>基于函数</code>的,而是<code>基于模块</code>的<code>翻译引擎</code>.</p> 
+<h2><a id="MCJIT_400"></a>理解<code>MCJIT</code>如何编译模块</h2> 
+<p>在模块对象<code>加载</code>阶段<code>生成</code>代码,由在<code>&lt;llvm_source&gt;/lib/ExecutionEngine/MCJIT/MCJIT.cpp</code>文件中的<code>MCJIT::generateCodeForModule()</code>方法触发.执行下面的任务:</p> 
+<p>1,创建一个<code>ObjectBuffer</code>实例来<code>保存</code>模块对象.如果已<code>加载(编译)</code>模块对象,就用<code>ObjectCache</code>接口取,避免重编译.<br> 2,假设之前<code>没有</code>缓存<code>(cache)</code>,<code>MCJIT::emitObject()</code>就发射<code>MC</code>代码.结果是一个<code>ObjectBufferStream</code>对象(支持流的<code>ObjectBuffer</code>子类).</p> 
+<p>3,<code>RuntimeDyld</code>动态链接器加载生成的<code>ObjectBuffer</code>对象,并通过<code>RuntimeDyld::loadObject()</code>创建符号表<code>(symboltable)</code>.并返回<code>ObjectImage</code>对象.<br> 4,按<code>已加载</code>标记<code>模块</code>.</p> 
+<h2><a id="_410"></a>对象缓冲,缓存,图像</h2> 
+<p><code>ObjectBuffer</code>类,<code>(&lt;llvm_source&gt;/include/llvm/ExecutionEngine/ObjectBuffer.h)</code>实现了<code>MemoryBuffer</code>类<code>(&lt;llvm_source&gt;/include/llvm/Support/MemoryBuffer.h)</code>的包装.</p> 
+<p><code>MCObjectStreamer</code>子类用<code>MemoryBuffer</code>类发射<code>指令和数据</code>到内存.此外,<code>ObjectCache</code>类直接引用可从中取<code>ObjectBuffer</code>的<code>MemoryBuffer</code>实例.</p> 
+<p><code>ObjectBufferStream</code>类是一个带额外的让读写<code>内存缓冲</code>容易的标准<code>C++</code>流符号(如,<code>&gt;&gt;</code>和<code>&lt;&lt;</code>)的<code>ObjectBuffer</code>子类.</p> 
+<p><code>ObjectImage</code>对象<code>(&lt;llvm_source&gt;/include/llvm/ExecutionEngine/ObjectImage.h)</code>来<code>保持</code>加载的模块,且可<code>直接</code>访问<code>ObjectBuffer</code>和<code>ObjectFile</code>的引用.</p> 
+<p>由<code>目标相关</code>的如<code>ELF,COFF</code>,和<code>MachO</code>等<code>目标文件</code>类型特化<code>ObjectFile</code>对象.<code>ObjectFile</code>对象可从<code>MemoryBuffer</code>对象,直接取<code>符号,重定向,和节</code>.</p> 
+<h2><a id="_422"></a>动态链接</h2> 
+<p>按<code>ObjectImage</code>实例表示<code>MCJIT</code>加载的<code>模块对象</code>.如前,可通过<code>目标无关</code>的<code>ObjectFile</code>接口,<code>透明</code>访问<code>内存缓冲</code>.因此,可处理<code>符号,节,和重定向</code>.</p> 
+<p>为了生成<code>ObjectImage</code>对象,<code>MCJIT</code>有<code>RuntimeDyld</code>类提供的<code>动态链接特性</code>.该类提供了访问这些特性的<code>公共接口</code>,而每个<code>对象文件类型</code>特化的<code>RuntimeDyldImpl</code>对象提供<code>实际实现</code>.</p> 
+<p>因此,从<code>ObjectBuffer</code>生成<code>ObjectImage</code>对象的<code>RuntimeDyld::loadObject()</code>方法,首先创建<code>目标相关</code>的<code>RuntimeDyldImpl</code>对象,然后调用<code>RuntimeDyldImpl::loadObject()</code>.</p> 
+<p>过程中,还创建了可通过<code>ObjectImage</code>对象取它的<code>ObjectFile</code>对象.</p> 
+<p>在<code>模块就绪</code>过程中,用运行时<code>RuntimeDyld</code>动态链接器来解决<code>重定向</code>,并为<code>模块对象</code>注册<code>异常处理帧</code>.</p> 
+<p>回想起<code>getFunctionAddress()</code>和<code>getPointerToFunction()</code>执行引擎方法,要求<code>引擎</code>知道<code>符号(函数)地址</code>.<br> 为此,<code>MCJIT</code>还通过<code>RuntimeDyld::getSymbolLoadAddress()</code>方法,用<code>RuntimeDyld</code>取<code>任意符号地址</code>.</p> 
+<h2><a id="_437"></a>管理内存器</h2> 
+<p><code>LinkingMemoryManager</code>类,是另一个<code>RTDyldMemoryManager</code>的子类,是<code>MCJIT</code>引擎所用的<code>实际管理内存器</code>.它聚集了一个<code>SectionMemoryManager</code>实例,并向它发送<code>代理请求</code>.</p> 
+<p>每当<code>RuntimeDyld</code>动态链接器,通过<code>LinkingMemoryManager::getSymbolAddress()</code>请求<code>符号地址</code>时,它有两个选择:如果在<code>已编译模块</code>中可取得<code>符号</code>,就从<code>MCJIT</code>取地址;<br> 否则,从由<code>SectionMemoryManager</code>实例<code>加载并映射</code>的<code>外部库</code>请求地址.<br> 参考<code>&lt;llvm_source&gt;/lib/ExecutionEngine/MCJIT/MCJIT.cpp</code>中的<code>LinkingMemoryManager::getSymbolAddress()</code>了解详情.</p> 
+<p><code>SectionMemoryManager</code>实例是个<code>简单管理器</code>.作为一个<code>RTDyldMemoryManager</code>的子类,<code>SectionMemoryManager</code>继承了它所有的<code>查询库</code>方法,但是通过直接处理低级<code>MemoryBlock</code>单元<code>(&lt;llvm_source&gt;/include/llvm/Support/Memory.h)</code>,来分配<code>代码和数据节</code>.</p> 
+<h2><a id="MC_447"></a>发射<code>MC</code>代码</h2> 
+<p><code>MCJIT</code>调用<code>MCJIT::emitObject()</code>发射<code>MC</code>代码.如下:<br> 1,创建一个<code>PassManager</code>对象.<br> 2,添加一个<code>目标布局趟</code>,调用<code>addPassesToEmitMC()</code>以添加所有生成代码<code>趟</code>并发射<code>MC</code>代码.</p> 
+<p>3,用<code>PassManager::run()</code>方法,运行所有的<code>趟</code>.在一个<code>ObjectBufferStream</code>对象中<code>存储</code>结果代码.</p> 
+<p>4,添加<code>已编译的对象</code>到<code>ObjectCache</code>实例并<code>返回</code>它.</p> 
+<p><code>MCJIT</code>的<code>发射代码</code>比旧<code>即时</code>更一致.不是给<code>即时</code>提供<code>自定义的输出器和目标信息</code>,<code>MCJIT</code>透明访问现有<code>MC</code>基础设施的<code>所有信息</code>.</p> 
+<h2><a id="_459"></a>终止化对象</h2> 
+<p>最终,在<code>MCJIT::finalizeLoadedModules()</code>里让模块对象<code>就绪</code>:已解决<code>重定向</code>,把<code>已加载</code>模块移到<code>已就绪</code>模块组,并调用<code>LinkingMemoryManager::finalizeMemory()</code>以改变<code>内存页权限</code>.</p> 
+<p>对象<code>就绪</code>后,就可执行<code>MCJIT</code>编译的<code>函数</code>了.</p> 
+<h2><a id="MCJIT_465"></a>使用<code>MCJIT</code>引擎</h2> 
+<p>下面的<code>sum-MCJIT.cpp</code>源文件包含了用<code>MCJIT</code>而不是旧<code>即时</code>框架,<code>即时</code>编译<code>Sum</code>函数<code>所必需的代码</code>.<br> 为了表明它与前面的<code>即时</code>示例<code>相似</code>,保留了<code>旧代码</code>,并用<code>UseMCJIT</code>布尔变量来<code>决定</code>使用旧<code>即时</code>还是<code>MCJIT</code>.</p> 
+<p>1,首先,如下包含<code>MCJIT</code>头文件:</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/ExecutionEngine/MCJIT.h"</span></span>
+</code></pre> 
+<p>2,包含其它必需的头文件,并导入<code>llvm</code>名字空间:</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/ADT/OwningPtr.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/Bitcode/ReaderWriter.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/ExecutionEngine/JIT.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/IR/LLVMContext.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/IR/Module.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/Support/MemoryBuffer.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/Support/ManagedStatic.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/Support/TargetSelect.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/Support/raw_ostream.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/Support/system_error.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"llvm/Support/FileSystem.h"</span></span>
+<span class="token keyword">using</span> <span class="token keyword">namespace</span> llvm<span class="token punctuation">;</span>
+</code></pre> 
+<p>3,设置<code>UseMCJIT</code>为<code>true</code>,以测试<code>MCJIT</code>.设置为<code>false</code>就用旧<code>即时</code>运行该示例,如下:</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">bool</span> UseMCJIT <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token function">InitializeNativeTarget</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>4,<code>MCJIT</code>需要初化<code>汇编解析器和打印器</code>:</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">if</span> <span class="token punctuation">(</span>UseMCJIT<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">InitializeNativeTargetAsmPrinter</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">InitializeNativeTargetAsmParser</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+LLVMContext Context<span class="token punctuation">;</span>
+std<span class="token double-colon punctuation">::</span>string ErrorMessage<span class="token punctuation">;</span>
+OwningPtr<span class="token operator">&lt;</span>MemoryBuffer<span class="token operator">&gt;</span> Buffer<span class="token punctuation">;</span>
+<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">MemoryBuffer</span><span class="token double-colon punctuation">::</span><span class="token function">getFile</span><span class="token punctuation">(</span><span class="token string">"./sum.bc"</span><span class="token punctuation">,</span> Buffer<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">errs</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"sum.bc not found\n"</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+Module <span class="token operator">*</span>M <span class="token operator">=</span> <span class="token function">ParseBitcodeFile</span><span class="token punctuation">(</span>Buffer<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Context<span class="token punctuation">,</span> <span class="token operator">&amp;</span>ErrorMessage<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>M<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">errs</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> ErrorMessage <span class="token operator">&lt;&lt;</span> <span class="token string">"\n"</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>5,创建执行引擎,调用<code>SetUseMCJIT(true)</code>方法,让引擎使用<code>MCJIT</code>,如下:</p> 
+<pre><code class="prism language-cpp">OwningPtr<span class="token operator">&lt;</span>ExecutionEngine<span class="token operator">&gt;</span> EE<span class="token punctuation">;</span>
+<span class="token keyword">if</span> <span class="token punctuation">(</span>UseMCJIT<span class="token punctuation">)</span>
+    EE<span class="token punctuation">.</span><span class="token function">reset</span><span class="token punctuation">(</span><span class="token function">EngineBuilder</span><span class="token punctuation">(</span>M<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">setUseMCJIT</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">create</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">else</span>
+    EE<span class="token punctuation">.</span><span class="token function">reset</span><span class="token punctuation">(</span><span class="token function">EngineBuilder</span><span class="token punctuation">(</span>M<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">create</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>6,旧<code>即时</code>需要稍后取<code>函数指针</code>并析构<code>分配的内存</code>的<code>Function</code>引用:</p> 
+<pre><code class="prism language-cpp">Function<span class="token operator">*</span> SumFn <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>UseMCJIT<span class="token punctuation">)</span>
+    SumFn <span class="token operator">=</span> <span class="token generic-function"><span class="token function">cast</span><span class="token generic class-name"><span class="token operator">&lt;</span>Function<span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span>M<span class="token operator">-&gt;</span><span class="token function">getFunction</span><span class="token punctuation">(</span><span class="token string">"sum"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>7,如前,<code>MCJIT</code>淘汰了<code>getPointerToFunction()</code>,在<code>MCJIT</code>中只能用<code>getFunctionAddress()</code>.因此,对各个<code>即时</code>类型,要用<code>正确</code>方法:</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">int</span> <span class="token punctuation">(</span><span class="token operator">*</span>Sum<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">,</span> <span class="token keyword">int</span><span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+<span class="token keyword">if</span> <span class="token punctuation">(</span>UseMCJIT<span class="token punctuation">)</span>
+    Sum <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">int</span> <span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">,</span> <span class="token keyword">int</span><span class="token punctuation">)</span><span class="token punctuation">)</span> EE<span class="token operator">-&gt;</span><span class="token function">getFunctionAddress</span><span class="token punctuation">(</span>std<span class="token double-colon punctuation">::</span><span class="token function">string</span><span class="token punctuation">(</span><span class="token string">"sum"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">else</span>
+    Sum <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">int</span> <span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">,</span> <span class="token keyword">int</span><span class="token punctuation">)</span><span class="token punctuation">)</span> EE<span class="token operator">-&gt;</span><span class="token function">getPointerToFunction</span><span class="token punctuation">(</span>SumFn<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">int</span> res <span class="token operator">=</span> <span class="token function">Sum</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">outs</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"Sum result: "</span> <span class="token operator">&lt;&lt;</span> res <span class="token operator">&lt;&lt;</span> <span class="token string">"\n"</span><span class="token punctuation">;</span>
+res <span class="token operator">=</span> <span class="token function">Sum</span><span class="token punctuation">(</span>res<span class="token punctuation">,</span> <span class="token number">6</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">outs</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"Sum result: "</span> <span class="token operator">&lt;&lt;</span> res <span class="token operator">&lt;&lt;</span> <span class="token string">"\n"</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>8,因为<code>MCJIT</code>一次编译<code>整个模块</code>,释放<code>Sum</code>函数的<code>机器代码</code>,仅在旧<code>即时</code>中才有意义:</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>UseMCJIT<span class="token punctuation">)</span>
+    EE<span class="token operator">-&gt;</span><span class="token function">freeMachineCodeForFunction</span><span class="token punctuation">(</span>SumFn<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">llvm_shutdown</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>9,用下面命令编译和链接<code>sum-MCJIT.cpp</code>:</p> 
+<pre><code class="prism language-cpp">$ clang<span class="token operator">++</span> sum<span class="token operator">-</span>MCJIT<span class="token punctuation">.</span>cpp <span class="token operator">-</span>g <span class="token operator">-</span>O3 <span class="token operator">-</span>rdynamic <span class="token operator">-</span>fno<span class="token operator">-</span>rtti $<span class="token punctuation">(</span>llvm<span class="token operator">-</span>config <span class="token operator">--</span>cppflags <span class="token operator">--</span>ldflags <span class="token operator">--</span>libs 即时 MCJIT native irreader<span class="token punctuation">)</span> <span class="token operator">-</span>o sum<span class="token operator">-</span>MCJIT
+</code></pre> 
+<p>或,修改前面的<code>Makefile</code>.运行该示例,并检查输出:</p> 
+<pre><code class="prism language-cpp">$ <span class="token punctuation">.</span><span class="token operator">/</span>sum<span class="token operator">-</span>MCJIT
+Sum result<span class="token operator">:</span> <span class="token number">9</span>
+Sum result<span class="token operator">:</span> <span class="token number">15</span>
+</code></pre> 
+<h2><a id="LLVM_560"></a>用<code>LLVM即时</code>编译工具</h2> 
+<p><code>LLVM</code>提供了一些<code>即时</code>引擎的工具.如<code>lli</code>和<code>llvm-rtdyld</code>.</p> 
+<h2><a id="lli_564"></a>使用<code>lli</code>工具</h2> 
+<p>用<code>LLVM</code>执行引擎,<code>(lli)</code>解释工具实现了一个<code>LLVM位码</code>解释器和<code>即时</code>编译器.考虑如下<code>sum-main.c</code>源文件:</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+<span class="token keyword">int</span> <span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">int</span> a<span class="token punctuation">,</span> <span class="token keyword">int</span> b<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> a <span class="token operator">+</span> b<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"sum: %d\n"</span><span class="token punctuation">,</span> <span class="token function">sum</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token function">sum</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>只要有<code>main</code>函数,<code>lli</code>工具可运行<code>位码</code>文件.用<code>clang</code>生成<code>sum-main.bc</code>位码文件:</p> 
+<pre><code class="prism language-cpp">$ clang <span class="token operator">-</span>emit<span class="token operator">-</span>llvm <span class="token operator">-</span>c sum<span class="token operator">-</span>main<span class="token punctuation">.</span>c <span class="token operator">-</span>o sum<span class="token operator">-</span>main<span class="token punctuation">.</span>bc
+</code></pre> 
+<p>现在,通过<code>lli</code>用旧<code>即时</code>编译引擎运行<code>位码</code>:</p> 
+<pre><code class="prism language-cpp">$ lli sum<span class="token operator">-</span>main<span class="token punctuation">.</span>bc
+sum<span class="token operator">:</span> <span class="token number">12</span>
+</code></pre> 
+<p>或,用<code>MCJIT</code>引擎:</p> 
+<pre><code class="prism language-cpp">$ lli <span class="token operator">-</span>use<span class="token operator">-</span>MCJIT sum<span class="token operator">-</span>main<span class="token punctuation">.</span>bc
+sum<span class="token operator">:</span> <span class="token number">12</span>
+</code></pre> 
+<p>也有应用更慢的<code>解释器</code>的标志:</p> 
+<pre><code class="prism language-cpp">$ lli <span class="token operator">-</span>force<span class="token operator">-</span>interpreter sum<span class="token operator">-</span>main<span class="token punctuation">.</span>bc
+sum<span class="token operator">:</span> <span class="token number">12</span>
+</code></pre> 
+<h2><a id="llvmrtdyld_598"></a>使用<code>llvm-rtdyld</code>工具</h2> 
+<p><code>llvm-rtdyld</code>工具()是个<code>非常简单</code>的测试<code>MCJIT</code>对象<code>加载和链接</code>框架的工具.它可从<code>磁盘</code>读取<code>二进制目标文件</code>,并通过<code>命令行</code>,执行<code>指定函数</code>.</p> 
+<p>它不<code>即时</code>编译和执行,但允许<code>测试和运行</code>目标文件.<br> 考虑下面三个<code>C源码</code>文件:<code>main.c,add.c</code>,和<code>sub.c</code>:</p> 
+<pre><code class="prism language-cpp">main<span class="token punctuation">.</span>c
+<span class="token keyword">int</span> <span class="token function">add</span><span class="token punctuation">(</span><span class="token keyword">int</span> a<span class="token punctuation">,</span> <span class="token keyword">int</span> b<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">int</span> <span class="token function">sub</span><span class="token punctuation">(</span><span class="token keyword">int</span> a<span class="token punctuation">,</span> <span class="token keyword">int</span> b<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">return</span> <span class="token function">sub</span><span class="token punctuation">(</span><span class="token function">add</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+add<span class="token punctuation">.</span>c
+<span class="token keyword">int</span> <span class="token function">add</span><span class="token punctuation">(</span><span class="token keyword">int</span> a<span class="token punctuation">,</span> <span class="token keyword">int</span> b<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">return</span> a<span class="token operator">+</span>b<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+sub<span class="token punctuation">.</span>c
+<span class="token keyword">int</span> <span class="token function">sub</span><span class="token punctuation">(</span><span class="token keyword">int</span> a<span class="token punctuation">,</span> <span class="token keyword">int</span> b<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">return</span> a<span class="token operator">-</span>b<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>按<code>目标文件</code>编译它们:</p> 
+<pre><code class="prism language-cpp">$ clang <span class="token operator">-</span>c main<span class="token punctuation">.</span>c <span class="token operator">-</span>o main<span class="token punctuation">.</span>o
+$ clang <span class="token operator">-</span>c add<span class="token punctuation">.</span>c <span class="token operator">-</span>o add<span class="token punctuation">.</span>o
+$ clang <span class="token operator">-</span>c sub<span class="token punctuation">.</span>c <span class="token operator">-</span>o sub<span class="token punctuation">.</span>o
+</code></pre> 
+<p>用<code>llvm-rtdyld</code>工具,以<code>-entry</code>和<code>-execute</code>选项执行<code>main</code>函数:</p> 
+<pre><code class="prism language-cpp">$ llvm<span class="token operator">-</span>rtdyld <span class="token operator">-</span>execute <span class="token operator">-</span>entry<span class="token operator">=</span>_main main<span class="token punctuation">.</span>o add<span class="token punctuation">.</span>o sub<span class="token punctuation">.</span>o<span class="token punctuation">;</span> echo $  loaded <span class="token char">'_main'</span> at<span class="token operator">:</span> <span class="token number">0x104d98000</span>
+<span class="token number">5</span>
+</code></pre> 
+<p>或用<code>-printline</code>,为编译了<code>调试信息</code>的函数<code>打印行信息</code>.如下:</p> 
+<pre><code class="prism language-cpp">$ clang <span class="token operator">-</span>g <span class="token operator">-</span>c add<span class="token punctuation">.</span>c <span class="token operator">-</span>o add<span class="token punctuation">.</span>o
+$ llvm<span class="token operator">-</span>rtdyld <span class="token operator">-</span>printline add<span class="token punctuation">.</span>o
+Function<span class="token operator">:</span> _add<span class="token punctuation">,</span> Size <span class="token operator">=</span> <span class="token number">20</span>
+  Line info @ <span class="token number">0</span><span class="token operator">:</span> add<span class="token punctuation">.</span>c<span class="token punctuation">,</span> line<span class="token operator">:</span> <span class="token number">2</span>
+  Line info @ <span class="token number">10</span><span class="token operator">:</span> add<span class="token punctuation">.</span>c<span class="token punctuation">,</span> line<span class="token operator">:</span> <span class="token number">3</span>
+  Line info @ <span class="token number">20</span><span class="token operator">:</span> add<span class="token punctuation">.</span>c<span class="token punctuation">,</span> line<span class="token operator">:</span> <span class="token number">3</span>
+</code></pre> 
+<p>可见,<code>llvm-rtdyld</code>工具,从<code>MCJIT</code>框架抽象的<code>对象</code>.<code>llvm-rtdyld</code>工具读取一系列<code>二进制目标文件</code>到<code>ObjectBuffer</code>对象,并通过<code>RuntimeDyld::loadObject()</code>生成<code>ObjectImage</code>实例.</p> 
+<p>加载完所有<code>目标文件</code>后,由<code>RuntimeDyld::resolveRelocations()</code>解决<code>重定向</code>.<br> 接着,通过<code>getSymbolAddress()</code>取入口<code>(entrypoint)</code>,并调用<code>函数</code>.</p> 
+<p><code>llvm-rtdyld</code>工具用了<code>自定义</code>的管理内存的<code>TrivialMemoryManager</code>.这是个简单的<code>RTDyldMemoryManager</code>子类.<br> 可帮助你理解<code>MCJIT</code>框架的<code>基本概念</code>.</p> 
+<h2><a id="_648"></a>其它资源</h2> 
+<p><code>&lt;llvm_source&gt;/examples/HowToUseJIT</code>和<code>&lt;llvm_source&gt;/examples/ParallelJIT</code>包含了学习<code>即时</code>基础的<code>简单源码示例</code>.</p> 
+<p><a href="http://llvm.org/docs/tutorial/LangImpl4.html" rel="nofollow">教程</a>介绍如何使用<code>即时</code>.<br> <code>MCJIT</code>设计和实现,见<a href="http://llvm.org/docs/MCJITDesignAndImplementation.html" rel="nofollow">这里</a>.</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/59610b4504579d5a3aecea0037b95235/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">项目应用多级缓存示例</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7d53e8fec98629785dc8eb9d9bd51282/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【Python小知识 - 6】：QLabel设置图片</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Spring Cloud Ribbon源码解析 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Spring Cloud Ribbon源码解析" />
+<meta property="og:description" content="1 概述 Spring Cloud Ribbon 可以实现客户端负载均衡，本文仅仅以Ribbon单独使用时对源码进行分析和理解，没有集成Eureka。
+Ribbon会针对我们在配置文件中配置的服务地址进行负载均衡的计算，得到目标地址后，进行服务的调用。
+接下来会针对两方面进行分析：
+1、为什么我们使用@LoadBalanced注解作用于RestTemplate上就可以实现负载均衡了呢？
+2、如何对服务地址进行解析的呢？
+2 版本信息 &lt;dependency&gt; &lt;groupId&gt;org.springframework.cloud&lt;/groupId&gt; &lt;artifactId&gt;spring-cloud-starter-netflix-ribbon&lt;/artifactId&gt; &lt;version&gt;2.2.9.RELEASE&lt;/version&gt; &lt;/dependency&gt; 3 源码解析 3.1 @LoadBalancer注解的作用 在使用RestTemplate的时候，我们加了一个@LoadBalance注解，就能让这个RestTemplate在请求时，就拥有客户端负载均衡的能力。
+@Bean @LoadBalanced RestTemplate restTemplate() { return new RestTemplate(); } 然后，我们打开@LoadBalanced这个注解，可以发现该注解仅仅是声明了一个@Qualifier 注解。
+@Target({ ElementType.FIELD, ElementType.PARAMETER, ElementType.METHOD }) @Retention(RetentionPolicy.RUNTIME) @Documented @Inherited @Qualifier public @interface LoadBalanced { } @Qualifier注解相信大家在spring中都接触过，起作用就是当您创建多个相同类型的 bean 并希望仅使用属性装配其中一个 bean 时，您可以使用@Qualifier 注解和 @Autowired 通过指定应该装配哪个确切的 bean来消除歧义。
+下面我们进行一个案例演示：
+现在我们有一个TestClass类，想把这个类的实例对象注入到Spring容器中
+public class TestClass { private String name; } @Configuration public class TestConfig { @Bean(&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/81fe71c1ff2dc7f6390b60a1fa4149ca/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-05-21T11:41:30+08:00" />
+<meta property="article:modified_time" content="2022-05-21T11:41:30+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Spring Cloud Ribbon源码解析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h4><a id="1__0"></a>1 概述</h4> 
+<p>Spring Cloud Ribbon 可以实现客户端负载均衡，本文仅仅以Ribbon单独使用时对源码进行分析和理解，没有集成Eureka。<br> Ribbon会针对我们在配置文件中配置的服务地址进行负载均衡的计算，得到目标地址后，进行服务的调用。<br> 接下来会针对两方面进行分析：<br> 1、为什么我们使用@LoadBalanced注解作用于RestTemplate上就可以实现负载均衡了呢？<br> 2、如何对服务地址进行解析的呢？</p> 
+<h4><a id="2__7"></a>2 版本信息</h4> 
+<pre><code class="prism language-java">        <span class="token generics"><span class="token punctuation">&lt;</span>dependency<span class="token punctuation">&gt;</span></span>
+            <span class="token generics"><span class="token punctuation">&lt;</span>groupId<span class="token punctuation">&gt;</span></span>org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>cloud<span class="token operator">&lt;</span><span class="token operator">/</span>groupId<span class="token operator">&gt;</span>
+            <span class="token generics"><span class="token punctuation">&lt;</span>artifactId<span class="token punctuation">&gt;</span></span>spring<span class="token operator">-</span>cloud<span class="token operator">-</span>starter<span class="token operator">-</span>netflix<span class="token operator">-</span>ribbon<span class="token operator">&lt;</span><span class="token operator">/</span>artifactId<span class="token operator">&gt;</span>
+            <span class="token generics"><span class="token punctuation">&lt;</span>version<span class="token punctuation">&gt;</span></span><span class="token number">2.2</span><span class="token number">.9</span><span class="token punctuation">.</span>RELEASE<span class="token operator">&lt;</span><span class="token operator">/</span>version<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span><span class="token operator">/</span>dependency<span class="token operator">&gt;</span>
+</code></pre> 
+<h4><a id="3__15"></a>3 源码解析</h4> 
+<h6><a id="31_LoadBalancer_16"></a>3.1 @LoadBalancer注解的作用</h6> 
+<p>在使用RestTemplate的时候，我们加了一个@LoadBalance注解，就能让这个RestTemplate在请求时，就拥有客户端负载均衡的能力。</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Bean</span>
+<span class="token annotation punctuation">@LoadBalanced</span>
+<span class="token class-name">RestTemplate</span> <span class="token function">restTemplate</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">RestTemplate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>然后，我们打开@LoadBalanced这个注解，可以发现该注解仅仅是声明了一个@Qualifier 注解。</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Target</span><span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span> <span class="token class-name">ElementType</span><span class="token punctuation">.</span>FIELD<span class="token punctuation">,</span> <span class="token class-name">ElementType</span><span class="token punctuation">.</span>PARAMETER<span class="token punctuation">,</span> <span class="token class-name">ElementType</span><span class="token punctuation">.</span>METHOD <span class="token punctuation">}</span><span class="token punctuation">)</span>
+<span class="token annotation punctuation">@Retention</span><span class="token punctuation">(</span><span class="token class-name">RetentionPolicy</span><span class="token punctuation">.</span>RUNTIME<span class="token punctuation">)</span>
+<span class="token annotation punctuation">@Documented</span>
+<span class="token annotation punctuation">@Inherited</span>
+<span class="token annotation punctuation">@Qualifier</span>
+<span class="token keyword">public</span> <span class="token annotation punctuation">@interface</span> <span class="token class-name">LoadBalanced</span> <span class="token punctuation">{<!-- --></span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>@Qualifier注解相信大家在spring中都接触过，起作用就是当您创建多个相同类型的 bean 并希望仅使用属性装配其中一个 bean 时，您可以使用@Qualifier 注解和 @Autowired 通过指定应该装配哪个确切的 bean来消除歧义。</p> 
+<p>下面我们进行一个案例演示：<br> 现在我们有一个TestClass类，想把这个类的实例对象注入到Spring容器中</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">TestClass</span> <span class="token punctuation">{<!-- --></span>
+<span class="token keyword">private</span> <span class="token class-name">String</span> name<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Configuration</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">TestConfig</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token annotation punctuation">@Bean</span><span class="token punctuation">(</span><span class="token string">"testClass1"</span><span class="token punctuation">)</span>
+	<span class="token class-name">TestClass</span> <span class="token function">testClass</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">TestClass</span><span class="token punctuation">(</span><span class="token string">"testClass1"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token annotation punctuation">@Bean</span><span class="token punctuation">(</span><span class="token string">"testClass2"</span><span class="token punctuation">)</span>
+	<span class="token class-name">TestClass</span> <span class="token function">testClass2</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">TestClass</span><span class="token punctuation">(</span><span class="token string">"testClass2"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token annotation punctuation">@RestController</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">TestController</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token annotation punctuation">@Autowired</span><span class="token punctuation">(</span>required <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">)</span>
+	<span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">TestClass</span><span class="token punctuation">&gt;</span></span> testClasses<span class="token operator">=</span> <span class="token class-name">Collections</span><span class="token punctuation">.</span><span class="token function">emptyList</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span><span class="token string">"/test"</span><span class="token punctuation">)</span>
+	<span class="token keyword">public</span> <span class="token class-name">Object</span> <span class="token function">test</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> testClasses<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>通过浏览器访问http://localhost:8080/test</p> 
+<pre><code class="prism language-json"><span class="token punctuation">[</span>
+	<span class="token punctuation">{<!-- --></span>
+	<span class="token literal-property property">name</span><span class="token operator">:</span> <span class="token string">"testClass1"</span>
+	<span class="token punctuation">}</span><span class="token punctuation">,</span>
+	<span class="token punctuation">{<!-- --></span>
+	<span class="token literal-property property">name</span><span class="token operator">:</span> <span class="token string">"testClass2"</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">]</span>
+</code></pre> 
+<p>此时我们修改修改TestConfig类</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Configuration</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">TestConfig</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token annotation punctuation">@Bean</span><span class="token punctuation">(</span><span class="token string">"testClass1"</span><span class="token punctuation">)</span>
+	<span class="token annotation punctuation">@Qualifier</span>
+	<span class="token class-name">TestClass</span> <span class="token function">testClass</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">TestClass</span><span class="token punctuation">(</span><span class="token string">"testClass1"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token annotation punctuation">@Bean</span><span class="token punctuation">(</span><span class="token string">"testClass2"</span><span class="token punctuation">)</span>
+	<span class="token class-name">TestClass</span> <span class="token function">testClass2</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">TestClass</span><span class="token punctuation">(</span><span class="token string">"testClass2"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>再次进行访问可以发现：</p> 
+<pre><code class="prism language-json"><span class="token punctuation">[</span>
+	<span class="token punctuation">{<!-- --></span>
+	<span class="token literal-property property">name</span><span class="token operator">:</span> <span class="token string">"testClass1"</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">]</span>
+</code></pre> 
+<p>通过这个案例我们是不是可以发现@LoadBalance注解的作用了，肯定会有个地方对加上了@LoadBanlance注解的RestTemplate进行筛选。答案肯定是没错的，确实有筛选的地方，下面我们就分析是哪里进行保存的呢？<br> 我们找到<code>spring-cloud-commons-2.2.9.RELEASE.jar</code>这个包<br> 找到<code>META-INF</code>目录。相信大家并不陌生，这里肯定使用的是spi的机制把一些类加载到IOC容器中的，我们打开<code>spring.factories</code>文件：</p> 
+<pre><code class="prism language-yml"><span class="token comment"># AutoConfiguration</span>
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
+org.springframework.cloud.client.CommonsClientAutoConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.client.ReactiveCommonsClientAutoConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.client.discovery.composite.CompositeDiscoveryClientAutoConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.client.discovery.composite.reactive.ReactiveCompositeDiscoveryClientAutoConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.client.discovery.noop.NoopDiscoveryClientAutoConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.client.discovery.simple.SimpleDiscoveryClientAutoConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.client.discovery.simple.reactive.SimpleReactiveDiscoveryClientAutoConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.client.hypermedia.CloudHypermediaAutoConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.client.loadbalancer.AsyncLoadBalancerAutoConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.client.loadbalancer.LoadBalancerAutoConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.client.loadbalancer.reactive.LoadBalancerBeanPostProcessorAutoConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.client.loadbalancer.reactive.ReactorLoadBalancerClientAutoConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.client.loadbalancer.reactive.ReactiveLoadBalancerAutoConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.client.serviceregistry.ServiceRegistryAutoConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.commons.httpclient.HttpClientConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.commons.util.UtilAutoConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.configuration.CompatibilityVerifierAutoConfiguration<span class="token punctuation">,</span>\
+org.springframework.cloud.client.serviceregistry.AutoServiceRegistrationAutoConfiguration
+<span class="token comment"># Environment Post Processors</span>
+org.springframework.boot.env.EnvironmentPostProcessor=\
+org.springframework.cloud.client.HostInfoEnvironmentPostProcessor
+<span class="token comment"># Failure Analyzers</span>
+org.springframework.boot.diagnostics.FailureAnalyzer=\
+org.springframework.cloud.configuration.CompatibilityNotMetFailureAnalyzer
+
+</code></pre> 
+<p>我们发现有一个<code>.springframework.cloud.client.loadbalancer.LoadBalancerAutoConfiguration</code>类。<br> 该类中会做两件事情：</p> 
+<ol><li>把配置了@LoadBalanced 注解的RestTemplate 注入到restTemplates 集合中</li><li>拿到了RestTemplate 之后，在LoadBalancerInterceptorConfig配置类中，会针对这些RestTemplate 进行拦截，当我们调用目标方法的时候会通过拦截器进行拦截</li></ol> 
+<p>具体的源码如下：</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Configuration</span><span class="token punctuation">(</span>proxyBeanMethods <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">)</span>
+<span class="token annotation punctuation">@ConditionalOnClass</span><span class="token punctuation">(</span><span class="token class-name">RestTemplate</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span>
+<span class="token annotation punctuation">@ConditionalOnBean</span><span class="token punctuation">(</span><span class="token class-name">LoadBalancerClient</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span>
+<span class="token annotation punctuation">@EnableConfigurationProperties</span><span class="token punctuation">(</span><span class="token class-name">LoadBalancerRetryProperties</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">LoadBalancerAutoConfiguration</span> <span class="token punctuation">{<!-- --></span>
+
+	<span class="token comment">//收集配置了@LoadBalanced 注解的RestTemplate</span>
+	<span class="token annotation punctuation">@LoadBalanced</span>
+	<span class="token annotation punctuation">@Autowired</span><span class="token punctuation">(</span>required <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">)</span>
+	<span class="token keyword">private</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">RestTemplate</span><span class="token punctuation">&gt;</span></span> restTemplates <span class="token operator">=</span> <span class="token class-name">Collections</span><span class="token punctuation">.</span><span class="token function">emptyList</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>省略
+
+<span class="token comment">//拿到了RestTemplate 之后，在LoadBalancerInterceptorConfig配置类中，会针对这些RestTemplate 进行拦截，当我们调用目标方法的时候会通过拦截器进行拦截</span>
+	<span class="token annotation punctuation">@Configuration</span><span class="token punctuation">(</span>proxyBeanMethods <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">)</span>
+	<span class="token annotation punctuation">@ConditionalOnMissingClass</span><span class="token punctuation">(</span><span class="token string">"org.springframework.retry.support.RetryTemplate"</span><span class="token punctuation">)</span>
+	<span class="token keyword">static</span> <span class="token keyword">class</span> <span class="token class-name">LoadBalancerInterceptorConfig</span> <span class="token punctuation">{<!-- --></span>
+
+		<span class="token comment">//装载一个LoadBalancerInterceptor的实例到IOC容器。</span>
+		<span class="token annotation punctuation">@Bean</span>
+		<span class="token keyword">public</span> <span class="token class-name">LoadBalancerInterceptor</span> <span class="token function">loadBalancerInterceptor</span><span class="token punctuation">(</span>
+				<span class="token class-name">LoadBalancerClient</span> loadBalancerClient<span class="token punctuation">,</span>
+				<span class="token class-name">LoadBalancerRequestFactory</span> requestFactory<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">LoadBalancerInterceptor</span><span class="token punctuation">(</span>loadBalancerClient<span class="token punctuation">,</span> requestFactory<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+<span class="token comment">//遍历所有加了@LoadBalanced注解的RestTemplate，在原有的拦截器之上，再增加了一个LoadBalancerInterceptor</span>
+		<span class="token annotation punctuation">@Bean</span>
+		<span class="token annotation punctuation">@ConditionalOnMissingBean</span>
+		<span class="token keyword">public</span> <span class="token class-name">RestTemplateCustomizer</span> <span class="token function">restTemplateCustomizer</span><span class="token punctuation">(</span>
+				<span class="token keyword">final</span> <span class="token class-name">LoadBalancerInterceptor</span> loadBalancerInterceptor<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">return</span> restTemplate <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">ClientHttpRequestInterceptor</span><span class="token punctuation">&gt;</span></span> list <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ArrayList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>
+						restTemplate<span class="token punctuation">.</span><span class="token function">getInterceptors</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				list<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>loadBalancerInterceptor<span class="token punctuation">)</span><span class="token punctuation">;</span>
+				restTemplate<span class="token punctuation">.</span><span class="token function">setInterceptors</span><span class="token punctuation">(</span>list<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+
+	<span class="token punctuation">}</span>
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+</code></pre> 
+<h6><a id="32_RestTemplate_181"></a>3.2 RestTemplate调用过程</h6> 
+<p>接下来我们通过RestTemplate调用过程分析整个流程，在调用的过程中肯定会进入到我们上面注入的拦截器，进行拦截。</p> 
+<p>我们在程序中，使用下面的代码发起远程请求时<code>restTemplate.getForObject(url,String.class);</code><br> 整个调用过程如下：(我们重点分析拦截器部分，restTemplate源码不做重点)</p> 
+<pre><code>RestTemplate.getForObject
+-----&gt; AbstractClientHttpRequest.execute()
+-----&gt; AbstractBufferingClientHttpRequest.executeInternal()
+-----&gt; InterceptingClientHttpRequest.executeInternal()
+-----&gt; InterceptingClientHttpRequest.execute()
+</code></pre> 
+<h6><a id="33_LoadBalancerInterceptor_193"></a>3.3 LoadBalancerInterceptor拦截器</h6> 
+<p>LoadBalancerInterceptor是一个拦截器，当一个被@Loadbalanced 注解修饰的RestTemplate 对象发起HTTP请求时，会被LoadBalancerInterceptor 的intercept 方法拦截，在这个方法中直接通过getHost 方法就可以获取到服务名（因为我们在使用RestTemplate调用服务的时候，使用的是服务名而不是域名，所以这里可以通过getHost直接拿到服务名然后去调用execute方法发起请求）</p> 
+<ul><li>InterceptingClientHttpRequest.execute()</li></ul> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token class-name">ClientHttpResponse</span> <span class="token function">execute</span><span class="token punctuation">(</span><span class="token class-name">HttpRequest</span> request<span class="token punctuation">,</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> body<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">IOException</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">//遍历所有的拦截器，通过拦截器进行逐个处理。</span>
+            <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>iterator<span class="token punctuation">.</span><span class="token function">hasNext</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token class-name">ClientHttpRequestInterceptor</span> nextInterceptor <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">ClientHttpRequestInterceptor</span><span class="token punctuation">)</span><span class="token keyword">this</span><span class="token punctuation">.</span>iterator<span class="token punctuation">.</span><span class="token function">next</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token comment">//调用intercept方法进行拦截 重点分析</span>
+                <span class="token keyword">return</span> nextInterceptor<span class="token punctuation">.</span><span class="token function">intercept</span><span class="token punctuation">(</span>request<span class="token punctuation">,</span> body<span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token class-name">HttpMethod</span> method <span class="token operator">=</span> request<span class="token punctuation">.</span><span class="token function">getMethod</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token class-name">Assert</span><span class="token punctuation">.</span><span class="token function">state</span><span class="token punctuation">(</span>method <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">,</span> <span class="token string">"No standard HTTP method"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token class-name">ClientHttpRequest</span> delegate <span class="token operator">=</span> <span class="token class-name">InterceptingClientHttpRequest</span><span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>requestFactory<span class="token punctuation">.</span><span class="token function">createRequest</span><span class="token punctuation">(</span>request<span class="token punctuation">.</span><span class="token function">getURI</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> method<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                request<span class="token punctuation">.</span><span class="token function">getHeaders</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">forEach</span><span class="token punctuation">(</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> value<span class="token punctuation">)</span> <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+                    delegate<span class="token punctuation">.</span><span class="token function">getHeaders</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">addAll</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> value<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span><span class="token punctuation">(</span>body<span class="token punctuation">.</span>length <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">if</span><span class="token punctuation">(</span>delegate <span class="token keyword">instanceof</span> <span class="token class-name">StreamingHttpOutputMessage</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token class-name">StreamingHttpOutputMessage</span> streamingOutputMessage <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">StreamingHttpOutputMessage</span><span class="token punctuation">)</span>delegate<span class="token punctuation">;</span>
+                        streamingOutputMessage<span class="token punctuation">.</span><span class="token function">setBody</span><span class="token punctuation">(</span><span class="token punctuation">(</span>outputStream<span class="token punctuation">)</span> <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token class-name">StreamUtils</span><span class="token punctuation">.</span><span class="token function">copy</span><span class="token punctuation">(</span>body<span class="token punctuation">,</span> outputStream<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token class-name">StreamUtils</span><span class="token punctuation">.</span><span class="token function">copy</span><span class="token punctuation">(</span>body<span class="token punctuation">,</span> delegate<span class="token punctuation">.</span><span class="token function">getBody</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span>
+
+                <span class="token keyword">return</span> delegate<span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<ul><li>InterceptingClientHttpRequest.intercept()</li></ul> 
+<pre><code class="prism language-java">	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> <span class="token class-name">ClientHttpResponse</span> <span class="token function">intercept</span><span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token class-name">HttpRequest</span> request<span class="token punctuation">,</span> <span class="token keyword">final</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> body<span class="token punctuation">,</span>
+			<span class="token keyword">final</span> <span class="token class-name">ClientHttpRequestExecution</span> execution<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">IOException</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//获取请求的uri</span>
+		<span class="token keyword">final</span> <span class="token class-name">URI</span> originalUri <span class="token operator">=</span> request<span class="token punctuation">.</span><span class="token function">getURI</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//获取服务名称，因为我们配置文件中配置的就是服务名</span>
+		<span class="token class-name">String</span> serviceName <span class="token operator">=</span> originalUri<span class="token punctuation">.</span><span class="token function">getHost</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token class-name">Assert</span><span class="token punctuation">.</span><span class="token function">state</span><span class="token punctuation">(</span>serviceName <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">,</span>
+				<span class="token string">"Request URI does not contain a valid hostname: "</span> <span class="token operator">+</span> originalUri<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//private LoadBalancerClient loadBalancer; LoadBalancerClient其实是一个接口，我们看一下它的类图，它有一个唯一的实现类：RibbonLoadBalancerClient 。</span>
+		<span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">.</span>loadBalancer<span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span>serviceName<span class="token punctuation">,</span>
+				<span class="token keyword">this</span><span class="token punctuation">.</span>requestFactory<span class="token punctuation">.</span><span class="token function">createRequest</span><span class="token punctuation">(</span>request<span class="token punctuation">,</span> body<span class="token punctuation">,</span> execution<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/c8/97/WsdiuRcw_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>RibbonLoadBalancerClient.execute()</li></ul> 
+<pre><code class="prism language-java">	<span class="token keyword">public</span> <span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> <span class="token class-name">T</span> <span class="token function">execute</span><span class="token punctuation">(</span><span class="token class-name">String</span> serviceId<span class="token punctuation">,</span> <span class="token class-name">LoadBalancerRequest</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> request<span class="token punctuation">,</span> <span class="token class-name">Object</span> hint<span class="token punctuation">)</span>
+			<span class="token keyword">throws</span> <span class="token class-name">IOException</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//根据serviceId获得一个ILoadBalancer，实例为：ZoneAwareLoadBalancer</span>
+		<span class="token class-name">ILoadBalancer</span> loadBalancer <span class="token operator">=</span> <span class="token function">getLoadBalancer</span><span class="token punctuation">(</span>serviceId<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//调用getServer方法去获取一个服务实例</span>
+		<span class="token class-name">Server</span> server <span class="token operator">=</span> <span class="token function">getServer</span><span class="token punctuation">(</span>loadBalancer<span class="token punctuation">,</span> hint<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//判断Server的值是否为空。这里的Server实际上就是传统的一个服务节点，这个对象存储了服务节点的一些元数据，比如host、port、schema等</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>server <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">IllegalStateException</span><span class="token punctuation">(</span><span class="token string">"No instances available for "</span> <span class="token operator">+</span> serviceId<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token comment">//封装成RibbonServer对象</span>
+		<span class="token class-name">RibbonServer</span> ribbonServer <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">RibbonServer</span><span class="token punctuation">(</span>serviceId<span class="token punctuation">,</span> server<span class="token punctuation">,</span>
+				<span class="token function">isSecure</span><span class="token punctuation">(</span>server<span class="token punctuation">,</span> serviceId<span class="token punctuation">)</span><span class="token punctuation">,</span>
+				<span class="token function">serverIntrospector</span><span class="token punctuation">(</span>serviceId<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getMetadata</span><span class="token punctuation">(</span>server<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token keyword">return</span> <span class="token function">execute</span><span class="token punctuation">(</span>serviceId<span class="token punctuation">,</span> ribbonServer<span class="token punctuation">,</span> request<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+</code></pre> 
+<ol><li>根据serviceId获得一个ILoadBalancer，实例为ZoneAwareLoadBalancer</li><li>调用getServer方法去获取一个服务实例判断Server的值是否为空。这里的Server实际上就是传统的一个服务节点，这个对象存储了服务节点的一些元数据，比如host、port等</li><li>封装成RibbonServer对象</li><li>调用目标方法</li></ol> 
+<p>ILoadBalancer是一个负载均衡接口，类的关系图如下：<br> <img src="https://images2.imgbox.com/d4/50/Yxob3NRk_o.png" alt="在这里插入图片描述"><br> 此时具体的实现类我们可以RibbonClientConfiguration 这个类中找到</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Bean</span>
+<span class="token annotation punctuation">@ConditionalOnMissingBean</span>
+<span class="token keyword">public</span> <span class="token class-name">ILoadBalancer</span> <span class="token function">ribbonLoadBalancer</span><span class="token punctuation">(</span><span class="token class-name">IClientConfig</span> config<span class="token punctuation">,</span>
+										<span class="token class-name">ServerList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> serverList<span class="token punctuation">,</span>
+										<span class="token class-name">ServerListFilter</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> serverListFilter<span class="token punctuation">,</span>
+										<span class="token class-name">IRule</span> rule<span class="token punctuation">,</span> <span class="token class-name">IPing</span> ping<span class="token punctuation">,</span> <span class="token class-name">ServerListUpdater</span>
+										serverListUpdater<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>propertiesFactory<span class="token punctuation">.</span><span class="token function">isSet</span><span class="token punctuation">(</span><span class="token class-name">ILoadBalancer</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">,</span> name<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">.</span>propertiesFactory<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token class-name">ILoadBalancer</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">,</span> config<span class="token punctuation">,</span> name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">ZoneAwareLoadBalancer</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>config<span class="token punctuation">,</span> rule<span class="token punctuation">,</span> ping<span class="token punctuation">,</span> serverList<span class="token punctuation">,</span>
+	serverListFilter<span class="token punctuation">,</span> serverListUpdater<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>该类是一个配置类，可以看到如果我们没有自定义去实现ILoadBalancer接口，则直接返回一个ZoneAwareLoadBalancer。ZoneAwareLoadBalancer我们可以实现异地灾备。<br> <strong>ZoneAwareLoadBalancer的核心功能是</strong></p> 
+<ol><li>若开启了区域意识，且zone的个数 &gt; 1，就继续区域选择逻辑</li><li>根据ZoneAvoidanceRule.getAvailableZones()方法拿到可用区们（会T除掉完全不可用的区域们，以及可用但是负载最高的一个区域）</li><li>从可用区zone们中，通过ZoneAvoidanceRule.randomChooseZone随机选一个zone出来（该随机遵从权重规则：谁的zone里面Server数量最多，被选中的概率越大）</li><li>在选中的zone里面的所有Server中，采用该zone对对应的Rule，进行choose</li></ol> 
+<ul><li>getServer(loadBalancer, hint)<br> 接着我们分析getServer(loadBalancer, hint)方法，通过上面的分析我们直到了此时，loadBalance实例对象是ZoneAwareLoadBalancer。</li></ul> 
+<pre><code class="prism language-java">    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token class-name">Server</span> <span class="token function">chooseServer</span><span class="token punctuation">(</span><span class="token class-name">Object</span> key<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//ENABLED，表示是否用区域意识的choose选择Server，默认是true，</span>
+<span class="token comment">//如果禁用了区域、或者只有一个zone，就直接按照父类的逻辑来进行处理，父类默认采用轮询算法</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>ENABLED<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token function">getLoadBalancerStats</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getAvailableZones</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;=</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            logger<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"Zone aware logic disabled or there is only one zone"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span> <span class="token keyword">super</span><span class="token punctuation">.</span><span class="token function">chooseServer</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token class-name">Server</span> server <span class="token operator">=</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">LoadBalancerStats</span> lbStats <span class="token operator">=</span> <span class="token function">getLoadBalancerStats</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//创建区域对应的快照信息</span>
+            <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">ZoneSnapshot</span><span class="token punctuation">&gt;</span></span> zoneSnapshot <span class="token operator">=</span> <span class="token class-name">ZoneAvoidanceRule</span><span class="token punctuation">.</span><span class="token function">createSnapshot</span><span class="token punctuation">(</span>lbStats<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            logger<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"Zone snapshots: {}"</span><span class="token punctuation">,</span> zoneSnapshot<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>triggeringLoad <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                triggeringLoad <span class="token operator">=</span> <span class="token class-name">DynamicPropertyFactory</span><span class="token punctuation">.</span><span class="token function">getInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getDoubleProperty</span><span class="token punctuation">(</span>
+                        <span class="token string">"ZoneAwareNIWSDiscoveryLoadBalancer."</span> <span class="token operator">+</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">".triggeringLoadPerServerThreshold"</span><span class="token punctuation">,</span> <span class="token number">0.2d</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>triggeringBlackoutPercentage <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                triggeringBlackoutPercentage <span class="token operator">=</span> <span class="token class-name">DynamicPropertyFactory</span><span class="token punctuation">.</span><span class="token function">getInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getDoubleProperty</span><span class="token punctuation">(</span>
+                        <span class="token string">"ZoneAwareNIWSDiscoveryLoadBalancer."</span> <span class="token operator">+</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">".avoidZoneWithBlackoutPercetage"</span><span class="token punctuation">,</span> <span class="token number">0.99999d</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token comment">//根据相关阈值计算可用区域</span>
+            <span class="token class-name">Set</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> availableZones <span class="token operator">=</span> <span class="token class-name">ZoneAvoidanceRule</span><span class="token punctuation">.</span><span class="token function">getAvailableZones</span><span class="token punctuation">(</span>zoneSnapshot<span class="token punctuation">,</span> triggeringLoad<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> triggeringBlackoutPercentage<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            logger<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"Available zones: {}"</span><span class="token punctuation">,</span> availableZones<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>availableZones <span class="token operator">!=</span> <span class="token keyword">null</span> <span class="token operator">&amp;&amp;</span>  availableZones<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> zoneSnapshot<span class="token punctuation">.</span><span class="token function">keySet</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//从可用区域中随机选择一个区域，区域的服务器节点越多，被选中的概率越大</span>
+                <span class="token class-name">String</span> zone <span class="token operator">=</span> <span class="token class-name">ZoneAvoidanceRule</span><span class="token punctuation">.</span><span class="token function">randomChooseZone</span><span class="token punctuation">(</span>zoneSnapshot<span class="token punctuation">,</span> availableZones<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                logger<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"Zone chosen: {}"</span><span class="token punctuation">,</span> zone<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>zone <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">//根据区域获得该区域中的BaseLoadBalancer ，然后根据该区域的负载均衡算法选择一个server</span>
+                    <span class="token class-name">BaseLoadBalancer</span> zoneLoadBalancer <span class="token operator">=</span> <span class="token function">getLoadBalancer</span><span class="token punctuation">(</span>zone<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    server <span class="token operator">=</span> zoneLoadBalancer<span class="token punctuation">.</span><span class="token function">chooseServer</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            logger<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token string">"Error choosing server using zone aware logic for load balancer={}"</span><span class="token punctuation">,</span> name<span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>server <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> server<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            logger<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"Zone avoidance logic is not invoked."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span> <span class="token keyword">super</span><span class="token punctuation">.</span><span class="token function">chooseServer</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>通过上面的代码分析我们直到如果没有配置多区域，那么会调用到<code>super.chooseServer(key);</code>方法，即<code>BaseLoadBalancer.chooseServer</code>方法</p> 
+<pre><code class="prism language-java">   <span class="token keyword">public</span> <span class="token class-name">Server</span> <span class="token function">chooseServer</span><span class="token punctuation">(</span><span class="token class-name">Object</span> key<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>counter <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            counter <span class="token operator">=</span> <span class="token function">createCounter</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        counter<span class="token punctuation">.</span><span class="token function">increment</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>rule <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//根据默认的负载均衡算法来获得指定的服务节点。默认的算法是RoundBin。</span>
+                <span class="token keyword">return</span> rule<span class="token punctuation">.</span><span class="token function">choose</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                logger<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"LoadBalancer [{}]:  Error choosing server for key {}"</span><span class="token punctuation">,</span> name<span class="token punctuation">,</span> key<span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<ul><li>rule.choose<br> rule代表负载均衡算法规则，它有很多实现，IRule的实现类关系图如下。<br> <img src="https://images2.imgbox.com/2d/6f/EhDUqymd_o.png" alt="在这里插入图片描述"></li></ul> 
+<ol><li>BestAvailableRule：选择具有最低并发请求的服务器。</li><li>ClientConfigEnabledRoundRobinRule：轮询。</li><li>RandomRule：随机选择一个服务器。</li><li>RoundRobinRule：轮询选择服务器。</li><li>RetryRule：具备重试机制的轮询。</li><li>WeightedResponseTimeRule：根据使用平均响应时间去分配一个weight（权重） ，weight越低，被选择的可能性就越低。</li><li>ZoneAvoidanceRule：根据区域和可用性筛选，再轮询选择服务器。</li></ol> 
+<p>默认情况下， rule 的实现为ZoneAvoidanceRule ，它是在RibbonClientConfiguration 这个配置类中定义的。</p> 
+<p>所以，在BaseLoadBalancer.chooseServer 中调用rule.choose(key); ，实际会进入到ZoneAvoidanceRule 的choose 方法，我们可以发现该类中并没有choose方法，但是该类继承了PredicateBasedRule说明会调用父类的方法：</p> 
+<pre><code class="prism language-java">    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token class-name">Server</span> <span class="token function">choose</span><span class="token punctuation">(</span><span class="token class-name">Object</span> key<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    	<span class="token comment">//获取负载均衡器</span>
+        <span class="token class-name">ILoadBalancer</span> lb <span class="token operator">=</span> <span class="token function">getLoadBalancer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//通过过滤和轮询算法获取目标服务</span>
+        <span class="token class-name">Optional</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> server <span class="token operator">=</span> <span class="token function">getPredicate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">chooseRoundRobinAfterFiltering</span><span class="token punctuation">(</span>lb<span class="token punctuation">.</span><span class="token function">getAllServers</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>server<span class="token punctuation">.</span><span class="token function">isPresent</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> server<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>       
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">Optional</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> <span class="token function">chooseRoundRobinAfterFiltering</span><span class="token punctuation">(</span><span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> servers<span class="token punctuation">,</span> <span class="token class-name">Object</span> loadBalancerKey<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    	<span class="token comment">//使用主过滤条件对所有实例过滤并返回过滤后的清单，</span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> eligible <span class="token operator">=</span> <span class="token function">getEligibleServers</span><span class="token punctuation">(</span>servers<span class="token punctuation">,</span> loadBalancerKey<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>eligible<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token class-name">Optional</span><span class="token punctuation">.</span><span class="token function">absent</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">//如果可用的节点不为零，通过轮询的方式返回可用的节点</span>
+        <span class="token keyword">return</span> <span class="token class-name">Optional</span><span class="token punctuation">.</span><span class="token function">of</span><span class="token punctuation">(</span>eligible<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token function">incrementAndGetModulo</span><span class="token punctuation">(</span>eligible<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    
+<span class="token keyword">public</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> <span class="token function">getEligibleServers</span><span class="token punctuation">(</span><span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> servers<span class="token punctuation">,</span> <span class="token class-name">Object</span> loadBalancerKey<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> result <span class="token operator">=</span> <span class="token keyword">super</span><span class="token punctuation">.</span><span class="token function">getEligibleServers</span><span class="token punctuation">(</span>servers<span class="token punctuation">,</span> loadBalancerKey<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//按照fallbacks中存储的过滤器顺序进行过滤（此处就行先ZoneAvoidancePredicate然后AvailabilityPredicate）</span>
+        <span class="token class-name">Iterator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">AbstractServerPredicate</span><span class="token punctuation">&gt;</span></span> i <span class="token operator">=</span> fallbacks<span class="token punctuation">.</span><span class="token function">iterator</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token punctuation">(</span>result<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&gt;=</span> minimalFilteredServers <span class="token operator">&amp;&amp;</span> result<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&gt;</span> <span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">)</span> <span class="token punctuation">(</span>servers<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">*</span> minimalFilteredPercentage<span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token operator">&amp;&amp;</span> i<span class="token punctuation">.</span><span class="token function">hasNext</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">AbstractServerPredicate</span> predicate <span class="token operator">=</span> i<span class="token punctuation">.</span><span class="token function">next</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            result <span class="token operator">=</span> predicate<span class="token punctuation">.</span><span class="token function">getEligibleServers</span><span class="token punctuation">(</span>servers<span class="token punctuation">,</span> loadBalancerKey<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">return</span> result<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>getEligibleServers这个方法还是比较复杂的，执行过程很绕，建议debug执行一遍。<br> 这里先说一下结论，他会通过<code>AvailabilityPredicate</code>, <code>ZoneAvoidancePredicate</code>这两个类进行筛选，</p> 
+<ol><li>AvailabilityPredicate，过滤熔断状态下的服务以及并发连接过多的服务。</li><li>ZoneAvoidancePredicate，过滤掉无可用区域的节点。</li></ol> 
+<ul><li>CompositePredicate.getEligibleServers</li></ul> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Override</span>
+<span class="token keyword">public</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> <span class="token function">getEligibleServers</span><span class="token punctuation">(</span><span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> servers<span class="token punctuation">,</span> <span class="token class-name">Object</span> loadBalancerKey<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token comment">//</span>
+<span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> result <span class="token operator">=</span> <span class="token keyword">super</span><span class="token punctuation">.</span><span class="token function">getEligibleServers</span><span class="token punctuation">(</span>servers<span class="token punctuation">,</span> loadBalancerKey<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//按照fallbacks中存储的过滤器顺序进行过滤（此处就行先ZoneAvoidancePredicate然后</span>
+<span class="token class-name">AvailabilityPredicate</span>）
+<span class="token class-name">Iterator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">AbstractServerPredicate</span><span class="token punctuation">&gt;</span></span> i <span class="token operator">=</span> fallbacks<span class="token punctuation">.</span><span class="token function">iterator</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token punctuation">(</span>result<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&gt;=</span> minimalFilteredServers <span class="token operator">&amp;&amp;</span> result<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&gt;</span> <span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">)</span>
+<span class="token punctuation">(</span>servers<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">*</span> minimalFilteredPercentage<span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token operator">&amp;&amp;</span> i<span class="token punctuation">.</span><span class="token function">hasNext</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token class-name">AbstractServerPredicate</span> predicate <span class="token operator">=</span> i<span class="token punctuation">.</span><span class="token function">next</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+result <span class="token operator">=</span> predicate<span class="token punctuation">.</span><span class="token function">getEligibleServers</span><span class="token punctuation">(</span>servers<span class="token punctuation">,</span> loadBalancerKey<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token keyword">return</span> result<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>依次使用次过滤条件对主过滤条件的结果进行过滤</p> 
+<ol><li>不论是主过滤条件还是次过滤条件，都需要判断下面两个条件</li><li>只要有一个条件符合，就不再过滤，将当前结果返回供线性轮询</li></ol> 
+<ul><li>第1个条件：过滤后的实例总数&gt;=最小过滤实例数（默认为1）</li><li>第2个条件：过滤互的实例比例&gt;最小过滤百分比（默认为0）</li></ul> 
+<p>AbstractServerPredicate.getEligibleServers</p> 
+<pre><code class="prism language-java">    <span class="token keyword">public</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> <span class="token function">getEligibleServers</span><span class="token punctuation">(</span><span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> servers<span class="token punctuation">,</span> <span class="token class-name">Object</span> loadBalancerKey<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//这里的实现逻辑是，遍历所有服务器列表，调用this.apply 方法进行验证，验证通过的节点，会加入到results 这个列表中返回。</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>loadBalancerKey <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token class-name">ImmutableList</span><span class="token punctuation">.</span><span class="token function">copyOf</span><span class="token punctuation">(</span><span class="token class-name">Iterables</span><span class="token punctuation">.</span><span class="token function">filter</span><span class="token punctuation">(</span>servers<span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getServerOnlyPredicate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>            
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> results <span class="token operator">=</span> <span class="token class-name">Lists</span><span class="token punctuation">.</span><span class="token function">newArrayList</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">Server</span> server<span class="token operator">:</span> servers<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//this.apply ，会进入到CompositePredicate.apply</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">apply</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">PredicateKey</span><span class="token punctuation">(</span>loadBalancerKey<span class="token punctuation">,</span> server<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    results<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>server<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">return</span> results<span class="token punctuation">;</span>            
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token annotation punctuation">@Override</span>
+<span class="token keyword">public</span> <span class="token keyword">boolean</span> <span class="token function">apply</span><span class="token punctuation">(</span><span class="token annotation punctuation">@Nullable</span> <span class="token class-name">PredicateKey</span> input<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+<span class="token comment">//delegate 的实例是AbstractServerPredicate</span>
+	<span class="token keyword">return</span> delegate<span class="token punctuation">.</span><span class="token function">apply</span><span class="token punctuation">(</span>input<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+  <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token class-name">AbstractServerPredicate</span> <span class="token function">ofKeyPredicate</span><span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token class-name">Predicate</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">PredicateKey</span><span class="token punctuation">&gt;</span></span> p<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">AbstractServerPredicate</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token annotation punctuation">@Override</span>
+            <span class="token annotation punctuation">@edu.umd.cs.findbugs.annotations.SuppressWarnings</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"NP"</span><span class="token punctuation">)</span>
+            <span class="token keyword">public</span> <span class="token keyword">boolean</span> <span class="token function">apply</span><span class="token punctuation">(</span><span class="token class-name">PredicateKey</span> input<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">return</span> p<span class="token punctuation">.</span><span class="token function">apply</span><span class="token punctuation">(</span>input<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>            
+        <span class="token punctuation">}</span><span class="token punctuation">;</span>        
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>也就是说，会通过AbstractServerPredicate.apply 方法进行过滤，其中， input 表示目<br> 标服务器集群的某一个具体节点。<br> 其中p ，表示AndPredicate 实例，这里用到了组合predicate进行判断，而这里的组合判断<br> 是and的关系，用到了AndPredicate实现。</p> 
+<p>上述代码中，components是由两个predicate组合而成</p> 
+<ol><li>AvailabilityPredicate，过滤熔断状态下的服务以及并发连接过多的服务。</li><li>ZoneAvoidancePredicate，过滤掉无可用区域的节点。</li></ol> 
+<h6><a id="34__489"></a>3.4 服务列表的加载过程</h6> 
+<p>在本实例中，我们将服务列表配置在application.properties文件中，意味着在某个时候会加载这个列表，保存在某个位置，那它是在什么时候加载的呢？</p> 
+<p>在RibbonClientConfiguration这个配置类中，有下面这个Bean的声明，（该Bean是条件触发）它用来定义默认的负载均衡实现。</p> 
+<pre><code class="prism language-java">	<span class="token annotation punctuation">@Bean</span>
+	<span class="token annotation punctuation">@ConditionalOnMissingBean</span>
+	<span class="token keyword">public</span> <span class="token class-name">ILoadBalancer</span> <span class="token function">ribbonLoadBalancer</span><span class="token punctuation">(</span><span class="token class-name">IClientConfig</span> config<span class="token punctuation">,</span>
+			<span class="token class-name">ServerList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> serverList<span class="token punctuation">,</span> <span class="token class-name">ServerListFilter</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> serverListFilter<span class="token punctuation">,</span>
+			<span class="token class-name">IRule</span> rule<span class="token punctuation">,</span> <span class="token class-name">IPing</span> ping<span class="token punctuation">,</span> <span class="token class-name">ServerListUpdater</span> serverListUpdater<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>propertiesFactory<span class="token punctuation">.</span><span class="token function">isSet</span><span class="token punctuation">(</span><span class="token class-name">ILoadBalancer</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">,</span> name<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">.</span>propertiesFactory<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token class-name">ILoadBalancer</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">,</span> config<span class="token punctuation">,</span> name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">ZoneAwareLoadBalancer</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>config<span class="token punctuation">,</span> rule<span class="token punctuation">,</span> ping<span class="token punctuation">,</span> serverList<span class="token punctuation">,</span>
+				serverListFilter<span class="token punctuation">,</span> serverListUpdater<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+</code></pre> 
+<p>在改配置类中我们可以看到会创建一个区域负载均衡器ZoneAwareLoadBalancer，那么我们看下它的构造方法：</p> 
+<pre><code class="prism language-java">    <span class="token keyword">public</span> <span class="token class-name">ZoneAwareLoadBalancer</span><span class="token punctuation">(</span><span class="token class-name">IClientConfig</span> clientConfig<span class="token punctuation">,</span> <span class="token class-name">IRule</span> rule<span class="token punctuation">,</span>
+                                 <span class="token class-name">IPing</span> ping<span class="token punctuation">,</span> <span class="token class-name">ServerList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> serverList<span class="token punctuation">,</span> <span class="token class-name">ServerListFilter</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> filter<span class="token punctuation">,</span>
+                                 <span class="token class-name">ServerListUpdater</span> serverListUpdater<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+         <span class="token comment">//调用父类的方法DynamicServerListLoadBalancer类</span>
+        <span class="token keyword">super</span><span class="token punctuation">(</span>clientConfig<span class="token punctuation">,</span> rule<span class="token punctuation">,</span> ping<span class="token punctuation">,</span> serverList<span class="token punctuation">,</span> filter<span class="token punctuation">,</span> serverListUpdater<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+
+    <span class="token keyword">public</span> <span class="token class-name">DynamicServerListLoadBalancer</span><span class="token punctuation">(</span><span class="token class-name">IClientConfig</span> clientConfig<span class="token punctuation">,</span> <span class="token class-name">IRule</span> rule<span class="token punctuation">,</span> <span class="token class-name">IPing</span> ping<span class="token punctuation">,</span>
+                                         <span class="token class-name">ServerList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> serverList<span class="token punctuation">,</span> <span class="token class-name">ServerListFilter</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> filter<span class="token punctuation">,</span>
+                                         <span class="token class-name">ServerListUpdater</span> serverListUpdater<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">super</span><span class="token punctuation">(</span>clientConfig<span class="token punctuation">,</span> rule<span class="token punctuation">,</span> ping<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>serverListImpl <span class="token operator">=</span> serverList<span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>filter <span class="token operator">=</span> filter<span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>serverListUpdater <span class="token operator">=</span> serverListUpdater<span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>filter <span class="token keyword">instanceof</span> <span class="token class-name">AbstractServerListFilter</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">AbstractServerListFilter</span><span class="token punctuation">)</span> filter<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">setLoadBalancerStats</span><span class="token punctuation">(</span><span class="token function">getLoadBalancerStats</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">//实现服务列表的加载</span>
+        <span class="token function">restOfInit</span><span class="token punctuation">(</span>clientConfig<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<ul><li>restOfInit<br> restOfInit方法主要做两件事情。</li></ul> 
+<ol><li>开启动态更新Server的功能</li><li>更新Server列表</li></ol> 
+<pre><code class="prism language-java">    <span class="token keyword">void</span> <span class="token function">restOfInit</span><span class="token punctuation">(</span><span class="token class-name">IClientConfig</span> clientConfig<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">boolean</span> primeConnection <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">isEnablePrimingConnections</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// turn this off to avoid duplicated asynchronous priming done in BaseLoadBalancer.setServerList()</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">setEnablePrimingConnections</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//开启动态更新Server(开启定时任务动态更新)</span>
+        <span class="token function">enableAndInitLearnNewServersFeature</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//更新Server列表</span>
+        <span class="token function">updateListOfServers</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>primeConnection <span class="token operator">&amp;&amp;</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getPrimeConnections</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getPrimeConnections</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                    <span class="token punctuation">.</span><span class="token function">primeConnections</span><span class="token punctuation">(</span><span class="token function">getReachableServers</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">setEnablePrimingConnections</span><span class="token punctuation">(</span>primeConnection<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        LOGGER<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"DynamicServerListLoadBalancer for client {} initialized: {}"</span><span class="token punctuation">,</span> clientConfig<span class="token punctuation">.</span><span class="token function">getClientName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<ul><li>updateListOfServers</li></ul> 
+<pre><code class="prism language-java">    <span class="token annotation punctuation">@VisibleForTesting</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">updateListOfServers</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> servers <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ArrayList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>serverListImpl <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//serverListImpl的实例为：ConfigurationBasedServerList，</span>
+        <span class="token comment">//调用getUpdatedListOfServers方法时，返回的是在application.properties文件中定义的服务列表。</span>
+            servers <span class="token operator">=</span> serverListImpl<span class="token punctuation">.</span><span class="token function">getUpdatedListOfServers</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            LOGGER<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"List of Servers for {} obtained from Discovery client: {}"</span><span class="token punctuation">,</span>
+                    <span class="token function">getIdentifier</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> servers<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token comment">//判断是否需要filter，如果有，则通过filter进行服务列表过滤</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>filter <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                servers <span class="token operator">=</span> filter<span class="token punctuation">.</span><span class="token function">getFilteredListOfServers</span><span class="token punctuation">(</span>servers<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                LOGGER<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"Filtered List of Servers for {} obtained from Discovery client: {}"</span><span class="token punctuation">,</span>
+                        <span class="token function">getIdentifier</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> servers<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">//更新所有Server到本地缓存中</span>
+        <span class="token function">updateAllServerList</span><span class="token punctuation">(</span>servers<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<h6><a id="35Ping_575"></a>3.5动态Ping机制</h6> 
+<p>在Ribbon中，基于Ping机制，目标服务地址也会发生动态变更，具体的实现方式在DynamicServerListLoadBalancer.restOfInit方法中,我们这里再贴一下源码：</p> 
+<pre><code class="prism language-java">```java
+    <span class="token keyword">void</span> <span class="token function">restOfInit</span><span class="token punctuation">(</span><span class="token class-name">IClientConfig</span> clientConfig<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">boolean</span> primeConnection <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">isEnablePrimingConnections</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// turn this off to avoid duplicated asynchronous priming done in BaseLoadBalancer.setServerList()</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">setEnablePrimingConnections</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//开启动态更新Server(开启定时任务动态更新)</span>
+        <span class="token function">enableAndInitLearnNewServersFeature</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//更新Server列表</span>
+        <span class="token function">updateListOfServers</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>primeConnection <span class="token operator">&amp;&amp;</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getPrimeConnections</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getPrimeConnections</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                    <span class="token punctuation">.</span><span class="token function">primeConnections</span><span class="token punctuation">(</span><span class="token function">getReachableServers</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">setEnablePrimingConnections</span><span class="token punctuation">(</span>primeConnection<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        LOGGER<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"DynamicServerListLoadBalancer for client {} initialized: {}"</span><span class="token punctuation">,</span> clientConfig<span class="token punctuation">.</span><span class="token function">getClientName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<ul><li>enableAndInitLearnNewServersFeature</li></ul> 
+<pre><code class="prism language-java">
+<span class="token comment">//注意，这里会启动一个定时任务，而定时任务所执行的程序是updateAction，它是一个匿名内部类，定义如下。</span>
+   <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">enableAndInitLearnNewServersFeature</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        LOGGER<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"Using serverListUpdater {}"</span><span class="token punctuation">,</span> serverListUpdater<span class="token punctuation">.</span><span class="token function">getClass</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getSimpleName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        serverListUpdater<span class="token punctuation">.</span><span class="token function">start</span><span class="token punctuation">(</span>updateAction<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+
+    <span class="token keyword">protected</span> <span class="token keyword">final</span> <span class="token class-name">ServerListUpdater<span class="token punctuation">.</span>UpdateAction</span> updateAction <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ServerListUpdater<span class="token punctuation">.</span>UpdateAction</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">doUpdate</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">updateListOfServers</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">//定时任务的启动方法如下，这个任务每隔30s执行一次</span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">synchronized</span> <span class="token keyword">void</span> <span class="token function">start</span><span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token class-name">UpdateAction</span> updateAction<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>isActive<span class="token punctuation">.</span><span class="token function">compareAndSet</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">final</span> <span class="token class-name">Runnable</span> wrapperRunnable <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Runnable</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token annotation punctuation">@Override</span>
+                <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>isActive<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span>scheduledFuture <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            scheduledFuture<span class="token punctuation">.</span><span class="token function">cancel</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+                        <span class="token keyword">return</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token comment">//执行具体的任务</span>
+                        updateAction<span class="token punctuation">.</span><span class="token function">doUpdate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        lastUpdated <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        logger<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"Failed one update cycle"</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+            scheduledFuture <span class="token operator">=</span> <span class="token function">getRefreshExecutor</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">scheduleWithFixedDelay</span><span class="token punctuation">(</span>
+                    wrapperRunnable<span class="token punctuation">,</span>
+                    initialDelayMs<span class="token punctuation">,</span>
+                    refreshIntervalMs<span class="token punctuation">,</span>
+                    <span class="token class-name">TimeUnit</span><span class="token punctuation">.</span>MILLISECONDS
+            <span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            logger<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"Already active, no-op"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    
+</code></pre> 
+<p>当30s之后触发了doUpdate方法后，最终进入到updateAllServerList方法</p> 
+<pre><code class="prism language-java">   <span class="token keyword">protected</span> <span class="token keyword">void</span> <span class="token function">updateAllServerList</span><span class="token punctuation">(</span><span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> ls<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// other threads might be doing this - in which case, we pass</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>serverListUpdateInProgress<span class="token punctuation">.</span><span class="token function">compareAndSet</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">T</span> s <span class="token operator">:</span> ls<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    s<span class="token punctuation">.</span><span class="token function">setAlive</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// set so that clients can start using these</span>
+                                      <span class="token comment">// servers right away instead</span>
+                                      <span class="token comment">// of having to wait out the ping cycle.</span>
+                <span class="token punctuation">}</span>
+                <span class="token comment">//更新服务列表</span>
+                <span class="token function">setServersList</span><span class="token punctuation">(</span>ls<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token comment">//进行心跳健康检测</span>
+                <span class="token keyword">super</span><span class="token punctuation">.</span><span class="token function">forceQuickPing</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">finally</span> <span class="token punctuation">{<!-- --></span>
+                serverListUpdateInProgress<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/862be0744917f723303c4a8806122230/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">核主元分析 KPCA及matlab代码</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8314e31d668c6f46d6bf4895220fe8f2/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">华为防火墙技术-防火墙基础</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

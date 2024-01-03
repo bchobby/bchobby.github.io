@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>####好好好#####时序数据库介绍和使用 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="####好好好#####时序数据库介绍和使用" />
+<meta property="og:description" content="1.基础
+1.1 时序数据的定义
+什么是时间序列数据（Time Series Data，TSD，以下简称时序）从定义上来说，就是一串按时间维度索引的数据。用描述性的语言来解释什么是时序数据，简单的说，就是这类数据描述了某个被测量的主体在一个时间范围内的每个时间点上的测量值。它普遍存在于IT基础设施、运维监控系统和物联网中。
+对时序数据进行建模的话，会包含三个重要部分，分别是：主体，时间点和测量值。套用这套模型，你会发现你在日常工作生活中，无时无刻不在接触着这类数据。
+如果你是一个股民，某只股票的股价就是一类时序数据，其记录着每个时间点该股票的股价。
+如果你是一个运维人员，监控数据是一类时序数据，例如对于机器的CPU的监控数据，就是记录着每个时间点机器上CPU的实际消耗值。
+时序数据从时间维度上将孤立的观测值连成一条线，从而揭示软硬件系统的状态变化。孤立的观测值不能叫时序数据，但如果把大量的观测值用时间线串起来，我们就可以研究和分析观测值的趋势及规律。
+1.2 时序数据的特点
+1.2.1 时序数据的数学模型
+上面介绍了时序数据的基本概念，也说明了分析时序数据的意义。那么时序数据该怎样存储呢？数据的存储要考虑其数学模型和特点，时序数据当然也不例外。所以这里先介绍时序数据的数学模型和特点。
+下图为一段时序数据，记录了一段时间内的某个集群里各机器上各端口的出入流量，每半小时记录一个观测值。这里以图中的数据为例，介绍下时序数据的数学模型（不同的时序数据库中，基本概念的称谓有可能不同，这里以腾讯CTSDB为准）：
+measurement： 度量的数据集，类似于关系型数据库中的 table；
+point： 一个数据点，类似于关系型数据库中的 row；
+timestamp： 时间戳，表征采集到数据的时间点；
+tag： 维度列，代表数据的归属、属性，表明是哪个设备/模块产生的，一般不随着时间变化，供查询使用；
+field： 指标列，代表数据的测量值，随时间平滑波动，不需要查询。
+如上图所示，这组数据的measurement为Network，每个point由以下部分组成：
+timestamp：时间戳
+两个tag：host、port，代表每个point归属于哪台机器的哪个端口
+两个field：bytes_in、bytes_out，代表piont的测量值，半小时内出入流量的平均值
+同一个host、同一个port，每半小时产生一个point，随着时间的增长，field（bytes_in、bytes_out）不断变化。如host：host4，port：51514，timestamp从02:00 到02:30的时间段内，bytes_in 从 37.937上涨到38.089，bytes_out从2897.26上涨到3009.86，说明这一段时间内该端口服务压力升高。
+1.2.2 时序数据特点
+数据模式： 时序数据随时间增长，相同维度重复取值，指标平滑变化：这点从上面的Network表的数据变化可以看出。
+写入： 持续高并发写入，无更新操作：时序数据库面对的往往是百万甚至千万数量级终端设备的实时数据写入（如摩拜单车2017年全国车辆数为千万级），但数据大多表征设备状态，写入后不会更新。
+查询： 按不同维度对指标进行统计分析，且存在明显的冷热数据，一般只会频繁查询近期数据。
+1.3 时序数据的存储
+1.3.1 传统关系型数据库存储时序数据的问题
+有了时序数据后，该存储在哪里呢？首先我们看下传统的关系型数据库解决方案在存储时序数据时会遇到什么问题。
+很多人可能认为在传统关系型数据库上加上时间戳一列就能作为时序数据库。数据量少的时候确实也没问题。但时序数据往往是由百万级甚至千万级终端设备产生的，写入并发量比较高，属于海量数据场景。
+MySQL在海量的时序数据场景下存在如下问题：
+存储成本大：对于时序数据压缩不佳，需占用大量机器资源；
+维护成本高：单机系统，需要在上层人工的分库分表，维护成本高；
+写入吞吐低：单机写入吞吐低，很难满足时序数据千万级的写入压力；
+查询性能差：适用于交易处理，海量数据的聚合分析性能差。
+另外，使用Hadoop生态（Hadoop、Spark等）存储时序数据会有以下问题：
+数据延迟高：离线批处理系统，数据从产生到可分析，耗时数小时、甚至天级；
+查询性能差：不能很好的利用索引，依赖MapReduce任务，查询耗时一般在分钟级。
+可以看到时序数据库需要解决以下几个问题：
+时序数据的写入：如何支持每秒钟上千万上亿数据点的写入。
+时序数据的读取：如何支持在秒级对上亿数据的分组聚合运算。
+成本敏感：由海量数据存储带来的是成本问题。如何更低成本的存储这些数据，将成为时序数据库需要解决的重中之重。
+1.3.2 时序数据库
+***时序数据库产品的发明都是为了解决传统关系型数据库在时序数据存储和分析上的不足和缺陷，这类产品被统一归类为时序数据库。***针对时序数据的特点对写入、存储、查询等流程进行了优化，这些优化与时序数据的特点息息相关：
+存储成本：
+利用时间递增、维度重复、指标平滑变化的特性，合理选择编码压缩算法，提高数据压缩比；
+通过预降精度，对历史数据做聚合，节省存储空间。
+高并发写入：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/3661f6acc9844a61da1f3ccc405da128/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-04-07T18:39:05+08:00" />
+<meta property="article:modified_time" content="2022-04-07T18:39:05+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">####好好好#####时序数据库介绍和使用</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>1.基础<br> 1.1 时序数据的定义<br> 什么是时间序列数据（Time Series Data，TSD，以下简称时序）从定义上来说，就是一串按时间维度索引的数据。用描述性的语言来解释什么是时序数据，简单的说，就是这类数据描述了某个被测量的主体在一个时间范围内的每个时间点上的测量值。它普遍存在于IT基础设施、运维监控系统和物联网中。<br>   <br> 对时序数据进行建模的话，会包含三个重要部分，分别是：主体，时间点和测量值。套用这套模型，你会发现你在日常工作生活中，无时无刻不在接触着这类数据。</p> 
+<p>如果你是一个股民，某只股票的股价就是一类时序数据，其记录着每个时间点该股票的股价。<br> 如果你是一个运维人员，监控数据是一类时序数据，例如对于机器的CPU的监控数据，就是记录着每个时间点机器上CPU的实际消耗值。<br> 时序数据从时间维度上将孤立的观测值连成一条线，从而揭示软硬件系统的状态变化。孤立的观测值不能叫时序数据，但如果把大量的观测值用时间线串起来，我们就可以研究和分析观测值的趋势及规律。</p> 
+<p>1.2 时序数据的特点<br> 1.2.1 时序数据的数学模型<br> 上面介绍了时序数据的基本概念，也说明了分析时序数据的意义。那么时序数据该怎样存储呢？数据的存储要考虑其数学模型和特点，时序数据当然也不例外。所以这里先介绍时序数据的数学模型和特点。</p> 
+<p>下图为一段时序数据，记录了一段时间内的某个集群里各机器上各端口的出入流量，每半小时记录一个观测值。这里以图中的数据为例，介绍下时序数据的数学模型（不同的时序数据库中，基本概念的称谓有可能不同，这里以腾讯CTSDB为准）：</p> 
+<p>measurement： 度量的数据集，类似于关系型数据库中的 table；</p> 
+<p>point： 一个数据点，类似于关系型数据库中的 row；</p> 
+<p>timestamp： 时间戳，表征采集到数据的时间点；</p> 
+<p>tag： 维度列，代表数据的归属、属性，表明是哪个设备/模块产生的，一般不随着时间变化，供查询使用；</p> 
+<p>field： 指标列，代表数据的测量值，随时间平滑波动，不需要查询。</p> 
+<p>如上图所示，这组数据的measurement为Network，每个point由以下部分组成：</p> 
+<p>timestamp：时间戳</p> 
+<p>两个tag：host、port，代表每个point归属于哪台机器的哪个端口</p> 
+<p>两个field：bytes_in、bytes_out，代表piont的测量值，半小时内出入流量的平均值<br> 同一个host、同一个port，每半小时产生一个point，随着时间的增长，field（bytes_in、bytes_out）不断变化。如host：host4，port：51514，timestamp从02:00 到02:30的时间段内，bytes_in 从 37.937上涨到38.089，bytes_out从2897.26上涨到3009.86，说明这一段时间内该端口服务压力升高。</p> 
+<p>1.2.2 时序数据特点<br> 数据模式： 时序数据随时间增长，相同维度重复取值，指标平滑变化：这点从上面的Network表的数据变化可以看出。<br> 写入： 持续高并发写入，无更新操作：时序数据库面对的往往是百万甚至千万数量级终端设备的实时数据写入（如摩拜单车2017年全国车辆数为千万级），但数据大多表征设备状态，写入后不会更新。<br> 查询： 按不同维度对指标进行统计分析，且存在明显的冷热数据，一般只会频繁查询近期数据。<br> 1.3 时序数据的存储<br> 1.3.1 传统关系型数据库存储时序数据的问题<br> 有了时序数据后，该存储在哪里呢？首先我们看下传统的关系型数据库解决方案在存储时序数据时会遇到什么问题。</p> 
+<p>很多人可能认为在传统关系型数据库上加上时间戳一列就能作为时序数据库。数据量少的时候确实也没问题。但时序数据往往是由百万级甚至千万级终端设备产生的，写入并发量比较高，属于海量数据场景。</p> 
+<p>MySQL在海量的时序数据场景下存在如下问题：</p> 
+<p>存储成本大：对于时序数据压缩不佳，需占用大量机器资源；<br> 维护成本高：单机系统，需要在上层人工的分库分表，维护成本高；<br> 写入吞吐低：单机写入吞吐低，很难满足时序数据千万级的写入压力；<br> 查询性能差：适用于交易处理，海量数据的聚合分析性能差。<br> 另外，使用Hadoop生态（Hadoop、Spark等）存储时序数据会有以下问题：</p> 
+<p>数据延迟高：离线批处理系统，数据从产生到可分析，耗时数小时、甚至天级；<br> 查询性能差：不能很好的利用索引，依赖MapReduce任务，查询耗时一般在分钟级。<br> 可以看到时序数据库需要解决以下几个问题：</p> 
+<p>时序数据的写入：如何支持每秒钟上千万上亿数据点的写入。<br> 时序数据的读取：如何支持在秒级对上亿数据的分组聚合运算。<br> 成本敏感：由海量数据存储带来的是成本问题。如何更低成本的存储这些数据，将成为时序数据库需要解决的重中之重。<br> 1.3.2 时序数据库<br> ***时序数据库产品的发明都是为了解决传统关系型数据库在时序数据存储和分析上的不足和缺陷，这类产品被统一归类为时序数据库。***针对时序数据的特点对写入、存储、查询等流程进行了优化，这些优化与时序数据的特点息息相关：</p> 
+<p>存储成本：<br> 利用时间递增、维度重复、指标平滑变化的特性，合理选择编码压缩算法，提高数据压缩比；<br> 通过预降精度，对历史数据做聚合，节省存储空间。</p> 
+<p>高并发写入：<br> 批量写入数据，降低网络开销；<br> 数据先写入内存，再周期性的dump为不可变的文件存储。</p> 
+<p>低查询延时，高查询并发：<br> 优化常见的查询模式，通过索引等技术降低查询延时；<br> 通过缓存、routing等技术提高查询并发。</p> 
+<p>1.3.3 时序数据的存储原理<br> 传统数据库存储采用的都是 B tree，这是由于其在查询和顺序插入时有利于减少寻道次数的组织形式。我们知道磁盘寻道时间是非常慢的，一般在 10ms 左右。磁盘的随机读写慢就慢在寻道上面。对于随机写入 B tree 会消耗大量的时间在磁盘寻道上，导致速度很慢。我们知道 SSD 具有更快的寻道时间，但并没有从根本上解决这个问题。</p> 
+<p>对于 90% 以上场景都是写入的时序数据库，B tree 很明显是不合适的。</p> 
+<p>业界主流都是采用 LSM tree 替换 B tree，比如 Hbase, Cassandra 等 nosql 。这里我们详细介绍一下。</p> 
+<p>LSM tree 包括内存里的数据结构和磁盘上的文件两部分。分别对应 Hbase 里的 MemStore 和 HLog；对应 Cassandra 里的 MemTable 和 sstable。</p> 
+<p>LSM tree 操作流程如下：</p> 
+<p>数据写入和更新时首先写入位于内存里的数据结构。为了避免数据丢失也会先写到 WAL 文件中。<br> 内存里的数据结构会定时或者达到固定大小会刷到磁盘。这些磁盘上的文件不会被修改。<br> 随着磁盘上积累的文件越来越多，会定时的进行合并操作，消除冗余数据，减少文件数量。</p> 
+<p>可以看到 LSM tree 核心思想就是通过内存写和后续磁盘的顺序写入获得更高的写入性能，避免了随机写入。但同时也牺牲了读取性能，因为同一个 key 的值可能存在于多个 HFile 中。为了获取更好的读取性能，可以通过 bloom filter 和 compaction 得到，这里限于篇幅就不详细展开。</p> 
+<p>###1.3.4 分布式存储<br> 时序数据库面向的是海量数据的写入存储读取，单机是无法解决问题的。所以需要采用多机存储，也就是分布式存储。</p> 
+<p>分布式存储首先要考虑的是如何将数据分布到多台机器上面，也就是分片（sharding）问题。下面我们就时序数据库分片问题展开介绍。分片问题由分片方法的选择和分片的设计组成。</p> 
+<p>####分片方法<br> 时序数据库的分片方法和其他分布式系统是相通的。</p> 
+<p>哈希分片：这种方法实现简单，均衡性较好，但是集群不易扩展。<br> 一致性哈希：这种方案均衡性好，集群扩展容易，只是实现复杂。代表有 Amazon 的 DynamoDB 和开源的 Cassandra。<br> 范围划分：通常配合全局有序，复杂度在于合并和分裂。代表有 Hbase。<br> 分片设计<br> 分片设计简单来说就是以什么做分片，这是非常有技巧的，会直接影响写入读取的性能。</p> 
+<p>**结合时序数据库的特点，根据 measurement+tags 分片是比较好的一种方式，因为往往会按照一个时间范围查询，这样相同 metric 和 tags 的数据会分配到一台机器上连续存放，顺序的磁盘读取是很快的。**再结合上面讲到的单机存储内容，可以做到快速查询。</p> 
+<p>进一步我们考虑时序数据时间范围很长的情况，需要根据时间范围再分成几段，分别存储到不同的机器上，这样对于大范围时序数据就可以支持并发查询，优化查询速度。</p> 
+<p>如下图，第一行和第三行都是同样的 tag（sensor=95D8-7913;city= 上海），所以分配到同样的分片，而第五行虽然也是同样的 tag，但是根据时间范围再分段，被分到了不同的分片。第二、四、六行属于同样的 tag（sensor=F3CC-20F3;city= 北京）也是一样的道理。</p> 
+<p><br> 1.4 开源时序数据库介绍<br> 1.4.1开源时序数据库对比<br> 目前行业内比较流行的开源时序数据库产品有 InfluxDB、OpenTSDB、Prometheus、Graphite等，其产品特性对比如下图所示：</p> 
+<p><br> 1.4.2 InfluxDB介绍<br> InfluxDB是一个开源的时序数据库，使用GO语言开发，特别适合用于处理和分析资源监控数据这种时序相关数据。而InfluxDB自带的各种特殊函数如求标准差，随机取样数据，统计数据变化比等，使数据统计和实时分析变得十分方便。</p> 
+<p>重要概念<br> influxdb里面有一些重要概念：database，timestamp，field key， field value， field set，tag key，tag value，tag set，measurement， retention policy ，series，point。结合下面的例子数据来说明这几个概念：</p> 
+<p>name: census<br> -————————————<br> time                     butterflies     honeybees     location   scientist<br> 2015-08-18T00:00:00Z      12                23           1         langstroth<br> 2015-08-18T00:00:00Z      1                 30           1         perpetua<br> 2015-08-18T00:06:00Z      11                28           1         langstroth<br> 2015-08-18T00:06:00Z      3                 28           1         perpetua<br> 2015-08-18T05:54:00Z      2                 11           2         langstroth<br> 2015-08-18T06:00:00Z      1                 10           2         langstroth<br> 2015-08-18T06:06:00Z      8                 23           2         perpetua<br> 2015-08-18T06:12:00Z      7                 22           2         perpetua<br><br> timestamp<br> 既然是时间序列数据库，influxdb的数据都有一列名为time的列，里面存储UTC时间戳。</p> 
+<p>field key，field value，field set<br> butterflies和honeybees两列数据称为字段(fields)，influxdb的字段由field key和field value组成。其中butterflies和honeybees为field key，它们为string类型，用于存储元数据。</p> 
+<p>而butterflies这一列的数据12-7为butterflies的field value，同理，honeybees这一列的23-22为honeybees的field value。field value可以为string，float，integer或boolean类型。field value通常都是与时间关联的。</p> 
+<p>field key和field value对组成的集合称之为field set。如下：</p> 
+<p>butterflies = 12 honeybees = 23<br> butterflies = 1 honeybees = 30<br> butterflies = 11 honeybees = 28<br> butterflies = 3 honeybees = 28<br> butterflies = 2 honeybees = 11<br> butterflies = 1 honeybees = 10<br> butterflies = 8 honeybees = 23<br> butterflies = 7 honeybees = 22<br><br> 在influxdb中，字段必须存在。注意，字段是没有索引的。如果使用字段作为查询条件，会扫描符合查询条件的所有字段值，性能不及tag。类比一下，fields相当于SQL的没有索引的列。</p> 
+<p>tag key，tag value，tag set<br> location和scientist这两列称为标签(tags)，标签由tag key和tag value组成。location这个tag key有两个tag value：1和2，scientist有两个tag value：langstroth和perpetua。tag key和tag value对组成了tag set，示例中的tag set如下：</p> 
+<p>location = 1, scientist = langstroth<br> location = 2, scientist = langstroth<br> location = 1, scientist = perpetua<br> location = 2, scientist = perpetua<br><br> tags是可选的，但是强烈建议你用上它，因为tag是有索引的，tags相当于SQL中的有索引的列。tag value只能是string类型 如果你的常用场景是根据butterflies和honeybees来查询，那么你可以将这两个列设置为tag，而其他两列设置为field，tag和field依据具体查询需求来定。</p> 
+<p>measurement<br> measurement是fields，tags以及time列的容器，measurement的名字用于描述存储在其中的字段数据，类似mysql的表名。如上面例子中的measurement为census。measurement相当于SQL中的表，本文中我在部分地方会用表来指代measurement。</p> 
+<p>retention policy<br> retention policy指数据保留策略，示例数据中的retention policy为默认的autogen。它表示数据一直保留永不过期，副本数量为1。你也可以指定数据的保留时间，如30天。</p> 
+<p>series<br> series是共享同一个retention policy，measurement以及tag set的数据集合。示例中数据有4个series，如下:</p> 
+<p>Arbitrary series number    Retention policy    Measurement    Tag set<br> series 1    autogen    census    location = 1,scientist = langstroth<br> series 2    autogen    census    location = 2,scientist = langstroth<br> series 3    autogen    census    location = 1,scientist = perpetua<br> series 4    autogen    census    location = 2,scientist = perpetua<br><br> point<br> point则是同一个series中具有相同时间的field set，points相当于SQL中的数据行。如下面就是一个point：</p> 
+<p>name: census<br> -----------------<br> time                  butterflies    honeybees   location    scientist<br> 2015-08-18T00:00:00Z       1            30           1        perpetua<br><br> database<br> 上面提到的结构都存储在数据库中，示例的数据库为my_database。一个数据库可以有多个measurement，retention policy， continuous queries以及user。influxdb是一个无模式的数据库，可以很容易的添加新的measurement，tags，fields等。而它的操作却和传统的数据库一样，可以使用类SQL语言查询和修改数据。</p> 
+<p>influxdb不是一个完整的CRUD数据库，它更像是一个CR-ud数据库。它优先考虑的是增加和读取数据而不是更新和删除数据的性能，而且它阻止了某些更新和删除行为使得创建和读取数据更加高效。</p> 
+<p>更多详细介绍请见：https://www.jianshu.com/p/a1344ca86e9b</p> 
+<p>2.部署<br> 2.1 influxdb部署<br> yum部署：<br> &lt;1&gt; 配置YUM源</p> 
+<p>cat &lt;&lt;EOF| sudo tee /etc/yum.repos.d/influxdb.repo<br> [influxdb]<br> name = InfluxDB Repository- RHEL\$releasever<br> baseurl = https://repos.influxdata.com/rhel/\$releasever/\$basearch/stable<br> enabled = 1<br> gpgcheck = 1<br> gpgkey = https://repos.influxdata.com/influxdb.key<br> EOF<br><br> &lt;2&gt; yum安装</p> 
+<p>yum install influxdb -y<br> systemctl start influxdb<br> systemctl enable influxdb<br><br> rpm部署：</p> 
+<p>wget https://dl.influxdata.com/influxdb/releases/influxdb-1.5.2.x86_64.rpm<br> yum -y localinstall influxdb-1.5.2.x86_64.rpm<br><br> docker部署：</p> 
+<p>docker run --name=influxdb -d -p 8086:8086 -v /etc/localtime:/etc/localtime daocloud.io/liukuan73/influxdb:1.4        <br>         <br> 备注：假如是收集collectd的内容，还需要映射25826端口-p 25826:25826<br> ##2.2 grafana部署<br> rpm部署：</p> 
+<p>wget https://s3-us-west-2.amazonaws.com/grafana-releases/release/grafana-5.0.4-1.x86_64.rpm<br> yum -y localinstall grafana-5.0.4-1.x86_64.rpm <br> systemctl enable grafana-server<br> systemctl start grafana-server<br><br> docker部署：</p> 
+<p>docker run -d -p 3000:3000 --name=grafana -e "GF_SERVER_HTTP_PORT=3000" -e "GF_AUTH_BASIC_ENABLED=false" -e "GF_AUTH_ANONYMOUS_ENABLED=true" -e "GF_AUTH_ANONYMOUS_ORG_ROLE=Admin"  -e "GF_SERVER_ROOT_URL=/" daocloud.io/liukuan73/grafana:5.0.0</p> 
+<p><br> 3.使用<br> 有三种方法可以将数据写入InfluxDB，包括：</p> 
+<p>客户端库<br> 调用restapi<br> 命令行（类sql语句）<br> ##3.1 调用客户端库操作influxdb<br> 以collectd+influxdb+grafana为例介绍通过collectd采集主机性能指标，然后通过influxdb的客户端库写入influxdb，最后在grafana展示的完整过程。<br> 3.1.1 collectd部署<br> 1、yum安装</p> 
+<p>sudo yum -y install epel-release<br> sudo yum -y install collectd<br><br> 2、数据写入 influxdb ,修改配置</p> 
+<p>vi /etc/collectd.conf<br> LoadPlugin network<br> &lt;Plugin network&gt;<br> #       # client setup:<br>         Server "10.142.232.155" "25826"<br> #       &lt;Server "239.192.74.66" "25826"&gt;<br> &lt;/Plugin&gt;<br> systemctl enable collectd<br> systemctl start collectd<br> systemctl status collectd<br><br> 3.1.2 influxdb配置<br> 1、创建collectd数据库</p> 
+<p>influx -host '10.142.232.155' -port '8086'<br> Connected to http://127.0.0.1:8086 version 1.5.2<br> InfluxDB shell version: 1.5.2<br> &gt; create database collectd<br> &gt; use collectd<br> &gt; create user "collectd" with password '123456' with all privileges<br><br> 2、配置influxdb，开启对collectd数据的接收</p> 
+<p>vim /etc/influxdb/influxdb.conf<br> [[collectd]]<br>   enabled = true<br>   port = 25826                                            <br>   database = "collectd"         #刚创建的collectd数据库，来自collectd的数据写入这个数据库。没事先创建好的话会启动失败<br><br> 3.1.3 grafana配置<br> 1、配置influxdb数据源<br> 点击“Add data source”配置数据源：</p> 
+<p><br> 2.配置dashboard<br> 网络流量统计<br> 创建graph，切换编辑模式“Toggle Edit Mode”, 然后输入自定义SQL查询</p> 
+<p>输入查询语句：</p> 
+<p>SELECT derivative("value") AS "value" FROM "interface_rx" WHERE "host" = 'k8sslave04' AND "type" = 'if_octets' AND "instance" = 'eno16777984'<br><br> 备注：<br> 函数 derivative 意为导数, 微积分中的概念. value 为传输总量(字节), derivative(“value”) 为 value 在时间上的增量.其中：</p> 
+<p>host = k8sslave04<br> type = if_octets<br> instance = eno16777984<br> 系统负载</p> 
+<p>输入查询语句：</p> 
+<p>SELECT mean("value") FROM "load_longterm" WHERE "host" = 'k8sslave04' AND $timeFilter GROUP BY time($interval) fill(null)<br> SELECT mean("value") FROM "load_midterm" WHERE "host" = 'k8sslave04' AND $timeFilter GROUP BY time($interval) fill(null)<br> SELECT mean("value") FROM "load_shortterm" WHERE "host" = 'k8sslave04' AND $timeFilter GROUP BY time($interval) fill(null)<br><br> 内存用量</p> 
+<p>输入查询语句：</p> 
+<p>SELECT mean("value") FROM "memory_value" WHERE "type_instance" = 'used' AND $timeFilter GROUP BY time($interval) fill(null)<br> 1<br> 效果</p> 
+<p><br> 3.2 RestAPI操作<br> 3.2.1 实例<br> 创建数据库：<br> 要创建数据库，请将POST请求发送到/query终结点，并将URL参数q设置为CREATE DATABASE。 下面的示例主机上运行的InfluxDB发送请求，并创建数据库test：</p> 
+<p>curl -i -XPOST http://influxdb-ip:8086/query --data-urlencode "q=CREATE DATABASE test"<br><br> 写入单条数据:<br> 通过向/write端点发送POST请求，HTTP-API是将数据写入InfluxDB的主要方式。下面的例子向test数据库写了一个点。 数据由度量cpu_load_short，标签键host和region和对应的标签值server01和us-west，字段值为0.64的字段键value和时间戳1434055562000000000组成。</p> 
+<p>curl -i -XPOST 'http://influxdb-ip:8086/write?db=test' --data-binary 'cpu_load_short,host=server01,region=us-west value=0.64 1434055562000000000'<br><br> 写入点时，必须在db查询参数中指定一个现有的数据库。 如果您没有使用rp查询参数提供保留策略，则会将点写入数据库的默认保留策略。 请参阅API参考文档以获取可用查询参数的完整列表。</p> 
+<p>写入多条数据：<br> 一次将多个点Post到不同序列，只需要用行将多个点分隔即可。这种批量方式具有高性能。以下示例将三个点写入数据库mydb。 第一点属于拥有度量cpu_load_short及标签集host = server02且用服务器本地时间戳的序列。第二点属于拥有度量cpu_load_short及标签集host = server02，region =us-west且具有指定时间戳1422568543702900257的序列。第三个点与第二个点具有相同的指定时间戳，但是将其写入拥有度量cpu_load_short和标签集direction=in,host=server01,region=us-west的序列。</p> 
+<p>curl -i -XPOST 'http://influxdb-ip:8086/write?db=test' --data-binary 'cpu_load_short,host=server02 value=0.67<br> cpu_load_short,host=server02,region=us-west value=0.55 1422568543702900257<br> cpu_load_short,direction=in,host=server01,region=us-west value=2.0 1422568543702900257'<br><br> 写入来自文件的数据：<br> 通过将@filename传给curl来从文件中写入点。文件中的数据应该遵循InfluxDB的行协议语法。格式正确的文件示例（cpu_data.txt）：</p> 
+<p>cpu_load_short,host=server02 value=0.67<br> cpu_load_short,host=server02,region=us-west value=0.55 1422568543702900257<br> cpu_load_short,direction=in,host=server01,region=us-west value=2.0 1422568543702900257<br><br> 将cpu_data.txt中数据写入mydb数据库：</p> 
+<p>curl -i -XPOST 'http://influxdb-ip:8086/write?db=test' --data-binary @cpu_data.txt<br> 1<br> 注意：如果数据文件中超过5,000个点，可能需要将该文件分成几个文件，以便将数据批量写入InfluxDB。 默认情况下，HTTP请求在五秒钟后超时。 InfluxDB在超时之后仍然会尝试写出这些点，但是不能确认它们是否成功写入。</p> 
+<p>###3.2.2 HTTP响应总结</p> 
+<p>2xx：如果你的写请求收到HTTP 204 No Content，那就成功了！<br> 4xx：InfluxDB无法理解请求。<br> 5xx：系统过载或严重受损。<br> 无架构设计<br> InfluxDB是一个无架构的数据库。 您可以随时添加新的度量，标签和字段。请注意，如果您尝试写入与已写入数据类型不相同的数据（例如，将字符串写入之前接受整数的字段），InfluxDB将拒绝这些数据。</p> 
+<p>错误响应的例子：</p> 
+<p>将浮点数写入先前接受布尔值的字段中：</p> 
+<p>curl -i -XPOST 'https://influxdb-ip:8086/writedb=hamlet' --data-binary 'tobeornottobe booleanonly=true'</p> 
+<p>curl -i -XPOST 'https://influxdb-ip:8086/writedb=hamlet' --data-binary 'tobeornottobe booleanonly=5'<br><br> 返回：</p> 
+<p>HTTP/1.1 400 Bad Request<br> Content-Type: application/json<br> Request-Id: [...]<br> X-Influxdb-Version: 1.4.x<br> Date: Wed, 01 Mar 2017 19:38:01 GMT<br> Content-Length: 150</p> 
+<p>{"error":"field type conflict: input field \"booleanonly\" on measurement \"tobeornottobe\" is type float, already exists as type boolean dropped=1"}<br> Writing a point to a database that doesn’t exist:<br>  curl -i -XPOST 'https://localhost:8086/writedb=atlantis' --data-binary 'liters value=10'<br> returns: <br>  HTTP/1.1 404 Not Found<br> Content-Type: application/json<br> Request-Id: [...]<br> X-Influxdb-Version: 1.4.x<br> Date: Wed, 01 Mar 2017 19:38:35 GMT<br> Content-Length: 45</p> 
+<p>{"error":"database not found: \"atlantis\""}<br> Next steps<br> Now that you know how to write data with the built-in HTTP API discover how to query them with the Querying Data guide! For more information about writing data with the HTTP API, please see the API reference documentation.<br><br> 将点写入不存在的数据库</p> 
+<p>curl -i -XPOST 'https://localhost:8086/writedb=atlantis' --data-binary 'liters value=10'<br> 1<br> 返回：</p> 
+<p>HTTP/1.1 404 Not Found<br> Content-Type: application/json<br> Request-Id: [...]<br> X-Influxdb-Version: 1.4.x<br> Date: Wed, 01 Mar 2017 19:38:35 GMT<br> Content-Length: 45</p> 
+<p>{"error":"database not found: \"atlantis\""}<br><br> 3.3命令行操作<br> InfluxDB提供类SQL语法，如果熟悉SQL的话会非常容易上手。<br> 一些操作实例请见：https://www.linuxdaxue.com/influxdb-basic-operation.html</p> 
+<p>参考：<br> http://www.infoq.com/cn/articles/storage-in-sequential-databases<br> https://zhuanlan.zhihu.com/p/32627177<br> https://segmentfault.com/a/1190000006868587<br> http://www.zhimengzhe.com/shujuku/MySQL/414763.html<br> https://blog.csdn.net/a464057216/article/details/53043551<br> https://blog.csdn.net/wudufeng/article/details/78567866<br> https://www.linuxdaxue.com/influxdb-basic-operation.html<br> https://www.jianshu.com/p/a1344ca86e9b<br>  </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/256134e2ceb082291b9dcd95aa868916/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">free(): invalid next size (fast):错误及解决方案</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/5298316454cb46b059b5fe5355220def/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">STM32定时器的定时时间设置</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

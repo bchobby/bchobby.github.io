@@ -1,0 +1,1381 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>etcd集群部署、备份还原、etcdctl命令行工具 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="etcd集群部署、备份还原、etcdctl命令行工具" />
+<meta property="og:description" content="目录 前言什么是etcdetcd名词raft协议-摘抄自《etcd技术内幕》etcd的部署要求二进制部署etcd查看etcd命令帮助创建etcd集群，使用systemd管理，http协议创建etcd集群，使用systemd管理，https协议etcdctl客户端工具的使用为etcdctl创建别名alarm 告警管理key的增删改查put 添加或修改keyget 查询或获取keydel 删除keywatch 监听key lease租约endpoint 操作member 操作leader角色转换给指定节点用户、角色、认证管理user用户管理role 角色管理auth认证 备份、还原 etcd 集群etcdutl 备份、快照管理命令etcd崩毁恢复有3种方法恢复损坏的member1、清除成员持久状态2、替换member3、恢复整个集群-使用快照恢复 前言 k8s集群中使用etcd数据库作为数据后端存储，所以本篇来学习etcd。
+截止目前2023-11月，官网最新版是etcd v3.6，但是3.6版本处于草稿状态，所以官网目前推荐使用最新稳定版本是etcd-v3.5，本篇来学习etcd v3.5版本。
+什么是etcd 官网：https://etcd.io/
+官网介绍：A distributed, reliable key-value store for the most critical data of a distributed system 分布式、可靠的键值存储，用于存储分布式系统中最关键的数据。
+etcd名词 Raft：etcd所采用的保证分布式系统强一致性的算法。 Node：一个Raft状态机实例。 Member： 一个etcd实例。它管理着一个Node，并且可以为客户端请求提供服务。 Cluster：由多个Member构成可以协同工作的etcd集群。 Peer：对同一个etcd集群中另外一个Member的称呼。 Client： 向etcd集群发送HTTP请求的客户端。 WAL：预写式日志，etcd用于持久化存储的日志格式。 snapshot：etcd防止WAL文件过多而设置的快照，存储etcd数据状态。 Proxy：etcd的一种模式，为etcd集群提供反向代理服务。 Leader(领导者)：Raft算法中通过竞选而产生的处理所有数据提交的领导节点。 Follower(跟随者)：竞选失败的节点作为Raft中的从属节点，为算法提供强一致性保证。 Candidate：候选节点，当Follower超过一定时间接收不到Leader的心跳时转变为Candidate开始Leader竞选。 Term：任期，某个节点成为Leader到下一次竞选开始的时间周期，称为一个Term任期。 Index：数据项编号。Raft中通过Term和Index来定位数据。 raft协议-摘抄自《etcd技术内幕》 Raft 协议的工作模式是一个 Leader 节点和多个 Follower 节点的模式，也就是常说的Leader-Follower 模式。在 Raft 协议中，每个节点都维护了一个状态机，该状态机有三种状态，分别是Leader状态、Follower状态和Candidate状态，在任意时刻，集群中的任意一个节点都处于这三个状态之一。各个状态和转换条件如图2-1所示：
+在多数情况下，集群中有一个Leader节点，其他节点都处于Follower状态，下面简单介绍一下每个状态的节点负责的主要工作。
+1、Leader节点负责处理所有客户端的请求，当接收到客户端的写入请求时，Leader节点会在本地追加一条相应的日志，然后将其封装
+成消息发送到集群中其他的Follower节点。当Follower节点收到该消息时会对其进行响应。如果集群中多数（超过半数）节点都已收到该
+请求对应的日志记录时，则 Leader 节点认为该条日志记录已提交（committed），可以向客户端返回响应。Leader 还会处理客户端的" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/329cb543a1b846cf0b972795534d0552/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-13T18:28:41+08:00" />
+<meta property="article:modified_time" content="2023-12-13T18:28:41+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">etcd集群部署、备份还原、etcdctl命令行工具</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><ul><li><a href="#_1" rel="nofollow">前言</a></li><li><a href="#etcd_4" rel="nofollow">什么是etcd</a></li><li><a href="#etcd_8" rel="nofollow">etcd名词</a></li><li><a href="#raftetcd_26" rel="nofollow">raft协议-摘抄自《etcd技术内幕》</a></li><li><a href="#etcd_81" rel="nofollow">etcd的部署要求</a></li><li><a href="#etcd_88" rel="nofollow">二进制部署etcd</a></li><li><a href="#etcd_132" rel="nofollow">查看etcd命令帮助</a></li><li><a href="#etcdsystemdhttp_360" rel="nofollow">创建etcd集群，使用systemd管理，http协议</a></li><li><a href="#etcdsystemdhttps_536" rel="nofollow">创建etcd集群，使用systemd管理，https协议</a></li><li><a href="#etcdctl_757" rel="nofollow">etcdctl客户端工具的使用</a></li><li><a href="#etcdctl_835" rel="nofollow">为etcdctl创建别名</a></li><li><a href="#alarm__854" rel="nofollow">alarm 告警管理</a></li><li><a href="#key_861" rel="nofollow">key的增删改查</a></li><li><ul><li><a href="#put_key_862" rel="nofollow">put 添加或修改key</a></li><li><a href="#get_key_891" rel="nofollow">get 查询或获取key</a></li><li><a href="#del_key_926" rel="nofollow">del 删除key</a></li><li><a href="#watch_key_939" rel="nofollow">watch 监听key</a></li></ul> 
+   </li><li><a href="#lease_955" rel="nofollow">lease租约</a></li><li><a href="#endpoint__987" rel="nofollow">endpoint 操作</a></li><li><a href="#member__996" rel="nofollow">member 操作</a></li><li><a href="#leader_1022" rel="nofollow">leader角色转换给指定节点</a></li><li><a href="#_1035" rel="nofollow">用户、角色、认证管理</a></li><li><ul><li><a href="#user_1036" rel="nofollow">user用户管理</a></li><li><a href="#role__1071" rel="nofollow">role 角色管理</a></li><li><a href="#auth_1106" rel="nofollow">auth认证</a></li></ul> 
+   </li><li><a href="#_etcd__1132" rel="nofollow">备份、还原 etcd 集群</a></li><li><a href="#etcdutl__1171" rel="nofollow">etcdutl 备份、快照管理命令</a></li><li><a href="#etcd_1241" rel="nofollow">etcd崩毁恢复</a></li><li><ul><li><a href="#3member_1245" rel="nofollow">有3种方法恢复损坏的member</a></li><li><a href="#1_1252" rel="nofollow">1、清除成员持久状态</a></li><li><a href="#2member_1270" rel="nofollow">2、替换member</a></li><li><a href="#3_1288" rel="nofollow">3、恢复整个集群-使用快照恢复</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="_1"></a>前言</h3> 
+<p>k8s集群中使用etcd数据库作为数据后端存储，所以本篇来学习etcd。<br> 截止目前2023-11月，官网最新版是etcd v3.6，但是3.6版本处于草稿状态，所以官网目前推荐使用最新稳定版本是etcd-v3.5，本篇来学习etcd v3.5版本。</p> 
+<h3><a id="etcd_4"></a>什么是etcd</h3> 
+<p>官网：<code>https://etcd.io/</code><br> 官网介绍：<code>A distributed, reliable key-value store for the most critical data of a distributed system</code> 分布式、可靠的键值存储，用于存储分布式系统中最关键的数据。</p> 
+<h3><a id="etcd_8"></a>etcd名词</h3> 
+<pre><code class="prism language-bash">Raft：etcd所采用的保证分布式系统强一致性的算法。
+Node：一个Raft状态机实例。
+Member： 一个etcd实例。它管理着一个Node，并且可以为客户端请求提供服务。
+Cluster：由多个Member构成可以协同工作的etcd集群。
+Peer：对同一个etcd集群中另外一个Member的称呼。
+Client： 向etcd集群发送HTTP请求的客户端。
+WAL：预写式日志，etcd用于持久化存储的日志格式。
+snapshot：etcd防止WAL文件过多而设置的快照，存储etcd数据状态。
+Proxy：etcd的一种模式，为etcd集群提供反向代理服务。
+Leader<span class="token punctuation">(</span>领导者<span class="token punctuation">)</span>：Raft算法中通过竞选而产生的处理所有数据提交的领导节点。
+Follower<span class="token punctuation">(</span>跟随者<span class="token punctuation">)</span>：竞选失败的节点作为Raft中的从属节点，为算法提供强一致性保证。
+Candidate：候选节点，当Follower超过一定时间接收不到Leader的心跳时转变为Candidate开始Leader竞选。
+Term：任期，某个节点成为Leader到下一次竞选开始的时间周期，称为一个Term任期。
+Index：数据项编号。Raft中通过Term和Index来定位数据。
+</code></pre> 
+<h3><a id="raftetcd_26"></a>raft协议-摘抄自《etcd技术内幕》</h3> 
+<p>Raft 协议的工作模式是一个 Leader 节点和多个 Follower 节点的模式，也就是常说的Leader-Follower 模式。在 Raft 协议中，每个节点都维护了一个状态机，该状态机有三种状态，分别是Leader状态、Follower状态和Candidate状态，在任意时刻，集群中的任意一个节点都处于这三个状态之一。各个状态和转换条件如图2-1所示：<br> <img src="https://images2.imgbox.com/ed/32/PYcHD60M_o.png" alt="在这里插入图片描述"><br> 在多数情况下，集群中有一个Leader节点，其他节点都处于Follower状态，下面简单介绍一下每个状态的节点负责的主要工作。<br> 1、Leader节点负责处理所有客户端的请求，当接收到客户端的写入请求时，Leader节点会在本地追加一条相应的日志，然后将其封装<br> 成消息发送到集群中其他的Follower节点。当Follower节点收到该消息时会对其进行响应。如果集群中多数（超过半数）节点都已收到该<br> 请求对应的日志记录时，则 Leader 节点认为该条日志记录已提交（committed），可以向客户端返回响应。Leader 还会处理客户端的<br> 只读请求，其中涉及一个简单的优化，后面介绍具体实现时，再进行详细介绍。Leader节点的另一项工作是定期向集群中的 Follower 节<br> 点发送心跳消息，这主要是为了防止集群中的其他Follower节点的选举计时器超时而触发新一轮选举。<br> 2、Follower节点不会发送任何请求，它们只是简单地响应来自Leader或者Candidate 的请求；Follower节点也不处理Client的请求，而是将请求重定向给集群的Leader节点进行处理。<br> 3、Candidate节点是由Follower节点转换而来的，当Follower节点长时间没有收到Leader节点发送的心跳消息时，则该节点的选举计时器就会过期，同时会将自身状态转换成Candidate，发起新一轮选举。选举的具体过程在下面详细描述。<br> 了解了Raft协议中节点的三种状态及各个状态下节点的主要行为之后，我们通过一个示例介绍Raft协议中Leader选举的大致流程。为<br> 了方便描述，我们假设当前集群中有三个节点（A、B、C），如图2-2所示。<br> <img src="https://images2.imgbox.com/8d/fd/E0EZlZz4_o.png" alt="在这里插入图片描述"><br> 在Raft协议中有两个时间控制Leader选举发生，其中一个是选举超时时间（election timeout），每个Follower节点在接收不到Leader节点的心跳消息之后，并不会立即发起新一轮选举，而是需要等待一段时间之后才切换成Candidate状态发起新一轮选举。这段等待时长就是这里所说的election timeout（后面介绍etcd的具体实现时会提到，Follower节点等待的时长并不完全等于该配置）。之所以这样设计，主要是 Leader 节点发送的心跳消息可能因为瞬间的网络延迟或程序瞬间的卡顿而迟到（或是丢失），因此就触发新一轮选举是没有必要的。lection timeout一般设置为150ms～300ms之间的随机数。另一个超时时间是心跳超时时间（heartbeat timeout），也就是Leader节点向集群中其他Follower节点发送心跳消息的时间间隔。当集群初始化时，所有节点都处于 Follower 的状态，此时的集群中没有 Leader 节点。当Follower 节点一段时间（选举计时器超时）内收不到 Leader 节点的心跳消息，则认为 Leader节点出现故障导致其任期（Term）过期，Follower节点会转换成Candidate状态，发起新一轮的选举。所谓 “任期（Term）”，实际上就是一个全局的、连续递增的整数，在 Raft 协议中每进行一次选举，任期（Term）加一，在每个节点中都会记录当前的任期值（currentTerm）。每一个任期 都 是 从 一 次 选 举 开 始 的 ， 在 选 举 时 ， 会 出 现 一 个 或 者 多 个Candidate 节点尝试成为 Leader节点，如果其中一个Candidate节点赢得选举，则该节点就会切换为Leader状态并成为该任期的Leader节点，直到该任期结束。回到前面的示例中，此时节点 A 由于长时间未收到 Leader 的心跳消息，就会切换成为Candidate状态并发起选举（节点A的选举计时器（election timer）已被重置）。在选举过程中，节点A首先会将自己的选票投给自己，并会向集群中其他节点发送选举请求（RequestVote）以获取其选票，如图2-3（1）所示；此时的节点B和节点C还都是处于Term=0的任期之中，且都是Follower状态，均未投出Term=1任期中的选票，所以节点B和节点C在接收到节点A的选举请求后会将选票投给节点A，另外，节点B、C在收到节点A的选举请求的同时会将选举定时器重置，这是为了防止一个任期中同时出现多个Candidate节点，导致选举失败，如图2-3 （2）所示。注意，节点B和节点C也会递增自身记录的Term值。<br> <img src="https://images2.imgbox.com/5b/ce/GxR4sVrx_o.png" alt="在这里插入图片描述"><br> 在节点 A 收到节点 B、C 的投票之后，其收到了集群中超过半数的选票，所以在 Term=1这个任期中，该集群的Leader节点就是节点<br> A，其他节点将切换成Follower状态，如图2-4所示。另外需要读者了解的是，集群中的节点除了记录当期任期号（currentTerm），还会记<br> 录在该任期中当前节点的投票结果（VoteFor）。</p> 
+<p><img src="https://images2.imgbox.com/d7/0d/pGu6ov2i_o.png" alt="在这里插入图片描述"><br> 继续前面的示例，成为Term=1任期的Leader节点之后，节点A会定期向集群中的其他节点发送心跳消息，如图2-5（1）所示，这样就可<br> 以防止节点B和节点C中的选举计时器（election timer）超时而触发新一轮的选举；当节点B和节点C（Follower）收到节点A的心跳消息之<br> 后会重置选举计时器，如图2-5（2）所示，由此可见，心跳超时时间（ heartbeat timeout ） 需 要 远 远 小 于 选 举 超 时 时 间 （ election<br> timeout）。<br> <img src="https://images2.imgbox.com/cf/9a/Edcq6Bfl_o.png" alt="在这里插入图片描述"><br> 到这里读者可能会问，如果有两个或两个以上节点的选举计时器同时过期，则这些节点会同时由 Follower 状态切换成 Candidate 状态，然后同时触发新一轮选举，在该轮选举中，每个Candidate节点获取的选票都不到半数，无法选举出Leader节点，那么Raft协议会如何处理呢？这种情况确实存在，假设集群中有4个节点，其中节点A和节点B的选举计时器同时到期，切换到Candidate状态并向集群中其他节点发出选举请求，如图2-6（1）所示。这里假设节点A发出的选举请求先抵达节点C，节点B发出的选举请求先抵达节点D，如图2-6（2）所示，节点A和节点B除了得到自身的选票之外，还分别得到了节点C和节点D投出的选票，得票数都是2，都没有超过半数。在这种情况下，Term=4这个任期会以选举失败结束，随着时间的流逝，当任意节点的选举计时器到期之后，会再次发起新一轮的选举。前面提到过election timeout是在一个时间区间内取的随机数，所以在配置合理的时候，像上述情况多次出现的概率并不大。<br> <img src="https://images2.imgbox.com/db/d3/lh1j7c2a_o.png" alt="在这里插入图片描述"><br> 继续上面的示例，这里假设节点A的选举计时器再次到期（此次节点B、C、D 的选举计时器并未到期），它会切换成Candidate状态并发<br> 起新一轮选举（Term=5），如图2-7（1）所示，其中节点B虽然处于Candidate状态，但是接收到Term值比自身记录的Term值大的请求时，<br> 节点会切换成Follower状态并更新自身记录的Term值，所以该示例中的节点B也会将选票投给节点A，如图2-7（2）所示。</p> 
+<p><img src="https://images2.imgbox.com/d6/cb/erDlYLvo_o.png" alt="在这里插入图片描述"><br> 在获取集群中半数以上的选票并成为新任期（Term=5）的 Leader之后，节点 A 会定期向集群中其他节点发送心跳消息；当集群中其他<br> 节点收到Leader节点的心跳消息的时候，会重置选举定时器，如图2-8所示。<br> <img src="https://images2.imgbox.com/ef/40/XZPLTck2_o.png" alt="在这里插入图片描述"><br> 介绍完集群启动时的Leader选举流程之后，下面分析Leader节点宕机之后重新选举的场景。继续上述4节点集群的示例，在系统运行一<br> 段时间后，集群当前的Leader节点（A）因为故障而宕机，此时将不再有心跳消息发送到集群的其他Follower节点（节点B、C、D），一段时间后，会有一个Follower节点的选举计时器最先超时，这里假设节点D的选举计时器最先超时，然后它将切换为Candidate状态并发起新一轮选举，如图2-9（1）所示。<br> <img src="https://images2.imgbox.com/15/9d/9HVZ3mMC_o.png" alt="在这里插入图片描述"><br> 当节点B和节点C收到节点D的选举请求后，会将其选票投给节点D，由于节点A已经宕机，没有参加此次选举，也就无法进行投票，但<br> 是在此轮选举中，节点D依然获得了半数以上的选票，故成为新任期（Term=6）的Leader节点，并开始向其他Follower节点发送心跳消<br> 息，如图2-10所示。<br> <img src="https://images2.imgbox.com/91/68/EKduIV9y_o.png" alt="在这里插入图片描述"><br> 当节点A恢复之后，会收到节点D发来的心跳消息，该消息中携带的任期号（Term=6）大于节点A当前记录的任期号（Term=5），所以节<br> 点A会切换成Follower状态。在Raft协议中，当某个节点接收到的消息所携带的任期号大于当前节点本身记录的任期号，那么该节点会更新<br> 自身记录的任期号，同时会切换为Follower状态并重置选举计时器，这是Raft算法中所有节点最后请读者考虑一个场景：如果集群中选出<br> 的Leader节点频繁崩溃或是其他原因导致选举频繁发生，这会使整个集群中没有一个稳定的Leader节点，这样客户端无法与集群中的Leader节点正常交互，也就会导致整个集群无法正常工作。Leader选举是Raft算法中对时间要求较为严格的一个点，一般要求整个集群中的时间满足如下不等式：<br> 广播时间 ＜＜ 选举超时时间 ＜＜ 平均故障间隔时间<br> 在上述不等式中，广播时间指的是从一个节点发送心跳消息到集群中的其他节点并接收响应的平均时间；平均故障间隔时间就是对于<br> 一个节点而言，两次故障之间的平均时间。为了保证整个Raft集群可用，广播时间必须比选举超时时间小一个数量级，这样Leader节点才<br> 能够发送稳定的心跳消息来重置其他 Follower 节点的选举计时器，从而防止它们切换成 Candidate 状态，触发新一轮选举。在前面的描<br> 述中也提到过，选举超时时间是一个随机数，通过这种随机的方式，会使得多个Candidate节点瓜分选票的情况明显减少，也就减少了选举<br> 耗时。另外，选举超时时间应该比平均故障间隔时间小几个数量级，这样Leader节点才能稳定存在，整个集群才能稳定运行。当Leader节<br> 点崩溃之后，整个集群会有大约相当于选举超时的时间不可用，这种情况占比整个集群稳定运行的时间还是非常小的。广播时间和平均故障间隔时间是由网络和服务器本身决定的，但是选举超时时间是可以由我们自己调节的。一般情况下，广播时间可以做到0.5ms～50ms，选举超时时间设置为200ms～1s之间，而大多数服务器的平均故障间隔时间都在几个月甚至更长，很容易满足上述不等式的时间需求。</p> 
+<h3><a id="etcd_81"></a>etcd的部署要求</h3> 
+<p>etcd的部署要求：</p> 
+<pre><code class="prism language-bash">https://etcd.io/docs/v3.5/op-guide/supported-platform/
+https://etcd.io/docs/v3.5/op-guide/hardware/
+<span class="token comment">#总结2点：etcd对磁盘要求很高，建议是使用ssd固态硬盘，etcd节点之间时间要求严格一致</span>
+</code></pre> 
+<h3><a id="etcd_88"></a>二进制部署etcd</h3> 
+<p>官网：<code>https://etcd.io/docs/v3.5/install/</code><br> 官网显示有很多方式安装etcd，这里在linux上使用预编译的二进制安装etcd：</p> 
+<pre><code class="prism language-bash">下载地址：https://github.com/etcd-io/etcd/releases/
+<span class="token comment">#根据github官网提示，可以使用下面命令下载，这里下载etcd-v3.5.10，v3.5.10是3.5的最新版</span>
+<span class="token assign-left variable">ETCD_VER</span><span class="token operator">=</span>v3.5.10
+<span class="token comment"># choose either URL</span>
+<span class="token assign-left variable">GOOGLE_URL</span><span class="token operator">=</span>https://storage.googleapis.com/etcd
+<span class="token assign-left variable">GITHUB_URL</span><span class="token operator">=</span>https://github.com/etcd-io/etcd/releases/download
+<span class="token assign-left variable">DOWNLOAD_URL</span><span class="token operator">=</span><span class="token variable">${GOOGLE_URL}</span>
+<span class="token function">curl</span> <span class="token parameter variable">-L</span> <span class="token variable">${DOWNLOAD_URL}</span>/<span class="token variable">${ETCD_VER}</span>/etcd-<span class="token variable">${ETCD_VER}</span>-linux-amd64.tar.gz <span class="token parameter variable">-o</span>  ./etcd-<span class="token variable">${ETCD_VER}</span>-linux-amd64.tar.gz
+<span class="token comment">#解压，可以看到就是几个二进制文件</span>
+<span class="token function">tar</span> xzvf etcd-<span class="token variable">${ETCD_VER}</span>-linux-amd64.tar.gz
+<span class="token punctuation">[</span>root@node2 ~<span class="token punctuation">]</span><span class="token comment"># cd etcd-v3.5.10-linux-amd64/</span>
+<span class="token punctuation">[</span>root@node2 etcd-v3.5.10-linux-amd64<span class="token punctuation">]</span><span class="token comment"># ll -h</span>
+total 53M
+drwxr-xr-x <span class="token number">3</span> <span class="token number">528287</span> <span class="token number">89939</span>   <span class="token number">40</span> Oct <span class="token number">27</span> <span class="token number">18</span>:34 Documentation
+-rwxr-xr-x <span class="token number">1</span> <span class="token number">528287</span> <span class="token number">89939</span>  22M Oct <span class="token number">27</span> <span class="token number">18</span>:34 etcd			<span class="token comment">#服务端文件</span>
+-rwxr-xr-x <span class="token number">1</span> <span class="token number">528287</span> <span class="token number">89939</span>  17M Oct <span class="token number">27</span> <span class="token number">18</span>:34 etcdctl			<span class="token comment">#etcd客户端命令行工具</span>
+-rwxr-xr-x <span class="token number">1</span> <span class="token number">528287</span> <span class="token number">89939</span>  14M Oct <span class="token number">27</span> <span class="token number">18</span>:34 etcdutl			<span class="token comment">#etcd恢复命令行工具</span>
+-rw-r--r-- <span class="token number">1</span> <span class="token number">528287</span> <span class="token number">89939</span>  42K Oct <span class="token number">27</span> <span class="token number">18</span>:34 README-etcdctl.md
+-rw-r--r-- <span class="token number">1</span> <span class="token number">528287</span> <span class="token number">89939</span> <span class="token number">7</span>.2K Oct <span class="token number">27</span> <span class="token number">18</span>:34 README-etcdutl.md
+-rw-r--r-- <span class="token number">1</span> <span class="token number">528287</span> <span class="token number">89939</span> <span class="token number">9</span>.2K Oct <span class="token number">27</span> <span class="token number">18</span>:34 README.md
+-rw-r--r-- <span class="token number">1</span> <span class="token number">528287</span> <span class="token number">89939</span> <span class="token number">7</span>.8K Oct <span class="token number">27</span> <span class="token number">18</span>:34 READMEv2-etcdctl.md
+<span class="token punctuation">[</span>root@node2 etcd-v3.5.10-linux-amd64<span class="token punctuation">]</span><span class="token comment"># </span>
+<span class="token comment">#移动etcd可执行文件到PATH路径</span>
+<span class="token function">mv</span> etcd-v3.5.10-linux-amd64/etcd  /usr/local/bin/
+<span class="token function">mv</span> etcd-v3.5.10-linux-amd64/etcdctl /usr/local/bin/
+<span class="token function">mv</span> etcd-v3.5.10-linux-amd64/etcdutl /usr/local/bin/
+<span class="token comment">#启动一个etcd server，查看etcd命令帮助，执行etcd命令启动即可</span>
+etcd <span class="token parameter variable">-h</span>
+etcd <span class="token parameter variable">--name</span> <span class="token string">'default'</span> --data-dir<span class="token operator">=</span><span class="token string">"/var/lib/etcd"</span> <span class="token operator">&amp;</span>
+<span class="token comment">#etcd默认启动两个端口，一个是服务端口2379，用于客户端请求，另外一个是2380，用于peer之间的通信端口</span>
+<span class="token punctuation">[</span>root@node2 ~<span class="token punctuation">]</span><span class="token comment"># lsof  -i:2379</span>
+COMMAND   PID <span class="token environment constant">USER</span>   FD   TYPE    DEVICE SIZE/OFF NODE NAME
+etcd    <span class="token number">22900</span> root    8u  IPv4 <span class="token number">132006599</span>      0t0  TCP localhost:2379 <span class="token punctuation">(</span>LISTEN<span class="token punctuation">)</span>
+etcd    <span class="token number">22900</span> root   12u  IPv4 <span class="token number">132007428</span>      0t0  TCP localhost:36806-<span class="token operator">&gt;</span>localhost:2379 <span class="token punctuation">(</span>ESTABLISHED<span class="token punctuation">)</span>
+etcd    <span class="token number">22900</span> root   14u  IPv4 <span class="token number">132002331</span>      0t0  TCP localhost:2379-<span class="token operator">&gt;</span>localhost:36806 <span class="token punctuation">(</span>ESTABLISHED<span class="token punctuation">)</span>
+<span class="token punctuation">[</span>root@node2 ~<span class="token punctuation">]</span><span class="token comment"># lsof  -i:2380</span>
+COMMAND   PID <span class="token environment constant">USER</span>   FD   TYPE    DEVICE SIZE/OFF NODE NAME
+etcd    <span class="token number">22900</span> root    7u  IPv4 <span class="token number">132006596</span>      0t0  TCP localhost:2380 <span class="token punctuation">(</span>LISTEN<span class="token punctuation">)</span>
+<span class="token punctuation">[</span>root@node2 ~<span class="token punctuation">]</span><span class="token comment"># </span>
+</code></pre> 
+<h3><a id="etcd_132"></a>查看etcd命令帮助</h3> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@etcd-1 ~<span class="token punctuation">]</span><span class="token comment"># etcd --help</span>
+Usage:
+  etcd <span class="token punctuation">[</span>flags<span class="token punctuation">]</span>
+    启动一个etcd server.
+  etcd <span class="token parameter variable">--version</span>
+    显示etcd版本.
+  etcd <span class="token parameter variable">-h</span> <span class="token operator">|</span> <span class="token parameter variable">--help</span>
+    显示etcd帮助.
+  etcd --config-file
+    配置文件的路径。注意，如果提供了配置文件，其他命令行参数和环境变量将被忽略
+  etcd gateway
+    运行无状态pass-through etcd TCP连接转发代理
+  etcd grpc-proxy
+    运行无状态etcd v3 gRPC L7反向代理
+Member:
+  <span class="token parameter variable">--name</span> <span class="token string">'default'</span>		etcd节点名称，不指定则默认为default
+  --data-dir <span class="token string">'${name}.etcd'</span>	etcd的数据存放目录，不写默认为当前目录下<span class="token variable">${name}</span>.etcd目录
+  --wal-dir <span class="token string">''</span>                  wal目录路径。
+  --snapshot-count <span class="token string">'100000'</span>		指定有多少事务被提交时，触发截取快照保存到磁盘
+  --heartbeat-interval <span class="token string">'100'</span>		leader多久发送一次心跳到followers<span class="token punctuation">(</span>默认100毫秒<span class="token punctuation">)</span>。
+  --election-timeout <span class="token string">'1000'</span>		选举超时的时间<span class="token punctuation">(</span>以毫秒为单位<span class="token punctuation">)</span>
+  --initial-election-tick-advance <span class="token string">'true'</span>		是否在启动时快进初始选举以更快地进行选举。
+  --listen-peer-urls <span class="token string">'http://localhost:2380'</span>		peer的监听地址和端口
+  --listen-client-urls <span class="token string">'http://localhost:2379'</span>		etcd的监听地址和端口,客户端使用该地址进行链接到etcd 
+    List of URLs to listen on <span class="token keyword">for</span> client grpc traffic and http as long as --listen-client-http-urls is not specified.
+  --listen-client-http-urls <span class="token string">''</span>
+    仅监听http客户端流量的url列表。启用此标志将从——listen-client-urls中删除http服务。
+  --max-snapshots <span class="token string">'5'</span>         要保留的最大快照文件数<span class="token punctuation">(</span><span class="token number">0</span>为无限制<span class="token punctuation">)</span>。
+  --max-wals <span class="token string">'5'</span>              要保留的最大wal文件数<span class="token punctuation">(</span><span class="token number">0</span>为无限制<span class="token punctuation">)</span>。
+  --quota-backend-bytes <span class="token string">'0'</span>   当后端大小超过给定配额<span class="token punctuation">(</span><span class="token number">0</span>默认为低空间配额<span class="token punctuation">)</span>时发出警报。
+  --backend-bbolt-freelist-type <span class="token string">'map'</span>
+    BackendFreelistType specifies the <span class="token builtin class-name">type</span> of freelist that boltdb backend uses<span class="token punctuation">(</span>array and map are supported types<span class="token punctuation">)</span>.
+  --backend-batch-interval <span class="token string">''</span>
+    BackendBatchInterval is the maximum <span class="token function">time</span> before commit the backend transaction.
+  --backend-batch-limit <span class="token string">'0'</span>
+    BackendBatchLimit is the maximum operations before commit the backend transaction.
+  --max-txn-ops <span class="token string">'128'</span>  事务中允许的最大操作数。
+  --max-request-bytes <span class="token string">'1572864'</span>  服务器将接受的最大客户端请求大小<span class="token punctuation">(</span>以字节为单位<span class="token punctuation">)</span>。
+  --max-concurrent-streams <span class="token string">'math.MaxUint32'</span>
+    Maximum concurrent streams that each client can <span class="token function">open</span> at a time.
+  --grpc-keepalive-min-time <span class="token string">'5s'</span>   客户机在ping服务器之前应该等待的最小持续时间间隔。
+  --grpc-keepalive-interval <span class="token string">'2h'</span>
+    Frequency duration of server-to-client <span class="token function">ping</span> to check <span class="token keyword">if</span> a connection is alive <span class="token punctuation">(</span><span class="token number">0</span> to disable<span class="token punctuation">)</span>.
+  --grpc-keepalive-timeout <span class="token string">'20s'</span>
+    Additional duration of <span class="token function">wait</span> before closing a non-responsive connection <span class="token punctuation">(</span><span class="token number">0</span> to disable<span class="token punctuation">)</span>.
+  --socket-reuse-port <span class="token string">'false'</span>
+    Enable to <span class="token builtin class-name">set</span> socket option SO_REUSEPORT on listeners allowing rebinding of a port already <span class="token keyword">in</span> use.
+  --socket-reuse-address <span class="token string">'false'</span>
+	Enable to <span class="token builtin class-name">set</span> socket option SO_REUSEADDR on listeners allowing binding to an address <span class="token keyword">in</span> TIME_WAIT state.
+
+Clustering:
+  --initial-advertise-peer-urls <span class="token string">'http://localhost:2380'</span>
+    List of this member<span class="token string">'s peer URLs to advertise to the rest of the cluster.
+  --initial-cluster '</span>default<span class="token operator">=</span>http://localhost:2380<span class="token string">'    用于引导的初始集群配置,格式是'</span>etcd节点名字<span class="token operator">=</span>https://IP:2380<span class="token string">'
+  --initial-cluster-state '</span>new<span class="token string">'    初始集群状态(启动新集群时为'</span>new<span class="token string">'，向现有集群添加新成员时为'</span>existing<span class="token string">')，在成功初始化(引导或添加)之后，重新启动etcd时忽略该标志。
+    
+  --initial-cluster-token '</span>etcd-cluster<span class="token string">'
+    Initial cluster token for the etcd cluster during bootstrap.
+    Specifying this can protect you from unintended cross-cluster interaction when running multiple clusters.
+  --advertise-client-urls '</span>http://localhost:2379<span class="token string">'
+    List of this member'</span>s client URLs to advertise to the public.
+    The client URLs advertised should be accessible to machines that talk to etcd cluster. etcd client libraries parse these URLs to connect to the cluster.
+  <span class="token parameter variable">--discovery</span> <span class="token string">''</span>
+    Discovery URL used to bootstrap the cluster.
+  --discovery-fallback <span class="token string">'proxy'</span>
+    Expected behavior <span class="token punctuation">(</span><span class="token string">'exit'</span> or <span class="token string">'proxy'</span><span class="token punctuation">)</span> when discovery services fails.
+    <span class="token string">"proxy"</span> supports v2 API only.
+  --discovery-proxy <span class="token string">''</span>
+    HTTP proxy to use <span class="token keyword">for</span> traffic to discovery service.
+  --discovery-srv <span class="token string">''</span>
+    DNS srv domain used to bootstrap the cluster.
+  --discovery-srv-name <span class="token string">''</span>
+    Suffix to the dns srv name queried when bootstrapping.
+  --strict-reconfig-check <span class="token string">'true'</span>
+    Reject reconfiguration requests that would cause quorum loss.
+  --pre-vote <span class="token string">'true'</span>
+    Enable to run an additional Raft election phase.
+  --auto-compaction-retention <span class="token string">'0'</span>
+    Auto compaction retention length. <span class="token number">0</span> means disable auto compaction.
+  --auto-compaction-mode <span class="token string">'periodic'</span>
+    Interpret <span class="token string">'auto-compaction-retention'</span> one of: periodic<span class="token operator">|</span>revision. <span class="token string">'periodic'</span> <span class="token keyword">for</span> duration based retention, defaulting to hours <span class="token keyword">if</span> no <span class="token function">time</span> unit is provided <span class="token punctuation">(</span>e.g. <span class="token string">'5m'</span><span class="token punctuation">)</span>. <span class="token string">'revision'</span> <span class="token keyword">for</span> revision number based retention.
+  --enable-v2 <span class="token string">'false'</span>
+    Accept etcd V2 client requests. Deprecated and to be decommissioned <span class="token keyword">in</span> v3.6.
+  --v2-deprecation <span class="token string">'not-yet'</span>
+    Phase of v2store deprecation. Allows to opt-in <span class="token keyword">for</span> higher compatibility mode.
+    Supported values:
+      <span class="token string">'not-yet'</span>                // Issues a warning <span class="token keyword">if</span> v2store have meaningful content <span class="token punctuation">(</span>default <span class="token keyword">in</span> v3.5<span class="token punctuation">)</span>
+      <span class="token string">'write-only'</span>             // Custom v2 state is not allowed <span class="token punctuation">(</span>planned default <span class="token keyword">in</span> v3.6<span class="token punctuation">)</span>
+      <span class="token string">'write-only-drop-data'</span>   // Custom v2 state will get DELETED <span class="token operator">!</span>
+      <span class="token string">'gone'</span>                   // v2store is not maintained any longer. <span class="token punctuation">(</span>planned default <span class="token keyword">in</span> v3.7<span class="token punctuation">)</span>
+
+Security:
+  --cert-file <span class="token string">''</span>
+    Path to the client server TLS cert file.
+  --key-file <span class="token string">''</span>
+    Path to the client server TLS key file.
+  --client-cert-auth <span class="token string">'false'</span>
+    Enable client cert authentication.
+  --client-crl-file <span class="token string">''</span>
+    Path to the client certificate revocation list file.
+  --client-cert-allowed-hostname <span class="token string">''</span>
+    Allowed TLS <span class="token function">hostname</span> <span class="token keyword">for</span> client cert authentication.
+  --trusted-ca-file <span class="token string">''</span>
+    Path to the client server TLS trusted CA cert file.
+  --auto-tls <span class="token string">'false'</span>
+    Client TLS using generated certificates.
+  --peer-cert-file <span class="token string">''</span>
+    Path to the peer server TLS cert file.
+  --peer-key-file <span class="token string">''</span>
+    Path to the peer server TLS key file.
+  --peer-client-cert-auth <span class="token string">'false'</span>
+    Enable peer client cert authentication.
+  --peer-trusted-ca-file <span class="token string">''</span>
+    Path to the peer server TLS trusted CA file.
+  --peer-cert-allowed-cn <span class="token string">''</span>
+    Required CN <span class="token keyword">for</span> client certs connecting to the peer endpoint.
+  --peer-cert-allowed-hostname <span class="token string">''</span>
+    Allowed TLS <span class="token function">hostname</span> <span class="token keyword">for</span> inter peer authentication.
+  --peer-auto-tls <span class="token string">'false'</span>
+    Peer TLS using self-generated certificates <span class="token keyword">if</span> --peer-key-file and --peer-cert-file are not provided.
+  --self-signed-cert-validity <span class="token string">'1'</span>
+    The validity period of the client and peer certificates that are automatically generated by etcd when you specify ClientAutoTLS and PeerAutoTLS, the unit is year, and the default is <span class="token number">1</span>.
+  --peer-crl-file <span class="token string">''</span>
+    Path to the peer certificate revocation list file.
+  --cipher-suites <span class="token string">''</span>
+    Comma-separated list of supported TLS cipher suites between client/server and peers <span class="token punctuation">(</span>empty will be auto-populated by Go<span class="token punctuation">)</span>.
+  <span class="token parameter variable">--cors</span> <span class="token string">'*'</span>
+    Comma-separated whitelist of origins <span class="token keyword">for</span> CORS, or cross-origin resource sharing, <span class="token punctuation">(</span>empty or * means allow all<span class="token punctuation">)</span>.
+  --host-whitelist <span class="token string">'*'</span>
+    Acceptable hostnames from HTTP client requests, <span class="token keyword">if</span> server is not secure <span class="token punctuation">(</span>empty or * means allow all<span class="token punctuation">)</span>.
+  --tls-min-version <span class="token string">'TLS1.2'</span>
+    Minimum TLS version supported by etcd. Possible values: TLS1.2, TLS1.3.
+  --tls-max-version <span class="token string">''</span>
+    Maximum TLS version supported by etcd. Possible values: TLS1.2, TLS1.3 <span class="token punctuation">(</span>empty will be auto-populated by Go<span class="token punctuation">)</span>.
+
+Auth:
+  --auth-token <span class="token string">'simple'</span>
+    Specify a v3 authentication token <span class="token builtin class-name">type</span> and its options <span class="token punctuation">(</span><span class="token string">'simple'</span> or <span class="token string">'jwt'</span><span class="token punctuation">)</span>.
+  --bcrypt-cost <span class="token number">10</span>
+    Specify the cost / strength of the bcrypt algorithm <span class="token keyword">for</span> hashing auth passwords. Valid values are between <span class="token number">4</span> and <span class="token number">31</span>.
+  --auth-token-ttl <span class="token number">300</span>
+    Time <span class="token punctuation">(</span>in seconds<span class="token punctuation">)</span> of the auth-token-ttl.
+
+Profiling and Monitoring:
+  --enable-pprof <span class="token string">'false'</span>
+    Enable runtime profiling data via HTTP server. Address is at client URL + <span class="token string">"/debug/pprof/"</span>
+  <span class="token parameter variable">--metrics</span> <span class="token string">'basic'</span>
+    Set level of detail <span class="token keyword">for</span> exported metrics, specify <span class="token string">'extensive'</span> to include server side grpc histogram metrics.
+  --listen-metrics-urls <span class="token string">''</span>
+    List of URLs to listen on <span class="token keyword">for</span> the metrics and health endpoints.
+
+Logging:
+  <span class="token parameter variable">--logger</span> <span class="token string">'zap'</span>
+    Currently only supports <span class="token string">'zap'</span> <span class="token keyword">for</span> structured logging.
+  --log-outputs <span class="token string">'default'</span>
+    Specify <span class="token string">'stdout'</span> or <span class="token string">'stderr'</span> to skip journald logging even when running under systemd, or list of comma separated output targets.
+  --log-level <span class="token string">'info'</span>
+    Configures log level. Only supports debug, info, warn, error, panic, or fatal.
+  --enable-log-rotation <span class="token string">'false'</span>
+    Enable log rotation of a single log-outputs <span class="token function">file</span> target.
+  --log-rotation-config-json <span class="token string">'{"maxsize": 100, "maxage": 0, "maxbackups": 0, "localtime": false, "compress": false}'</span>
+    Configures log rotation <span class="token keyword">if</span> enabled with a JSON logger config. MaxSize<span class="token punctuation">(</span>MB<span class="token punctuation">)</span>, MaxAge<span class="token punctuation">(</span>days,0<span class="token operator">=</span>no limit<span class="token punctuation">)</span>, MaxBackups<span class="token punctuation">(</span><span class="token number">0</span><span class="token operator">=</span>no limit<span class="token punctuation">)</span>, LocalTime<span class="token punctuation">(</span>use computers <span class="token builtin class-name">local</span> <span class="token function">time</span><span class="token punctuation">)</span>, Compress<span class="token punctuation">(</span>gzip<span class="token punctuation">)</span>". 
+
+Experimental distributed tracing:
+  --experimental-enable-distributed-tracing <span class="token string">'false'</span>
+    Enable experimental distributed tracing.
+  --experimental-distributed-tracing-address <span class="token string">'localhost:4317'</span>
+    Distributed tracing collector address.
+  --experimental-distributed-tracing-service-name <span class="token string">'etcd'</span>
+    Distributed tracing <span class="token function">service</span> name, must be same across all etcd instances.
+  --experimental-distributed-tracing-instance-id <span class="token string">''</span>
+    Distributed tracing instance ID, must be unique per each etcd instance.
+
+v2 Proxy <span class="token punctuation">(</span>to be deprecated <span class="token keyword">in</span> v3.6<span class="token punctuation">)</span>:
+  <span class="token parameter variable">--proxy</span> <span class="token string">'off'</span>
+    Proxy mode setting <span class="token punctuation">(</span><span class="token string">'off'</span>, <span class="token string">'readonly'</span> or <span class="token string">'on'</span><span class="token punctuation">)</span>.
+  --proxy-failure-wait <span class="token number">5000</span>
+    Time <span class="token punctuation">(</span>in milliseconds<span class="token punctuation">)</span> an endpoint will be held <span class="token keyword">in</span> a failed state.
+  --proxy-refresh-interval <span class="token number">30000</span>
+    Time <span class="token punctuation">(</span>in milliseconds<span class="token punctuation">)</span> of the endpoints refresh interval.
+  --proxy-dial-timeout <span class="token number">1000</span>
+    Time <span class="token punctuation">(</span>in milliseconds<span class="token punctuation">)</span> <span class="token keyword">for</span> a dial to timeout.
+  --proxy-write-timeout <span class="token number">5000</span>
+    Time <span class="token punctuation">(</span>in milliseconds<span class="token punctuation">)</span> <span class="token keyword">for</span> a <span class="token function">write</span> to timeout.
+  --proxy-read-timeout <span class="token number">0</span>
+    Time <span class="token punctuation">(</span>in milliseconds<span class="token punctuation">)</span> <span class="token keyword">for</span> a <span class="token builtin class-name">read</span> to timeout.
+
+Experimental feature:
+  --experimental-initial-corrupt-check <span class="token string">'false'</span>
+    Enable to check data corruption before serving any client/peer traffic.
+  --experimental-corrupt-check-time <span class="token string">'0s'</span>
+    Duration of <span class="token function">time</span> between cluster corruption check passes.
+  --experimental-compact-hash-check-enabled <span class="token string">'false'</span>
+    Enable leader to periodically check followers compaction hashes.
+  --experimental-compact-hash-check-time <span class="token string">'1m'</span>
+    Duration of <span class="token function">time</span> between leader checks followers compaction hashes.
+  --experimental-enable-v2v3 <span class="token string">''</span>
+    Serve v2 requests through the v3 backend under a given prefix. Deprecated and to be decommissioned <span class="token keyword">in</span> v3.6.
+  --experimental-enable-lease-checkpoint <span class="token string">'false'</span>
+    ExperimentalEnableLeaseCheckpoint enables primary lessor to persist lease remainingTTL to prevent indefinite auto-renewal of long lived leases.
+  --experimental-compaction-batch-limit <span class="token number">1000</span>
+    ExperimentalCompactionBatchLimit sets the maximum revisions deleted <span class="token keyword">in</span> each compaction batch.
+  --experimental-peer-skip-client-san-verification <span class="token string">'false'</span>
+    Skip verification of SAN field <span class="token keyword">in</span> client certificate <span class="token keyword">for</span> peer connections.
+  --experimental-watch-progress-notify-interval <span class="token string">'10m'</span>
+    Duration of periodical <span class="token function">watch</span> progress notification.
+  --experimental-warning-apply-duration <span class="token string">'100ms'</span>
+	Warning is generated <span class="token keyword">if</span> requests take <span class="token function">more</span> than this duration.
+  --experimental-txn-mode-write-with-shared-buffer <span class="token string">'true'</span>
+    Enable the <span class="token function">write</span> transaction to use a shared buffer <span class="token keyword">in</span> its <span class="token builtin class-name">readonly</span> check operations.
+  --experimental-bootstrap-defrag-threshold-megabytes
+    Enable the defrag during etcd server bootstrap on condition that it will <span class="token function">free</span> at least the provided threshold of disk space. Needs to be <span class="token builtin class-name">set</span> to non-zero value to take effect.
+
+Unsafe feature:
+  --force-new-cluster <span class="token string">'false'</span>
+    Force to create a new one-member cluster.
+  --unsafe-no-fsync <span class="token string">'false'</span>
+    Disables fsync, unsafe, will cause data loss.
+
+CAUTIOUS with unsafe flag<span class="token operator">!</span> It may <span class="token builtin class-name">break</span> the guarantees given by the consensus protocol<span class="token operator">!</span>
+
+<span class="token punctuation">[</span>root@etcd-1 ~<span class="token punctuation">]</span><span class="token comment"># </span>
+
+当客户端请求写入数据时，首先请求会被转发给leader节点，leader节点此时不会立即更新自己的数据，而是将写入数据请求转发给follower节点，follower节点收到数据写入请求
+，开始写入更新数据并返回已提交消息给leader节点，当leader节点收到大多数follower节点的已提交消息后，此时才开始写入更新自己的数据存储并且向client返回数据写入更新成功的消息，这一过程实现的很快.
+</code></pre> 
+<h3><a id="etcdsystemdhttp_360"></a>创建etcd集群，使用systemd管理，http协议</h3> 
+<p>下面使用systemd管理etcd 3节点集群，并且etcd配置为http协议，即没有加密认证的，没有秘钥。</p> 
+<pre><code class="prism language-bash"><span class="token comment">#准备3台centos7服务器并做以下基础环境配置</span>
+<span class="token comment">#联网同步时间</span>
+yum <span class="token function">install</span> chrony <span class="token parameter variable">-y</span> <span class="token operator">&amp;&amp;</span> systemctl <span class="token builtin class-name">enable</span> <span class="token parameter variable">--now</span> chronyd
+<span class="token comment">#安装常见的依赖</span>
+yum <span class="token function">install</span> <span class="token function">vim</span> <span class="token function">lsof</span> net-tools <span class="token function">zip</span> <span class="token function">unzip</span> tree <span class="token function">wget</span> <span class="token function">curl</span> bash-completion pciutils gcc <span class="token function">make</span> lrzsz tcpdump bind-utils <span class="token parameter variable">-y</span>
+<span class="token comment">#关闭防火墙</span>
+systemctl stop firewalld.service <span class="token operator">&amp;&amp;</span> systemctl disable firewalld.service
+<span class="token comment">#将本地时间同步给硬件时间</span>
+hwclock <span class="token parameter variable">-w</span>	
+<span class="token comment">#设置主机名</span>
+hostnamectl  set-hostname etcd-1
+hostnamectl  set-hostname etcd-2
+hostnamectl  set-hostname etcd-3
+<span class="token comment">#写入/etc/hosts文件</span>
+<span class="token function">cat</span> <span class="token operator">&gt;&gt;</span> /etc/hosts <span class="token operator">&lt;&lt;</span><span class="token string">EOF
+192.168.100.4 etcd-1
+192.168.100.5 etcd-2
+192.168.100.6 etcd-3
+EOF</span>				                
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token comment">#下载etcd安装包</span>
+<span class="token assign-left variable">ETCD_VER</span><span class="token operator">=</span>v3.5.10
+<span class="token comment"># choose either URL</span>
+<span class="token assign-left variable">GOOGLE_URL</span><span class="token operator">=</span>https://storage.googleapis.com/etcd
+<span class="token assign-left variable">GITHUB_URL</span><span class="token operator">=</span>https://github.com/etcd-io/etcd/releases/download
+<span class="token assign-left variable">DOWNLOAD_URL</span><span class="token operator">=</span><span class="token variable">${GOOGLE_URL}</span>
+<span class="token function">curl</span> <span class="token parameter variable">-L</span> <span class="token variable">${DOWNLOAD_URL}</span>/<span class="token variable">${ETCD_VER}</span>/etcd-<span class="token variable">${ETCD_VER}</span>-linux-amd64.tar.gz <span class="token parameter variable">-o</span>  ./etcd-<span class="token variable">${ETCD_VER}</span>-linux-amd64.tar.gz
+<span class="token function">tar</span> xf etcd-v3.5.10-linux-amd64.tar.gz 
+<span class="token builtin class-name">cd</span> etcd-v3.5.10-linux-amd64/
+<span class="token function">mv</span> etcd* /usr/local/bin/ 
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token comment">#创建etcd.service配置文件</span>
+<span class="token comment">#注意参数值不要加引号不然systemd会报错</span>
+<span class="token comment">#etcd-1节点</span>
+cat<span class="token operator">&gt;</span>/usr/lib/systemd/system/etcd.service<span class="token operator">&lt;&lt;</span><span class="token string">'EOF'
+[Unit]
+Description=Etcd Server
+After=network.target
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/etcd \
+  --name=etcd-1 \
+  --data-dir=/var/lib/etcd \
+  --listen-client-urls=http://192.168.100.4:2379 \
+  --listen-peer-urls=http://192.168.100.4:2380 \
+  --advertise-client-urls=http://192.168.100.4:2379 \
+  --initial-advertise-peer-urls=http://192.168.100.4:2380 \
+  --initial-cluster=etcd-1=http://192.168.100.4:2380,etcd-2=http://192.168.100.5:2380,etcd-3=http://192.168.100.6:2380 \
+  --initial-cluster-token=etcd-cluster \
+  --initial-cluster-state=new \
+  --logger=zap
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF</span>
+
+<span class="token comment">#etcd-2节点</span>
+cat<span class="token operator">&gt;</span>/usr/lib/systemd/system/etcd.service<span class="token operator">&lt;&lt;</span><span class="token string">'EOF'
+[Unit]
+Description=Etcd Server
+After=network.target
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/etcd \
+  --name=etcd-2 \
+  --data-dir=/var/lib/etcd \
+  --listen-client-urls=http://192.168.100.5:2379 \
+  --listen-peer-urls=http://192.168.100.5:2380 \
+  --advertise-client-urls=http://192.168.100.5:2379 \
+  --initial-advertise-peer-urls=http://192.168.100.5:2380 \
+  --initial-cluster=etcd-1=http://192.168.100.4:2380,etcd-2=http://192.168.100.5:2380,etcd-3=http://192.168.100.6:2380 \
+  --initial-cluster-token=etcd-cluster \
+  --initial-cluster-state=new \
+  --logger=zap
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF</span>
+
+<span class="token comment">#etcd-3节点</span>
+cat<span class="token operator">&gt;</span>/usr/lib/systemd/system/etcd.service<span class="token operator">&lt;&lt;</span><span class="token string">'EOF'
+[Unit]
+Description=Etcd Server
+After=network.target
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/etcd \
+  --name=etcd-3 \
+  --data-dir=/var/lib/etcd \
+  --listen-client-urls=http://192.168.100.6:2379 \
+  --listen-peer-urls=http://192.168.100.6:2380 \
+  --advertise-client-urls=http://192.168.100.6:2379 \
+  --initial-advertise-peer-urls=http://192.168.100.6:2380 \
+  --initial-cluster=etcd-1=http://192.168.100.4:2380,etcd-2=http://192.168.100.5:2380,etcd-3=http://192.168.100.6:2380 \
+  --initial-cluster-token=etcd-cluster \
+  --initial-cluster-state=new \
+  --logger=zap
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF</span>
+
+<span class="token comment">#下面对etcd.service中的参数进行说明</span>
+<span class="token parameter variable">--name</span>	      etcd的节点名字,自定义名字,etcd节点的名字不能相同
+--data-dir    etcd的数据存储目录
+--listen-client-urls	用于当前节点与客户端交互的URL地址，每个节点同样可以向客户端提供多个URL地址，多个地址使用道号分隔节课,端口一般保持默认2379即可
+--listen-peer-urls	   用于集群内各个节点之间通信的URL地址，每个节点可以监听多个URL地址,集群内部将通过这些URL地址进行数据交互,例如，Leader节点的选举、Message消息传输或是快照传输等,端口一般保持默认2380即可
+--advertise-client-urls	建议使用的客户端通信url,该值用于etcd 代理或etcd成员与etcd节点通信,与listen-client-urls参数值保持一致即可
+--initial-advertise-peer-urls	建议用于集群内部节点之间交互的URL地址,节点间将以该值进行通信,与listen-peer-urls参数值保持一致即可
+--initial-cluster	集群中所有的initial-advertise-peer-urls的合集,etcd启动的时候,会通过这个配置找到其他etcd节点的列表
+--initial-cluster-token	 节点的token值,该值可自定义,设置该值后集群将生成唯一id,并为每个节点也生成唯一id,当使用相同配置文件再启动一个集群时,只要该token值不一样,etcd 集群就不会相互影响
+--initial-cluster-state	初始化时集群的状态,可取值:new和existing,new代表新建的集群,existing 代表加入已经存在的集群
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token comment">#同时启动etc集群</span>
+<span class="token punctuation">[</span>root@etcd-1 data<span class="token punctuation">]</span><span class="token comment"># systemctl daemon-reload ; systemctl start etcd ; systemctl enable etcd </span>
+<span class="token punctuation">[</span>root@etcd-2 data<span class="token punctuation">]</span><span class="token comment"># systemctl daemon-reload ; systemctl start etcd ; systemctl enable etcd </span>
+<span class="token punctuation">[</span>root@etcd-3 data<span class="token punctuation">]</span><span class="token comment"># systemctl daemon-reload ; systemctl start etcd ; systemctl enable etcd </span>
+<span class="token comment">#查看etcd集群状态</span>
+<span class="token punctuation">[</span>root@etcd-1 ~<span class="token punctuation">]</span><span class="token comment"># etcdctl --endpoints="http://etcd-1:2379,http://etcd-2:2379,http://etcd-3:2379" endpoint status  --write-out=table</span>
++--------------------+------------------+---------+---------+-----------+------------+-----------+------------+--------------------+--------+
+<span class="token operator">|</span>      ENDPOINT      <span class="token operator">|</span>        ID        <span class="token operator">|</span> VERSION <span class="token operator">|</span> DB SIZE <span class="token operator">|</span> IS LEADER <span class="token operator">|</span> IS LEARNER <span class="token operator">|</span> RAFT <span class="token environment constant">TERM</span> <span class="token operator">|</span> RAFT INDEX <span class="token operator">|</span> RAFT APPLIED INDEX <span class="token operator">|</span> ERRORS <span class="token operator">|</span>
++--------------------+------------------+---------+---------+-----------+------------+-----------+------------+--------------------+--------+
+<span class="token operator">|</span> http://etcd-1:2380 <span class="token operator">|</span> 5d9fc535d420491b <span class="token operator">|</span>  <span class="token number">3.5</span>.10 <span class="token operator">|</span>   <span class="token number">20</span> kB <span class="token operator">|</span>      <span class="token boolean">true</span> <span class="token operator">|</span>      <span class="token boolean">false</span> <span class="token operator">|</span>         <span class="token number">6</span> <span class="token operator">|</span>         <span class="token number">23</span> <span class="token operator">|</span>                 <span class="token number">23</span> <span class="token operator">|</span>        <span class="token operator">|</span>
+<span class="token operator">|</span> http://etcd-2:2380 <span class="token operator">|</span> 9f1a1dd78783c271 <span class="token operator">|</span>  <span class="token number">3.5</span>.10 <span class="token operator">|</span>   <span class="token number">20</span> kB <span class="token operator">|</span>     <span class="token boolean">false</span> <span class="token operator">|</span>      <span class="token boolean">false</span> <span class="token operator">|</span>         <span class="token number">6</span> <span class="token operator">|</span>         <span class="token number">23</span> <span class="token operator">|</span>                 <span class="token number">23</span> <span class="token operator">|</span>        <span class="token operator">|</span>
+<span class="token operator">|</span> http://etcd-3:2380 <span class="token operator">|</span> de29f03c1db86ef2 <span class="token operator">|</span>  <span class="token number">3.5</span>.10 <span class="token operator">|</span>   <span class="token number">20</span> kB <span class="token operator">|</span>     <span class="token boolean">false</span> <span class="token operator">|</span>      <span class="token boolean">false</span> <span class="token operator">|</span>         <span class="token number">6</span> <span class="token operator">|</span>         <span class="token number">23</span> <span class="token operator">|</span>                 <span class="token number">23</span> <span class="token operator">|</span>        <span class="token operator">|</span>
++--------------------+------------------+---------+---------+-----------+------------+-----------+------------+--------------------+--------+
+<span class="token comment">#查看etcd集群健康状态</span>
+<span class="token punctuation">[</span>root@etcd-1 ~<span class="token punctuation">]</span><span class="token comment"># etcdctl --endpoints="http://etcd-1:2379,http://etcd-2:2379,http://etcd-3:2379" endpoint health  --write-out=table</span>
++--------------------+--------+------------+-------+
+<span class="token operator">|</span>      ENDPOINT      <span class="token operator">|</span> HEALTH <span class="token operator">|</span>    TOOK    <span class="token operator">|</span> ERROR <span class="token operator">|</span>
++--------------------+--------+------------+-------+
+<span class="token operator">|</span> http://etcd-1:2380 <span class="token operator">|</span>   <span class="token boolean">true</span> <span class="token operator">|</span> <span class="token number">2</span>.495626ms <span class="token operator">|</span>       <span class="token operator">|</span>
+<span class="token operator">|</span> http://etcd-3:2380 <span class="token operator">|</span>   <span class="token boolean">true</span> <span class="token operator">|</span> <span class="token number">2</span>.693007ms <span class="token operator">|</span>       <span class="token operator">|</span>
+<span class="token operator">|</span> http://etcd-2:2380 <span class="token operator">|</span>   <span class="token boolean">true</span> <span class="token operator">|</span> <span class="token number">3</span>.350188ms <span class="token operator">|</span>       <span class="token operator">|</span>
++--------------------+--------+------------+-------+
+<span class="token comment">#列出etcd集群成员节点</span>
+<span class="token punctuation">[</span>root@etcd-1 ~<span class="token punctuation">]</span><span class="token comment"># etcdctl --endpoints="http://etcd-1:2379,http://etcd-2:2379,http://etcd-3:2379" member list  --write-out=table</span>
++------------------+---------+--------+---------------------------+---------------------------+------------+
+<span class="token operator">|</span>        ID        <span class="token operator">|</span> STATUS  <span class="token operator">|</span>  NAME  <span class="token operator">|</span>        PEER ADDRS         <span class="token operator">|</span>       CLIENT ADDRS        <span class="token operator">|</span> IS LEARNER <span class="token operator">|</span>
++------------------+---------+--------+---------------------------+---------------------------+------------+
+<span class="token operator">|</span> 5d9fc535d420491b <span class="token operator">|</span> started <span class="token operator">|</span> etcd-1 <span class="token operator">|</span> http://192.168.100.4:2380 <span class="token operator">|</span> http://192.168.100.4:2379 <span class="token operator">|</span>      <span class="token boolean">false</span> <span class="token operator">|</span>
+<span class="token operator">|</span> 9f1a1dd78783c271 <span class="token operator">|</span> started <span class="token operator">|</span> etcd-2 <span class="token operator">|</span> http://192.168.100.5:2380 <span class="token operator">|</span> http://192.168.100.5:2379 <span class="token operator">|</span>      <span class="token boolean">false</span> <span class="token operator">|</span>
+<span class="token operator">|</span> de29f03c1db86ef2 <span class="token operator">|</span> started <span class="token operator">|</span> etcd-3 <span class="token operator">|</span> http://192.168.100.6:2380 <span class="token operator">|</span> http://192.168.100.6:2379 <span class="token operator">|</span>      <span class="token boolean">false</span> <span class="token operator">|</span>
++------------------+---------+--------+---------------------------+---------------------------+------------+
+<span class="token punctuation">[</span>root@etcd-1 ~<span class="token punctuation">]</span><span class="token comment"># </span>
+<span class="token comment">#问题排查</span>
+<span class="token comment">#在创建以上集群的时候，etcd-1、etcd-2都启动正常了，但是etcd-3一直启动不了，报这样的错：</span>
+Nov <span class="token number">25</span> <span class="token number">20</span>:22:35 etcd-3 etcd<span class="token punctuation">[</span><span class="token number">24879</span><span class="token punctuation">]</span>: <span class="token punctuation">{<!-- --></span><span class="token string">"level"</span><span class="token builtin class-name">:</span><span class="token string">"fatal"</span>,<span class="token string">"ts"</span><span class="token builtin class-name">:</span><span class="token string">"2023-11-25T20:22:35.401932+0800"</span>,<span class="token string">"caller"</span><span class="token builtin class-name">:</span><span class="token string">"etcdmain/etcd.go:204"</span>,<span class="token string">"msg"</span><span class="token builtin class-name">:</span><span class="token string">"discovery failed"</span>,<span class="token string">"error"</span><span class="token builtin class-name">:</span><span class="token string">"member de29f03c1db86ef2 has already been bootstrapped"</span>,<span class="token string">"stacktrace"</span><span class="token builtin class-name">:</span><span class="token string">"go.etcd.io/etcd/server/v3/etcdmain.startEtcdOrProxyV2<span class="token entity" title="\n">\n</span><span class="token entity" title="\t">\t</span>go.etcd.io/etcd/server/v3/etcdmain/etcd.go:204<span class="token entity" title="\n">\n</span>go.etcd.io/etcd/server/v3/etcdmain.Main<span class="token entity" title="\n">\n</span><span class="token entity" title="\t">\t</span>go.etcd.io/etcd/server/v3/etcdmain/main.go:40<span class="token entity" title="\n">\n</span>main.main<span class="token entity" title="\n">\n</span><span class="token entity" title="\t">\t</span>go.etcd.io/etcd/server/v3/main.go:31<span class="token entity" title="\n">\n</span>runtime.main<span class="token entity" title="\n">\n</span><span class="token entity" title="\t">\t</span>runtime/proc.go:250"</span><span class="token punctuation">}</span>
+尝试rm <span class="token parameter variable">-rf</span> /var/lib/etcd <span class="token punctuation">;</span> systemctl daemon-reload <span class="token punctuation">;</span>systemctl start etcd 依然不行
+从错误日志看好像是说etcd-3节点已经启动，但是明明删了数据文件都启动不了
+最后是将etcd-1、etcd-2停掉，先启动etcd-3在启动其他两个，这样etcd-3才能正常启动了，不解。
+
+<span class="token comment">#以上，我们就创建了一个3节点的etcd集群，但是etcd节点是http协议的，不安全</span>
+<span class="token comment">#下面我们演示使用https协议的etcd集群，生产环境也建议使用https协议的集群。</span>
+</code></pre> 
+<h3><a id="etcdsystemdhttps_536"></a>创建etcd集群，使用systemd管理，https协议</h3> 
+<pre><code class="prism language-bash"><span class="token comment">#准备3台centos7服务器并做以下基础环境配置</span>
+yum <span class="token function">install</span> chrony <span class="token parameter variable">-y</span> <span class="token operator">&amp;&amp;</span> systemctl <span class="token builtin class-name">enable</span> <span class="token parameter variable">--now</span> chronyd
+yum <span class="token function">install</span> <span class="token function">vim</span> <span class="token function">lsof</span> net-tools <span class="token function">zip</span> <span class="token function">unzip</span> tree <span class="token function">wget</span> <span class="token function">curl</span> bash-completion pciutils gcc <span class="token function">make</span> lrzsz tcpdump bind-utils <span class="token parameter variable">-y</span>
+systemctl stop firewalld.service <span class="token operator">&amp;&amp;</span> systemctl disable firewalld.service
+hwclock <span class="token parameter variable">-w</span>	
+hostnamectl  set-hostname etcd-1
+hostnamectl  set-hostname etcd-2
+hostnamectl  set-hostname etcd-3
+<span class="token function">cat</span> <span class="token operator">&gt;&gt;</span> /etc/hosts <span class="token operator">&lt;&lt;</span><span class="token string">EOF
+192.168.100.4 etcd-1
+192.168.100.5 etcd-2
+192.168.100.6 etcd-3
+EOF</span>
+<span class="token comment">#下载etcd安装包</span>
+<span class="token assign-left variable">ETCD_VER</span><span class="token operator">=</span>v3.5.10
+<span class="token comment"># choose either URL</span>
+<span class="token assign-left variable">GOOGLE_URL</span><span class="token operator">=</span>https://storage.googleapis.com/etcd
+<span class="token assign-left variable">GITHUB_URL</span><span class="token operator">=</span>https://github.com/etcd-io/etcd/releases/download
+<span class="token assign-left variable">DOWNLOAD_URL</span><span class="token operator">=</span><span class="token variable">${GOOGLE_URL}</span>
+<span class="token function">curl</span> <span class="token parameter variable">-L</span> <span class="token variable">${DOWNLOAD_URL}</span>/<span class="token variable">${ETCD_VER}</span>/etcd-<span class="token variable">${ETCD_VER}</span>-linux-amd64.tar.gz <span class="token parameter variable">-o</span>  ./etcd-<span class="token variable">${ETCD_VER}</span>-linux-amd64.tar.gz
+<span class="token function">tar</span> xf etcd-v3.5.10-linux-amd64.tar.gz 
+<span class="token builtin class-name">cd</span> etcd-v3.5.10-linux-amd64/
+<span class="token function">mv</span> etcd* /usr/local/bin/ 
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token comment">#安装cfssl证书生成工具</span>
+<span class="token comment">#cfssl是一个开源的证书管理工具，使用json文件生成证书，相比openssl更方便使用，找任意一台服务器操作来安装，生成证书即可</span>
+<span class="token function">wget</span> https://github.com/cloudflare/cfssl/releases/download/v1.6.4/cfssl_1.6.4_linux_amd64
+<span class="token function">wget</span> https://github.com/cloudflare/cfssl/releases/download/v1.6.4/cfssljson_1.6.4_linux_amd64
+<span class="token function">wget</span> https://github.com/cloudflare/cfssl/releases/download/v1.6.4/cfssl-certinfo_1.6.4_linux_amd64
+<span class="token function">chmod</span> +x cfssl_linux-amd64 cfssljson_linux-amd64 cfssl-certinfo_linux-amd64
+<span class="token function">mv</span> cfssl_linux-amd64          /usr/local/bin/cfssl
+<span class="token function">mv</span> cfssljson_linux-amd64      /usr/local/bin/cfssljson
+<span class="token function">mv</span> cfssl-certinfo_linux-amd64 /usr/local/bin/cfssl-certinfo
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token comment">#生成Etcd证书</span>
+<span class="token comment"># 1、自签证书颁发机构（CA）</span>
+<span class="token comment">#创建etcd证书存放目录</span>
+<span class="token function">mkdir</span> <span class="token parameter variable">-p</span> /etc/etcd/pki
+<span class="token comment">#自签CA</span>
+<span class="token builtin class-name">cd</span> /etc/etcd/pki
+<span class="token function">cat</span> <span class="token operator">&gt;</span> ca-config.json <span class="token operator">&lt;&lt;</span> <span class="token string">EOF
+{
+  "signing": {
+    "default": {
+      "expiry": "87600h"
+    },
+    "profiles": {
+      "www": {
+         "expiry": "87600h",
+         "usages": [
+            "signing",
+            "key encipherment",
+            "server auth",
+            "client auth"
+        ]
+      }
+    }
+  }
+}
+EOF</span>
+<span class="token builtin class-name">cd</span> /etc/etcd/pki
+<span class="token function">cat</span> <span class="token operator">&gt;</span> ca-csr.json <span class="token operator">&lt;&lt;</span> <span class="token string">EOF
+{
+    "CN": "etcd CA",
+    "key": {
+        "algo": "rsa",
+        "size": 2048
+    },
+    "names": [
+        {
+            "C": "CN",
+            "L": "Shenzhen",
+            "ST": "Shenzhen"
+        }
+    ]
+}
+EOF</span>
+<span class="token comment"># 生成ca证书，会生成ca.pem和ca-key.pem文件</span>
+<span class="token builtin class-name">cd</span> /etc/etcd/pki
+cfssl gencert <span class="token parameter variable">-initca</span> ca-csr.json <span class="token operator">|</span> cfssljson <span class="token parameter variable">-bare</span> ca -
+
+<span class="token comment"># 2、使用自签CA签发etcd https证书</span>
+<span class="token comment">#注:下面文件hosts字段中ip为所有etcd节点的集群内部通信ip,一个都不能少,为了方便后期扩容可以多写几个预留的ip</span>
+<span class="token comment">#创建证书申请文件</span>
+<span class="token builtin class-name">cd</span> /etc/etcd/pki
+<span class="token function">cat</span> <span class="token operator">&gt;</span> server-csr.json <span class="token operator">&lt;&lt;</span> <span class="token string">EOF
+{
+    "CN": "etcd",
+    "hosts": [
+    "192.168.100.4",
+    "192.168.100.5",
+    "192.168.100.6"
+    ],
+    "key": {
+        "algo": "rsa",
+        "size": 2048
+    },
+    "names": [
+        {
+            "C": "CN",
+            "L": "Shenzhen",
+            "ST": "Shenzhen"
+        }
+    ]
+}
+EOF</span>
+
+<span class="token comment">#生成证书,会生成server.pem和server-key.pem文件</span>
+<span class="token builtin class-name">cd</span> /etc/etcd/pki
+cfssl gencert <span class="token parameter variable">-ca</span><span class="token operator">=</span>ca.pem -ca-key<span class="token operator">=</span>ca-key.pem <span class="token parameter variable">-config</span><span class="token operator">=</span>ca-config.json <span class="token parameter variable">-profile</span><span class="token operator">=</span>www server-csr.json <span class="token operator">|</span> cfssljson <span class="token parameter variable">-bare</span> server
+
+<span class="token comment">#查看所有证书</span>
+<span class="token punctuation">[</span>root@etcd-1 pki<span class="token punctuation">]</span><span class="token comment"># ls</span>
+ca-config.json  ca.csr  ca-csr.json  ca-key.pem  ca.pem  server.csr  server-csr.json  server-key.pem  server.pem
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token comment">#创建etcd.service服务文件,使用systemd管理etcd</span>
+<span class="token comment">#为了让etcd.service文件更简洁，创建一个etcd.conf配置文件，然后etcd.service服务文件引用即可</span>
+<span class="token function">mkdir</span>  <span class="token parameter variable">-p</span> /etc/etcd/config 
+<span class="token comment">#编写一个etcd配置文件</span>
+<span class="token function">cat</span> <span class="token operator">&gt;&gt;</span> /etc/etcd/config/etcd.conf<span class="token operator">&lt;&lt;</span><span class="token string">'EOF'
+#[Member]
+#1.节点名称，必须唯一
+ETCD_NAME="etcd-1"
+#2.设置数据保存的目录
+ETCD_DATA_DIR="/var/lib/etcd"
+#3.用于监听其他etcd member的url（集群通信监听地址）
+ETCD_LISTEN_PEER_URLS="https://192.168.100.4:2380"
+#4.该节点对外提供服务的地址（客户端访问的监听地址）
+ETCD_LISTEN_CLIENT_URLS="https://192.168.100.4:2379"
+
+#[Clustering]
+#5.客户端访问的监听地址
+ETCD_ADVERTISE_CLIENT_URLS="https://192.168.100.4:2379"
+#6.该节点成员对等URL地址，且会通告集群的其余成员节点（集群通告的监听地址）
+ETCD_INITIAL_ADVERTISE_PEER_URLS="https://192.168.100.4:2380"
+#7.集群中所有节点的信息
+ETCD_INITIAL_CLUSTER="etcd-1=https://192.168.100.4:2380,etcd-2=https://192.168.100.5:2380,etcd-3=https://192.168.100.6:2380"
+#8.创建集群的token，这个值每个集群保持唯一
+ETCD_INITIAL_CLUSTER_TOKEN="etcd-cluster"
+#9.初始集群状态，新建集群的时候，这个值为new；
+ETCD_INITIAL_CLUSTER_STATE="new"
+EOF</span>
+<span class="token comment">#创建etcd.service服务文件</span>
+<span class="token function">cat</span> <span class="token operator">&gt;</span> /usr/lib/systemd/system/etcd.service <span class="token operator">&lt;&lt;</span> <span class="token string">'EOF'
+[Unit]
+Description=Etcd Server
+After=network.target
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+EnvironmentFile=/etc/etcd/config/etcd.conf
+ExecStart=/usr/local/bin/etcd \
+  --cert-file=/etc/etcd/pki/server.pem \
+  --key-file=/etc/etcd/pki/server-key.pem \
+  --peer-cert-file=/etc/etcd/pki/server.pem \
+  --peer-key-file=/etc/etcd/pki/server-key.pem \
+  --trusted-ca-file=/etc/etcd/pki/ca.pem \
+  --peer-trusted-ca-file=/etc/etcd/pki/ca.pem \
+  --logger=zap
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF</span>
+
+<span class="token comment">#复制etcd文件到其他节点</span>
+<span class="token function">scp</span> <span class="token parameter variable">-r</span> /etc/etcd root@etcd-2:/etc/
+<span class="token function">scp</span> /usr/lib/systemd/system/etcd.service root@etcd-2:/usr/lib/systemd/system/
+<span class="token function">scp</span> <span class="token parameter variable">-r</span> /etc/etcd root@etcd-3:/etc/
+<span class="token function">scp</span> /usr/lib/systemd/system/etcd.service root@etcd-3:/usr/lib/systemd/system/
+
+<span class="token comment">#etcd-2节点上修改etcd.conf配置文件</span>
+<span class="token builtin class-name">cd</span> /etc/etcd/config/
+<span class="token function">vim</span> etcd.conf		<span class="token comment">#修改参数值为对应的本机IP</span>
+<span class="token assign-left variable">ETCD_NAME</span><span class="token operator">=</span><span class="token string">"etcd-2"</span>	<span class="token comment">#节点名称一定要唯一</span>
+<span class="token assign-left variable">ETCD_LISTEN_PEER_URLS</span><span class="token operator">=</span><span class="token string">"https://192.168.100.5:2380"</span>
+<span class="token assign-left variable">ETCD_LISTEN_CLIENT_URLS</span><span class="token operator">=</span><span class="token string">"https://192.168.100.5:2379"</span>
+<span class="token assign-left variable">ETCD_ADVERTISE_CLIENT_URLS</span><span class="token operator">=</span><span class="token string">"https://192.168.100.5:2379"</span>
+<span class="token assign-left variable">ETCD_INITIAL_ADVERTISE_PEER_URLS</span><span class="token operator">=</span><span class="token string">"https://192.168.100.5:2380"</span>
+<span class="token comment">#同理,etcd-3节点上也要修改etcd.conf配置文件</span>
+
+<span class="token comment">#启动etcd集群,3台同时启动即可</span>
+systemctl daemon-reload <span class="token punctuation">;</span> systemctl start etcd <span class="token punctuation">;</span> systemctl <span class="token builtin class-name">enable</span> etcd 
+systemctl daemon-reload <span class="token punctuation">;</span> systemctl start etcd <span class="token punctuation">;</span> systemctl <span class="token builtin class-name">enable</span> etcd 
+systemctl daemon-reload <span class="token punctuation">;</span> systemctl start etcd <span class="token punctuation">;</span> systemctl <span class="token builtin class-name">enable</span> etcd 
+
+<span class="token comment">#查看etcd集群状态</span>
+<span class="token comment">#endpoints写节点的https协议IP端口地址</span>
+ etcdctl <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cacert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/ca.pem"</span>  <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--key</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server-key.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--endpoints</span><span class="token operator">=</span><span class="token string">"https://192.168.100.4:2379,https://192.168.100.5:2379,https://192.168.100.6:2379"</span> <span class="token punctuation">\</span>
+ endpoint status  --write-out<span class="token operator">=</span>table
+ <span class="token comment">#查看etcd集群是否健康</span>
+ etcdctl <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cacert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/ca.pem"</span>  <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--key</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server-key.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--endpoints</span><span class="token operator">=</span><span class="token string">"https://192.168.100.4:2379,https://192.168.100.5:2379,https://192.168.100.6:2379"</span> <span class="token punctuation">\</span>
+ endpoint health  --write-out<span class="token operator">=</span>table
+ <span class="token comment">#列出节点成员</span>
+ etcdctl <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cacert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/ca.pem"</span>  <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--key</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server-key.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--endpoints</span><span class="token operator">=</span><span class="token string">"https://192.168.100.4:2379,https://192.168.100.5:2379,https://192.168.100.6:2379"</span> <span class="token punctuation">\</span>
+ member list  --write-out<span class="token operator">=</span>table
+</code></pre> 
+<h3><a id="etcdctl_757"></a>etcdctl客户端工具的使用</h3> 
+<pre><code class="prism language-bash"><span class="token comment">#etcdctl客户端命令行工具语法</span>
+<span class="token punctuation">[</span>root@etcd-1 pki<span class="token punctuation">]</span><span class="token comment"># etcdctl  --help</span>
+USAGE:
+	etcdctl <span class="token punctuation">[</span>flags<span class="token punctuation">]</span>
+COMMANDS:
+	alarm disarm	解除全部警报
+	alarm list		列出全部警报
+	auth disable	禁用authentication
+	auth <span class="token builtin class-name">enable</span>		启动authentication
+	auth status		查看authentication状态
+	check datascale		对于给定服务实例，检查持有数据的存储使用率.
+	check perf		检查etcd集群的性能
+	compaction		C压缩etcd的历史事件
+	defrag			整理给定的etcd实例的存储碎片
+	del			   删除指定的键或键的范围<span class="token punctuation">[</span>key, range_end<span class="token punctuation">]</span>
+	elect			加入leader选举
+	endpoint hashkv		打印每个端点的KV <span class="token function">history</span> hash,使用--endpoints参数指定端点,端点就是etcd节点的意思
+	endpoint health		检查指定endpoints的健康状况,使用--endpoints参数指定端点,端点就是etcd节点的意思
+	endpoint status		打印每个端点的状态,使用--endpoints参数指定端点,端点就是etcd节点的意思
+	<span class="token builtin class-name">help</span>			命令的帮助信息
+	lease grant		创建租约
+	lease keep-alive	保持租约有效<span class="token punctuation">(</span>续约<span class="token punctuation">)</span>
+	lease list		列出所有有效租约
+	lease revoke		撤销租约
+	lease timetolive	获取租约信息
+	lock			获取命名锁
+	make-mirror		指定一个etcd集群作为镜像集群
+	member <span class="token function">add</span>		添加一个member到etcd集群
+	member list		列出etcd集群全部的members
+	member promote		提升集群中无投票权的member
+	member remove		删除etcd集群的member 
+	member update		更新etcd集群的member
+	move-leader		 将leader角色转换给另一个节点，即转移leader角色给指定节点
+	get				获取指定key或指定范围的key
+	put			    添加key-value
+	role <span class="token function">add</span>		添加角色
+	role delete		删除角色
+	role get		获取角色的详细信息
+	role grant-permission	给角色授予key
+	role list		列出全部角色
+	role revoke-permission	Revokes a key from a role
+	snapshot restore	恢复快照到指定数据目录
+	snapshot save		保存快照到指定文件
+	snapshot status		<span class="token punctuation">[</span>弃用<span class="token punctuation">]</span> 获取给定快照文件的状态
+	txn			txn在一个事务内处理所有的请求
+	user <span class="token function">add</span>		添加新用户
+	user delete		删除用户
+	user get		获取用户信息
+	user grant-role	授权角色给用户
+	user list		列出全部用户
+	user <span class="token function">passwd</span>		修改用户密码
+	user revoke-role	撤销用户的角色
+	version			打印etcdctl版本
+	<span class="token function">watch</span>			Watches events stream on keys or prefixes
+
+OPTIONS:
+      <span class="token parameter variable">--cacert</span><span class="token operator">=</span><span class="token string">""</span>				服务端使用https时，使用ca文件进行验证
+      <span class="token parameter variable">--cert</span><span class="token operator">=</span><span class="token string">""</span>					https下客户端使用的TLS证书文件
+      --command-timeout<span class="token operator">=</span>5s			命令执行超时时间
+      --debug<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>				启用客户端调试日志，默认false
+      --dial-timeout<span class="token operator">=</span>2s				为客户端连接超时时间
+  -d, --discovery-srv<span class="token operator">=</span><span class="token string">""</span>			用于查询描述集群端点srv记录的域名
+      --discovery-srv-name<span class="token operator">=</span><span class="token string">""</span>		使用DNS发现时要查询的服务名称
+      <span class="token parameter variable">--endpoints</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token number">127.0</span>.0.1:2379<span class="token punctuation">]</span>		gRPC endpoints
+  -h, --help<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>				etcdctl帮助
+      --hex<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>				将字节字符串打印为十六进制编码字符串
+      --insecure-discovery<span class="token punctuation">[</span><span class="token operator">=</span>true<span class="token punctuation">]</span>		接受描述集群端点的不安全SRV记录
+      --insecure-skip-tls-verify<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>	跳过服务端证书验证 <span class="token punctuation">(</span>注意:此选项仅应用于测试目的<span class="token punctuation">)</span>
+      --insecure-transport<span class="token punctuation">[</span><span class="token operator">=</span>true<span class="token punctuation">]</span>		客户端禁用安全传输
+      --keepalive-time<span class="token operator">=</span>2s			客户端连接的keepalive时间
+      --keepalive-timeout<span class="token operator">=</span>6s		客户端连接的Keepalive超时时间
+      <span class="token parameter variable">--key</span><span class="token operator">=</span><span class="token string">""</span>					 https下客户端使用的TLS密钥文件
+      <span class="token parameter variable">--password</span><span class="token operator">=</span><span class="token string">""</span>				密码 <span class="token punctuation">(</span>如果使用该参数, 则--user参数不应该包含密码<span class="token punctuation">)</span>
+      <span class="token parameter variable">--user</span><span class="token operator">=</span><span class="token string">""</span>					username<span class="token punctuation">[</span>:password<span class="token punctuation">]</span> 用户名密码 <span class="token punctuation">(</span>如果为提供密码则提示<span class="token punctuation">)</span>
+  -w, --write-out<span class="token operator">=</span><span class="token string">"simple"</span>		设置输出格式<span class="token punctuation">(</span>fields, json, protobuf, simple, table<span class="token punctuation">)</span>，其中simple为原始信息
+</code></pre> 
+<h3><a id="etcdctl_835"></a>为etcdctl创建别名</h3> 
+<pre><code class="prism language-bash"><span class="token comment">#默认情况需要写ca、endpoints等参数，为了方便，可以给etcdctl创建别名</span>
+<span class="token comment">#临时别名</span>
+<span class="token builtin class-name">alias</span> <span class="token assign-left variable">etcdctl</span><span class="token operator">=</span><span class="token string">'
+  etcdctl \
+ --cacert="/etc/etcd/pki/ca.pem"  \
+ --cert="/etc/etcd/pki/server.pem" \
+ --key="/etc/etcd/pki/server-key.pem" \
+ --endpoints="https://192.168.100.4:2379,https://192.168.100.5:2379,https://192.168.100.6:2379" \
+ '</span>
+<span class="token comment">#取消别名</span>
+<span class="token builtin class-name">unalias</span> etcdctl
+<span class="token comment">#永久设置别名</span>
+<span class="token function">vim</span> ~/.bashrc  <span class="token comment">#加入以上命令即可</span>
+<span class="token comment">#验证,正常</span>
+etcdctl endpoint  status <span class="token parameter variable">-w</span> table
+<span class="token comment">#如无特殊说明，下面篇章出现的etcdctl默认都是别名</span>
+</code></pre> 
+<h3><a id="alarm__854"></a>alarm 告警管理</h3> 
+<pre><code class="prism language-bash"><span class="token comment">#解除全部告警</span>
+etcdctl alarm disarm
+<span class="token comment">#列出全部告警	</span>
+etcdctl alarm list		
+</code></pre> 
+<h3><a id="key_861"></a>key的增删改查</h3> 
+<h4><a id="put_key_862"></a>put 添加或修改key</h4> 
+<pre><code class="prism language-bash">USAGE:
+	etcdctl put <span class="token punctuation">[</span>options<span class="token punctuation">]</span> <span class="token operator">&lt;</span>key<span class="token operator">&gt;</span> <span class="token operator">&lt;</span>value<span class="token operator">&gt;</span> <span class="token punctuation">(</span><span class="token operator">&lt;</span>value<span class="token operator">&gt;</span> can also be given from stdin<span class="token punctuation">)</span> <span class="token punctuation">[</span>flags<span class="token punctuation">]</span>
+DESCRIPTION:
+	Puts the given key into the store.
+	When <span class="token operator">&lt;</span>value<span class="token operator">&gt;</span> begins with <span class="token string">'-'</span>, <span class="token operator">&lt;</span>value<span class="token operator">&gt;</span> is interpreted as a flag.
+	Insert <span class="token string">'--'</span> <span class="token keyword">for</span> workaround:	
+	$ put <span class="token operator">&lt;</span>key<span class="token operator">&gt;</span> -- <span class="token operator">&lt;</span>value<span class="token operator">&gt;</span>
+	$ put -- <span class="token operator">&lt;</span>key<span class="token operator">&gt;</span> <span class="token operator">&lt;</span>value<span class="token operator">&gt;</span>	
+	If <span class="token operator">&lt;</span>value<span class="token operator">&gt;</span> isn<span class="token string">'t given as a command line argument and '</span>--ignore-value<span class="token string">' is not specified,
+	this command tries to read the value from standard input.	
+	If &lt;lease&gt; isn'</span>t given as a <span class="token builtin class-name">command</span> line argument and <span class="token string">'--ignore-lease'</span> is not specified,
+	this <span class="token builtin class-name">command</span> tries to <span class="token builtin class-name">read</span> the value from standard input.	
+	For example,
+	$ <span class="token function">cat</span> <span class="token function">file</span> <span class="token operator">|</span> put <span class="token operator">&lt;</span>key<span class="token operator">&gt;</span>
+	will store the content of the <span class="token function">file</span> to <span class="token operator">&lt;</span>key<span class="token operator">&gt;</span>.
+OPTIONS:
+  -h, --help<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>		<span class="token builtin class-name">help</span> <span class="token keyword">for</span> put
+      --ignore-lease<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>	updates the key using its current lease
+      --ignore-value<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>	updates the key using its current value
+      <span class="token parameter variable">--lease</span><span class="token operator">=</span><span class="token string">"0"</span>		lease ID <span class="token punctuation">(</span>in hexadecimal<span class="token punctuation">)</span> to attach to the key
+      --prev-kv<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>		<span class="token builtin class-name">return</span> the previous key-value pair before modification
+示例：
+etcdctl put /henan/key1 value1
+etcdctl put /henan/key2 value2
+etcdctl put /henan/key3 value3
+etcdctl put /henan/key4 <span class="token string">"Hello world"</span>
+</code></pre> 
+<h4><a id="get_key_891"></a>get 查询或获取key</h4> 
+<pre><code class="prism language-bash">USAGE:
+	etcdctl get <span class="token punctuation">[</span>options<span class="token punctuation">]</span> <span class="token operator">&lt;</span>key<span class="token operator">&gt;</span> <span class="token punctuation">[</span>range_end<span class="token punctuation">]</span> <span class="token punctuation">[</span>flags<span class="token punctuation">]</span>
+OPTIONS:
+      <span class="token parameter variable">--consistency</span><span class="token operator">=</span><span class="token string">"l"</span>			Linearizable<span class="token punctuation">(</span>l<span class="token punctuation">)</span> or Serializable<span class="token punctuation">(</span>s<span class="token punctuation">)</span>
+      --count-only<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>		Get only the count
+      --from-key<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>		Get keys that are greater than or equal to the given key using byte compare
+  -h, --help<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>			get命令帮助
+      --keys-only<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>		仅获取key
+      <span class="token parameter variable">--limit</span><span class="token operator">=</span><span class="token number">0</span>				现在最大返回结果
+      <span class="token parameter variable">--order</span><span class="token operator">=</span><span class="token string">""</span>			结果排序<span class="token punctuation">;</span> ASCEND or DESCEND <span class="token punctuation">(</span>默认ASCEND <span class="token punctuation">)</span>
+      --prefix<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>		已前缀匹配获取key
+      --print-value-only<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>	Only <span class="token function">write</span> values when using the <span class="token string">"simple"</span> output <span class="token function">format</span>
+      <span class="token parameter variable">--rev</span><span class="token operator">=</span><span class="token number">0</span>				指定kv版本
+      --sort-by<span class="token operator">=</span><span class="token string">""</span>			排序<span class="token punctuation">;</span> CREATE, KEY, MODIFY, VALUE, or VERSION
+
+<span class="token comment">#返回以/henan为前缀开头的key</span>
+etcdctl get /henan <span class="token parameter variable">--prefix</span><span class="token operator">=</span>true
+<span class="token comment">##返回以/henan为前缀开头的key，并限制返回结果</span>
+etcdctl get /henan <span class="token parameter variable">--prefix</span><span class="token operator">=</span>true <span class="token parameter variable">--limit</span><span class="token operator">=</span><span class="token number">2</span>
+<span class="token comment">#获取指定key，默认返回key和value</span>
+etcdctl get /henan/key1
+<span class="token comment">#获取指定key，仅返回key</span>
+etcdctl get /henan/key1 --keys-only<span class="token operator">=</span>true
+<span class="token comment">#获取指定key，仅返回value</span>
+etcdctl get /henan/key1 --print-value-only<span class="token operator">=</span>true
+<span class="token comment">#获取指定版本号的key,--rev=20参数查询指定版本号</span>
+<span class="token comment">#key原理上并不会被删除，而是每个原子变化操作(例如，一个事务操作可能包含多个操作)都会在键空间上创建一个新的revision。以前revisions的所有数据保持不变，revisions在集群的整个生命周期中单调增加，初始revisions为1，然后往上递增。</span>
+etcdctl put /henan/key4 <span class="token string">"Hello world I am find"</span>
+etcdctl get /henan/key4 <span class="token parameter variable">-w</span> json
+etcdctl get /henan/key4  <span class="token parameter variable">--rev</span><span class="token operator">=</span><span class="token number">20</span>
+<span class="token comment">#获取指定范围内的值，这是一个半开区间，即[key1,key4), 包含key1不包含key4</span>
+etcdctl  get  /henan/key1 /henan/key4
+</code></pre> 
+<h4><a id="del_key_926"></a>del 删除key</h4> 
+<pre><code class="prism language-bash">USAGE:
+	etcdctl del <span class="token punctuation">[</span>options<span class="token punctuation">]</span> <span class="token operator">&lt;</span>key<span class="token operator">&gt;</span> <span class="token punctuation">[</span>range_end<span class="token punctuation">]</span> <span class="token punctuation">[</span>flags<span class="token punctuation">]</span>
+OPTIONS:
+      --from-key<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>	使用字节比较删除大于或等于给定键的键
+  -h, --help<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>		del帮助信息
+      --prefix<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>		删除匹配前缀的key
+      --prev-kv<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>		返回显示删除的key-value
+      --range<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>		删除键的范围
+示例：
+etcdct del /henan/key4
+</code></pre> 
+<h4><a id="watch_key_939"></a>watch 监听key</h4> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@node2 config<span class="token punctuation">]</span><span class="token comment"># etcdctl  watch --help</span>
+USAGE:
+	etcdctl <span class="token function">watch</span> <span class="token punctuation">[</span>options<span class="token punctuation">]</span> <span class="token punctuation">[</span>key or prefix<span class="token punctuation">]</span> <span class="token punctuation">[</span>range_end<span class="token punctuation">]</span> <span class="token punctuation">[</span>--<span class="token punctuation">]</span> <span class="token punctuation">[</span>exec-command arg1 arg2 <span class="token punctuation">..</span>.<span class="token punctuation">]</span> <span class="token punctuation">[</span>flags<span class="token punctuation">]</span>
+OPTIONS:
+  -h, --help<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>		<span class="token builtin class-name">help</span> <span class="token keyword">for</span> <span class="token function">watch</span>
+  -i, --interactive<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>	Interactive mode
+      --prefix<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>		Watch on a prefix <span class="token keyword">if</span> prefix is <span class="token builtin class-name">set</span>
+      --prev-kv<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>		get the previous key-value pair before the event happens
+      --progress-notify<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>	get periodic <span class="token function">watch</span> progress notification from server
+      <span class="token parameter variable">--rev</span><span class="token operator">=</span><span class="token number">0</span>			Revision to start watching
+示例：
+etcdctl <span class="token function">watch</span>  /henan/key4
+</code></pre> 
+<h3><a id="lease_955"></a>lease租约</h3> 
+<p>lease意味租约，类似于redis中的TTL（Time To Live），etcd中的键值对可以绑定到租约上，实现存活周期的控制。</p> 
+<pre><code class="prism language-bash">USAGE:
+	etcdctl lease <span class="token operator">&lt;</span>subcommand<span class="token operator">&gt;</span> <span class="token punctuation">[</span>flags<span class="token punctuation">]</span>
+COMMANDS:
+	grant		创建leases
+	keep-alive	保持leases有效 <span class="token punctuation">(</span>续约<span class="token punctuation">)</span>
+	list		列出全部存活的leases
+	revoke		撤销、删除leases
+	timetolive	获取lease信息
+
+<span class="token comment">#创建租约，超过100s该租约就会过期，过期的租约会自动被删掉</span>
+<span class="token punctuation">[</span>root@etcd-1 ~<span class="token punctuation">]</span><span class="token comment"># etcdctl  lease  grant  100</span>
+lease 38bc8c067d43a340 granted with TTL<span class="token punctuation">(</span>100s<span class="token punctuation">)</span>
+<span class="token comment">#列出全部存活的租约 </span>
+<span class="token punctuation">[</span>root@etcd-1 ~<span class="token punctuation">]</span><span class="token comment"># etcdctl  lease list</span>
+found <span class="token number">1</span> leases
+2c188c067d363d32
+<span class="token comment">#查看租约的信息</span>
+<span class="token punctuation">[</span>root@etcd-1 ~<span class="token punctuation">]</span><span class="token comment"># etcdctl  lease timetolive 2c188c067d363d32</span>
+lease 2c188c067d363d32 granted with TTL<span class="token punctuation">(</span>300s<span class="token punctuation">)</span>, remaining<span class="token punctuation">(</span>286s<span class="token punctuation">)</span>
+<span class="token comment">#一直自动续约,会自动重新设置租约的存活时间为其原始值</span>
+etcdctl  lease keep-alive 2c188c067d363d32
+<span class="token comment">#--once=true参数表示续约一次,重新设置租约的存活时间为其原始值</span>
+etcdctl  lease keep-alive <span class="token parameter variable">--once</span><span class="token operator">=</span>true 2c188c067d363d32
+<span class="token comment">#创建key时附加租约到指定的key上，当租约过期了，租约会被删掉，对应的key也会被删掉</span>
+etcdctl  put /test <span class="token string">"test"</span> <span class="token parameter variable">--lease</span><span class="token operator">=</span>2c188c067d363d32
+<span class="token comment">#删除租约，租约被删除其对应的key也会被删除</span>
+<span class="token punctuation">[</span>root@etcd-1 ~<span class="token punctuation">]</span><span class="token comment"># etcdctl lease  revoke 2c188c067d363d35</span>
+lease 2c188c067d363d35 revoked
+</code></pre> 
+<h3><a id="endpoint__987"></a>endpoint 操作</h3> 
+<pre><code class="prism language-bash"><span class="token comment">#打印endpoints中每个端点的KV历史散列</span>
+etcdctl  endpoint hashkv <span class="token parameter variable">-w</span> table
+<span class="token comment">#检查端点的健康状况,即检查etcd集群是否健康,很常用的命令</span>
+etcdctl  endpoint health <span class="token parameter variable">-w</span> table
+<span class="token comment">#输出端点的状态,即检查etcd集群状态,可以查看哪个是leader节点,节点ID,etcd版本,数据库大小,任期,版本等信息,很常用的命令</span>
+etcdctl  endpoint status <span class="token parameter variable">-w</span> table
+</code></pre> 
+<h3><a id="member__996"></a>member 操作</h3> 
+<pre><code class="prism language-bash">member <span class="token function">add</span>			添加member，就添加节点
+member list			列出全部member
+member promote		提升集群中无投票权的成员
+member remove		移除member
+member update		更新member 
+<span class="token comment">#示例</span>
+<span class="token comment">#列出全部member,可以查看节点是否已启动</span>
+etcdctl  member list <span class="token parameter variable">-w</span> table
+<span class="token comment">#删除member</span>
+etcdctl  member remove bd90d8585bceb8bc
+<span class="token comment">#添加member</span>
+etcdctl member <span class="token function">add</span> <span class="token operator">&lt;</span>memberName<span class="token operator">&gt;</span> <span class="token punctuation">[</span>options<span class="token punctuation">]</span> <span class="token punctuation">[</span>flags<span class="token punctuation">]</span>
+OPTIONS:
+  -h, --help<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>	<span class="token builtin class-name">help</span> <span class="token keyword">for</span> <span class="token function">add</span>
+      --learner<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>	indicates <span class="token keyword">if</span> the new member is raft learner
+      --peer-urls<span class="token operator">=</span><span class="token string">""</span>	comma separated peer URLs <span class="token keyword">for</span> the new member.
+<span class="token comment">#示例</span>
+<span class="token comment">#先将etcd-1的etcd配置文件、服务文件复制到etcd-3节点，注意修改这个参数ETCD_INITIAL_CLUSTER_STATE="existing"</span>
+<span class="token comment">#然后将新节点加入集群即可</span>
+etcdctl  member <span class="token function">add</span>  etcd-3 --peer-urls<span class="token operator">=</span><span class="token string">"https://192.168.100.6:2380"</span>
+
+<span class="token comment">#移除失败的节点，新增节点可以参考官网</span>
+https://kubernetes.io/zh-cn/docs/tasks/administer-cluster/configure-upgrade-etcd/<span class="token comment">#replacing-a-failed-etcd-member</span>
+</code></pre> 
+<h3><a id="leader_1022"></a>leader角色转换给指定节点</h3> 
+<pre><code class="prism language-bash">USAGE:
+	etcdctl move-leader <span class="token operator">&lt;</span>transferee-member-id<span class="token operator">&gt;</span> <span class="token punctuation">[</span>flags<span class="token punctuation">]</span>
+作用:将leader角色转换给另一个节点，即转移leader角色给指定节点
+示例：
+<span class="token comment">#查看当前leader节点并且得到各个节点的ID</span>
+etcdctl  endpoint status <span class="token parameter variable">-w</span> table
+<span class="token comment">#转换leader角色给指定节点</span>
+etcdctl move-leader bd90d8585bceb8bc
+<span class="token comment">#再次查看leader节点，已经时另外一个节点了，任期也增加了</span>
+etcdctl  endpoint status <span class="token parameter variable">-w</span> table
+</code></pre> 
+<h3><a id="_1035"></a>用户、角色、认证管理</h3> 
+<h4><a id="user_1036"></a>user用户管理</h4> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@etcd-1 ~<span class="token punctuation">]</span><span class="token comment"># etcdctl  user -h</span>
+COMMANDS:
+	<span class="token function">add</span>			添加一个新用户
+	delete		删除用户
+	get			查看用户详细信息
+	grant-role	授权角色给用户
+	list		列出全部的用户
+	<span class="token function">passwd</span>		修改用户密码
+	revoke-role	撤销用户角色
+<span class="token comment">#添加一个用户</span>
+USAGE:
+	etcdctl user <span class="token function">add</span> <span class="token operator">&lt;</span>user name or user:password<span class="token operator">&gt;</span> <span class="token punctuation">[</span>options<span class="token punctuation">]</span> <span class="token punctuation">[</span>flags<span class="token punctuation">]</span>
+OPTIONS:
+  -h, --help<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>		<span class="token builtin class-name">help</span> <span class="token keyword">for</span> <span class="token function">add</span>
+      --interactive<span class="token punctuation">[</span><span class="token operator">=</span>true<span class="token punctuation">]</span>	Read password from stdin instead of interactive terminal
+      --new-user-password<span class="token operator">=</span><span class="token string">""</span>	Supply password from the <span class="token builtin class-name">command</span> line flag
+      --no-password<span class="token punctuation">[</span><span class="token operator">=</span>false<span class="token punctuation">]</span>	Create a user without password <span class="token punctuation">(</span>CN based auth only<span class="token punctuation">)</span>
+<span class="token comment">#1、添加一个用户示例</span>
+etcdctl user <span class="token function">add</span> root:root	<span class="token comment">#必须先创建一名字叫做root的用户才能启用auth验证</span>
+etcdctl user <span class="token function">add</span> xiaoming --new-user-password<span class="token operator">=</span><span class="token string">"xiaoming"</span>
+<span class="token comment">#2、删除用户</span>
+etcdctl user delete xiaoming
+<span class="token comment">#3、查看用户详细信息</span>
+etcdctl user get root
+<span class="token comment">#4、授权角色给用户,xiaoming是user名,fox是role名</span>
+etcdctl user grant-role xiaoming fox
+<span class="token comment">#5、列出全部的用户</span>
+etcdctl user list
+<span class="token comment">#6、修改用户密码,需要输入密码</span>
+etcdctl user <span class="token function">passwd</span> xiaoming
+<span class="token comment">#7、撤销用户角色</span>
+etcdctl user revoke-role xiaoming fox
+</code></pre> 
+<h4><a id="role__1071"></a>role 角色管理</h4> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@etcd-1 helm<span class="token punctuation">]</span><span class="token comment"># etcdctl role  --help</span>
+USAGE:
+	etcdctl role <span class="token operator">&lt;</span>subcommand<span class="token operator">&gt;</span> <span class="token punctuation">[</span>flags<span class="token punctuation">]</span>
+COMMANDS:
+	<span class="token function">add</span>					添加一个角色
+	delete				删除一个角色
+	get					获取角色详细信息
+	grant-permission	给key授权角色
+	list				列出全部的角色
+	revoke-permission	撤销key的角色
+
+<span class="token comment">#示例</span>
+<span class="token comment">#1、添加角色</span>
+etcdctl role  <span class="token function">add</span>  fox
+<span class="token comment">#2、删除角色</span>
+etcdctl role  delete fox
+<span class="token comment">#3、获取角色详细信息</span>
+etcdctl role  get fox
+<span class="token comment">#4、给key授权角色</span>
+<span class="token comment">#语法：	etcdctl role grant-permission [options] &lt;role name&gt; &lt;permission type&gt; &lt;key&gt; [endkey] [flags]</span>
+其中<span class="token operator">&lt;</span>permission type<span class="token operator">&gt;</span>有read<span class="token operator">|</span><span class="token function">write</span><span class="token operator">|</span>readwrite    
+<span class="token comment">#示例</span>
+<span class="token comment">#授权fox角色对/name  key有read权限</span>
+etcdctl role grant-permission  fox <span class="token builtin class-name">read</span> /name
+<span class="token comment">#给xiaoming用户授于fox角色</span>
+etcdctl user grant-role xiaoming fox
+
+<span class="token comment">#5、列出全部的角色</span>
+etcdctl role  list
+<span class="token comment">#6、撤销key的角色</span>
+<span class="token comment">#语法：etcdctl role revoke-permission &lt;role name&gt; &lt;key&gt; [endkey] [flags]</span>
+etcdctl role revoke-permission fox /name
+</code></pre> 
+<h4><a id="auth_1106"></a>auth认证</h4> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@etcd-1 helm<span class="token punctuation">]</span><span class="token comment"># etcdctl auth -h</span>
+USAGE:
+	etcdctl auth <span class="token operator">&lt;</span>enable or disable<span class="token operator">&gt;</span> <span class="token punctuation">[</span>flags<span class="token punctuation">]</span>
+COMMANDS:
+	disable	禁用authentication
+	<span class="token builtin class-name">enable</span>	启用authentication
+	status	查看authentication状态
+<span class="token comment">#1、禁用authentication</span>
+etcdctl auth 
+<span class="token comment">#2、启用authentication</span>
+<span class="token comment">#注意:启用auth需要一个root用户，并且root用户有root角色</span>
+etcdctl user <span class="token function">add</span> root:root
+etcdctl role <span class="token function">add</span> root
+etcdctl role grant-permission <span class="token parameter variable">--prefix</span><span class="token operator">=</span>true root readwrite /
+etcdctl user grant-role root root
+etcdctl auth <span class="token builtin class-name">enable</span>	
+<span class="token comment">#3、查看authentication状态，现在查看就需要执行user参数了</span>
+etcdctl auth status <span class="token parameter variable">--user</span><span class="token operator">=</span>root:root
+
+<span class="token comment">#开启了etcd的auth认证，k8s集群的kube-apiserver连不上etcd了，不知道应该怎么配置</span>
+<span class="token comment">#查阅官网发现https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/#limiting-access-of-etcd-clusters</span>
+Note: etcd authentication is not currently supported by Kubernetes. For <span class="token function">more</span> information, see the related issue Support Basic Auth <span class="token keyword">for</span> Etcd v2.
+<span class="token comment">#看着好像是k8s不支持etcd auth认证,所以一般生产环境都是不开etcd的auth认证的，也不会创建user和role</span>
+</code></pre> 
+<h3><a id="_etcd__1132"></a>备份、还原 etcd 集群</h3> 
+<p>还原 etcd 集群参考下面的《etcd崩毁恢复》章节，此处的还原etcd 集群不太详细，仅给出命令用法。</p> 
+<pre><code class="prism language-bash"><span class="token comment">#注:snapshot指令只针对单个etcd 节点进行快照操作，即--endpoints参数只能指定一个节点</span>
+snapshot restore	恢复快照（该参数已弃用，使用etcdutl snapshot restore替代）
+snapshot save		创建快照到指定文件
+snapshot status		获取给定文件的后端快照状态（该参数已弃用，使用etcdutl snapshot status替代）
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token comment">#先移除之前设置的别名,因为之前的etcdctl别名endpoints参数写了多个地址</span>
+<span class="token builtin class-name">unalias</span> etcdctl
+<span class="token comment">#示例	</span>
+<span class="token comment">#1、保存快照,即存储快照到指定文件</span>
+<span class="token comment">#语法: etcdctl snapshot save &lt;filename&gt; [flags]</span>
+etcdctl <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cacert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/ca.pem"</span>  <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--key</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server-key.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--endpoints</span><span class="token operator">=</span><span class="token string">"https://192.168.100.4:2379"</span> <span class="token punctuation">\</span>
+ snapshot save /data/snapshot.db
+ 
+<span class="token comment">#2、检查快照状态</span>
+etcdctl <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cacert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/ca.pem"</span>  <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--key</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server-key.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--endpoints</span><span class="token operator">=</span><span class="token string">"https://192.168.100.4:2379"</span> <span class="token punctuation">\</span>
+ snapshot status /data/snapshot.db
+ 此命令已废弃，改用etcdutl snapshot status /data/snapshot.db
+ 
+<span class="token comment">#3、使用快照恢复etcd集群请参考下面的《etcd崩毁恢复》,此处不是详细步骤,仅为etcdctl snapshot restore命令</span>
+etcdctl snapshot restore /data/snapshot.db --data-dir /var/lib/etcd <span class="token punctuation">\</span>
+  <span class="token parameter variable">--name</span> etcd-1 <span class="token punctuation">\</span>
+  --initial-cluster etcd-1<span class="token operator">=</span>https://192.168.100.4:2380,etcd-2<span class="token operator">=</span>https://192.168.100.5:2380,etcd-3<span class="token operator">=</span>https://192.168.100.6:2380 <span class="token punctuation">\</span>
+  --initial-cluster-token etcd-cluster <span class="token punctuation">\</span>
+  --initial-advertise-peer-urls https://192.168.100.4:2380
+<span class="token comment">#注意,根据官方文档说明,使用快照恢复etcd集群是全部的节点都恢复,不是单独某个节点恢复,其实相当于重建etcd集群,</span>
+<span class="token comment"># 只是KV数据没变而已,集群ID,member id等元数据均变了</span>
+</code></pre> 
+<h3><a id="etcdutl__1171"></a>etcdutl 备份、快照管理命令</h3> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@node1 config<span class="token punctuation">]</span><span class="token comment"># etcdutl  -h</span>
+Usage:
+  etcdutl <span class="token punctuation">[</span>command<span class="token punctuation">]</span>
+Available Commands:
+  backup      <span class="token punctuation">[</span>legacy<span class="token punctuation">]</span> 离线备份etcd目录
+  defrag      清理etcd的存储碎片
+  snapshot    管理etcd节点快照
+  version     打印etcdutl的版本
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token comment">#1、离线备份etcd目录</span>
+Usage:
+  etcdutl backup <span class="token punctuation">[</span>flags<span class="token punctuation">]</span>
+Flags:
+      --backup-dir string       备份目录
+      --backup-wal-dir string   备份的wal目录
+      --data-dir string         etcd的data目录
+      --wal-dir string          Path to the etcd wal <span class="token function">dir</span>
+      --with-v3                 Backup v3 backend data <span class="token punctuation">(</span>default <span class="token boolean">true</span><span class="token punctuation">)</span>
+<span class="token comment">#示例,离线备份成功之后在/data目录下存在member目录,mumber目录下存在snap、wal目录</span>
+systemctl stop etcd
+etcdutl backup  --backup-dir /data/ --data-dir /var/lib/etcd/
+systemctl start etcd 
+
+<span class="token comment">#2、清理清理etcd的存储碎片</span>
+<span class="token punctuation">[</span>root@node1 config<span class="token punctuation">]</span><span class="token comment"># etcdutl  defrag   -h   </span>
+Usage:
+  etcdutl defrag <span class="token punctuation">[</span>flags<span class="token punctuation">]</span>
+Flags:
+      --data-dir string   Required. Defragments a data directory not <span class="token keyword">in</span> use by etcd.
+
+<span class="token comment">#示例, 清理etcd存储碎片也需要停止etcd进程</span>
+systemctl stop etcd 
+etcdutl  defrag --data-dir<span class="token operator">=</span>/var/lib/etcd  
+systemctl start etcd   
+
+<span class="token comment">#3、快照管理,快照恢复请参考下篇的《etcd崩毁恢复》</span>
+<span class="token punctuation">[</span>root@node1 config<span class="token punctuation">]</span><span class="token comment"># etcdutl snapshot    --help</span>
+Usage:
+  etcdutl snapshot <span class="token punctuation">[</span>command<span class="token punctuation">]</span>
+Available Commands:
+  restore     将etcd成员快照恢复到etcd目录
+  status      获取给定文件的后端快照状态
+
+<span class="token comment">#示例</span>
+<span class="token comment">#1、先使用etcdctl snapshot save 命令备份快照</span>
+etcdctl <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cacert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/ca.pem"</span>  <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--key</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server-key.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--endpoints</span><span class="token operator">=</span><span class="token string">"https://192.168.100.4:2379"</span> <span class="token punctuation">\</span>
+ snapshot save /data/snapshot.db
+ 
+<span class="token comment">#2、查看快照状态</span>
+etcdutl snapshot status /data/snapshot.db
+
+<span class="token comment">#3、还原快照</span>
+<span class="token comment">#还原快照是全部的节点都要还原的,不是说单独一个还原快照,而且根据官网说明,还原快照其实是拉起了一个新的集群</span>
+<span class="token comment">#也就是说集群ID,member id等这些元数据都是会变的,只是kv键值还是原来的数据</span>
+<span class="token comment">#使用快照恢复etcd集群请参考下面的《etcd崩毁恢复》,此处不是详细步骤,仅为etcdutl snapshot restore命令</span>
+<span class="token punctuation">[</span>root@etcd-1 data<span class="token punctuation">]</span><span class="token comment"># etcdutl snapshot   restore -h</span>
+ 语法:  etcdutl snapshot restore <span class="token operator">&lt;</span>filename<span class="token operator">&gt;</span> --data-dir <span class="token punctuation">{<!-- --></span>output dir<span class="token punctuation">}</span> <span class="token punctuation">[</span>options<span class="token punctuation">]</span> <span class="token punctuation">[</span>flags<span class="token punctuation">]</span>
+etcdutl snapshot restore /data/snapshot.db --data-dir /var/lib/etcd <span class="token punctuation">\</span>
+  <span class="token parameter variable">--name</span> etcd-1 <span class="token punctuation">\</span>
+  --initial-cluster etcd-1<span class="token operator">=</span>https://192.168.100.4:2380,etcd-2<span class="token operator">=</span>https://192.168.100.5:2380,etcd-3<span class="token operator">=</span>https://192.168.100.6:2380 <span class="token punctuation">\</span>
+  --initial-cluster-token etcd-cluster <span class="token punctuation">\</span>
+  --initial-advertise-peer-urls https://192.168.100.4:2380
+</code></pre> 
+<h3><a id="etcd_1241"></a>etcd崩毁恢复</h3> 
+<p>etcd崩毁恢复 ：<code>https://etcd.io/docs/v3.5/op-guide/data_corruption/</code><br> etcd快照恢复官网文档：<code>https://etcd.io/docs/v3.5/op-guide/recovery/</code><br> 注意：根据官网文档我们知道，使用快照恢复etcd集群，要恢复集群，只需要一个快照’db.文件。使用etdutl快照恢复的集群恢复会创建新的etcd数据目录，所有成员都应该使用相同的快照进行恢复。恢复会覆盖一些快照元数据(特别是成员ID和集群ID)，成员失去原来的身份。此元数据覆盖可防止新成员无意中加入现有集群。因此，为了从快照启动集群，恢复必须启动一个新的逻辑集群。可以选择在恢复时验证快照完整性。如果快照是用etcdctl snapshot save创建的，那么它会有一个完整性哈希值，由etcdctl snapshot restore检查。如果快照是从数据目录复制的，则没有完整性散列，并且只会通过使用–skip-hash-check进行恢复。恢复初始化新集群的新成员，使用etcd的集群配置标志进行新的集群配置，但保留etcd键空间的内容。继续前面的示例，下面创建新的etcd数据目录(m1)。etcd, m2。Etcd, m3.etcd)，用于三个成员集群。</p> 
+<h4><a id="3member_1245"></a>有3种方法恢复损坏的member</h4> 
+<pre><code class="prism language-bash">有3种方法恢复损坏的member:
+<span class="token number">1</span>、清除成员持久状态
+<span class="token number">2</span>、替换member
+<span class="token number">3</span>、恢复整个集群，使用快照恢复
+</code></pre> 
+<h4><a id="1_1252"></a>1、清除成员持久状态</h4> 
+<pre><code class="prism language-bash"><span class="token comment">#先把别名去掉</span>
+<span class="token builtin class-name">unalias</span> etcdctl
+
+<span class="token comment">#1、清除成员持久状态</span>
+<span class="token comment">#停止etcd实例</span>
+systemctl stop etcd 
+<span class="token comment">#备份etcd数据目录</span>
+<span class="token function">cp</span> <span class="token parameter variable">-r</span> /var/lib/etcd/ /data/
+<span class="token comment">#从etcd数据目录移出snap子目录</span>
+<span class="token function">mv</span> /var/lib/etcd/member/snap/ /data/
+<span class="token punctuation">(</span>测试发现还需要将wal目录移走 <span class="token function">mv</span> /var/lib/etcd/member/wal /data/<span class="token punctuation">)</span>
+<span class="token comment">#启动etcd指定--initial-cluster-state=existing和--initial-cluster参数</span>
+<span class="token function">vim</span> /etc/etcd/config/etcd.conf
+systemctl start etcd 
+<span class="token comment">#etcd members需要从leader那里下载最新的快照</span>
+</code></pre> 
+<h4><a id="2member_1270"></a>2、替换member</h4> 
+<pre><code class="prism language-bash"><span class="token comment">#2、替换member</span>
+<span class="token comment">#停止etcd实例</span>
+systemctl stop etcd 
+<span class="token comment">#备份etcd数据目录</span>
+<span class="token function">cp</span> <span class="token parameter variable">-r</span> /var/lib/etcd/ /data/
+<span class="token comment">#移除etcd数据目录</span>
+<span class="token function">rm</span> <span class="token parameter variable">-rf</span> /var/lib/etcd
+<span class="token comment">#从集群移除etcd节点</span>
+etcdctl member list  <span class="token parameter variable">-w</span> table 
+etcdctl member remove c80fe079dfd22a61
+<span class="token comment">#添加etcd节点</span>
+<span class="token comment">#先将其他节点的etcd配置文件、服务文件复制到etcd-1节点，注意修改这个参数ETCD_INITIAL_CLUSTER_STATE="existing"</span>
+<span class="token comment">#然后将新节点加入集群,并且启动etcd进程</span>
+etcdctl member <span class="token function">add</span> etcd-1 --peer-urls<span class="token operator">=</span><span class="token string">"https://192.168.100.4:2380"</span>
+systemctl start etcd
+</code></pre> 
+<h4><a id="3_1288"></a>3、恢复整个集群-使用快照恢复</h4> 
+<p>官网文档：<code>https://etcd.io/docs/v3.5/op-guide/recovery/</code></p> 
+<pre><code class="prism language-bash"><span class="token comment">#3、恢复整个集群</span>
+<span class="token comment"># 通过保存当前leader的快照并将其恢复到所有成员，可以恢复集群。对leader运行etcdctl snapshot save，然后执行恢复集群的过程。</span>
+<span class="token comment">#先在leader节点上备份快照</span>
+  etcdctl <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cacert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/ca.pem"</span>  <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--key</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server-key.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--endpoints</span><span class="token operator">=</span><span class="token string">"https://192.168.100.6:2379"</span> <span class="token punctuation">\</span>
+ snapshot save /data/snapshot.db
+
+<span class="token comment">#将快照复制到其他节点</span>
+<span class="token function">scp</span> /data/snapshot.db root@etcd-1:/data/snapshot.db
+<span class="token function">scp</span> /data/snapshot.db root@etcd-2:/data/snapshot.db
+
+<span class="token comment">#停掉全部etcd节点</span>
+systemctl stop etcd
+
+<span class="token comment">#将全部etcd节点的数据目录移除</span>
+<span class="token function">mv</span> /var/lib/etcd/ /data/etcd.bak
+
+<span class="token comment">#还原快照,3个节点都还原快照,还原示例如下</span>
+<span class="token comment">#注意参数要和/etc/etcd/config/etcd.conf配置文件保持一致</span>
+<span class="token comment">#第一个节点</span>
+etcdutl snapshot restore /data/snapshot.db --data-dir /var/lib/etcd <span class="token punctuation">\</span>
+  <span class="token parameter variable">--name</span> etcd-1 <span class="token punctuation">\</span>
+  --initial-cluster etcd-1<span class="token operator">=</span>https://192.168.100.4:2380,etcd-2<span class="token operator">=</span>https://192.168.100.5:2380,etcd-3<span class="token operator">=</span>https://192.168.100.6:2380 <span class="token punctuation">\</span>
+  --initial-cluster-token etcd-cluster <span class="token punctuation">\</span>
+  --initial-advertise-peer-urls https://192.168.100.4:2380
+<span class="token comment">#第二个节点</span>
+etcdutl snapshot restore /data/snapshot.db --data-dir /var/lib/etcd <span class="token punctuation">\</span>
+  <span class="token parameter variable">--name</span> etcd-2 <span class="token punctuation">\</span>
+  --initial-cluster etcd-1<span class="token operator">=</span>https://192.168.100.4:2380,etcd-2<span class="token operator">=</span>https://192.168.100.5:2380,etcd-3<span class="token operator">=</span>https://192.168.100.6:2380 <span class="token punctuation">\</span>
+  --initial-cluster-token etcd-cluster <span class="token punctuation">\</span>
+  --initial-advertise-peer-urls https://192.168.100.5:2380
+<span class="token comment">#第三个节点</span>
+etcdutl snapshot restore /data/snapshot.db --data-dir /var/lib/etcd <span class="token punctuation">\</span>
+  <span class="token parameter variable">--name</span> etcd-3 <span class="token punctuation">\</span>
+  --initial-cluster etcd-1<span class="token operator">=</span>https://192.168.100.4:2380,etcd-2<span class="token operator">=</span>https://192.168.100.5:2380,etcd-3<span class="token operator">=</span>https://192.168.100.6:2380 <span class="token punctuation">\</span>
+  --initial-cluster-token etcd-cluster <span class="token punctuation">\</span>
+  --initial-advertise-peer-urls https://192.168.100.6:2380
+
+<span class="token comment">#修改配置文件</span>
+<span class="token comment">#其中一个节点的ETCD_INITIAL_CLUSTER_STATE参数改为new,另外两个节点改为existing</span>
+<span class="token function">vim</span> /etc/etcd/config/etcd.conf
+
+<span class="token comment">#重启etcd,先重启ETCD_INITIAL_CLUSTER_STATE参数为new的节点,再重启其他两个节点即可</span>
+systemctl start  etcd
+
+<span class="token comment">#检查,发现数据均正常,之前的数据都在</span>
+etcdctl <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cacert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/ca.pem"</span>  <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--key</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server-key.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--endpoints</span><span class="token operator">=</span><span class="token string">"https://192.168.100.4:2379,https://192.168.100.5:2379,https://192.168.100.6:2379"</span> <span class="token punctuation">\</span>
+ member list <span class="token parameter variable">-w</span> table <span class="token punctuation">;</span>
+etcdctl <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cacert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/ca.pem"</span>  <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--key</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server-key.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--endpoints</span><span class="token operator">=</span><span class="token string">"https://192.168.100.4:2379,https://192.168.100.5:2379,https://192.168.100.6:2379"</span> <span class="token punctuation">\</span>
+ endpoint status <span class="token parameter variable">-w</span> table <span class="token punctuation">;</span>
+etcdctl <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cacert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/ca.pem"</span>  <span class="token punctuation">\</span>
+ <span class="token parameter variable">--cert</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--key</span><span class="token operator">=</span><span class="token string">"/etc/etcd/pki/server-key.pem"</span> <span class="token punctuation">\</span>
+ <span class="token parameter variable">--endpoints</span><span class="token operator">=</span><span class="token string">"https://192.168.100.6:2379"</span> <span class="token punctuation">\</span>
+ get name
+</code></pre> 
+<p>以上就是etcd的大体内容，后续会持续更新。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f83d872612da7149fc813b0540ae9e83/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Zotero安装教程（非常详细）从零基础入门到精通，看完这一篇就够了</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a763c1d13bd3e86d966d9ac374a98dcb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">七天搞定软件测试，这一篇教程就够了，学完最少能拿13k</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

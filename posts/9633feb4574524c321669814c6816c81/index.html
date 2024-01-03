@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>深入理解JVM（十五）垃圾回收相关概念 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="深入理解JVM（十五）垃圾回收相关概念" />
+<meta property="og:description" content="一、System.gc()的理解 在默认情况下，通过 System.gc () 或者 Runtime.getRuntime().gc() 的调用，会显式触发 Full GC，同时对老年代和新生代进行回收，尝试释放被丢弃对象占用的内存。
+System.gc() 调用附带一个免责声明，无法保证对垃圾收集器的调用(无法保证马上触发 GC)。
+以下代码如果注掉 System.runFinalization() ，那么控制台不保证一定打印，证明了 System.gc() 无法保证 GC 一定执行。
+public class SystemGCTest { public static void main(String[] args) { new SystemGCTest(); System.gc();//提醒jvm的垃圾回收器执行gc,但是不确定是否马上执行gc //与Runtime.getRuntime().gc()的作用一样。 System.runFinalization();//强制调用使用引用的对象的finalize()方法 } @Override protected void finalize() throws Throwable { super.finalize(); System.out.println(&#34;SystemGCTest 重写了finalize()&#34;); } } 手动 GC 理解不可达对象的回收行为 首先说明一个问题：开启了逃逸分析，没有逃逸的对象一定会在栈中分配吗？
+在 Hotspot 中采用的是解释器和编译器并行架构，所谓的混合模式，就是解释器和编译器搭配使用，当程序启动初期，采用解释器执行（同时会记录相关的数据，比如函数的调用次数，循环语句执行次数），节省编译的时间。在使用解释器执行期间，记录的函数运行的数据，通过这些数据发现某些代码是热点代码，采用编译器对热点代码进行编译，以及优化（逃逸分析就是其中一种优化技术），也就是当成为热点代码才会通过逃逸分析优化。
+再具体一点，逃逸分析有两个条件
+不能逃出当前方法，--不可逃逸条件这个方法执行了上万次，才会执行逃逸分析的逻辑判断 以下的代码满足不可逃逸条件，但是不满足执行次数，不要认为这些都在栈上分配
+// 执行GC,引用未释放，survivor区放不下10M数据，直接放入old区 public void localvarGC1() { byte[] buffer = new byte[10 * 1024 * 1024];//10MB System." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/9633feb4574524c321669814c6816c81/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-02-02T13:00:57+08:00" />
+<meta property="article:modified_time" content="2023-02-02T13:00:57+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">深入理解JVM（十五）垃圾回收相关概念</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>一、System.gc()的理解 </h2> 
+<p>在默认情况下，通过 <span style="color:#ed7976;"><span style="background-color:#fef2f0;">System.gc () </span></span>或者 <span style="color:#ed7976;"><span style="background-color:#fef2f0;">Runtime.getRuntime().gc() </span></span>的调用，<span style="color:#ed7976;">会显式触发 Full GC</span>，同时对老年代和新生代进行回收，尝试释放被丢弃对象占用的内存。</p> 
+<p>System.gc() 调用附带一个免责声明，<span style="color:#ed7976;">无法保证对垃圾收集器的调用(无法保证马上触发 GC)</span>。</p> 
+<p>以下代码如果注掉 System.runFinalization() ，那么控制台不保证一定打印，证明了 System.gc() 无法保证 GC 一定执行。</p> 
+<pre><code class="language-java">public class SystemGCTest {
+    public static void main(String[] args) {
+        new SystemGCTest();
+        System.gc();//提醒jvm的垃圾回收器执行gc,但是不确定是否马上执行gc
+        //与Runtime.getRuntime().gc()的作用一样。
+        System.runFinalization();//强制调用使用引用的对象的finalize()方法
+    }
+
+    @Override
+    protected void finalize() throws Throwable {
+        super.finalize();
+        System.out.println("SystemGCTest 重写了finalize()");
+    }
+}
+
+</code></pre> 
+<h4>手动 GC 理解不可达对象的回收行为</h4> 
+<p>首先说明一个问题：<strong>开启了逃逸分析，没有逃逸的对象一定会在栈中分配吗？</strong></p> 
+<p>在 Hotspot 中采用的是解释器和编译器并行架构，所谓的混合模式，就是解释器和编译器搭配使用，当程序启动初期，采用解释器执行（同时会记录相关的数据，比如函数的调用次数，循环语句执行次数），节省编译的时间。在使用解释器执行期间，记录的函数运行的数据，通过这些数据发现某些代码是热点代码，<span style="color:#ed7976;">采用编译器对热点代码进行编译，以及优化（逃逸分析就是其中一种优化技术）</span>，也就是当成为热点代码才会通过逃逸分析优化。</p> 
+<p>再具体一点，逃逸分析有两个条件</p> 
+<ol><li>不能逃出当前方法，--不可逃逸条件</li><li>这个方法执行了上万次，才会执行逃逸分析的逻辑判断</li></ol> 
+<p>以下的代码满足不可逃逸条件，但是不满足执行次数，不要认为这些都在栈上分配</p> 
+<pre><code class="language-java">    // 执行GC,引用未释放，survivor区放不下10M数据，直接放入old区
+    public void localvarGC1() {
+        byte[] buffer = new byte[10 * 1024 * 1024];//10MB
+        System.gc();
+    }</code></pre> 
+<p>虚拟机参数：-XX:+PrintGCDetails   </p> 
+<p>System.gc()会连带触发 Young GC 和 Full GC </p> 
+<p><img alt="" height="86" src="https://images2.imgbox.com/84/d7/RjRwriek_o.png" width="1042"></p> 
+<pre><code class="language-java">    //执行GC，释放引用，回收该数组在堆区空间
+    public void localvarGC2() {
+        byte[] buffer = new byte[10 * 1024 * 1024];
+        buffer = null;
+        System.gc();
+    }</code></pre> 
+<p><img alt="" height="75" src="https://images2.imgbox.com/08/47/jabEoESE_o.png" width="950"></p> 
+<pre><code class="language-java">    /*
+     * 执行GC，虽然buffer声明在局部作用域中，但是在局部变量表中还占着一个slot槽，
+     * 所以未进行回收
+     */ 
+    public void localvarGC3() {
+        {
+            byte[] buffer = new byte[10 * 1024 * 1024];
+        }
+        System.gc();
+    }</code></pre> 
+<p><img alt="" height="73" src="https://images2.imgbox.com/69/51/bhviDmfY_o.png" width="1033"></p> 
+<p>那为啥看不到 buffer 占用的槽位呢？出了作用域</p> 
+<p><img alt="" height="122" src="https://images2.imgbox.com/8e/b8/7H8aXi7Q_o.png" width="1183"></p> 
+<p>可以这样理解：局部变量表最大槽数为 2，说明还有一个槽位，buffer 还在槽内，只是没显示而已，也就是局部变量表的槽位可以复用但不会清除该槽位，里面的引用还在。</p> 
+<p><img alt="" height="169" src="https://images2.imgbox.com/c4/b6/qOISTi32_o.png" width="668"></p> 
+<pre><code class="language-java">    /*
+     * 执行GC，buffer声明在局部作用域中，但是作用域外重新声明了一个变量value，
+     * value会覆盖buffer，所以进行回收
+     */ 
+    public void localvarGC4() {
+        {
+            byte[] buffer = new byte[10 * 1024 * 1024];
+        }
+        int value = 10;
+        System.gc();
+    }</code></pre> 
+<p>栈帧中的局部变量表中的槽位是可以重用的，如果一个局部变量出了其作用域，那么在其作用域之后声明新的局部变量就很有可能会复用过期局部变量的槽位，从而达到节省资源的目的。 </p> 
+<p><img alt="" height="83" src="https://images2.imgbox.com/c1/0f/mfM67N4O_o.png" width="949"></p> 
+<pre><code class="language-java">// 调用完localGC1()后，localGC1()弹出栈，引用释放。
+    public void localvarGC5() {
+        localvarGC1();
+        System.gc();
+    }</code></pre> 
+<p><img alt="" height="191" src="https://images2.imgbox.com/2a/cd/g5UQ3d4k_o.png" width="984"></p> 
+<h2>二、内存溢出与内存泄漏</h2> 
+<h3>内存溢出</h3> 
+<p>Javadoc 中对 OutOfMemoryError 的解释是，<span style="color:#ed7976;">没有空闲内存，并且垃圾收集器也无法提供更多内存</span>。</p> 
+<p>在抛出 OutOfMemoryError 之前，<span style="color:#ed7976;">通常垃圾收集器会被触发，尽其所能去清理出空间。</span>例如：在引用机制分析中，涉及到 JVM 会去<span style="color:#ed7976;">尝试回收软引用</span>指向的对象等。当然，也不是在任何情况下垃圾收集器都会被触发的。比如，<span style="color:#ed7976;">我们去分配一个超大对象，类似一个超大数组超过堆的最大值，JVM可以判断出垃圾收集并不能解决这个问题，所以直接拋出 OutOfMemoryError。</span></p> 
+<h3>内存泄漏(Memory Leak)</h3> 
+<p>严格来说，<span style="color:#ed7976;">只有对象不会再被程序用到了，但是 GC 又不能回收它们的情况，才叫内存泄漏</span>。但一些不太好的实践（或疏忽）会导致对象的生命周期变得很长甚至导致 OOM，也可以叫做宽泛意义上的 “内存泄漏“ 。</p> 
+<p>尽管内存泄漏并不会立刻引起程序崩溃，但是一旦发生内存泄漏，程序中的可用内存就会被逐步蚕食，直至耗尽所有内存，最终出现 OutOfMemory 异常，导致程序崩溃。</p> 
+<p><strong>举例</strong></p> 
+<ol><li><strong>单例模式：</strong>单例的生命周期和应用程序是一样长的，所以单例程序中，如果持有对外部对象的引用的话，那么这个外部对象是不能被回收的，则会导致内存泄漏的产生。</li><li><strong>一些提供close的资源未关闭导致内存泄漏：</strong>数据库连接，网络连接和 IO 连接必须手动关闭，否则是不能被回收的。</li></ol> 
+<h2>三、Stop The World</h2> 
+<p>指的是 GC 事件发生过程中，会产生应用程序的停顿，<span style="color:#ed7976;">停顿产生时整个应用程序线程都会被暂停，没有任何响应，有点像卡死的感觉</span>，这个停顿称为 STW 。<span style="color:#ed7976;">STW 是 JVM 在后台自动发起和自动完成的</span>，在用户不可见的情况下，把用户正常的工作线程全部停掉。被 STW 中断的应用程序线程会在完成 GC 之后恢复，频繁中断会让用户感觉像是网速不快造成电影卡带一样， 所以我们需要减少 STW的发生。</p> 
+<p><strong>可达性分析算法中枚举根节点（GC Roots）会导致所有 Java 执行线程停顿，分析工作必须在一个能确保一致性的快照中进行</strong>，一致性指整个分析期间整个执行系统看起来像被冻结在某个时间点上。</p> 
+<p>开发中不要用 System.gc() ，会导致 STW 的发生。</p> 
+<pre><code class="language-java">public class StopTheWorldDemo {
+    public static class WorkThread extends Thread {
+        List&lt;byte[]&gt; list = new ArrayList&lt;byte[]&gt;();
+
+        @Override
+        public void run() {
+            try {
+                while (true) {
+                    for(int i = 0;i &lt; 1000;i++){
+                        byte[] buffer = new byte[1024];
+                        list.add(buffer);
+                    }
+
+                    if(list.size() &gt; 10000){
+                        list.clear();
+                        System.gc();//会触发full gc，进而会出现STW事件
+                    }
+                }
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
+        }
+    }
+
+    public static class PrintThread extends Thread {
+        public final long startTime = System.currentTimeMillis();
+
+        @Override
+        public void run() {
+            try {
+                while (true) {
+                    // 每秒打印时间信息
+                    long t = System.currentTimeMillis() - startTime;
+                    System.out.println(t / 1000 + "." + t % 1000);
+                    Thread.sleep(1000);
+                }
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        WorkThread w = new WorkThread();
+        PrintThread p = new PrintThread();
+        w.start();
+        p.start();
+    }
+}</code></pre> 
+<h2>四、垃圾回收的并行与并发</h2> 
+<h3>并发(Concurrent)</h3> 
+<p>并发不是真正意义上的 “同时进行”，只是 CPU 把一个时间段划分成几个时间片段（时间区间），然后在这几个时间区间之间来回切换，由于 CPU 处理的速度非常快，只要时间间隔处理得当，即可让用户感觉是多个应用程序同时在进行。</p> 
+<p><img alt="" height="300" src="https://images2.imgbox.com/d1/c4/Y1btMk2i_o.png" width="498"></p> 
+<h3>并行(Parallel)</h3> 
+<p>当系统有一个以上 CPU 时，当一个 CPU 执行一个进程时，另一个 CPU 可以执行另一个进程，两个进程互不抢占CPU资源，可以同时进行，我们称之为并行。</p> 
+<p><img alt="" height="300" src="https://images2.imgbox.com/4c/01/azuj7H7M_o.png" width="515"></p> 
+<h3>垃圾回收的并发与并行</h3> 
+<p>并行 ：指多条垃圾收集线程并行工作，但此时用户线程仍处于等待状态。如ParNew、 Parallel Scavenge、 Parallel 0ld。</p> 
+<p>串行：单线程执行，如果内存不够，则程序暂停，启动JVM垃圾回收器进行垃圾回收，回收完再启动程序的线程。</p> 
+<p><img alt="" height="445" src="https://images2.imgbox.com/36/8c/VzY1B8z6_o.png" width="1200"></p> 
+<p>并发 ：指用户线程与垃圾收集线程同时执行，垃圾回收线程在执行时不会停顿用户程序的运行，用户程序继续运行，而垃圾收集程序线程运行于另一个 CPU 上。如： CMS、G1 </p> 
+<p><img alt="" height="300" src="https://images2.imgbox.com/10/f2/LTWqAEqQ_o.png" width="650"></p> 
+<h2>五、安全点与安全区域</h2> 
+<h3>安全点(Safepoint)</h3> 
+<p>程序执行时并非在所有地方都能停顿下来开始 GC，只有在<span style="color:#ed7976;">特定的位置才能停顿下来开始GC</span>，这些位置称为安全点<strong>。</strong></p> 
+<p>安全点的选择很重要，如果太少可能导致 GC 等待的时间太长，如果太频繁可能导致运行时的性能问题，大部分指令的执行时间都非常短暂，通常会根据“是否具有让程序长时间执行的特征”为标准。比如：选择些执行时间较长的指令作为安全点， 如方法调用、循环跳转和异常跳转等。</p> 
+<p><strong>如何在GC发生时，检查所有线程都跑到最近的安全点停顿下来呢？</strong></p> 
+<ul><li><strong>抢先式中断</strong>： （目前没有虚拟机采用了），首先中断所有线程，如果还有线程不在安全点，就恢复线程，让线程跑到安全点。</li><li><strong>主动式中断</strong>：设置一个中断标志，各个线程运行到安全点的时候主动轮询这个标志，如果中断标志为真，则将自己进行中断挂起。</li></ul> 
+<h3>安全区域(Safe Region)</h3> 
+<p>安全点机制保证了程序执行时，在不太长的时间内就会遇到可进入 GC 的安全点 。但是，程序“不执行”的时候呢？例如，线程处于 Sleep 状态或 Blocked 状态，这时候线程无法响应 JVM 的中断请求，“走” 到安全点去中断挂起，JVM 也不太可能等待线程被唤醒。对于这种情况，就需要安全区域来解决。</p> 
+<p><span style="color:#ed7976;">安全区域是指在一段代码片段中，对象的引用关系不会发生变化，在这个区域中的任何位置开始 GC 都是安全的。</span>我们也可以把安全区域看做是被扩展了的安全点。</p> 
+<p>当线程运行到安全区域的代码时，首先标识已经进入了安全区域，如果这段时间内发生 GC，JVM 会忽略标识为安全区域状态的线程，当线程即将离开安全区域时， 会检查 JVM 是否已经完成 GC ，如果完成了，则继续运行，否则线程必须等待，直到收到可以安全离开安全区域的信号为止；</p> 
+<h2>六、再谈引用 </h2> 
+<p>我们希望能描述这样一类对象： 当内存空间还足够时，则能保留在内存中，如果内存空间在进行垃圾收集后还是很紧张，则可以抛弃这些对象。</p> 
+<p><strong>强引用、软引用、弱引用、虚引用有什么区别？具体使用场景是什么？</strong></p> 
+<p>在 JDK1.2 版之后，Java 对引用的概念进行了扩充，将引用分为强引用（Strong Reference）、软引用（Soft Reference） 、弱引用（Weak Reference） 和虚引用（Phantom Reference） 4种，这4种引用强度依次逐渐减弱。</p> 
+<p>除强引用外，其他 3 种引用均可以在 java.lang.ref 包中找到它们的身影。</p> 
+<p><img alt="" height="245" src="https://images2.imgbox.com/bf/14/eiwZ8nfp_o.png" width="721"></p> 
+<p>Reference 子类中只有终结器引用是包内可见的，其他3种引用类型均为public，可以在应用程序中直接使用</p> 
+<ul><li><span style="color:#ed7976;"><strong>强引用（StrongReference</strong>）</span>：最传统的“引用”的定义，是指在程序代码之中普遍存在的引用赋值，即类似 “Object obj = new Object()” 这种引用关系。无论任何情况下，只要强引用关系还存在，垃圾收集器就永远不会回收掉被引用的对象。</li><li><strong><span style="color:#ed7976;">软引用（SoftReference）</span></strong> ：在系统将要发生内存溢出之前，将会把这些对象列入回收范围之中，进行第二次回收，如果这次回收后还没有足够的内存，才会抛出内存溢出异常。</li><li><strong><span style="color:#ed7976;">弱引用（WeakReference）</span></strong> ：被弱引用关联的对象只能生存到下一次垃圾收集之前。当垃圾收集器工作时，无论内存空间是否足够，都会回收掉被弱引用关联的对象。</li><li><strong><span style="color:#ed7976;">虚引用（PhantomReference）</span></strong> ：一个对象是否有虛引用的存在，完全不会对其生存时间构成影响，也无法通过虚引用来获得一个对象的实例。为一个对象设置虛引用关联的唯一目的就是能在这个对象被收集器回收时收到一个系统通知(回收跟踪)。</li></ul> 
+<h3>强引用: 不回收</h3> 
+<p>在 Java 程序中，最常见的引用类型是强引用，也是<span style="color:#ed7976;">默认的引用类型</span>。</p> 
+<p>当使用 new 操作符创建一个新的对象， 并将其赋值给一个变量的时候，这个变量就成为指向该对象的一个强引用。<span style="color:#ed7976;">强引用的对象是可触及的，垃圾收集器永远不会回收掉被引用的对象</span>。对于一个普通的对象，如果没有其他的引用关系，<span style="color:#ed7976;">只要超过了引用的作用域或者显式地将相应（强）引用赋值为 null，就是可以当做垃圾被收集了</span>，当然具体回收时机还是要看垃圾收集策略。</p> 
+<p>相对的，软引用、 弱引用和虚引用的对象是软可触及、弱可触及和虛可触及的，在一定条件下，都是可以被回收的。所以，<span style="color:#ed7976;">强引用是造成Java内存泄漏的主要原因之一</span>。 </p> 
+<pre><code class="language-java">public class StrongReferenceTest {
+    public static void main(String[] args) {
+        StringBuffer str = new StringBuffer ("Hello,尚硅谷");
+        StringBuffer str1 = str;
+
+        str = null;
+        System.gc();
+
+        try {
+            Thread.sleep(3000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+        System.out.println(str1);
+    }
+}</code></pre> 
+<p> 运行结果：Hello,尚硅谷</p> 
+<p><img alt="" height="284" src="https://images2.imgbox.com/7a/64/aWT6lxG4_o.png" width="803"></p> 
+<h3>软引用: 内存不足即回收</h3> 
+<p>软引用是用来描述一些还有用，但非必需的对象。<span style="color:#ed7976;">只被软引用关联着的对象，在系统将要发生内存溢出异常前，会把这些对象列进回收范围之中进行第二次回收</span>，如果这次回收还没有足够的内存，才会抛出内存溢出异常。</p> 
+<p>软引用通常用来实现<span style="color:#ed7976;">内存敏感的缓存</span>。比如：高速缓存就有用到软引用，如果还有空闲内存，就可以暂时保留缓存，当内存不足时清理掉，这样就保证了使用缓存的同时不会耗尽内存。</p> 
+<p>垃圾回收器在某个时刻决定回收软可达的对象的时候，会清理软引用，并可选地把引用存放到一个引用队列（ Reference Queue）。</p> 
+<pre><code class="language-java">public class SoftReferenceTest {
+    public static class User {
+        public User(int id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+
+        public int id;
+        public String name;
+
+        @Override
+        public String toString() {
+            return "[id=" + id + ", name=" + name + "] ";
+        }
+    }
+
+    public static void main(String[] args) {
+        User u1 = new User(1,"songhk");
+        //创建对象，建立软引用
+        SoftReference&lt;User&gt; userSoftRef = new SoftReference&lt;User&gt;(u1);
+        u1 = null;//取消强引用
+
+
+        //从软引用中重新获得强引用对象
+        System.out.println(userSoftRef.get());
+
+        System.gc();
+        System.out.println("After GC:");
+//        //垃圾回收之后获得软引用中的对象
+        System.out.println(userSoftRef.get());//由于堆空间内存足够，所有不会回收软引用的可达对象。
+//
+        try {
+            //让系统认为内存资源紧张、不够
+            byte[] b = new byte[1024 * 1024 * 7];
+        } catch (Throwable e) {
+            e.printStackTrace();
+        } finally {
+            //再次从软引用中获取数据
+            System.out.println(userSoftRef.get());//在报OOM之前，垃圾回收器会回收软引用的可达对象。
+        }
+    }
+}</code></pre> 
+<p> <img alt="" height="183" src="https://images2.imgbox.com/34/91/MyotU3XP_o.png" width="647"></p> 
+<h3>弱引用: 发现即回收</h3> 
+<p>被弱引用关联的对象<span style="color:#ed7976;">只能生存到下一次垃圾收集发生为止</span>。在系统GC时，只要发现弱引用，不管系统堆空间使用是否充足，都会回收掉只被弱引用关联的对象。但是，<span style="color:#ed7976;">由于垃圾回收器的线程通常优先级很低，因此，并不一定能很快地发现持有弱引用的对象，在这种情况下，弱引用对象可以存在较长的时间</span>。</p> 
+<pre><code class="language-java">public class WeakReferenceTest {
+    public static class User {
+        public User(int id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+
+        public int id;
+        public String name;
+
+        @Override
+        public String toString() {
+            return "[id=" + id + ", name=" + name + "] ";
+        }
+    }
+
+    public static void main(String[] args) {
+        //构造了弱引用
+        WeakReference&lt;User&gt; userWeakRef = new WeakReference&lt;User&gt;(new User(1, "songhk"));
+        //从弱引用中重新获取对象
+        System.out.println(userWeakRef.get());
+
+        System.gc();
+        // 不管当前内存空间足够与否，都会回收它的内存
+        System.out.println("After GC:");
+        //重新尝试从弱引用中获取对象
+        System.out.println(userWeakRef.get());
+    }
+}</code></pre> 
+<h3>虚引用: 对象回收跟踪</h3> 
+<p>虚引用也称为“幽灵引用”或者“幻影引用”，是所有引用类型中最弱的一个。一个对象是否有虚引用的存在，完全不会决定对象的生命周期，如果一个对象仅持有虚引用，那么它和没有引用几乎是一样的，随时都可能被垃圾回收器回收。</p> 
+<p>它不能单独使用，也无法通过虚引用来获取被引用的对象，当试图通过虚引用的 get() 方法取得对象时，总是 null 。<span style="color:#ed7976;">为一个对象设置虚引用关联的唯一目的在于跟踪垃圾回收过程。比如：能在这个对象被收集器回收时收到一个系统通知</span>。虚引用必须和引用队列一起使用，虚引用在创建时必须提供一个引用队列作为参数，当垃圾回收器准备回收一个对象时，如果发现它还有虛引用，就会在回收对象后，将这个虚引用加入引用队列，以通知应用程序对象的回收情况。<span style="color:#ed7976;">由于虚引用可以跟踪对象的回收时间，因此，也可以将一些资源释放操作放置在虛引用中执行和记录</span>。</p> 
+<pre><code class="language-java">public class PhantomReferenceTest {
+    public static PhantomReferenceTest obj;//当前类对象的声明
+    static ReferenceQueue&lt;PhantomReferenceTest&gt; phantomQueue = null;//引用队列
+
+    public static class CheckRefQueue extends Thread {
+        @Override
+        public void run() {
+            while (true) {
+                if (phantomQueue != null) {
+                    PhantomReference&lt;PhantomReferenceTest&gt; objt = null;
+                    try {
+                        objt = (PhantomReference&lt;PhantomReferenceTest&gt;) phantomQueue.remove();
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                    if (objt != null) {
+                        System.out.println("追踪垃圾回收过程：PhantomReferenceTest实例被GC了");
+                    }
+                }
+            }
+        }
+    }
+
+    @Override
+    protected void finalize() throws Throwable { //finalize()方法只能被调用一次！
+        super.finalize();
+        System.out.println("调用当前类的finalize()方法");
+        obj = this;
+    }
+
+    public static void main(String[] args) {
+        Thread t = new CheckRefQueue();
+        t.setDaemon(true);//设置为守护线程：当程序中没有非守护线程时，守护线程也就执行结束。
+        t.start();
+
+        phantomQueue = new ReferenceQueue&lt;PhantomReferenceTest&gt;();
+        obj = new PhantomReferenceTest();
+        //构造了 PhantomReferenceTest 对象的虚引用，并指定了引用队列
+        PhantomReference&lt;PhantomReferenceTest&gt; phantomRef = new PhantomReference&lt;PhantomReferenceTest&gt;(obj, phantomQueue);
+
+        try {
+            //不可获取虚引用中的对象
+            System.out.println(phantomRef.get());
+
+            //将强引用去除
+            obj = null;
+            //第一次进行GC,由于对象可复活，GC无法回收该对象
+            System.gc();
+            Thread.sleep(1000);
+            if (obj == null) {
+                System.out.println("obj 是 null");
+            } else {
+                System.out.println("obj 可用");
+            }
+            System.out.println("第 2 次 gc");
+            obj = null;
+            System.gc(); //一旦将obj对象回收，就会将此虚引用存放到引用队列中。
+            Thread.sleep(1000);
+            if (obj == null) {
+                System.out.println("obj 是 null");
+            } else {
+                System.out.println("obj 可用");
+            }
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+}
+</code></pre> 
+<p>运行结果：</p> 
+<blockquote> 
+ <p>null</p> 
+ <p>调用当前类的finalize()方法</p> 
+ <p>obj 可用</p> 
+ <p>第 2 次 gc</p> 
+ <p>追踪垃圾回收过程：PhantomReferenceTest实例被GC了</p> 
+ <p>obj 是 null </p> 
+</blockquote> 
+<h3>终结器引用</h3> 
+<p>用来实现对象的 finalize() 方法，也可以称为终结器引用，无需手动编码， 其内部配合引用队列使用。在GC时， 终结器引用入队，由 Finalizer 线程通过终结器引用找到被引用对象并调用它的 finalize() 方法，第二次 GC 时才能回收被引用对象。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/497c5a729800ab61fc041a228502b646/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">@Valid与@Validated区别</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/62fe3e90c06191a7b580976b09dea366/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Dockerfile构建Tomcat镜像</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

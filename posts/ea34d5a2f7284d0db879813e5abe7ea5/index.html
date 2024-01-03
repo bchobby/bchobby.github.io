@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>常见的锁策略、CAS及它的ABA问题 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="常见的锁策略、CAS及它的ABA问题" />
+<meta property="og:description" content="目录
+前言
+一、常见的锁策略
+1.1 乐观锁 vs 悲观锁
+1.2 普通的互斥锁 vs 读写锁
+1.3 重量级锁 vs 轻量级锁
+1.4 自旋锁 vs 挂起等待锁
+1.5 公平锁 vs 非公平锁
+1.6 可重入锁 vs 不可重入锁
+二、CAS
+2.1 CAS典型应用场景
+2.1.1 使用CAS实现原子类
+2.1.2 使用CAS实现自旋锁
+2.2 CAS中的ABA问题（小概率bug）
+2.2.1 什么是ABA问题
+2.2.2 ABA问题引发的bug
+2.2.3 解决ABA问题的办法
+前言 前面所介绍的 多线程基础篇的内容，主要介绍的还是一些 和多线程相关性非常高的内容，也都是工作中经常会涉及到的问题和代码~
+而接下来的多线程进阶篇的内容，则是需要对多线程内容进行进一步的补充~
+进阶篇中的很多知识，不再是工作中常用的，但是却是在面试中常考的（俗称：八股文，面试造核弹，工作拧螺丝）~
+下面，就正式开始来学习 进阶篇的内容 ...... 一、常见的锁策略 简单通俗的来说，锁策略就是 加锁的时候是咋加的~（锁策略也是一个锁的形容词）
+1.1 乐观锁 vs 悲观锁 乐观锁：预测接下来锁冲突的概率不大，就会少做一点工作，成本更小~
+悲观锁：预测接下来锁冲突的概率很大，就会多做一点工作，成本更大~
+比如说，就前段时间，西安那边又有确诊的了~
+有居民就比较紧张，就在想是不是要在家里屯点菜啥的（疫情会引起封城，封城会影响买菜），提前屯点菜以备不时之需~
+这个就可以看作是 悲观锁，花费所需成本较大（买菜、运菜、放在地上......）~
+当时有居民却认为，由于之前已经有过几次确诊的经历，所以说 已经有了不少经验了，所以封城的概率比较小，不需要提前屯菜（屯了吃不完大概率会坏）~
+这个就可以看作是 乐观锁，话费所需成本更小~ synchronized 就既是一个悲观锁，也是一个乐观锁，准确的来说 它是一个自适应锁~" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/ea34d5a2f7284d0db879813e5abe7ea5/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-02-04T23:28:44+08:00" />
+<meta property="article:modified_time" content="2023-02-04T23:28:44+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">常见的锁策略、CAS及它的ABA问题</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="%E5%89%8D%E8%A8%80-toc" style="margin-left:0px;"><a href="#%E5%89%8D%E8%A8%80" rel="nofollow">前言</a></p> 
+<p id="%E4%B8%80%E3%80%81%E5%B8%B8%E8%A7%81%E7%9A%84%E9%94%81%E7%AD%96%E7%95%A5-toc" style="margin-left:0px;"><a href="#%E4%B8%80%E3%80%81%E5%B8%B8%E8%A7%81%E7%9A%84%E9%94%81%E7%AD%96%E7%95%A5" rel="nofollow">一、常见的锁策略</a></p> 
+<p id="1.1%20%E4%B9%90%E8%A7%82%E9%94%81%20vs%20%E6%82%B2%E8%A7%82%E9%94%81-toc" style="margin-left:40px;"><a href="#1.1%20%E4%B9%90%E8%A7%82%E9%94%81%20vs%20%E6%82%B2%E8%A7%82%E9%94%81" rel="nofollow">1.1 乐观锁 vs 悲观锁</a></p> 
+<p id="1.2%20%E6%99%AE%E9%80%9A%E7%9A%84%E4%BA%92%E6%96%A5%E9%94%81%20vs%20%E8%AF%BB%E5%86%99%E9%94%81-toc" style="margin-left:40px;"><a href="#1.2%20%E6%99%AE%E9%80%9A%E7%9A%84%E4%BA%92%E6%96%A5%E9%94%81%20vs%20%E8%AF%BB%E5%86%99%E9%94%81" rel="nofollow">1.2 普通的互斥锁 vs 读写锁</a></p> 
+<p id="1.3%20%E9%87%8D%E9%87%8F%E7%BA%A7%E9%94%81%20vs%20%E8%BD%BB%E9%87%8F%E7%BA%A7%E9%94%81-toc" style="margin-left:40px;"><a href="#1.3%20%E9%87%8D%E9%87%8F%E7%BA%A7%E9%94%81%20vs%20%E8%BD%BB%E9%87%8F%E7%BA%A7%E9%94%81" rel="nofollow">1.3 重量级锁 vs 轻量级锁</a></p> 
+<p id="1.4%20%E8%87%AA%E6%97%8B%E9%94%81%20vs%20%E6%8C%82%E8%B5%B7%E7%AD%89%E5%BE%85%E9%94%81-toc" style="margin-left:40px;"><a href="#1.4%20%E8%87%AA%E6%97%8B%E9%94%81%20vs%20%E6%8C%82%E8%B5%B7%E7%AD%89%E5%BE%85%E9%94%81" rel="nofollow">1.4 自旋锁 vs 挂起等待锁</a></p> 
+<p id="1.5%20%E5%85%AC%E5%B9%B3%E9%94%81%20vs%20%E9%9D%9E%E5%85%AC%E5%B9%B3%E9%94%81-toc" style="margin-left:40px;"><a href="#1.5%20%E5%85%AC%E5%B9%B3%E9%94%81%20vs%20%E9%9D%9E%E5%85%AC%E5%B9%B3%E9%94%81" rel="nofollow">1.5 公平锁 vs 非公平锁</a></p> 
+<p id="1.6%20%E5%8F%AF%E9%87%8D%E5%85%A5%E9%94%81%20vs%20%E4%B8%8D%E5%8F%AF%E9%87%8D%E5%85%A5%E9%94%81-toc" style="margin-left:40px;"><a href="#1.6%20%E5%8F%AF%E9%87%8D%E5%85%A5%E9%94%81%20vs%20%E4%B8%8D%E5%8F%AF%E9%87%8D%E5%85%A5%E9%94%81" rel="nofollow">1.6 可重入锁 vs 不可重入锁</a></p> 
+<p id="%E4%BA%8C%E3%80%81CAS-toc" style="margin-left:0px;"><a href="#%E4%BA%8C%E3%80%81CAS" rel="nofollow">二、CAS</a></p> 
+<p id="2.1%20CAS%E5%85%B8%E5%9E%8B%E5%BA%94%E7%94%A8%E5%9C%BA%E6%99%AF-toc" style="margin-left:40px;"><a href="#2.1%20CAS%E5%85%B8%E5%9E%8B%E5%BA%94%E7%94%A8%E5%9C%BA%E6%99%AF" rel="nofollow">2.1 CAS典型应用场景</a></p> 
+<p id="2.1.1%20%E4%BD%BF%E7%94%A8CAS%E5%AE%9E%E7%8E%B0%E5%8E%9F%E5%AD%90%E7%B1%BB-toc" style="margin-left:80px;"><a href="#2.1.1%20%E4%BD%BF%E7%94%A8CAS%E5%AE%9E%E7%8E%B0%E5%8E%9F%E5%AD%90%E7%B1%BB" rel="nofollow">2.1.1 使用CAS实现原子类</a></p> 
+<p id="2.1.2%20%E4%BD%BF%E7%94%A8CAS%E5%AE%9E%E7%8E%B0%E8%87%AA%E6%97%8B%E9%94%81-toc" style="margin-left:80px;"><a href="#2.1.2%20%E4%BD%BF%E7%94%A8CAS%E5%AE%9E%E7%8E%B0%E8%87%AA%E6%97%8B%E9%94%81" rel="nofollow">2.1.2 使用CAS实现自旋锁</a></p> 
+<p id="2.2%20CAS%E4%B8%AD%E7%9A%84ABA%E9%97%AE%E9%A2%98%EF%BC%88%E5%B0%8F%E6%A6%82%E7%8E%87bug%EF%BC%89-toc" style="margin-left:40px;"><a href="#2.2%20CAS%E4%B8%AD%E7%9A%84ABA%E9%97%AE%E9%A2%98%EF%BC%88%E5%B0%8F%E6%A6%82%E7%8E%87bug%EF%BC%89" rel="nofollow">2.2 CAS中的ABA问题（小概率bug）</a></p> 
+<p id="2.2.1%20%E4%BB%80%E4%B9%88%E6%98%AFABA%E9%97%AE%E9%A2%98-toc" style="margin-left:80px;"><a href="#2.2.1%20%E4%BB%80%E4%B9%88%E6%98%AFABA%E9%97%AE%E9%A2%98" rel="nofollow">2.2.1 什么是ABA问题</a></p> 
+<p id="2.2.2%20ABA%E9%97%AE%E9%A2%98%E5%BC%95%E5%8F%91%E7%9A%84bug-toc" style="margin-left:80px;"><a href="#2.2.2%20ABA%E9%97%AE%E9%A2%98%E5%BC%95%E5%8F%91%E7%9A%84bug" rel="nofollow">2.2.2 ABA问题引发的bug</a></p> 
+<p id="2.2.3%20%E8%A7%A3%E5%86%B3ABA%E9%97%AE%E9%A2%98%E7%9A%84%E5%8A%9E%E6%B3%95-toc" style="margin-left:80px;"><a href="#2.2.3%20%E8%A7%A3%E5%86%B3ABA%E9%97%AE%E9%A2%98%E7%9A%84%E5%8A%9E%E6%B3%95" rel="nofollow">2.2.3 解决ABA问题的办法</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2> 
+<p>前面所介绍的 多线程基础篇的内容，主要介绍的还是一些 和多线程相关性非常高的内容，也都是工作中经常会涉及到的问题和代码~</p> 
+<p>而接下来的多线程进阶篇的内容，则是需要对多线程内容进行进一步的补充~</p> 
+<p>进阶篇中的很多知识，不再是工作中常用的，但是却是在面试中常考的（俗称：八股文，面试造核弹，工作拧螺丝）~</p> 
+<p>下面，就正式开始来学习 进阶篇的内容 ......  </p> 
+<hr> 
+<h2 id="%E4%B8%80%E3%80%81%E5%B8%B8%E8%A7%81%E7%9A%84%E9%94%81%E7%AD%96%E7%95%A5">一、常见的锁策略</h2> 
+<p>简单通俗的来说，锁策略就是 加锁的时候是咋加的~（锁策略也是一个锁的形容词）</p> 
+<h3 id="1.1%20%E4%B9%90%E8%A7%82%E9%94%81%20vs%20%E6%82%B2%E8%A7%82%E9%94%81">1.1 乐观锁 vs 悲观锁</h3> 
+<p><strong>乐观锁</strong>：预测接下来锁冲突的概率不大，就会少做一点工作，成本更小~</p> 
+<p><strong>悲观锁</strong>：预测接下来锁冲突的概率很大，就会多做一点工作，成本更大~</p> 
+<blockquote> 
+ <p>比如说，就前段时间，西安那边又有确诊的了~</p> 
+ <p></p> 
+ <p>有居民就比较紧张，就在想是不是要在家里屯点菜啥的（疫情会引起封城，封城会影响买菜），提前屯点菜以备不时之需~</p> 
+ <p>这个就可以看作是 悲观锁，花费所需成本较大（买菜、运菜、放在地上......）~</p> 
+ <p></p> 
+ <p>当时有居民却认为，由于之前已经有过几次确诊的经历，所以说 已经有了不少经验了，所以封城的概率比较小，不需要提前屯菜（屯了吃不完大概率会坏）~</p> 
+ <p>这个就可以看作是 乐观锁，话费所需成本更小~ </p> 
+</blockquote> 
+<blockquote> 
+ <p><strong>synchronized </strong>就<strong>既是一个悲观锁，也是一个乐观锁</strong>，准确的来说 它是一个<strong>自适应锁</strong>~</p> 
+ <p>如果当前锁冲突概率不大，就以乐观锁的方式运行，往往是纯用户态执行的~</p> 
+ <p>一旦发现锁冲突概率大了，就以悲观锁的方式运行，往往要进入内核，对当前线程进行挂起等待~</p> 
+</blockquote> 
+<hr> 
+<h3 id="1.2%20%E6%99%AE%E9%80%9A%E7%9A%84%E4%BA%92%E6%96%A5%E9%94%81%20vs%20%E8%AF%BB%E5%86%99%E9%94%81">1.2 普通的互斥锁 vs 读写锁</h3> 
+<blockquote> 
+ <p><strong>synchronized </strong>就属于普通的<strong>互斥锁</strong>，两个加锁操作之间会发生竞争~</p> 
+</blockquote> 
+<p>读写锁，把加锁操作细化了 "加读锁" "加写锁" ~</p> 
+<p><span style="color:#956fe7;"><strong>情况一：</strong></span></p> 
+<p>线程A 尝试加写锁，线程B 尝试加写锁，此时 A和B 产生竞争，和普通的锁没有区别~</p> 
+<p><span style="color:#956fe7;"><strong>情况二：</strong></span></p> 
+<p>线程A 尝试加读锁，线程B 尝试加读锁，此时 A和B 不产生竞争，和没有加锁一样（多线程读，不涉及修改，是线程安全的）~</p> 
+<p>这种情况是相当普遍的~</p> 
+<p><span style="color:#956fe7;"><strong>情况三：</strong></span></p> 
+<p>线程A 尝试加读锁，线程B 尝试加写锁，此时 A和B 产生竞争，和普通的锁没有区别~ </p> 
+<hr> 
+<h3 id="1.3%20%E9%87%8D%E9%87%8F%E7%BA%A7%E9%94%81%20vs%20%E8%BD%BB%E9%87%8F%E7%BA%A7%E9%94%81">1.3 重量级锁 vs 轻量级锁</h3> 
+<p>重量级锁：锁开销比较大，做的工作比较多~</p> 
+<p>轻量级锁：锁开销比较小，做的工作比较小~</p> 
+<blockquote> 
+ <p><strong>重量级锁、轻量级锁</strong> 与之前所介绍的 <strong>乐观锁、悲观锁</strong> 差不多（内容上不是完全的区分开），但是最终的着力点还是不一样的~</p> 
+ <p>其中，在大部分情况下（不绝对），悲观锁 经常会是重量级锁，乐观锁 经常会是轻量级锁~</p> 
+</blockquote> 
+<blockquote> 
+ <p>重量级锁 主要依赖了操作系统提供的锁，使用这种锁，容易产生阻塞等待~</p> 
+ <p>轻量级锁 主要尽量的避免使用操作系统提供的锁，尽量在用户态完成功能，尽量避免用户态和内核态的切换，尽量避免挂起等待~</p> 
+</blockquote> 
+<blockquote> 
+ <p>同时，synchronized 是一个自适应锁，既是轻量级锁，也是重量级锁~</p> 
+ <p>锁冲突不高：轻量级</p> 
+ <p>锁冲突很高：重量级 </p> 
+</blockquote> 
+<hr> 
+<h3 id="1.4%20%E8%87%AA%E6%97%8B%E9%94%81%20vs%20%E6%8C%82%E8%B5%B7%E7%AD%89%E5%BE%85%E9%94%81">1.4 自旋锁 vs 挂起等待锁</h3> 
+<p>自旋锁 是轻量级锁的具体实现，挂起等待锁 是重量级锁的具体实现~</p> 
+<blockquote> 
+ <p><strong>自旋锁：</strong>当发生锁冲突的时候，不会挂起等待，会迅速来尝试看这个锁能不能获取到（更轻量，乐观锁）~</p> 
+ <p>特点：</p> 
+ <ol><li>一旦锁被释放，就可以第一时间获取到</li><li>如果锁一直不释放，就会消耗大量的资源</li></ol> 
+ <p>可以看作是一个 不断的循环，可以用一个伪代码来表示：</p> 
+ <pre><code>//自旋锁伪代码，不停的循环
+while(抢锁(lock) == 失败) {
+ 
+}</code></pre> 
+ <p><strong>挂起等待锁：</strong>发现锁冲突，就挂起等待（更重量，悲观锁）~</p> 
+ <p>特点：</p> 
+ <ol><li>一旦锁被释放，不能第一时间获取到</li><li>在锁被其他线程占用的时候，会放弃CPU资源</li></ol> 
+</blockquote> 
+<p><strong>synchronized </strong>作为轻量级锁的时候，内部是 自旋锁；作为重量级锁的时候，内部是 挂起等待锁~</p> 
+<hr> 
+<h3 id="1.5%20%E5%85%AC%E5%B9%B3%E9%94%81%20vs%20%E9%9D%9E%E5%85%AC%E5%B9%B3%E9%94%81">1.5 公平锁 vs 非公平锁</h3> 
+<p>啥样的情况才算是公平？</p> 
+<p>一般认为，符合 "先到先得" 这样的规则，就是公平！！！</p> 
+<blockquote> 
+ <p>公平锁：多个线程等待一把锁的时候，谁先来尝试拿着一把锁，这把锁就是谁的~</p> 
+ <p>非公平锁：多个线程等待一把锁的时候，就和哪个线程先来后到没有关系，每个线程拿到锁的概率是均等的~</p> 
+</blockquote> 
+<p><strong>synchronized </strong>是非公平锁~</p> 
+<hr> 
+<h3 id="1.6%20%E5%8F%AF%E9%87%8D%E5%85%A5%E9%94%81%20vs%20%E4%B8%8D%E5%8F%AF%E9%87%8D%E5%85%A5%E9%94%81">1.6 可重入锁 vs 不可重入锁</h3> 
+<p>一个线程连续加锁两次，不会造成死锁，那么这个锁就叫做 可重入锁~</p> 
+<p>一个线程连续加锁两次，会造成死锁，那么这个锁就叫做 不可重入锁</p> 
+<blockquote> 
+ <pre><code>  private  static void func() {
+        //......进行一些多线程操作
+        //第一次加锁
+        synchronized (Demo27.class) {
+            //第二次加锁
+            synchronized (Demo27.class) {
+ 
+            }
+        }
+    }</code></pre> 
+ <p>如上述代码，第一次加锁能够成功，Demo27.class 处于被加锁的状态；但是 第二次加锁，由于 Demo27.class 已经是被加锁的状态了，所以就会呈现出 阻塞状态~</p> 
+ <p>要等待第一次加锁释放掉，第二次加锁才能够成功；但是 要想第一次加锁释放，那么 又必须要到第二次加锁成功之后，代码往下执行 ......</p> 
+ <p>这样就构成了一个死循环，就叫做 死锁！！！ </p> 
+</blockquote> 
+<p> <strong>synchronized </strong>属于可重入锁~</p> 
+<hr> 
+<h2 id="%E4%BA%8C%E3%80%81CAS">二、CAS</h2> 
+<p>CAS 是操作系统硬件 给JVM提供的另外一种更轻量的原子操作的机制~</p> 
+<p>准确来说，CAS是CPU提供的一条特殊的指令 —— compare and swap（比较和交换）~</p> 
+<p>CAS 是一个原子指令~</p> 
+<blockquote> 
+ <p>比较：是比较内存和寄存器的值~</p> 
+ <p>如果相等，则把寄存器和另一个值进行交换；如果不相等，就不进行操作~ </p> 
+</blockquote> 
+<pre><code>//CAS 的伪代码来理解它的工作流程
+//其中，address表示内存地址，expextValue表示一个寄存器中 用来比较的值，
+//expextValue表示另一个寄存器中 用来交换的值
+boolean CAS(address,expextValue,swapValue) {
+    if(&amp;address == expextValue) {
+        &amp;address = swapValue;
+        return true;
+  }
+  return false;
+}
+//上面一系列操作都是由一个CPU指令来完成的</code></pre> 
+<hr> 
+<h3 id="2.1%20CAS%E5%85%B8%E5%9E%8B%E5%BA%94%E7%94%A8%E5%9C%BA%E6%99%AF">2.1 CAS典型应用场景</h3> 
+<h4 id="2.1.1%20%E4%BD%BF%E7%94%A8CAS%E5%AE%9E%E7%8E%B0%E5%8E%9F%E5%AD%90%E7%B1%BB"><a name="t10"></a>2.1.1 使用CAS实现原子类</h4> 
+<p>原子类：这是标准库中提供的一组类，可以让原子的进行 ++、-- 等运算~</p> 
+<pre><code>package thread;
+ 
+public class Demo28 {
+    public static int count = 0;
+ 
+    public static void main(String[] args) throws InterruptedException {
+        Thread t1 = new Thread(() -&gt; {
+            for (int i = 0; i &lt; 50000; i++) {
+                count++;
+            }
+        });
+        Thread t2 = new Thread(() -&gt; {
+            for (int i = 0; i &lt; 50000; i++) {
+                count++;
+            }
+        });
+        t1.start();
+        t2.start();
+        t1.join();
+        t2.join();
+        System.out.println("count = " + count);
+    }
+}</code></pre> 
+<p>在之前，我们已经介绍过，最终的结果不是 10_0000 ~</p> 
+<p>运行结果：</p> 
+<p><img alt="" height="115" src="https://images2.imgbox.com/50/ca/GENqBiap_o.png" width="478"></p> 
+<p> 我们可以使用加锁来解决这个问题，也可以使用原子类来解决这个问题：</p> 
+<pre><code>package thread;
+ 
+import java.util.concurrent.atomic.AtomicInteger;
+ 
+public class Demo28 {
+    //public static int count = 0;
+    public static AtomicInteger count = new AtomicInteger(0);
+ 
+    public static void main(String[] args) throws InterruptedException {
+        Thread t1 = new Thread(() -&gt; {
+            for (int i = 0; i &lt; 50000; i++) {
+                //count++;
+                //这个方法相当于count++
+                count.getAndIncrement();
+            }
+        });
+        Thread t2 = new Thread(() -&gt; {
+            for (int i = 0; i &lt; 50000; i++) {
+                //count++;
+                count.getAndIncrement();
+            }
+        });
+        t1.start();
+        t2.start();
+        t1.join();
+        t2.join();
+        System.out.println("count = " + count);
+    }
+}
+//和之前的不同的代码已注释，这是使用 原子类来解决问题的，没有使用加锁操作，也实现了线程安全</code></pre> 
+<p>运行结果：</p> 
+<p><img alt="" height="96" src="https://images2.imgbox.com/74/9d/Ig4qdkUB_o.png" width="357"></p> 
+<p> 在Java标准库 里面提供了基于CAS所实现的 "原子类"，是线程安全的~</p> 
+<p><img alt="" height="116" src="https://images2.imgbox.com/37/6d/GMIfuq81_o.png" width="527"></p> 
+<p>这些 "原子类" 通常以 Atomic 开头，对常用的 int、long等等 进行了封装，如：</p> 
+<p><img alt="" height="256" src="https://images2.imgbox.com/3c/6d/YfHVj6Ua_o.png" width="545"></p> 
+<hr> 
+<h4 id="2.1.2%20%E4%BD%BF%E7%94%A8CAS%E5%AE%9E%E7%8E%B0%E8%87%AA%E6%97%8B%E9%94%81">2.1.2 使用CAS实现自旋锁</h4> 
+<pre><code>//自旋锁伪代码
+public class SpinLock {
+    private Thread owner = null;
+    public void lock() {
+        //当前的owner是否为空，为空即为当前没有加锁，于是就进行交换，
+        //把当前要给加锁的线程的值赋予owner
+        //非空就不去进行交换，就循环继续进行，呈现自旋的状态
+        while(!CAS(this.owner,null,Thread.currentThread())) {
+    }
+  }
+    public void unlock（）{
+        this.owner = null;
+    }
+}</code></pre> 
+<blockquote> 
+ <p>当 owner 为 null 的时候 CAS 才能成功，循环才能结束~</p> 
+ <p>当 owner 为非null，这说明当前的锁已经被其他线程给占用了，因此 就需要继续循环（自旋）~</p> 
+</blockquote> 
+<hr> 
+<h3 id="2.2%20CAS%E4%B8%AD%E7%9A%84ABA%E9%97%AE%E9%A2%98%EF%BC%88%E5%B0%8F%E6%A6%82%E7%8E%87bug%EF%BC%89">2.2 CAS中的ABA问题（小概率bug）</h3> 
+<h4 id="2.2.1%20%E4%BB%80%E4%B9%88%E6%98%AFABA%E9%97%AE%E9%A2%98"><a name="t13"></a>2.2.1 什么是ABA问题</h4> 
+<p>ABA问题可以单纯的这样理解：如果你去买一个手机，那么你无法区分 它是一个新机，还是一个翻新机（二手的、外面包装和新机一样）~</p> 
+<p>类似的，在CAS里面，也无法区分，数据始终就是A；还是数据从 A 变成 B，之后又变回了 A ~</p> 
+<p>如果是前者，那么一点问题都没有；但是如果是后者，那么 CAS 就会有一定的概率引发 bug（极端情况下的小概率事件） ~  </p> 
+<p><img alt="" height="300" src="https://images2.imgbox.com/94/b0/uNmhpGCd_o.png" width="1200"></p> 
+<hr> 
+<h4 id="2.2.2%20ABA%E9%97%AE%E9%A2%98%E5%BC%95%E5%8F%91%E7%9A%84bug">2.2.2 ABA问题引发的bug</h4> 
+<p>这里结合一个具体的例子，来介绍ABA问题引发的bug~</p> 
+<p>假设滑稽老铁有 1000 存款，此时想要从 ATM机 上取走 500（ATM机 按照CAS的方式来进行操作）~</p> 
+<p>取钱的时候，按下取款按钮，就会触发一个 "取钱的线程"，但是 滑稽老铁手一滑，连续按了两下（即 产生了两个线程）~  </p> 
+<p><strong>符合预期的方式（即使手滑了多点了两次，仍然只取走了500）：</strong></p> 
+<p><img alt="" height="294" src="https://images2.imgbox.com/f9/c5/iDDYP36H_o.png" width="1177">但是，怕就怕在这期间 突然又来了一个线程（比如说 滑稽老铁的一个朋友，此时正好向滑稽老铁转了500）~</p> 
+<p><img alt="" height="398" src="https://images2.imgbox.com/07/4e/o1ZhQfRr_o.png" width="1192"></p> 
+<p>这时候，就扣除了两次500了，这个就是典型的ABA问题（极端情况下的小概率问题）~</p> 
+<p>此时，线程2不知道 当前的1000，始终是1000；还是 1000 -&gt; 500 -&gt; 1000 ~</p> 
+<hr> 
+<h4 id="2.2.3%20%E8%A7%A3%E5%86%B3ABA%E9%97%AE%E9%A2%98%E7%9A%84%E5%8A%9E%E6%B3%95">2.2.3 解决ABA问题的办法</h4> 
+<p>正经的解决ABA问题的办法，是想办法获取到中间过程 —— 引入一个 "版本号" 来解决~</p> 
+<p>在上述的例子当中，CAS是比较的是 余额，余额相同，就可以进行修改（余额是可以变大和变小，所以就会出现ABA问题）~</p> 
+<p>但是，如果换成 "版本号"，并且规定 "版本号" <strong>只能增不能减</strong>，那么就不会出现ABA问题 ~ </p> 
+<p><img alt="" height="396" src="https://images2.imgbox.com/1c/24/aWenmA4a_o.png" width="1172"></p> 
+<p> 当然，解决ABA问题的办法肯定不止这一种，这里只是列举了一种非常典型的办法 ~  </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/57c6143e52aac111fb0569783b57b68a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Qt·.·.解决QString中文字符转cv::String乱码</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/1523c14cc87330ca14d94dad6bfd6799/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">配置安全的linux-apache服务器（5）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

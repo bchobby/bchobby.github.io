@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>DSP28335入门教程：ADC to DMA 后篇 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="DSP28335入门教程：ADC to DMA 后篇" />
+<meta property="og:description" content="好，接着ADC to DMA 前篇我们继续，后篇主要是举例子加以理解这三个函数：
+DMACH1BurstConfig(3,1,10); //burst传输 DMACH1TransferConfig(9,1,0); //transfer传输 DMACH1WrapConfig(1,0,0,1); //wrap传输 还是上一个程序：
+#include &#34;DSP28x_Project.h&#34; // Device Headerfile and Examples Include File #define ADC_CKPS 0x1 // ADC module clock = HSPCLK/2*ADC_CKPS = 25.0MHz/(1*2) = 12.5MHz #define ADC_SHCLK 0xf // S/H width in ADC module periods = 16 ADC clocks #define BUF_SIZE 40 // Sample buffer size // Global variable for this example Uint16 j=0; #pragma DATA_SECTION(DMABuf1,&#34;DMARAML4&#34;); volatile Uint16 DMABuf1[BUF_SIZE]; volatile Uint16 *pDMADest; volatile Uint16 *pDMASource; __interrupt void local_DINTCH1_ISR(void); void main(void) { Uint16 i; // step 1." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/9bc518fde3e19930326f558b7bb35674/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-03-18T14:56:53+08:00" />
+<meta property="article:modified_time" content="2019-03-18T14:56:53+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">DSP28335入门教程：ADC to DMA 后篇</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>好，接着<a href="https://blog.csdn.net/qq_40692629/article/details/88622324">ADC to DMA 前篇</a>我们继续，后篇主要是举例子加以理解这三个函数：</p> 
+<pre class="has"><code class="language-cpp">    DMACH1BurstConfig(3,1,10);          //burst传输
+    DMACH1TransferConfig(9,1,0);        //transfer传输
+    DMACH1WrapConfig(1,0,0,1);          //wrap传输</code></pre> 
+<p>还是上一个程序：</p> 
+<pre class="has"><code class="language-cpp">#include "DSP28x_Project.h"     // Device Headerfile and Examples Include File
+
+#define ADC_CKPS   0x1   // ADC module clock = HSPCLK/2*ADC_CKPS   = 25.0MHz/(1*2) = 12.5MHz
+#define ADC_SHCLK  0xf   // S/H width in ADC module periods                        = 16 ADC clocks
+#define BUF_SIZE   40    // Sample buffer size
+
+// Global variable for this example
+Uint16 j=0;
+
+#pragma DATA_SECTION(DMABuf1,"DMARAML4");
+volatile Uint16 DMABuf1[BUF_SIZE];
+
+volatile Uint16 *pDMADest;
+volatile Uint16 *pDMASource;
+__interrupt void local_DINTCH1_ISR(void);
+
+void main(void)
+{
+    Uint16 i;
+
+    // step 1. 时钟配置
+    InitSysCtrl();                  //初始系统时钟
+    EALLOW;                         //允许编辑受保护的寄存器
+    SysCtrlRegs.HISPCP.all = 0x3;   //配置高速外设时钟 HSPCLK = SYSCLKOUT/6 = 25M
+    EDIS;                           //禁止编辑，与EALLOW成对出现
+
+    // Step 2. 初始化GPIO
+    //本例不需要
+
+    // Step 3. CUP和PIE中断配置
+    DINT;                           //禁用CPU中断
+    InitPieCtrl();                  //寄存器复位置零
+    IER = 0x0000;                   //清除CPU中断标识
+    IFR = 0x0000;
+
+    InitPieVectTable();              //初始中断向量表
+    EALLOW;
+    PieVectTable.DINTCH1= &amp;local_DINTCH1_ISR;
+    EDIS;
+
+    IER = M_INT7 ;                  //Enable INT7 (7.1 DMA Ch1)
+    EnableInterrupts();             //使能PIE和CPU中断
+
+    // Step 4. 初始化外设
+    InitAdc();                      //使能ADC时钟和校准
+
+    //配置ADC
+    AdcRegs.ADCTRL1.bit.ACQ_PS = ADC_SHCLK;
+    AdcRegs.ADCTRL3.bit.ADCCLKPS = ADC_CKPS;
+    AdcRegs.ADCTRL1.bit.SEQ_CASC = 0;       // 0 Non-Cascaded Mode
+    AdcRegs.ADCTRL2.bit.INT_ENA_SEQ1 = 0x1;
+    AdcRegs.ADCTRL2.bit.RST_SEQ1 = 0x1;
+    AdcRegs.ADCCHSELSEQ1.bit.CONV00 = 0x0;  //选择管脚ADCINA0
+    AdcRegs.ADCCHSELSEQ1.bit.CONV01 = 0x1;  //ADCINA1
+    AdcRegs.ADCCHSELSEQ1.bit.CONV02 = 0x8;  //ADCINB0
+    AdcRegs.ADCCHSELSEQ1.bit.CONV03 = 0x9;  //ADCINB1
+    AdcRegs.ADCCHSELSEQ2.bit.CONV04 = 0x0;
+    AdcRegs.ADCCHSELSEQ2.bit.CONV05 = 0x1;
+    AdcRegs.ADCCHSELSEQ2.bit.CONV06 = 0x8;
+    AdcRegs.ADCCHSELSEQ2.bit.CONV07 = 0x9;
+    AdcRegs.ADCMAXCONV.bit.MAX_CONV1 = 3;   // Set up ADC to perform 4 conversions for every SOC
+
+    //Step 5. User specific code
+    DMAInitialize();                  //DMA初始化
+    for (i=0; i&lt;BUF_SIZE; i++)       //缓冲清零。注：用DMABuf1[40]={0}定义不能初始化为0
+    {
+        DMABuf1[i] = 0;
+    }
+
+    // Configure DMA Channel
+    pDMADest   = &amp;DMABuf1[0];            //Point DMA destination to the beginning of the array
+    pDMASource = &amp;AdcMirror.ADCRESULT0;  //Point DMA source to ADC result register base
+    DMACH1AddrConfig(pDMADest,pDMASource);
+    DMACH1BurstConfig(3,1,10);          //burst传输
+    DMACH1TransferConfig(9,1,0);        //transfer传输
+    DMACH1WrapConfig(1,0,0,1);          //wrap传输
+    DMACH1ModeConfig(DMA_SEQ1INT,PERINT_ENABLE,ONESHOT_DISABLE,CONT_DISABLE,SYNC_DISABLE,SYNC_SRC,
+                     OVRFLOW_DISABLE,SIXTEEN_BIT,CHINT_END,CHINT_ENABLE);
+    StartDMACH1();
+    AdcRegs.ADCTRL2.bit.SOC_SEQ1 = 0x1; // Start SEQ1
+
+    for(i=0;i&lt;10;i++)
+    {
+        for(j=0;j&lt;1000;j++){}
+        AdcRegs.ADCTRL2.bit.SOC_SEQ1 = 1;    //Normally ADC will be tied to ePWM, or timed routine
+    }                                         //For this example will re-start manually
+}
+
+// INT7.1
+__interrupt void local_DINTCH1_ISR(void)     // DMA Channel 1
+{
+    // To receive more interrupts from this PIE group, acknowledge this interrupt
+    PieCtrlRegs.PIEACK.all = PIEACK_GROUP7;
+
+    // Next two lines for debug only to halt the processor here
+    // Remove after inserting ISR Code
+    __asm ("      ESTOP0");
+    for(;;);
+}
+
+
+</code></pre> 
+<h4>现象</h4> 
+<p>我们现在来作如下改动，其他地方不变：</p> 
+<pre class="has"><code class="language-cpp">    DMACH1BurstConfig(3,1,1);          //burst传输
+    DMACH1TransferConfig(9,1,0);        //transfer传输
+    DMACH1WrapConfig(100,0,100,1);          //wrap传输
+    DMACH1ModeConfig(DMA_SEQ1INT,PERINT_ENABLE,ONESHOT_DISABLE,CONT_DISABLE,SYNC_DISABLE,SYNC_SRC,
+                     OVRFLOW_DISABLE,SIXTEEN_BIT,CHINT_END,CHINT_ENABLE);
+    StartDMACH1();
+    AdcRegs.ADCTRL2.bit.SOC_SEQ1 = 0x1; // 触发一次ADC转换
+    for(;;){}                           // 在此停住
+    for(i=0;i&lt;10;i++)
+    {
+        for(j=0;j&lt;1000;j++){}
+        AdcRegs.ADCTRL2.bit.SOC_SEQ1 = 1;    //Normally ADC will be tied to ePWM, or timed routine
+    }  </code></pre> 
+<p>现在来看看程序运行的结果：</p> 
+<p><img alt="" class="has" src="https://images2.imgbox.com/e4/f3/LcIIemvt_o.png"></p> 
+<p><img alt="" class="has" src="https://images2.imgbox.com/6c/3b/7I5CYlUu_o.png"></p> 
+<p>我们可以看到，DMABuf1只有四个数据，分别存了四通道的转换值。并且暂停后程序停在了for循环处，表明没有进入中断。</p> 
+<h4>DMACH1BurstConfig</h4> 
+<p>因为只进行了一次ADC转换，所以也就只触发传输了一帧，共4个WORD的数据。所以由</p> 
+<pre class="has"><code class="language-cpp">DMACH1BurstConfig(3,1,1);          //burst传输</code></pre> 
+<p>这个函数我们知道，1帧传输数据是这样的：</p> 
+<pre class="has"><code class="language-html">ADCRESULT0-&gt;DMABuf1[0],ADCRESULT1-&gt;DMABuf1[1],ADCRESULT2-&gt;DMABuf1[2],ADCRESULT3-&gt;DMABuf1[3]</code></pre> 
+<h4>DMACH1TransferConfig</h4> 
+<pre class="has"><code class="language-cpp">DMACH1TransferConfig(9,1,0);        //transfer传输</code></pre> 
+<p>只传输了1帧，没有达到第一个参数指定的10帧，所以不会触发中断。第二个参数1，第三个参数0，所以，现在源数据的指针指向的是ADCRESULT4，目的指针指向的还是上一帧后的DMABuf1[3]。</p> 
+<p>因为只传了一帧，所以第二个参数在这里起不到任何作用。</p> 
+<p>我们把9改成0再运行看看：</p> 
+<pre class="has"><code class="language-cpp">DMACH1TransferConfig(0,1,0);        //transfer传输</code></pre> 
+<p><img alt="" class="has" src="https://images2.imgbox.com/8d/f1/VH0RnmCE_o.png"></p> 
+<p>没错，进入了中断。</p> 
+<p>我们改到传2帧，DMACH1TransferConfig(1,-3,1);</p> 
+<pre class="has"><code class="language-cpp">DMACH1TransferConfig(1,-3,1);        //transfer传输
+//...
+AdcRegs.ADCTRL2.bit.SOC_SEQ1 = 0x1; // 触发一次ADC转换
+for(j=0;j&lt;1000;j++){}               //延迟
+AdcRegs.ADCTRL2.bit.SOC_SEQ1 = 0x1; // 再触发一次ADC转换
+for(;;){}
+//...</code></pre> 
+<p>看结果</p> 
+<p><img alt="" class="has" src="https://images2.imgbox.com/a5/34/o8gGGvp8_o.png"></p> 
+<p>-3的偏移导致源指针从ADCRESULT3回到了ADCRESULT0。而目的地址指针从DMABuf1[3]偏移+1移到了DMABuf1[4]，第二帧的目的地址就从DMABuf1[4]开始了。还发现两帧之后也进入了DMA中断。</p> 
+<h4>DMACH1WrapConfig</h4> 
+<p>我们继续，仅改成如下</p> 
+<pre class="has"><code class="language-cpp">    DMACH1BurstConfig(3,1,1);          //没变
+    DMACH1TransferConfig(100,0,0);     //不起作用
+    DMACH1WrapConfig(0,0,0,4);         //实现循环</code></pre> 
+<p>再看看结果：</p> 
+<p><img alt="" class="has" src="https://images2.imgbox.com/41/d7/PO3wDTDL_o.png"></p> 
+<p>没错，效果和和上面的DMACH1TransferConfig(1,-3,1);完全一样！</p> 
+<p>每1帧后，源数据指针等于&amp;ADCRESULT0往后累加0，所以每帧后都回到ADCRESULT0。每1帧后，目的地址指针等于&amp;DMABuf1[0]往后累加4。（即第一帧后指向DMABuf1[4]，第二帧后指向DMABuf1[8]，第三帧后指向DMABuf1[12]……以此类推）</p> 
+<p>还有一点要说的是 ，</p> 
+<pre class="has"><code class="language-cpp">DMACH1TransferConfig(9,0,0);        //transfer传输
+DMACH1WrapConfig(0,0,0,4);          //wrap传输</code></pre> 
+<p>这两个函数都会导致地址偏移，但是不会同时发生，可以在DMACH1TransferConfig函数原型中看到TRANSFER_STEP is ignored when WRAP occurs，就是说，不管是源地址和目的地址，如果发生了DMACH1WrapConfig回绕，那么DMACH1TransferConfig的第二和第三个参数就被忽略掉。</p> 
+<p>如果不想要DMACH1WrapConfig进行循环呢，我要怎么关闭这个功能？这个功能没有所谓的disable，把wrapsize位字段设置为大于transfersize位字段就行。官方手册解释如下：</p> 
+<p><img alt="" class="has" src="https://images2.imgbox.com/ce/98/s17yiUXr_o.png"></p> 
+<p>好了，例子就举这么多，不知道各位明白没有，原谅老笨的文采太差。</p> 
+<h4> </h4> 
+<h4>番外篇</h4> 
+<p>前篇的分析中还有一点没有交代：</p> 
+<pre class="has"><code class="language-cpp">    //...
+    AdcRegs.ADCCHSELSEQ1.bit.CONV00 = 0x0;  //选择管脚ADCINA0
+    AdcRegs.ADCCHSELSEQ1.bit.CONV01 = 0x1;  //ADCINA1
+    AdcRegs.ADCCHSELSEQ1.bit.CONV02 = 0x8;  //ADCINB0
+    AdcRegs.ADCCHSELSEQ1.bit.CONV03 = 0x9;  //ADCINB1
+    AdcRegs.ADCCHSELSEQ2.bit.CONV04 = 0x0;
+    AdcRegs.ADCCHSELSEQ2.bit.CONV05 = 0x1;
+    AdcRegs.ADCCHSELSEQ2.bit.CONV06 = 0x8;
+    AdcRegs.ADCCHSELSEQ2.bit.CONV07 = 0x9;
+    AdcRegs.ADCMAXCONV.bit.MAX_CONV1 = 3;   // Set up ADC to perform 4 conversions for every SOC
+    //...
+    DMACH1WrapConfig(1,0,0,1);          //wrap传输
+    //...</code></pre> 
+<p>为什么CONV00-CONV07都设置了通道，最后却只开了4个转换(conversion)？</p> 
+<p>不知道你发现没有，CONV04-CONV07的通道设置和CONV00-CONV03是重复的，依次是通道0x0,0x1,0x2,0x8,0x9。</p> 
+<p>实际上只是转换了通道0x0,0x1,0x2,0x8,0x9，因为通道一样，所以CONV04-CONV07和CONV00-CONV03一样，都是</p> 
+<p>通道0x0,0x1,0x2,0x8,0x9的转换结果。</p> 
+<p>DMACH1WrapConfig(1,0,0,1)第一个参数表示2帧后回绕源地址，所以源地址在ADCRESULT0-ADCRESULT7循环，结果也是正确的。</p> 
+<p>到这里有人就会想到的了，那我设置成DMACH1WrapConfig(0,0,0,1)，让源地址在ADCRESULT0-ADCRESULT3循环不是也行？没错，</p> 
+<p>第一个参数改成0也行，那是必然的，至于例程为什么这么做，估计是在尽量短的例程里展现最全的用法。</p> 
+<p>以下是改成DMACH1WrapConfig(0,0,0,1)的结果：</p> 
+<p><img alt="" class="has" src="https://images2.imgbox.com/b2/2d/mNx0xsFq_o.png"></p> 
+<p><img alt="" class="has" src="https://images2.imgbox.com/ee/36/zHkDqQBY_o.png"></p> 
+<p> </p> 
+<p>好了，ADC to DMA篇的教程就到结束了。</p> 
+<p> </p> 
+<p> </p> 
+<p> </p> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4848047c82cdb7c7f3cc8cb9cb8f2ab7/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C&#43;&#43;如何定义一个长度超过一百万的数组</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/686bdae2cf7f6730c12312aac6bb1307/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">git log命令常用参数集合</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

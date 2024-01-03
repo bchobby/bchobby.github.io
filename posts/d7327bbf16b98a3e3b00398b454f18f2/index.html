@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>京东如何基于Vitess管理大型MySQL实例集群 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="京东如何基于Vitess管理大型MySQL实例集群" />
+<meta property="og:description" content="本文根据dbaplus社群第203期线上分享整理而成
+讲师介绍
+王云博
+京东数据库高级研发工程师
+2014年加入京东，一直致力于数据库运维自动化的发展；
+2018年专注于京东弹性数据库研发、运维工作。
+谢金科
+2017年加入京东，致力于弹性库落地、周边生态开发及建设工作。
+一、初识Vitess
+MySQL作为关系型数据库的佼佼者，伴随着互联网技术的发展，已风靡全球十余年；但是MySQL单机存储能力有限。性能或者容量达到瓶颈后，就需要我们来进行改造。
+当MySQL出现性能和存储瓶颈后，目前有2个大的解决方向。一个是利用程序或者数据库中间件（底层仍是MySQL）来实现分库分表,。这种中间件方案，我相信每个DBA或者相关研发人员，或多或少的都了解过或测试过。
+另一个方向，就是使用分布式数据库直接解决，比如业内比较火的tidb，cockroachdb等。对于后者，我想没有人去否定它，它一定是关系型数据库的将来；因此一些大公司纷纷都在招募人马，积极发展自己的分布式关系型数据库，但是目前此类数据库还有一些问题亟待解决，因此传统的分库分表中间件还是有它成长和发展空间的。
+我今天将向大家介绍一个集部署、扩展、管理大型MySQL实例集群的数据库解决方案：Vitess。
+Vitess最初的名字是Voltron， Voltron是动画片里的人物形象，可以把多个部件汇总在一起组成超级机器人（隐喻Vitess是分布式系统），选择开源对外发布的时候，合伙人给这个产品起名为vitesse，法语中“速度”的意思，但这哥们由于拼写经常糊里糊涂的，漏写了一个e，后来也就这样了。(玩笑)
+Vitess的里程碑：
+2010年出生，2011年上线应用
+2012年开源，2015年为云而生
+2018年2月加入CNCF
+2019年10月从CNCF毕业
+CNCF有三个不同层次的项目：沙箱、孵化和毕业。目前只有8个项目毕业，这意味着它们符合最高水平的质量标准。有了CNCF的毕业认证背书，说明Vitess是质量可靠、社区完善、创新新颖的数据库中间件软件。
+下面是一些客观数据，也说明Vitess是非常被业界认可的。
+Github：9,000&#43; stars、17,000&#43; commits、190&#43; contributors、1200&#43; forks、1000&#43; Slack members
+谁在使用：Youtube、Slack、Square、Pinterest、Github、BetterCloud等
+使用环境：k8s/non k8s, AWS / GKE / EKS / Azure
+1、Vitess主要特性
+1）扩展性
+Vitess集MySQL数据库的很多重要特性和NoSQL数据库的可扩展性于一体。
+其内建拆分分片功能使用户的MySQL数据库集群可以实现无限水平扩展，同时无需为应用添加分片逻辑。
+2）性能
+Vitess避免了MySQL连接的高内存开销。Vitess服务器轻松地一次处理数千个连接。
+Vitess自动重写对数据库性能有损害的查询。它还使用缓存机制来调解查询，并防止重复查询同时到达后端的数据库。
+3）运维
+Vitess可以支持自动处理主故障转移和备份等功能。
+它使用分布式元数据服务来跟踪和管理服务器，使您的应用程序无需关心数据库拓扑变化。
+4）Cloud-native
+容器化（Containerized）：每个部分（应用程序，进程等）都封装在自己的容器中。这有助于重复性，透明度和资源隔离。
+动态编排（Dynamically orchestrated）：动态的调度和管理容器以优化资源利用。
+面向微服务（Microservices oriented）：应用程序基于微服务架构，显著提高架构演进的灵活性和可维护性。
+2、Vitess架构
+其中各个角色用途如下：
+1）Vttablets部署在某个单独的MySQL实例之前，接管所有与该MySQL实例的通信和维护主、从架构。
+2）Vitess需要一个拓扑服务器来存储其元数据。可以是etcd、zk、consul等。
+3）Vtgate是无状态的proxy，可以动态的扩容。（由于proxy是带数据库连接状态的，缩容是需要注意的）
+4）应用服务器可以连接到任何vtgate，甚至在请求之间。
+5）vtctld是用于查看系统元数据，启动工作流，具备相关维护操作的web服务。
+前面我们提到，Vitess为云而生，Vitess是如何做到的？
+Vitess出生于youtube，part of google，vitess早于k8s，但已为k8s准备就绪，因为它在google内部服务于borg系统，而k8s的前身正是borg。云中的数据库是k8的最后一个领域，而Vites填补了这一空白。目前大规模使用k8s部署生产集群的公司有，JD 、Needlework Lab，Hub 。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/d7327bbf16b98a3e3b00398b454f18f2/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-01-11T11:03:24+08:00" />
+<meta property="article:modified_time" content="2020-01-11T11:03:24+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">京东如何基于Vitess管理大型MySQL实例集群</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <p style="text-align: center"><img src="https://images2.imgbox.com/67/50/fQn07yUU_o.png"></p> 
+ <p>本文根据dbaplus社群第203期线上分享整理而成<br></p> 
+ <p>讲师介绍</p> 
+ <p><img src="https://images2.imgbox.com/57/1b/oqPaxEdn_o.png"></p> 
+ <p style="text-align: center"><strong>王云博</strong></p> 
+ <p style="text-align: center">京东数据库高级研发工程师</p> 
+ <ul><li><p style="text-align: left">2014年加入京东，一直致力于数据库运维自动化的发展；</p></li><li><p style="text-align: left">2018年专注于京东弹性数据库研发、运维工作。<br></p></li></ul> 
+ <p><img src="https://images2.imgbox.com/08/e3/iPyzOPQh_o.png"></p> 
+ <p style="text-align: center"><strong>谢金科</strong></p> 
+ <ul><li><p style="text-align: left">2017年加入京东，致力于弹性库落地、周边生态开发及建设工作。</p></li></ul> 
+ <p><strong>一、初识Vitess</strong></p> 
+ <p>MySQL作为关系型数据库的佼佼者，伴随着互联网技术的发展，已风靡全球十余年；但是MySQL单机存储能力有限。性能或者容量达到瓶颈后，就需要我们来进行改造。</p> 
+ <p>当MySQL出现性能和存储瓶颈后，目前有2个大的解决方向。一个是利用程序或者数据库中间件（底层仍是MySQL）来实现分库分表,。这种中间件方案，我相信每个DBA或者相关研发人员，或多或少的都了解过或测试过。</p> 
+ <p>另一个方向，就是使用分布式数据库直接解决，比如业内比较火的tidb，cockroachdb等。对于后者，我想没有人去否定它，它一定是关系型数据库的将来；因此一些大公司纷纷都在招募人马，积极发展自己的分布式关系型数据库，但是目前此类数据库还有一些问题亟待解决，因此传统的分库分表中间件还是有它成长和发展空间的。</p> 
+ <p>我今天将向大家介绍一个集部署、扩展、管理大型MySQL实例集群的数据库解决方案：Vitess。</p> 
+ <p>Vitess最初的名字是Voltron， Voltron是动画片里的人物形象，可以把多个部件汇总在一起组成超级机器人（隐喻Vitess是分布式系统），选择开源对外发布的时候，合伙人给这个产品起名为vitesse，法语中“速度”的意思，但这哥们由于拼写经常糊里糊涂的，漏写了一个e，后来也就这样了。(玩笑)</p> 
+ <p>Vitess的里程碑：</p> 
+ <ul><li><p>2010年出生，2011年上线应用</p></li><li><p>2012年开源，2015年为云而生</p></li><li><p>2018年2月加入CNCF</p></li><li><p>2019年10月从CNCF毕业</p></li></ul> 
+ <p>CNCF有三个不同层次的项目：沙箱、孵化和毕业。目前只有8个项目毕业，这意味着它们符合最高水平的质量标准。有了CNCF的毕业认证背书，说明Vitess是质量可靠、社区完善、创新新颖的数据库中间件软件。</p> 
+ <p>下面是一些客观数据，也说明Vitess是非常被业界认可的。</p> 
+ <ul><li><p style="text-align: left">Github：9,000+ stars、17,000+ commits、190+ contributors、1200+ forks、1000+ Slack members</p></li><li><p style="text-align: left">谁在使用：Youtube、Slack、Square、Pinterest、Github、BetterCloud等</p></li><li><p style="text-align: left">使用环境：k8s/non k8s, AWS / GKE / EKS / Azure</p></li></ul> 
+ <p>1、Vitess主要特性</p> 
+ <p><strong>1）扩展性</strong></p> 
+ <ul><li><p>Vitess集MySQL数据库的很多重要特性和NoSQL数据库的可扩展性于一体。</p></li><li><p>其内建拆分分片功能使用户的MySQL数据库集群可以实现无限水平扩展，同时无需为应用添加分片逻辑。</p></li></ul> 
+ <p><strong>2）性能</strong></p> 
+ <ul><li><p>Vitess避免了MySQL连接的高内存开销。Vitess服务器轻松地一次处理数千个连接。</p></li><li><p>Vitess自动重写对数据库性能有损害的查询。它还使用缓存机制来调解查询，并防止重复查询同时到达后端的数据库。</p></li></ul> 
+ <p><strong>3）运维</strong></p> 
+ <ul><li><p>Vitess可以支持自动处理主故障转移和备份等功能。</p></li><li><p>它使用分布式元数据服务来跟踪和管理服务器，使您的应用程序无需关心数据库拓扑变化。</p></li></ul> 
+ <p><strong>4）Cloud-native</strong></p> 
+ <ul><li><p>容器化（Containerized）：每个部分（应用程序，进程等）都封装在自己的容器中。这有助于重复性，透明度和资源隔离。</p></li><li><p>动态编排（Dynamically orchestrated）：动态的调度和管理容器以优化资源利用。</p></li><li><p>面向微服务（Microservices oriented）：应用程序基于微服务架构，显著提高架构演进的灵活性和可维护性。</p></li></ul> 
+ <p>2、Vitess架构</p> 
+ <p style="text-align: center"><img src="https://images2.imgbox.com/27/98/ftKA31ik_o.png"></p> 
+ <p>其中各个角色用途如下：</p> 
+ <p>1）Vttablets部署在某个单独的MySQL实例之前，接管所有与该MySQL实例的通信和维护主、从架构。</p> 
+ <p>2）Vitess需要一个拓扑服务器来存储其元数据。可以是etcd、zk、consul等。</p> 
+ <p>3）Vtgate是无状态的proxy，可以动态的扩容。（由于proxy是带数据库连接状态的，缩容是需要注意的）</p> 
+ <p>4）应用服务器可以连接到任何vtgate，甚至在请求之间。</p> 
+ <p>5）vtctld是用于查看系统元数据，启动工作流，具备相关维护操作的web服务。</p> 
+ <p>前面我们提到，Vitess为云而生，Vitess是如何做到的？</p> 
+ <p>Vitess出生于youtube，part of google，vitess早于k8s，但已为k8s准备就绪，因为它在google内部服务于borg系统，而k8s的前身正是borg。云中的数据库是k8的最后一个领域，而Vites填补了这一空白。目前大规模使用k8s部署生产集群的公司有，JD 、Needlework Lab，Hub 。</p> 
+ <p>下面的图中，我们可以看到，Vitess的每个角色，都利用k8s部署到了云环境中。</p> 
+ <p style="text-align: center"><img src="https://images2.imgbox.com/7d/d0/1MldGiX0_o.png"></p> 
+ <p>3、Vitess核心概念</p> 
+ <p>下面我们介绍一些Vitess重要概念，通过这些概念，我们可以指定Vitess是如何维护数据库集群的。</p> 
+ <p><strong>1）Cell</strong></p> 
+ <ul><li><p>一个Cell是指一个网络资源区域，在这个区域里，放置一组服务器或网络基础设施。它通常对应物理部署中的数据中心，亦可称为可用区域。Cell的主要作用是网络隔离。Vitess可以优雅的处置Cell级别的网络故障，如果有其他的Cell故障并不会影响到当前Cell。</p></li></ul> 
+ <ul><li><p>示例：</p></li></ul> 
+ <ul><li><p>整个数据中心</p></li><li><p>数据中心的一个子集，可用区域</p></li><li><p>一个Kubernetes集群</p></li></ul> 
+ <p><strong>2）Keyspace</strong></p> 
+ <ul><li><p>逻辑 数据库概念</p></li><li><p>未拆分场景下, keyspace =&gt; 单个 MySQL 集群</p></li><li><p>拆分场景下, keyspace =&gt; 多个 MySQL 集群 (相同配置)</p></li><li><p>无论哪种情况，从应用程序的角度来看，对外表现都是一个数据库集群</p></li></ul> 
+ <p><strong>3）Keyspace ID</strong></p> 
+ <ul><li><p>Keyspace 由keyspace ID 范围区间组成 </p></li><li><p>每一行都能映射到一个keyspace ID</p></li><li><p>相当于一行数据的街道门牌号码，是决定一行数据存在于哪个Shard的标识</p></li><li><p>Vitess内部实现,应用程序不需要知道任何关于它的信息。</p></li><li><p>通过计算而得，并未存储</p></li></ul> 
+ <p><strong>4）Shard</strong></p> 
+ <ul><li><p>Keyspace ID 范围 (Begin, End)</p></li><li><p>如果 Begin &lt; KeyspaceID &lt;= End, 那么计算而得到KeyspaceID的这行数据属于这个shard</p></li><li><p>一主多从</p></li><li><p>位于一个或多个Cell中</p></li></ul> 
+ <p style="text-align: center"><img src="https://images2.imgbox.com/5a/4c/CtpUQF0K_o.png"></p> 
+ <p><strong>5）Vindex</strong></p> 
+ <ul><li><p>对表中数据计算得到Keyspace ID 的方法</p></li><li><p>表的Vindex 由下列两种参数定义：</p></li></ul> 
+ <ul><li><p>拆分列</p></li><li><p>分片函数</p></li></ul> 
+ <ul><li><p>KeySpaceIDForRow = ShardingFunction(ColumnValueForRow)</p></li><li><p>举个栗子：</p></li></ul> 
+ <ul><li><p>表名: customer, 拆分列名: id，分片函数: hash</p></li><li><p>For a row where id is 123, KeySpaceId = hash(123)</p></li></ul> 
+ <p><strong>6）Sharding functions</strong></p> 
+ <p>下面是vitess已经提供的Sharding functions，当然我们也可以自定义。</p> 
+ <p><strong>二、Reshard</strong></p> 
+ <p>经过前面的基本概念的介绍，下面我们看一些vitess实现的reshard的过程。2片-&gt;4片的过程,需要说明的是，整个拆分过程，业务代码不用任何修改，只是在最后的切流量环节，会有几秒钟的可用率下跌：</p> 
+ <p>1）首先是一个正常的2个分片的keyspace，分片的名字分别是00-80,80-FF，正常对外提供服务，首先每个分片上选择一个从库，如图中所示：<br></p> 
+ <p style="text-align: center"><img src="https://images2.imgbox.com/d9/11/mLiD6eAK_o.png"></p> 
+ <p>2）接下来呢，申请新的分片需要的资源同时将老分片的从库停止复制，为下一步操作做好准备。</p> 
+ <p style="text-align: center"><img src="https://images2.imgbox.com/6e/e3/MRrqnhYZ_o.png"></p> 
+ <p>3）根据路由信息，将老分片的静态数据拷贝到新的分片上去。</p> 
+ <ul><li><p>其中要根据具体数据的keyspace id来路由数据。</p></li><li><p>00-80的数据只能路由到00-40或者40-80分片上。</p></li><li><p>80-FF的数据只能路由到80-C0或者C0-FF分片上。</p></li></ul> 
+ <p style="text-align: center"><img src="https://images2.imgbox.com/aa/2c/NPplNLsV_o.png"></p> 
+ <p>4）根据前面拷贝静态数据的binlog结束的位置点开始做过滤复制，核心点也是根据具体数据行的keyspace id路由到正确的地方。</p> 
+ <p style="text-align: center"><img src="https://images2.imgbox.com/e5/f6/Kbrd2HLy_o.png"></p> 
+ <p>5）下一步操作就是切量流量。切换过程中，Vitess做了如下操作：数据校验、切流量（先切从、再切主）。</p> 
+ <p style="text-align: center"><img src="https://images2.imgbox.com/79/19/gxTeCODb_o.png"></p> 
+ <p>6）下一步操作就是清理老的资源，建议观察几天后，再做此步骤。清理完老的分配资源后的效果如下：</p> 
+ <p style="text-align: center"><img src="https://images2.imgbox.com/99/6a/pRHGOJ8B_o.png"></p> 
+ <p><strong>三、落地Vitess</strong></p> 
+ <p style="text-align: center"><img src="https://images2.imgbox.com/98/dd/eVzqGMha_o.png"></p> 
+ <p>上面的架构图是我们使用Vitess的架构图，其中需要重点说明的如下几点：</p> 
+ <ul><li><p>管理工具需要可以同时操作Vitess及K8s。</p></li><li><p>迁移工具：从普通库迁移到Vitess集群的工具，同时配套相应数据校验工具。</p></li><li><p>Binlake：对外的一个提供类似canal抽数服务，对接kafka消息队列，业务无需知道集群内发生的任何事情，这意味着binlake具备采集自愈功能，能够保证业务消费到的binlog一定是新鲜无误的。</p></li></ul> 
+ <p>1、挑战</p> 
+ <p>1）具备连接状态的网关升级问题</p> 
+ <ul><li><p>修改rc的镜像为最新的。</p></li><li><p>修改老的pod的标签，使service的标签选择器无法找到当前pod,同时rc会根据新的镜像，拉起新的pod。</p></li><li><p>循环以上步骤。</p></li></ul> 
+ <p>2）复杂sql的支持：join、load、Prepare等支持。</p> 
+ <p>3）App的需求：业务隔离性、大数据部抽数、超核心系统的敏感性。</p> 
+ <ul><li><p>基于业务分级，物理隔离敏感系统及高i/o,高吞吐的项目<br></p></li><li><p>核心系统的使用独立网关</p></li><li><p>抽数使用独立网关，使用流式抽数</p></li></ul> 
+ <p>4）Etcd问题：修复一些bug造成Etcd OOM; app过多时，Vschema大value问题。</p> 
+ <ul><li><p>大value独立存储。</p></li><li><p>Vschma的操作由Cell级别拆成keyspace级别。 </p></li></ul> 
+ <p>2、建议</p> 
+ <p>Vitess作为一个核心产品，周边的生态仍然相对欠缺，各位如果有想把Vitess大规模用于生产，一定要对如下几点做好调研：</p> 
+ <ul><li><p>监控：监控要覆盖每个角色的每个pod。</p></li><li><p>拆分：一定要熟悉拆分过程，能够定位bug、修改bug，便于解决拆分中遇到的问题。</p></li><li><p>可靠的调度系统：一定要用好K8S本身强大的功能；或者Nomad也可以考虑。 </p></li><li><p>最重要的一点，实际动手操作，走出第一步，迁一个业务试试！</p></li></ul> 
+ <article> 
+  <pre class="has"><code class="language-php">特别推荐一个分享架构+算法的优质内容，还没关注的小伙伴，可以长按关注一下：
+
+长按订阅更多精彩▼
+
+如有收获，点个在看，诚挚感谢
+</code></pre> 
+ </article> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3bfd757a2decf7788a22c2b345be711f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Unity 工具类 之 BlendShape 捏脸的实现</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b5edc94ef64ab65a9d73a0a3be2b2ced/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">stm32 单片机的__attribute__ ((at())绝对定位及首次适应算法的动态内存管理</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

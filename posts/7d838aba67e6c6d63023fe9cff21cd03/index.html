@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>数据库系列之MySQL线程ID和操作系统线程ID对应关系 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="数据库系列之MySQL线程ID和操作系统线程ID对应关系" />
+<meta property="og:description" content="在日常运维工作中，MySQL数据库服务器出现SQL语句执行导致服务器CPU使用率突增，如何通过现有手段快速定位排查到哪个SQL语句，并采取应急措施。本文介绍基于传统的操作系统线程的CPU使用监控手段入手，利用操作系统线程ID和MySQL线程ID对应关系，逐步定位到异常SQL和事务。
+1、操作系统进程和线程ID 1.1 MySQL单进程和多线程关系 MySQL是一个单进程多线程数据库，进程是正在运行的程序的实例，线程是操作系统能够进行运算调度的最小单位。
+进程：是指一个内存中运行的应用程序，每个进程都有一个独立的内存空间；进程也是程序的一次执行过程，是系统运行程序的基本单位；系统运行一个程序即是一个进程从创建、运行到消亡的过程。线程：线程是进程中的一个执行单元，负责当前进程中程序的执行，一个进程中至少有一个线程。线程是操作系统能够进行运算调度的最小单位，它被包含在进程之中，是进程中的实际运作单位。一个进程中可以并发多个线程，每条线程并行执行不同的任务。 MySQL数据库选择单进程多线程，是因为进程同一时间内并发很多线程给不同的CPU，线程共享相同的内存单元/内存地址空间， 由于线程间的通信是在同一地址空间上进行的，所以不需要额外的通信机制，这就使得通信更简便而且信息传递的速度也更快。
+上图是MySQL存储引擎InnoDB的后台线程，在“InnoDB存储引擎解密”中详细介绍了。InnoDB后台线程主要用于维持服务器的正常运行和完成用户提交的任务，主要包括：master thread、page cleaner thread、purge thread、read thread、write thread、redo log thread、insert buffer thread、monitor thread、error monitor thread、lock monitor thread等。
+1.1.1 Master Thread Master thread是核心的后台线程，主要负责将缓冲池中的数据异步刷新到磁盘，保证数据的一致性，包括脏页的刷新、合并插入缓冲、undo页的回收等。Master thread内部由多个循环组成，包括主循环、后台循环、刷新循环和暂停循环，master thread会根据数据库运行的状态在不同的循环之间切换。在InnoDB 1.0.x版本之前的主循环中，分两大部分操作：每秒钟的操作和每10秒钟的操作。
+1）每秒一次的操作包括：
+日志缓冲刷新到磁盘，即使这个事务还没有提交（总是），这点解释了为什么再大的事务commit时都很快合并插入缓冲（可能），合并插入并不是每秒都发生，InnoDB会判断当前一秒内发生的IO次数是否小于5，如果是，则系统认为当前的IO压力很小，可以执行合并插入缓冲的操作。至多刷新100个InnoDB的缓冲池的脏页到磁盘（可能），这个刷新100个脏页也不是每秒都在做。 即使某个事务还没有提交，InnoDB存储引擎仍然每秒会将重做日志缓存中的内容刷新到redo log中。
+2）每10秒一次的操作包括：
+刷新100个脏页到磁盘（可能）；合并至多5个插入缓冲（总是）；将日志缓冲刷新到磁盘（总是）；删除无用的undo页（总是）；产生一个检查点（checkpoing）； 在以上过程中，InnoDB存储引擎会先判断过去10s内的磁盘IO操作是否小于200次，如果是InnoDB存储引擎认为当前有足够的磁盘IO操作能力，因此将100个脏页刷新到磁盘。接着，InnoDB存储引擎会合并插入缓冲，之后再将日志缓冲刷新到磁盘。最后InnoDB存储引擎会执行full purge操作，删除无用的undo页，它会先去判断当前系统中已被标记为删除的行是否可以删除，如果可以则可以立即将其删除。
+在InnoDB 1.0.x版本之前，InnoDB存储引擎对于IO是有限制的，缓冲池向磁盘刷新做了一定的硬编码，随着磁盘硬件性能提高，这种方式会限制InnoDB对磁盘IO的性能。因此在1.0.x版本之后，InnoDB提供了参数innodb_io_capacity，用来表示磁盘IO的吞吐量，默认值为200。对于刷新到磁盘页的数量，会按照innodb_io_capacity的百分比进行控制：
+在合并插入缓冲时，合并插入缓冲的数量为innodb_io_capacity值的5%在从缓冲区刷新脏页时，刷新脏页的数量为innodb_io_capacity 命令show engine innodb status;可以查看master thread信息：
+===================================== 2021-08-22 20:38:37 140186194323200 INNODB MONITOR OUTPUT ===================================== Per second averages calculated from the last 12 seconds ----------------- BACKGROUND THREAD ----------------- srv_master_thread loops: 1 srv_active, 0 srv_shutdown, 255 srv_idle srv_master_thread log flush and writes: 0 1." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/7d838aba67e6c6d63023fe9cff21cd03/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-04-10T08:40:19+08:00" />
+<meta property="article:modified_time" content="2023-04-10T08:40:19+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">数据库系列之MySQL线程ID和操作系统线程ID对应关系</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>在日常运维工作中，MySQL数据库服务器出现SQL语句执行导致服务器CPU使用率突增，如何通过现有手段快速定位排查到哪个SQL语句，并采取应急措施。本文介绍基于传统的操作系统线程的CPU使用监控手段入手，利用操作系统线程ID和MySQL线程ID对应关系，逐步定位到异常SQL和事务。</p> 
+<hr> 
+<h5><a id="1ID_3"></a>1、操作系统进程和线程ID</h5> 
+<h6><a id="11_MySQL_4"></a>1.1 MySQL单进程和多线程关系</h6> 
+<p>MySQL是一个单进程多线程数据库，进程是正在运行的程序的实例，线程是操作系统能够进行运算调度的最小单位。</p> 
+<ul><li>进程：是指一个内存中运行的应用程序，每个进程都有一个独立的内存空间；进程也是程序的一次执行过程，是系统运行程序的基本单位；系统运行一个程序即是一个进程从创建、运行到消亡的过程。</li><li>线程：线程是进程中的一个执行单元，负责当前进程中程序的执行，一个进程中至少有一个线程。线程是操作系统能够进行运算调度的最小单位，它被包含在进程之中，是进程中的实际运作单位。一个进程中可以并发多个线程，每条线程并行执行不同的任务。</li></ul> 
+<p>MySQL数据库选择单进程多线程，是因为进程同一时间内并发很多线程给不同的CPU，线程共享相同的内存单元/内存地址空间， 由于线程间的通信是在同一地址空间上进行的，所以不需要额外的通信机制，这就使得通信更简便而且信息传递的速度也更快。</p> 
+<p><img src="https://images2.imgbox.com/a0/89/S74BgrEZ_o.png" alt="在这里插入图片描述"></p> 
+<p>上图是MySQL存储引擎InnoDB的后台线程，在“InnoDB存储引擎解密”中详细介绍了。InnoDB后台线程主要用于维持服务器的正常运行和完成用户提交的任务，主要包括：master thread、page cleaner thread、purge thread、read thread、write thread、redo log thread、insert buffer thread、monitor thread、error monitor thread、lock monitor thread等。</p> 
+<h6><a id="111_Master_Thread_16"></a>1.1.1 Master Thread</h6> 
+<p>Master thread是核心的后台线程，主要负责将缓冲池中的数据异步刷新到磁盘，保证数据的一致性，包括脏页的刷新、合并插入缓冲、undo页的回收等。Master thread内部由多个循环组成，包括主循环、后台循环、刷新循环和暂停循环，master thread会根据数据库运行的状态在不同的循环之间切换。在InnoDB 1.0.x版本之前的主循环中，分两大部分操作：每秒钟的操作和每10秒钟的操作。</p> 
+<p>1）每秒一次的操作包括：</p> 
+<ul><li>日志缓冲刷新到磁盘，即使这个事务还没有提交（总是），这点解释了为什么再大的事务commit时都很快</li><li>合并插入缓冲（可能），合并插入并不是每秒都发生，InnoDB会判断当前一秒内发生的IO次数是否小于5，如果是，则系统认为当前的IO压力很小，可以执行合并插入缓冲的操作。</li><li>至多刷新100个InnoDB的缓冲池的脏页到磁盘（可能），这个刷新100个脏页也不是每秒都在做。</li></ul> 
+<p>即使某个事务还没有提交，InnoDB存储引擎仍然每秒会将重做日志缓存中的内容刷新到redo log中。</p> 
+<p>2）每10秒一次的操作包括：</p> 
+<ul><li>刷新100个脏页到磁盘（可能）；</li><li>合并至多5个插入缓冲（总是）；</li><li>将日志缓冲刷新到磁盘（总是）；</li><li>删除无用的undo页（总是）；</li><li>产生一个检查点（checkpoing）；</li></ul> 
+<p>在以上过程中，InnoDB存储引擎会先判断过去10s内的磁盘IO操作是否小于200次，如果是InnoDB存储引擎认为当前有足够的磁盘IO操作能力，因此将100个脏页刷新到磁盘。接着，InnoDB存储引擎会合并插入缓冲，之后再将日志缓冲刷新到磁盘。最后InnoDB存储引擎会执行full purge操作，删除无用的undo页，它会先去判断当前系统中已被标记为删除的行是否可以删除，如果可以则可以立即将其删除。</p> 
+<p>在InnoDB 1.0.x版本之前，InnoDB存储引擎对于IO是有限制的，缓冲池向磁盘刷新做了一定的硬编码，随着磁盘硬件性能提高，这种方式会限制InnoDB对磁盘IO的性能。因此在1.0.x版本之后，InnoDB提供了参数innodb_io_capacity，用来表示磁盘IO的吞吐量，默认值为200。对于刷新到磁盘页的数量，会按照innodb_io_capacity的百分比进行控制：</p> 
+<ul><li>在合并插入缓冲时，合并插入缓冲的数量为innodb_io_capacity值的5%</li><li>在从缓冲区刷新脏页时，刷新脏页的数量为innodb_io_capacity</li></ul> 
+<p>命令show engine innodb status;可以查看master thread信息：</p> 
+<pre><code>=====================================
+2021-08-22 20:38:37 140186194323200 INNODB MONITOR OUTPUT
+=====================================
+Per second averages calculated from the last 12 seconds
+-----------------
+BACKGROUND THREAD
+-----------------
+srv_master_thread loops: 1 srv_active, 0 srv_shutdown, 255 srv_idle
+srv_master_thread log flush and writes: 0
+</code></pre> 
+<h6><a id="112_Purge_Thread_53"></a>1.1.2 Purge Thread</h6> 
+<p>事务被提交后，其使用的undo log可能不再需要，因此需要Purge Thread来回收已经使用并分配的undo页，它的作用是真正的删除记录和删除undo log。</p> 
+<p>比如语句delete from tb1 where pk=1;</p> 
+<ol><li>将pk=1的记录标记为删除(delete-mark，infobits)，数据库中pk=1的记录此时还是存在的，空间并没有被释放，该操作为同步操作(SQL执行完，也就标记完成了)</li><li>Purge为后台线程(purge线程)异步操作，会真正的删除该记录，且空间被释放。purge线程是系统自动的，无法人工控制。</li></ol> 
+<p>Page页标记为已删除的原因有两点：1）该事物可能需要回滚，先作保留；2）当事物1去删除pk=1且没有提交时，事物2要能看到pk=1的记录(事物的隔离性)。根据不同的过滤条件，对删除标记的处理也不一样，如下表所示：</p> 
+<p><img src="https://images2.imgbox.com/02/6a/nmCAvTsm_o.png" alt="在这里插入图片描述"></p> 
+<p>因此，标记为delete-mark的记录最后会被purge线程回收，Purge会检测记录上是否有其他事物在引用undo，如果没有就可以删除。InnoDB 1.2版本开始，InnoDB支持多个purge thread，这样能够加快undo页的回收，同时离散的读取undo页也可以进一步提升磁盘的随机读取性能，目前MySQL 8.0版本中默认设置为4。</p> 
+<pre><code>mysql&gt; show variables like 'innodb_purge_threads';
++----------------------+-------+
+| Variable_name        | Value |
++----------------------+-------+
+| innodb_purge_threads | 4     |
++----------------------+-------+
+1 row in set (0.00 sec)
+</code></pre> 
+<h6><a id="113_Page_Cleaner_Thread_77"></a>1.1.3 Page Cleaner Thread</h6> 
+<p>Page Cleaner Thread是在InnoDB 1.2.x版本新引入的,其作用是将之前版本中脏页的刷新操作都放入单独的线程中来完成,这样减轻了Master Thread的工作及对于用户查询线程的阻塞。</p> 
+<h6><a id="114_IO_Thread_80"></a>1.1.4 IO Thread</h6> 
+<p>在InnoDB存储引擎中大量使用了异步IO来处理写IO请求，IO Thread的工作主要是负责这些IO请求的回调处理。InnoDB中有4种IO thread，分别为write、read、insert buffer和log IO thread：</p> 
+<ul><li>write thread：负责数据库的写操作，可配置多个写线程</li><li>read thread：负责数据库的读取操作，可配置多个读线程</li><li>insert buffer thread: 主要负责插入缓冲区的合并操作</li><li>log thread：用于将重做日志刷新到log file中</li></ul> 
+<p>通过命令SHOW ENGINE INNODB STATUS可以观察InnoDB中的IO Thread：</p> 
+<pre><code>--------
+FILE I/O
+--------
+I/O thread 0 state: waiting for completed aio requests (insert buffer thread)
+I/O thread 1 state: waiting for completed aio requests (log thread)
+I/O thread 2 state: waiting for completed aio requests (read thread)
+I/O thread 3 state: waiting for completed aio requests (read thread)
+I/O thread 4 state: waiting for completed aio requests (read thread)
+I/O thread 5 state: waiting for completed aio requests (read thread)
+I/O thread 6 state: waiting for completed aio requests (write thread)
+I/O thread 7 state: waiting for completed aio requests (write thread)
+I/O thread 8 state: waiting for completed aio requests (write thread)
+I/O thread 9 state: waiting for completed aio requests (write thread)
+Pending normal aio reads: [0, 0, 0, 0] , aio writes: [0, 0, 0, 0] ,
+ ibuf aio reads:, log i/o's:, sync i/o's:
+Pending flushes (fsync) log: 0; buffer pool: 0
+854 OS file reads, 207 OS file writes, 38 OS fsyncs
+0.00 reads/s, 0 avg bytes/read, 0.00 writes/s, 0.00 fsyncs/s
+</code></pre> 
+<h6><a id="12_MySQLID_109"></a>1.2 获得系统中MySQL进程ID</h6> 
+<p>Linux系统中获得MySQL进程ID方法很简单，使用命令ps -ef|grep mysqld就能看到其系统进程ID。如下所示进程MySQL运行的进行ID为1479：</p> 
+<pre><code>[root@tango-GDB-DB01 ~]# ps -ef|grep mysqld
+mysql      1479   1090  1 16:59 ?        00:00:03 /usr/local/mysql/bin/mysqld --basedir=/usr/local/mysql --datadir=/usr/local/mysql/data --plugin-dir=/usr/local/mysql/lib/plugin --user=mysql --log-error=tango-GDB-DB01.err --pid-file=/usr/local/mysql/data/tango-GDB-DB01.pid --socket=/tmp/mysql.sock
+</code></pre> 
+<h6><a id="13_MySQLID_116"></a>1.3 MySQL进程下线程ID信息</h6> 
+<p>Linux中显示某个具体线程信息有以下几种方法：</p> 
+<p>1）TOP -H显示线程信息</p> 
+<p>top命令可以实时显示各个线程情况，调用top命令的“-H”选项，该选项会列出所有Linux线程。加上-p会筛选具体进程下面的线程信息，如下所示：</p> 
+<pre><code>[root@tango-GDB-DB01 ~]# top -H -p 1479
+top - 17:10:44 up 11 min,  2 users,  load average: 0.00, 0.05, 0.05
+Threads:  39 total,   0 running,  39 sleeping,   0 stopped,   0 zombie
+%Cpu(s):  0.0 us,  0.0 sy,  0.0 ni,100.0 id,  0.0 wa,  0.0 hi,  0.0 si,  0.0 st
+KiB Mem :  1867024 total,  1051452 free,   495804 used,   319768 buff/cache
+KiB Swap:  2097148 total,  2097148 free,        0 used.  1185628 avail Mem 
+   PID USER      PR  NI    VIRT    RES    SHR S %CPU %MEM     TIME+ COMMAND                                            
+  1479 mysql     20   0 1318236 367380  16280 S  0.0 19.7   0:01.55 mysqld                                           
+  1527 mysql     20   0 1318236 367380  16280 S  0.0 19.7   0:00.00 mysqld                                         
+  1528 mysql     20   0 1318236 367380  16280 S  0.0 19.7   0:00.00 mysqld                                         
+</code></pre> 
+<p>2）在ps命令中，“-T”选项可以开启线程查看</p> 
+<p>下面的命令列出了由进程号为1479的进程创建的所有线程。</p> 
+<pre><code>ps -aT -p &lt;pid&gt;
+[root@tango-GDB-DB01 ~]# ps -aT -p 1479
+   PID   SPID TTY          TIME CMD
+  1479   1479 ?        00:00:01 mysqld
+  1479   1527 ?        00:00:00 mysqld
+  1479   1528 ?        00:00:00 mysqld
+</code></pre> 
+<p>3）命令ps -Lef查看线程</p> 
+<pre><code>[root@tango-GDB-DB01 ~]# ps -Lef|grep 1479
+UID         PID   PPID    LWP  C NLWP STIME TTY          TIME CMD
+mysql      1479   1090   1479  0   39 16:59 ?        00:00:01 /usr/local/mysql/bin/mysqld --basedir=/usr/local/mysql --datadir=/usr/local/mysql/data --plugin-dir=/usr/local/mysql/lib/plugin --user=mysql --log-error=tango-GDB-DB01.err --pid-file=/usr/local/mysql/data/tango-GDB-DB01.pid --socket=/tmp/mysql.sock
+mysql      1479   1090   1527  0   39 16:59 ?        00:00:00 /usr/local/mysql/bin/mysqld --basedir=/usr/local/mysql --datadir=/usr/local/mysql/data --plugin-dir=/usr/local/mysql/lib/plugin --user=mysql --log-error=tango-GDB-DB01.err --pid-file=/usr/local/mysql/data/tango-GDB-DB01.pid --socket=/tmp/mysql.sock
+</code></pre> 
+<p>上述命令中PID给出进程号、LWP显示线程ID、C表示CPU使用率、NLWP表示 线程组内线程的个数。</p> 
+<h6><a id="14_pstack_157"></a>1.4 pstack查看线程堆栈信息</h6> 
+<p>命令pstack可用来查看进程中的堆栈信息，需要注意的是运行pstack会短暂阻塞mysqld进程，所以请切勿在业务高峰期执行。</p> 
+<p><img src="https://images2.imgbox.com/c0/ff/vaSVIT2W_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="2IDMySQLID_164"></a>2、系统线程ID和MySQL线程ID对应关系</h5> 
+<h6><a id="21_MySQLProcessIDThreadID_165"></a>2.1 MySQL中的ProcessID和ThreadID</h6> 
+<p>1）连接MySQL，并执行以下语句</p> 
+<pre><code>[root@tango-GDB-DB01 local]# mysql -h192.168.112.121 -P3306 -uroot -p –A
+mysql&gt; begin;
+mysql&gt; begin;select count(1),sleep(2000) from tango.t2 for update;
+</code></pre> 
+<p>2）show processlist查看processlist信息，找到processlist_id</p> 
+<pre><code>mysql&gt; show processlist;
++----+-----------------+----------------------+-------+---------+------+------------------------+-------------------------------------------+
+| Id | User            | Host                 | db    | Command | Time | State                  | Info                                      |
++----+-----------------+----------------------+-------+---------+------+------------------------+-------------------------------------------+                                    |
+| 10 | root            | tango-GDB-DB01:50620 | tango | Query   |   52 | User sleep             | select count(1),sleep(2000) from tango.t2 for update |
+| 11 | root            | localhost            | NULL  | Query   |    0 | init                   | show processlist                          |
++----+-----------------+----------------------+-------+---------+------+------------------------+-------------------------------------------+
+3 rows in set (0.00 sec)
+</code></pre> 
+<p>3）查找MySQL内部线程对应的系统线程ID</p> 
+<p>从MySQL 5.7开始，performance_schema.threads 表增加 THREAD_OS_ID 列，用于记录MySQL内部线程对应的系统线程ID。</p> 
+<pre><code>mysql&gt; select * from performance_schema.threads where processlist_id=10\G
+*************************** 1. row ***************************
+          THREAD_ID: 49
+               NAME: thread/sql/one_connection
+               TYPE: FOREGROUND
+     PROCESSLIST_ID: 10
+   PROCESSLIST_USER: root
+   PROCESSLIST_HOST: tango-GDB-DB01
+     PROCESSLIST_DB: tango
+PROCESSLIST_COMMAND: Query
+   PROCESSLIST_TIME: 84
+  PROCESSLIST_STATE: User sleep
+   PROCESSLIST_INFO: select count(1),sleep(2000) from tango.t2 for update
+   PARENT_THREAD_ID: NULL
+               ROLE: NULL
+       INSTRUMENTED: YES
+            HISTORY: YES
+    CONNECTION_TYPE: SSL/TLS
+       THREAD_OS_ID: 1657
+     RESOURCE_GROUP: USR_default
+1 row in set (0.00 sec)
+</code></pre> 
+<p>以上找到MySQL内部的thread_id和对应操作系统的线程ID：THREAD_OS_ID</p> 
+<p>4）找到对应的操作系统线程信息</p> 
+<pre><code>[root@tango-GDB-DB01 ~]# top -H -p 1479
+top - 17:41:22 up 41 min,  3 users,  load average: 0.00, 0.01, 0.05
+Threads:  39 total,   0 running,  39 sleeping,   0 stopped,   0 zombie
+%Cpu(s):  0.0 us,  1.5 sy,  0.0 ni, 98.5 id,  0.0 wa,  0.0 hi,  0.0 si,  0.0 st
+KiB Mem :  1867024 total,   483128 free,   513864 used,   870032 buff/cache
+KiB Swap:  2097148 total,  2097148 free,        0 used.  1158844 avail Mem 
+   PID USER      PR  NI    VIRT    RES    SHR S %CPU %MEM     TIME+ COMMAND                                             
+  1657 mysql     20   0 1318236 377188  16536 S  0.0 20.2   0:00.04 mysqld
+</code></pre> 
+<p>通过top -H可以看到对应线程的CPU使用情况，包括内存和CPU的使用</p> 
+<h6><a id="22_statementsstatements_226"></a>2.2 查询当前statements和历史statements</h6> 
+<p>1）查询当前statements表</p> 
+<pre><code>mysql&gt; select * from performance_schema.events_statements_current WHERE THREAD_ID = 49\G
+*************************** 1. row ***************************
+              THREAD_ID: 49
+               EVENT_ID: 20
+           END_EVENT_ID: NULL
+             EVENT_NAME: statement/sql/select
+                 SOURCE: init_net_server_extension.cc:96
+            TIMER_START: 10615744184481000
+              TIMER_END: 10743215769959000
+             TIMER_WAIT: 127471585478000
+              LOCK_TIME: 121000000
+               SQL_TEXT: select count(1),sleep(2000) from tango.t2 for update
+                 DIGEST: 91558228446c9877c86805735096b85b8afe5a8148c4ea9c315a1948464ab27f
+            DIGEST_TEXT: SELECT COUNT (?) , `sleep` (?) FROM `tango` . `t2` FOR UPDATE
+         CURRENT_SCHEMA: tango
+            OBJECT_TYPE: NULL
+          OBJECT_SCHEMA: NULL
+            OBJECT_NAME: NULL
+  OBJECT_INSTANCE_BEGIN: NULL
+            MYSQL_ERRNO: 0
+      RETURNED_SQLSTATE: NULL
+           MESSAGE_TEXT: NULL
+                 ERRORS: 0
+               WARNINGS: 0
+          ROWS_AFFECTED: 0
+              ROWS_SENT: 0
+          ROWS_EXAMINED: 0
+CREATED_TMP_DISK_TABLES: 0
+     CREATED_TMP_TABLES: 0
+       SELECT_FULL_JOIN: 0
+ SELECT_FULL_RANGE_JOIN: 0
+           SELECT_RANGE: 0
+     SELECT_RANGE_CHECK: 0
+            SELECT_SCAN: 1
+      SORT_MERGE_PASSES: 0
+             SORT_RANGE: 0
+              SORT_ROWS: 0
+              SORT_SCAN: 0
+          NO_INDEX_USED: 1
+     NO_GOOD_INDEX_USED: 0
+       NESTING_EVENT_ID: 18
+     NESTING_EVENT_TYPE: TRANSACTION
+    NESTING_EVENT_LEVEL: 0
+           STATEMENT_ID: 37
+1 row in set (0.00 sec)
+</code></pre> 
+<p>2）执行SHOW ENGINE INNODB STATUS\G查看事务状态：</p> 
+<pre><code>---TRANSACTION 2715147, ACTIVE 480 sec
+mysql tables in use 1, locked 1
+2 lock struct(s), heap size 1136, 3 row lock(s)
+MySQL thread id 10, OS thread handle 140127942276864, query id 37 tango-GDB-DB01 192.168.112.121 root User sleep
+select count(1),sleep(2000) from tango.t2 for update
+Trx read view will not see trx with id &gt;= 2715147, sees &lt; 2715147
+</code></pre> 
+<p>MySQL连接ID=10，OS线程句柄 = 140127942276864</p> 
+<p>3）查看历史thread_statement信息</p> 
+<pre><code>mysql&gt; select * from performance_schema.events_statements_history  WHERE THREAD_ID = 49 limit 1 \G
+*************************** 1. row ***************************
+              THREAD_ID: 49
+               EVENT_ID: 17
+           END_EVENT_ID: 18
+             EVENT_NAME: statement/sql/begin
+                 SOURCE: init_net_server_extension.cc:96
+            TIMER_START: 10288037810168000
+              TIMER_END: 10288037917673000
+             TIMER_WAIT: 107505000
+              LOCK_TIME: 0
+               SQL_TEXT: begin
+                 DIGEST: 55fa5810fbb2760e86d578526176c1497b134d4ef3dd0863dd78b1c5e819848c
+            DIGEST_TEXT: BEGIN
+         CURRENT_SCHEMA: tango
+            OBJECT_TYPE: NULL
+          OBJECT_SCHEMA: NULL
+            OBJECT_NAME: NULL
+  OBJECT_INSTANCE_BEGIN: NULL
+            MYSQL_ERRNO: 0
+      RETURNED_SQLSTATE: 00000
+           MESSAGE_TEXT: NULL
+                 ERRORS: 0
+               WARNINGS: 0
+          ROWS_AFFECTED: 0
+              ROWS_SENT: 0
+          ROWS_EXAMINED: 0
+CREATED_TMP_DISK_TABLES: 0
+     CREATED_TMP_TABLES: 0
+       SELECT_FULL_JOIN: 0
+ SELECT_FULL_RANGE_JOIN: 0
+           SELECT_RANGE: 0
+     SELECT_RANGE_CHECK: 0
+            SELECT_SCAN: 0
+      SORT_MERGE_PASSES: 0
+             SORT_RANGE: 0
+              SORT_ROWS: 0
+              SORT_SCAN: 0
+          NO_INDEX_USED: 0
+     NO_GOOD_INDEX_USED: 0
+       NESTING_EVENT_ID: NULL
+     NESTING_EVENT_TYPE: NULL
+    NESTING_EVENT_LEVEL: 0
+           STATEMENT_ID: 28
+1 row in set (0.00 sec)
+</code></pre> 
+<h6><a id="23_killCPUthread_338"></a>2.3 kill长时间运行或高CPU的thread</h6> 
+<p>1）show processlists找到长时间运行的SQL</p> 
+<pre><code>mysql&gt; show processlist;
++----+-----------------+----------------------+-------+---------+-------+------------------------+------------------------------------------------------+
+| Id | User            | Host                 | db    | Command | Time  | State                  | Info                                                 |
++----+-----------------+----------------------+-------+---------+-------+------------------------+------------------------------------------------------+
+|  5 | event_scheduler | localhost            | NULL  | Daemon  | 11423 | Waiting on empty queue | NULL                                                 |
+| 10 | root            | tango-GDB-DB01:50620 | tango | Query   |   816 | User sleep             | select count(1),sleep(2000) from tango.t2 for update |
+</code></pre> 
+<p>2）通过TOP -H找到CPU高消耗的thread<br> <img src="https://images2.imgbox.com/c0/27/qAZ9Ynka_o.png" alt="在这里插入图片描述"></p> 
+<p>反向查找到processlist id</p> 
+<pre><code>mysql&gt; select * from performance_schema.threads WHERE THREAD_OS_ID = 1657\G
+*************************** 1. row ***************************
+          THREAD_ID: 49
+               NAME: thread/sql/one_connection
+               TYPE: FOREGROUND
+     PROCESSLIST_ID: 10
+   PROCESSLIST_USER: root
+   PROCESSLIST_HOST: tango-GDB-DB01
+     PROCESSLIST_DB: tango
+PROCESSLIST_COMMAND: Query
+   PROCESSLIST_TIME: 1050
+  PROCESSLIST_STATE: User sleep
+   PROCESSLIST_INFO: select count(1),sleep(2000) from tango.t2 for update
+   PARENT_THREAD_ID: NULL
+               ROLE: NULL
+       INSTRUMENTED: YES
+            HISTORY: YES
+    CONNECTION_TYPE: SSL/TLS
+       THREAD_OS_ID: 1657
+     RESOURCE_GROUP: USR_default
+1 row in set (0.00 sec)
+</code></pre> 
+<p>3）在mysql客户端kill processlist id</p> 
+<pre><code>mysql&gt; kill 10;
+Query OK, 0 rows affected (0.00 sec)
+</code></pre> 
+<p>杀掉当前长事务或者thread</p> 
+<h5><a id="3OS_thread_handleID_385"></a>3、OS thread handle和操作系统线程ID的对应关系</h5> 
+<p>在2.2步骤中查到的OS thread handle 140127942276864（OS thread handle是进程内部用于识别各个线程的内部ID），这里是个十进制的数值，需要先转成十六进制：</p> 
+<pre><code>mysql&gt; select lower(conv(140127942276864, 10, 16));
++--------------------------------------+
+| lower(conv(140127942276864, 10, 16)) |
++--------------------------------------+
+| 7f721438f700                         |
++--------------------------------------+
+1 row in set (0.00 sec)
+</code></pre> 
+<p>2）利用 pstack 查询该句柄和操作系统线程ID的关联：</p> 
+<pre><code>[root@tango-GDB-DB01 ~]# pstack 1479 |grep 7f721438f700
+Thread 3 (Thread 0x7f721438f700 (LWP 1657)):
+</code></pre> 
+<p>可以看到 LWP=1657，对应上面的THREAD_OS_ID值，LWP是Light-Weight Processes的缩写。</p> 
+<hr> 
+<ol><li>https://blog.csdn.net/n88Lpo/article/details/121964562</li><li><a href="https://blog.csdn.net/solihawk/article/details/119963662">数据库系列之InnoDB解密</a></li></ol>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0cfebe38537827291b5609abf3c1f31e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">基于Face&#43;&#43;，使用Spring Boot&#43;Elemnet-UI实现人脸识别登录。</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/21f4b9c3a3527013c0aa5cf04d2539de/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">typescript 交叉类型</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

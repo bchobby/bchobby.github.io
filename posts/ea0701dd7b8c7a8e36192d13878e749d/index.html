@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Impala4.x源码阅读笔记（三）——Impala如何管理Iceberg表元数据 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Impala4.x源码阅读笔记（三）——Impala如何管理Iceberg表元数据" />
+<meta property="og:description" content="前言 本文为笔者个人阅读Apache Impala源码时的笔记，仅代表我个人对代码的理解，个人水平有限，文章可能存在理解错误、遗漏或者过时之处。如果有任何错误或者有更好的见解，欢迎指正。
+上一篇文章Impala4.x源码阅读笔记（二）——Impala如何高效读取Iceberg表简单介绍了Iceberg表的基本情况和Impala是如何对其进行扫描的。这一篇则从元数据的角度对Impala如果管理Iceberg元数据进行一些简单的分析，这里的Iceberg元数据不是指Iceberg的那些元数据文件，那些是Iceberg API负责管理的，这里的元数据是指Iceberg表在Impala中的那些内存对象。
+为了提升查询性能，Impala本身有一套比较复杂的元数据管理机制，这套机制以Catalogd服务进程为核心，实现了元数据在集群内的集中管理。在一个完整的Impala集群中，Catalogd服务进程主要担任了两个角色，首先是一个自动化的元数据缓存，它会负责缓存并自动同步Hive Metastore中的元数据，并将其广播给集群中其他负责处理查询的Coordinator节点，这使得Coordinator可以省去每次查询时和Hive Metastore（HMS）以及HDFS Namenode（NN）的交互，从而缩短了查询耗时。Catalogd的另一个角色是一个集中式的DDL执行者，其他Coordinator节点接收到的DDL最终都会以RPC的形式交由Catalogd进行执行，这样使得集群内部的元数据统一得到了保证。
+Iceberg表作为一种表格式而非文件格式，其核心目标是高效且多功能地管理大量的数据文件，为了达成这一目标，Iceberg表的元数据相较于Hive表也更加复杂，从Impala支持Iceberg表的代码大部分都是元数据相关的也能看出这一点。关于Iceberg元数据管理的代码十分庞大，想要在一篇文章内全面地分析一遍是不太现实的，所以本文首先还是整体地、笼统地描述一下Iceberg表元数据的全貌，然后着重对元数据管理的两个关键环节——Iceberg表的加载和创建进行分析。
+Iceberg表的相关接口 由于Impala本身元数据管理的特性和Iceberg表元数据的特殊性，在Impala支持Iceberg表各项功能的过程中定义了很多类型，我们首先看一下Iceberg相关类的整体UML图：
+图中画出了Iceberg表在Impala中的主要相关接口和类以及其之间的实现或继承关系，其中绿色背景的就是与Iceberg表直接相关的，每个接口和类中都只列举了个别关键的成员变量和方法。在介绍具体的类之前我们先看一下其中的几个接口。
+FeTable 首先是Impala中所有类型的表都要实现的接口FeTable，它定义了Impala Frontend与各类型表交互的一些基本操作，比如获取获取库表名、数据列列表、所有者等，其中还包括了可以获取org.apache.hadoop.hive.metastore.api.Table对象的getMetaStoreTable()方法。因为Impala对HMS是强依赖的，基本上所有元数据都来自HMS，为了与HMS进行元数据交互，Impala中所有类型的表中都包括一个HMS中表对象也就是org.apache.hadoop.hive.metastore.api.Table。它为Impala的表提供了基本的元数据，比如库表名、字段信息和表属性properties等。Iceberg表在Impala也不例外，需要在HMS注册了才能被Impala查询。当然Iceberg表本身并不一定依赖HMS，比如使用HadoopCatalog创建的Iceberg表只依赖一个像HDFS一样的支持原子重命名文件的文件系统而已。对于这种Iceberg表需要先在Impala中通过创建外表的方式在HMS进行注册才能被Impala元数据管理所接受。
+FeFsTable FeFsTable是Impala中所有基于文件系统的表类型都要实现的接口，它继承了FeTable接口，作用也是类似的。像存储在HDFS、S3这种常见的文件系统或存储服务上的表都属于FeFsTable，Iceberg表自然也是FeFsTable。在FeTable的基础之上，FeFsTable额外定义了许多和文件系统相关的方法，比如获取文件系统类型、表位置和文件系统对象FileSystem等。
+FeIcebergTable FeIcebergTable是Impala中Iceberg表类型都要实现的接口，继承了FeFsTable并额外定义了关于Iceberg的通用方法。其中有几个关键方法需要重点介绍：
+getFeFsTable()，它会返回Iceberg对象内置的一个FeFsTable对象，这个对象会被用于将Iceberg表传递给Impala Backend。我们知道在Impala中Frontend负责制定执行计划、Backend负责执行，两者分别由Java和C&#43;&#43;开发，之间主要通过Thrift结构体传递数据，这些数据也包括了查询的执行计划。而Iceberg表在执行期间与普通HDFS表实际上并没有显著差别，可以说都只是一系列规划好的数据文件而已。因此，为了复用Backend中现有的HDFS表扫描代码，Iceberg表对象都内置了一张普通HDFS表对象，在序列化为Thrift结构体传递给Backend时就使用这个内置的FeFsTable对象的相关方法将自身“转变”为HDFS表。
+getIcebergApiTable()，它会返回Iceberg表对象对应的Iceberg API中的表对象org.apache.iceberg.Table，这是Iceberg API中的表示Iceberg表的接口，它提供了Iceberg表的许多重要API，比如获取快照、Schema和扫描计划。依靠这些接口，Impala可以进行Iceberg表的时间旅行查询、模式演进、谓词下推和获取数据文件列表等操作。
+getIcebergCatalog()，它会返回Iceberg表的Catalog类型，目前Impala支持的Iceberg Catalog类型有HadoopTables、HadoopCatalog、HiveCatalog和Catalogs。Iceberg的Catalog是用于追踪Iceberg表的，它主要负责储存Iceberg表最近元数据文件的位置，可以说是Iceberg表元数据的元数据。换句话说如果说Iceberg表是管理一系列数据文件并告诉我们数据文件在哪里，那么Iceberg Catalog的作用就是管理一系列Iceberg表并告诉我们Iceberg表在哪里。如果Iceberg表的最近元数据位置也直接储存在文件系统的一个文件中，则对应HadoopTables。如果文件系统中有一个专门的Catalog目录，Iceberg表的元数据位置由其负责管理，则对应HadoopCatalog。如果使用HMS储存Iceberg表的最近元数据位置，则对应HiveCatalog。而Catalogs接口相当于一种复合的自动Catalog，它依赖配置文件和表属性自动识别Iceberg表的Catalog类型。
+接口FeIcebergTable可以说是Iceberg表在Impala中的关键抽象，从图中也可以看到许多Iceberg表的相关类实现了该接口。
+Iceberg表的相关类 介绍完了相关接口之后，我们接下来继续看看Iceberg相关的类。从图中可以看到与Iceberg直接相关的表类型就有足足七种，当然其中除了IcebergTable和LocalIcebergTable这两个真正表示实际存在的Iceberg表的“正经”表类型外，其他的都可以算是为了支持各种Iceberg特性而抽象出来的功能性的工具类。接下来我们逐个介绍。
+IcebergTable IcebergTable是Iceberg表在Impala元数据管理中的代理类之一，每个对象都是对应了一张实际存在的Iceberg表。IcebergTable实现了FeIcebergTable接口并继承了Table类。Table类是Impala中所有表类的主要父类之一（另一个是LocalTable），它是一个抽象类，实现了FeTable接口，它定义了所有表共有的一些成员变量，如库对象、表名、所有者、表锁和数据列容器等等，它还定义了表对象共有的一些成员方法，其中最重要的就是实现表加载的抽象方法load()以及Coordinator接收到Catalogd服务广播的元数据Thrift结构体后从Thrift结构体加载元数据的loadFromThrift(TTable)方法。IcebergTable作为Table的子类，实现了自己的load()方法来加载Iceberg表，除此之外还包括一些特有的成员，如前文提到的内置的HDFS表对象hdfsTable_、Iceberg API表对象icebergApiTable_和从Iceberg元数据加载Schema的方法loadSchemaFromIceberg()等等。
+LocalIcebergTable LocalIcebergTable可以理解为IcebergTable的Local版本，它只在Coordinator的Local Catalog模式下使用，而IcebergTable会在Catalogd和Coordinator的传统Catalog模式下使用，LocalIcebergTable在Coordinator的作用和IcebergTable基本是一致的，可以说是更加轻量化的IcebergTable。Local Catalog模式是为了解决传统Catalog模式的一些缺点而设计的，它支持更细粒度的元数据缓存并能在启动时按需加载元数据，提升了Coordinator的启动速度并减少了内存消耗。LocalIcebergTable同样实现了FeIcebergTable接口，但是继承的是LocalTable类，而不是Table类。LocalTable类也是抽象类，是Table类的Local版本，其成员LocalDb这是Db类的Local版本。如同IcebergTable一样，LocalIcebergTable也内置了一张HDFS表对象，不过不再是HdfsTable类了，而是其Local版本的LocalFsTable，这些Local类都是只在Coordinator的Local Catalog模式下使用的，和非Local版本一一对应。
+IcebergPositionDeleteTable IcebergPositionDeleteTable是用于Iceberg MOR的虚拟表，在上一篇文章中其实已经登场过了，它只在制定Iceberg的Position Delete扫描计划中会被使用到，用来将Iceberg表的Delete File组织为一张虚拟表，这样才能使用Impala的ScanNode进行扫描，具体的使用过程可以参考上一篇文章Impala4.x源码阅读笔记（二）——Impala如何高效读取Iceberg表。IcebergPositionDeleteTable同样实现了FeIcebergTable接口，不过它继承的是表示虚拟表的抽象类VirtualTable，虚拟表不是实际存在的表，而是为了实现某些特定功能而虚拟出来的表，它往往会根据需要而添加一些虚拟列，可以将非表形式的数据以表的形式进行处理。
+IcebergMetadataTable Iceberg API提供了一系列专门的元数据表来查询Iceberg表的元数据，可通过其MetadataTableUtils类来创建各种类型的Iceberg元数据表，如ManifestEntriesTable、FilesTable和SnapshotsTable等。这些元数据表基于基本的Iceberg表创建，有各自的Schema，用于查询该表的各种元数据。IcebergMetadataTable就是Impala为了对接这些Iceberg元数据表而定义的类，它是另外一个继承了VirtualTable的类，不过它并没有实现FeIcebergTable接口，因为它不是通常的Iceberg表。它可以根据一个FeIcebergTable对象和元数据表类型字符串来创建，利用MetadataTableUtils来对接Iceberg元数据表获取Schema并依此填充自身作为VirtualTable的虚拟列，执行时IcebergMetadataTable由执行引擎这边的专门的IcebergMetadataScanNode负责扫描，当然由于执行引擎是C&#43;&#43;编写的，所以实际扫描时还是需要通过JNI调用Iceberg API来完成。
+IcebergCtasTarget IcebergCtasTarget是用于CTAS（Create Table As Select）语句的临时目标表类型，它继承了CtasTargetTable类并实现了FeIcebergTable接口，不过它也不是实际存在的表，只是用于CTAS的分析过程。Impala分析CTAS语句时会将其分解为CREATE语句和INSERT语句，然后根据CREATE语句先创建临时目标表，再结合临时目标表来分析INSERT语句。如果分析过程顺利完成才会真正创建目标表。对于Iceberg表来说，临时目标表只是分析使用的，不应该通过Iceberg API实际创建它，所以需要IcebergCtasTarget来充当这一角色。IcebergCtasTarget实现了FeIcebergTable，但是并不会通过Iceberg API实际创建一张Iceberg表。
+ForwardingFelcebergTable ForwardingFelcebergTable一个用于FeIcebergTable的转发类，也并非什么实际存在的表，只是一种使用组合代替继承的编程技巧，通过ForwardingFelcebergTable可以在不继承基类的前提下将不需要重写的方法委托给基类FeIcebergTable。这个类会在IcebergTimeTravelTable中使用，避免IcebergTimeTravelTable继承IcebergTable、LocalIcebergTable等类。
+IcebergTimeTravelTable IcebergTimeTravelTable表示进行时间旅行的Iceberg表，由于Iceberg表时间旅行和模式演进的特性，在不同的时间点Iceberg表可能有不同的Schema，因此对于进行时间旅行的Iceberg表我们需要根据时间或版本重新加载Schema，为了避免复制或破坏原始的Iceberg元数据，Impala通过IcebergTimeTravelTable来实现时间旅行的Iceberg表。IcebergTimeTravelTable没有继承FeIcebergTable而是继承了ForwardingFelcebergTable，通过ForwardingFelcebergTable嵌入对原始Iceberg表的引用并在此基础之上实现readSchema()加载自己的Schema，而那些未涉及时间旅行的方法都可以通过ForwardingFelcebergTable委托给原始Iceberg表类的同名方法 。
+至此Iceberg表在Impala中的相关类就介绍完了，可以发现除了IcebergTable和LocalIcebergTable可以真正称得上是Iceberg表的元数据之外，其他的类都是为了实现Iceberg表的各种功能而定义工具类，这些繁多的类看起来复杂，实际上本身代码量并不多，不如说正是因为定义了这些类才使得Iceberg元数据更好地融入Impala的元数据体系，也使得Impala在支持Iceberg的过程中可以大量复用现有的、可靠的、高性能的代码，反而减少了开发工作量。
+Iceberg表的加载 接下来我们分析一下Iceberg表在Impala中是如何加载的，所谓表的加载实际上就是Impala根据HMS的元数据对象创建自己的元数据对象的过程，对于Iceberg也是一样的，不过Iceberg还有很大一部分元数据以文件的形式存在，需要Iceberg API处理。不过在调用IcebergTable的load()方法之前我们需要先知道它是一张Iceberg表，这一判断由其静态方法isIcebergTable()完成：
+public static boolean isIcebergTable(org.apache.hadoop.hive.metastore.api.Table msTbl) { // 从HMS元数据获取InputFormat，如果是org." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/ea0701dd7b8c7a8e36192d13878e749d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-29T17:14:13+08:00" />
+<meta property="article:modified_time" content="2023-12-29T17:14:13+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Impala4.x源码阅读笔记（三）——Impala如何管理Iceberg表元数据</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="_0"></a>前言</h3> 
+<p>本文为笔者个人阅读<a href="https://github.com/apache/impala">Apache Impala</a>源码时的笔记，仅代表我个人对代码的理解，个人水平有限，文章可能存在理解错误、遗漏或者过时之处。如果有任何错误或者有更好的见解，欢迎指正。</p> 
+<p>上一篇文章<a href="https://blog.csdn.net/Eyizoha/article/details/134974480">Impala4.x源码阅读笔记（二）——Impala如何高效读取Iceberg表</a>简单介绍了Iceberg表的基本情况和Impala是如何对其进行扫描的。这一篇则从元数据的角度对Impala如果管理Iceberg元数据进行一些简单的分析，这里的Iceberg元数据不是指Iceberg的那些元数据文件，那些是Iceberg API负责管理的，这里的元数据是指Iceberg表在Impala中的那些内存对象。</p> 
+<p>为了提升查询性能，Impala本身有一套比较复杂的元数据管理机制，这套机制以Catalogd服务进程为核心，实现了元数据在集群内的集中管理。在一个完整的Impala集群中，Catalogd服务进程主要担任了两个角色，首先是一个自动化的元数据缓存，它会负责缓存并自动同步Hive Metastore中的元数据，并将其广播给集群中其他负责处理查询的Coordinator节点，这使得Coordinator可以省去每次查询时和Hive Metastore（HMS）以及HDFS Namenode（NN）的交互，从而缩短了查询耗时。Catalogd的另一个角色是一个集中式的DDL执行者，其他Coordinator节点接收到的DDL最终都会以RPC的形式交由Catalogd进行执行，这样使得集群内部的元数据统一得到了保证。</p> 
+<p>Iceberg表作为一种表格式而非文件格式，其核心目标是高效且多功能地管理大量的数据文件，为了达成这一目标，Iceberg表的元数据相较于Hive表也更加复杂，从Impala支持Iceberg表的代码大部分都是元数据相关的也能看出这一点。关于Iceberg元数据管理的代码十分庞大，想要在一篇文章内全面地分析一遍是不太现实的，所以本文首先还是整体地、笼统地描述一下Iceberg表元数据的全貌，然后着重对元数据管理的两个关键环节——Iceberg表的加载和创建进行分析。</p> 
+<h3><a id="Iceberg_9"></a>Iceberg表的相关接口</h3> 
+<p>由于Impala本身元数据管理的特性和Iceberg表元数据的特殊性，在Impala支持Iceberg表各项功能的过程中定义了很多类型，我们首先看一下Iceberg相关类的整体UML图：</p> 
+<p><img src="https://images2.imgbox.com/32/2e/ynhbCaTW_o.png" alt="Iceberg UML"></p> 
+<p>图中画出了Iceberg表在Impala中的主要相关接口和类以及其之间的实现或继承关系，其中绿色背景的就是与Iceberg表直接相关的，每个接口和类中都只列举了个别关键的成员变量和方法。在介绍具体的类之前我们先看一下其中的几个接口。</p> 
+<h4><a id="FeTable_17"></a>FeTable</h4> 
+<p>首先是Impala中所有类型的表都要实现的接口<code>FeTable</code>，它定义了Impala Frontend与各类型表交互的一些基本操作，比如获取获取库表名、数据列列表、所有者等，其中还包括了可以获取<code>org.apache.hadoop.hive.metastore.api.Table</code>对象的<code>getMetaStoreTable()</code>方法。因为Impala对HMS是强依赖的，基本上所有元数据都来自HMS，为了与HMS进行元数据交互，Impala中所有类型的表中都包括一个HMS中表对象也就是<code>org.apache.hadoop.hive.metastore.api.Table</code>。它为Impala的表提供了基本的元数据，比如库表名、字段信息和表属性properties等。Iceberg表在Impala也不例外，需要在HMS注册了才能被Impala查询。当然Iceberg表本身并不一定依赖HMS，比如使用HadoopCatalog创建的Iceberg表只依赖一个像HDFS一样的支持原子重命名文件的文件系统而已。对于这种Iceberg表需要先在Impala中通过创建外表的方式在HMS进行注册才能被Impala元数据管理所接受。</p> 
+<h4><a id="FeFsTable_21"></a>FeFsTable</h4> 
+<p><code>FeFsTable</code>是Impala中所有基于文件系统的表类型都要实现的接口，它继承了<code>FeTable</code>接口，作用也是类似的。像存储在HDFS、S3这种常见的文件系统或存储服务上的表都属于<code>FeFsTable</code>，Iceberg表自然也是<code>FeFsTable</code>。在<code>FeTable</code>的基础之上，<code>FeFsTable</code>额外定义了许多和文件系统相关的方法，比如获取文件系统类型、表位置和文件系统对象<code>FileSystem</code>等。</p> 
+<h4><a id="FeIcebergTable_25"></a>FeIcebergTable</h4> 
+<p><code>FeIcebergTable</code>是Impala中Iceberg表类型都要实现的接口，继承了<code>FeFsTable</code>并额外定义了关于Iceberg的通用方法。其中有几个关键方法需要重点介绍：</p> 
+<ul><li> <p><code>getFeFsTable()</code>，它会返回Iceberg对象内置的一个<code>FeFsTable</code>对象，这个对象会被用于将Iceberg表传递给Impala Backend。我们知道在Impala中Frontend负责制定执行计划、Backend负责执行，两者分别由Java和C++开发，之间主要通过Thrift结构体传递数据，这些数据也包括了查询的执行计划。而Iceberg表在执行期间与普通HDFS表实际上并没有显著差别，可以说都只是一系列规划好的数据文件而已。因此，为了复用Backend中现有的HDFS表扫描代码，Iceberg表对象都内置了一张普通HDFS表对象，在序列化为Thrift结构体传递给Backend时就使用这个内置的<code>FeFsTable</code>对象的相关方法将自身“转变”为HDFS表。</p> </li><li> <p><code>getIcebergApiTable()</code>，它会返回Iceberg表对象对应的Iceberg API中的表对象<code>org.apache.iceberg.Table</code>，这是Iceberg API中的表示Iceberg表的接口，它提供了Iceberg表的许多重要API，比如获取快照、Schema和扫描计划。依靠这些接口，Impala可以进行Iceberg表的时间旅行查询、模式演进、谓词下推和获取数据文件列表等操作。</p> </li><li> <p><code>getIcebergCatalog()</code>，它会返回Iceberg表的Catalog类型，目前Impala支持的Iceberg Catalog类型有HadoopTables、HadoopCatalog、HiveCatalog和Catalogs。Iceberg的Catalog是用于追踪Iceberg表的，它主要负责储存Iceberg表最近元数据文件的位置，可以说是Iceberg表元数据的元数据。换句话说如果说Iceberg表是管理一系列数据文件并告诉我们数据文件在哪里，那么Iceberg Catalog的作用就是管理一系列Iceberg表并告诉我们Iceberg表在哪里。如果Iceberg表的最近元数据位置也直接储存在文件系统的一个文件中，则对应HadoopTables。如果文件系统中有一个专门的Catalog目录，Iceberg表的元数据位置由其负责管理，则对应HadoopCatalog。如果使用HMS储存Iceberg表的最近元数据位置，则对应HiveCatalog。而Catalogs接口相当于一种复合的自动Catalog，它依赖配置文件和表属性自动识别Iceberg表的Catalog类型。</p> </li></ul> 
+<p>接口<code>FeIcebergTable</code>可以说是Iceberg表在Impala中的关键抽象，从图中也可以看到许多Iceberg表的相关类实现了该接口。</p> 
+<h3><a id="Iceberg_37"></a>Iceberg表的相关类</h3> 
+<p>介绍完了相关接口之后，我们接下来继续看看Iceberg相关的类。从图中可以看到与Iceberg直接相关的表类型就有足足七种，当然其中除了<code>IcebergTable</code>和<code>LocalIcebergTable</code>这两个真正表示实际存在的Iceberg表的“正经”表类型外，其他的都可以算是为了支持各种Iceberg特性而抽象出来的功能性的工具类。接下来我们逐个介绍。</p> 
+<h4><a id="IcebergTable_41"></a>IcebergTable</h4> 
+<p><code>IcebergTable</code>是Iceberg表在Impala元数据管理中的代理类之一，每个对象都是对应了一张实际存在的Iceberg表。<code>IcebergTable</code>实现了<code>FeIcebergTable</code>接口并继承了<code>Table</code>类。<code>Table</code>类是Impala中所有表类的主要父类之一（另一个是<code>LocalTable</code>），它是一个抽象类，实现了<code>FeTable</code>接口，它定义了所有表共有的一些成员变量，如库对象、表名、所有者、表锁和数据列容器等等，它还定义了表对象共有的一些成员方法，其中最重要的就是实现表加载的抽象方法<code>load()</code>以及Coordinator接收到Catalogd服务广播的元数据Thrift结构体后从Thrift结构体加载元数据的<code>loadFromThrift(TTable)</code>方法。<code>IcebergTable</code>作为<code>Table</code>的子类，实现了自己的<code>load()</code>方法来加载Iceberg表，除此之外还包括一些特有的成员，如前文提到的内置的HDFS表对象<code>hdfsTable_</code>、Iceberg API表对象<code>icebergApiTable_</code>和从Iceberg元数据加载Schema的方法<code>loadSchemaFromIceberg()</code>等等。</p> 
+<h4><a id="LocalIcebergTable_45"></a>LocalIcebergTable</h4> 
+<p><code>LocalIcebergTable</code>可以理解为<code>IcebergTable</code>的Local版本，它只在Coordinator的Local Catalog模式下使用，而<code>IcebergTable</code>会在Catalogd和Coordinator的传统Catalog模式下使用，<code>LocalIcebergTable</code>在Coordinator的作用和<code>IcebergTable</code>基本是一致的，可以说是更加轻量化的<code>IcebergTable</code>。Local Catalog模式是为了解决传统Catalog模式的一些缺点而设计的，它支持更细粒度的元数据缓存并能在启动时按需加载元数据，提升了Coordinator的启动速度并减少了内存消耗。<code>LocalIcebergTable</code>同样实现了<code>FeIcebergTable</code>接口，但是继承的是<code>LocalTable</code>类，而不是<code>Table</code>类。<code>LocalTable</code>类也是抽象类，是<code>Table</code>类的Local版本，其成员<code>LocalDb</code>这是<code>Db</code>类的Local版本。如同<code>IcebergTable</code>一样，<code>LocalIcebergTable</code>也内置了一张HDFS表对象，不过不再是<code>HdfsTable</code>类了，而是其Local版本的<code>LocalFsTable</code>，这些Local类都是只在Coordinator的Local Catalog模式下使用的，和非Local版本一一对应。</p> 
+<h4><a id="IcebergPositionDeleteTable_49"></a>IcebergPositionDeleteTable</h4> 
+<p><code>IcebergPositionDeleteTable</code>是用于Iceberg MOR的虚拟表，在上一篇文章中其实已经登场过了，它只在制定Iceberg的Position Delete扫描计划中会被使用到，用来将Iceberg表的Delete File组织为一张虚拟表，这样才能使用Impala的ScanNode进行扫描，具体的使用过程可以参考上一篇文章<a href="https://blog.csdn.net/Eyizoha/article/details/134974480">Impala4.x源码阅读笔记（二）——Impala如何高效读取Iceberg表</a>。<code>IcebergPositionDeleteTable</code>同样实现了<code>FeIcebergTable</code>接口，不过它继承的是表示虚拟表的抽象类<code>VirtualTable</code>，虚拟表不是实际存在的表，而是为了实现某些特定功能而虚拟出来的表，它往往会根据需要而添加一些虚拟列，可以将非表形式的数据以表的形式进行处理。</p> 
+<h4><a id="IcebergMetadataTable_53"></a>IcebergMetadataTable</h4> 
+<p>Iceberg API提供了一系列专门的元数据表来查询Iceberg表的元数据，可通过其<code>MetadataTableUtils</code>类来创建各种类型的Iceberg元数据表，如<code>ManifestEntriesTable</code>、<code>FilesTable</code>和<code>SnapshotsTable</code>等。这些元数据表基于基本的Iceberg表创建，有各自的Schema，用于查询该表的各种元数据。<code>IcebergMetadataTable</code>就是Impala为了对接这些Iceberg元数据表而定义的类，它是另外一个继承了<code>VirtualTable</code>的类，不过它并没有实现<code>FeIcebergTable</code>接口，因为它不是通常的Iceberg表。它可以根据一个<code>FeIcebergTable</code>对象和元数据表类型字符串来创建，利用<code>MetadataTableUtils</code>来对接Iceberg元数据表获取Schema并依此填充自身作为<code>VirtualTable</code>的虚拟列，执行时<code>IcebergMetadataTable</code>由执行引擎这边的专门的<code>IcebergMetadataScanNode</code>负责扫描，当然由于执行引擎是C++编写的，所以实际扫描时还是需要通过JNI调用Iceberg API来完成。</p> 
+<h4><a id="IcebergCtasTarget_57"></a>IcebergCtasTarget</h4> 
+<p><code>IcebergCtasTarget</code>是用于CTAS（Create Table As Select）语句的临时目标表类型，它继承了<code>CtasTargetTable</code>类并实现了<code>FeIcebergTable</code>接口，不过它也不是实际存在的表，只是用于CTAS的分析过程。Impala分析CTAS语句时会将其分解为CREATE语句和INSERT语句，然后根据CREATE语句先创建临时目标表，再结合临时目标表来分析INSERT语句。如果分析过程顺利完成才会真正创建目标表。对于Iceberg表来说，临时目标表只是分析使用的，不应该通过Iceberg API实际创建它，所以需要<code>IcebergCtasTarget</code>来充当这一角色。<code>IcebergCtasTarget</code>实现了<code>FeIcebergTable</code>，但是并不会通过Iceberg API实际创建一张Iceberg表。</p> 
+<h4><a id="ForwardingFelcebergTable_61"></a>ForwardingFelcebergTable</h4> 
+<p><code>ForwardingFelcebergTable</code>一个用于<code>FeIcebergTable</code>的转发类，也并非什么实际存在的表，只是一种使用组合代替继承的编程技巧，通过<code>ForwardingFelcebergTable</code>可以在不继承基类的前提下将不需要重写的方法委托给基类<code>FeIcebergTable</code>。这个类会在<code>IcebergTimeTravelTable</code>中使用，避免<code>IcebergTimeTravelTable</code>继承<code>IcebergTable</code>、<code>LocalIcebergTable</code>等类。</p> 
+<h4><a id="IcebergTimeTravelTable_65"></a>IcebergTimeTravelTable</h4> 
+<p><code>IcebergTimeTravelTable</code>表示进行时间旅行的Iceberg表，由于Iceberg表时间旅行和模式演进的特性，在不同的时间点Iceberg表可能有不同的Schema，因此对于进行时间旅行的Iceberg表我们需要根据时间或版本重新加载Schema，为了避免复制或破坏原始的Iceberg元数据，Impala通过<code>IcebergTimeTravelTable</code>来实现时间旅行的Iceberg表。<code>IcebergTimeTravelTable</code>没有继承<code>FeIcebergTable</code>而是继承了<code>ForwardingFelcebergTable</code>，通过<code>ForwardingFelcebergTable</code>嵌入对原始Iceberg表的引用并在此基础之上实现<code>readSchema()</code>加载自己的Schema，而那些未涉及时间旅行的方法都可以通过<code>ForwardingFelcebergTable</code>委托给原始Iceberg表类的同名方法 。</p> 
+<p>至此Iceberg表在Impala中的相关类就介绍完了，可以发现除了<code>IcebergTable</code>和<code>LocalIcebergTable</code>可以真正称得上是Iceberg表的元数据之外，其他的类都是为了实现Iceberg表的各种功能而定义工具类，这些繁多的类看起来复杂，实际上本身代码量并不多，不如说正是因为定义了这些类才使得Iceberg元数据更好地融入Impala的元数据体系，也使得Impala在支持Iceberg的过程中可以大量复用现有的、可靠的、高性能的代码，反而减少了开发工作量。</p> 
+<h3><a id="Iceberg_71"></a>Iceberg表的加载</h3> 
+<p>接下来我们分析一下Iceberg表在Impala中是如何加载的，所谓表的加载实际上就是Impala根据HMS的元数据对象创建自己的元数据对象的过程，对于Iceberg也是一样的，不过Iceberg还有很大一部分元数据以文件的形式存在，需要Iceberg API处理。不过在调用<code>IcebergTable</code>的<code>load()</code>方法之前我们需要先知道它是一张Iceberg表，这一判断由其静态方法<code>isIcebergTable()</code>完成：</p> 
+<pre><code class="prism language-java">  <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">boolean</span> <span class="token function">isIcebergTable</span><span class="token punctuation">(</span><span class="token class-name"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>hadoop<span class="token punctuation">.</span>hive<span class="token punctuation">.</span>metastore<span class="token punctuation">.</span>api<span class="token punctuation">.</span></span>Table</span> msTbl<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 从HMS元数据获取InputFormat，如果是org.apache.iceberg.mr.hive.HiveIcebergInputFormat</span>
+    <span class="token comment">// 则HdfsFileFormat会是HdfsFileFormat.ICEBERG</span>
+    <span class="token class-name">String</span> inputFormat <span class="token operator">=</span> msTbl<span class="token punctuation">.</span><span class="token function">getSd</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getInputFormat</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token class-name">HdfsFileFormat</span> hdfsFileFormat <span class="token operator">=</span> inputFormat <span class="token operator">!=</span> <span class="token keyword">null</span> <span class="token operator">?</span>
+        <span class="token class-name">HdfsFileFormat</span><span class="token punctuation">.</span><span class="token function">fromHdfsInputFormatClass</span><span class="token punctuation">(</span>inputFormat<span class="token punctuation">,</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token operator">:</span>
+        <span class="token keyword">null</span><span class="token punctuation">;</span>
+    <span class="token comment">// 如果表属性中的storage_handler值为org.apache.iceberg.mr.hive.HiveIcebergStorageHandler</span>
+    <span class="token comment">// 或者HdfsFileFormat为HdfsFileFormat.ICEBERG</span>
+    <span class="token comment">// 或者table_type值为ICEBERG，则会认为这是一张Iceberg表</span>
+    <span class="token keyword">return</span> <span class="token function">isIcebergStorageHandler</span><span class="token punctuation">(</span>msTbl<span class="token punctuation">.</span><span class="token function">getParameters</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token constant">KEY_STORAGE_HANDLER</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">||</span>
+        hdfsFileFormat <span class="token operator">==</span> <span class="token class-name">HdfsFileFormat</span><span class="token punctuation">.</span><span class="token constant">ICEBERG</span> <span class="token operator">||</span>
+        <span class="token punctuation">(</span>hdfsFileFormat <span class="token operator">==</span> <span class="token keyword">null</span> <span class="token operator">&amp;&amp;</span>
+         <span class="token string">"ICEBERG"</span><span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>msTbl<span class="token punctuation">.</span><span class="token function">getParameters</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token string">"table_type"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+</code></pre> 
+<p>根据表属性判断是一张Iceberg表之后，就可以使用<code>IcebergTable</code>的<code>load()</code>方法加载元数据了：</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Override</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">load</span><span class="token punctuation">(</span><span class="token keyword">boolean</span> reuseMetadata<span class="token punctuation">,</span> <span class="token class-name">IMetaStoreClient</span> msClient<span class="token punctuation">,</span>
+    <span class="token class-name"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>hadoop<span class="token punctuation">.</span>hive<span class="token punctuation">.</span>metastore<span class="token punctuation">.</span>api<span class="token punctuation">.</span></span>Table</span> msTbl<span class="token punctuation">,</span> <span class="token class-name">String</span> reason<span class="token punctuation">)</span>
+    <span class="token keyword">throws</span> <span class="token class-name">TableLoadingException</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> <span class="token comment">// 省略一些非关键代码</span>
+  <span class="token comment">// IcebergUtil.loadTable()方法会通过Iceberg API加载Iceberg表元数据，返回一个Iceberg的Table对象</span>
+  icebergApiTable_ <span class="token operator">=</span> <span class="token class-name">IcebergUtil</span><span class="token punctuation">.</span><span class="token function">loadTable</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  catalogSnapshotId_ <span class="token operator">=</span> <span class="token class-name">FeIcebergTable</span><span class="token punctuation">.</span><span class="token keyword">super</span><span class="token punctuation">.</span><span class="token function">snapshotId</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token comment">// loadSchemaFromIceberg()方法会将Iceberg Schema转换为Hive Schema并设置到HMS的Table对象msTable_中</span>
+  <span class="token comment">// 同时还会将Iceberg Schema转换为Impala的Column并添加到自身的列容器colsByPos_和colsByName_中</span>
+  <span class="token comment">// 这些转换的过程实际上就是遍历Iceberg Schema的每个字段，创建对应类型的Hive或Impala类型</span>
+  <span class="token comment">// 此外还有添加虚拟列、加载分区Spec等操作</span>
+  <span class="token function">loadSchemaFromIceberg</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token comment">// 然后是一些表属性的设置</span>
+  icebergFileFormat_ <span class="token operator">=</span> <span class="token class-name">IcebergUtil</span><span class="token punctuation">.</span><span class="token function">getIcebergFileFormat</span><span class="token punctuation">(</span>msTbl<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  icebergParquetCompressionCodec_ <span class="token operator">=</span> <span class="token class-name">Utils</span><span class="token punctuation">.</span><span class="token function">getIcebergParquetCompressionCodec</span><span class="token punctuation">(</span>msTbl<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  icebergParquetRowGroupSize_ <span class="token operator">=</span> <span class="token class-name">Utils</span><span class="token punctuation">.</span><span class="token function">getIcebergParquetRowGroupSize</span><span class="token punctuation">(</span>msTbl<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  icebergParquetPlainPageSize_ <span class="token operator">=</span> <span class="token class-name">Utils</span><span class="token punctuation">.</span><span class="token function">getIcebergParquetPlainPageSize</span><span class="token punctuation">(</span>msTbl<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  icebergParquetDictPageSize_ <span class="token operator">=</span> <span class="token class-name">Utils</span><span class="token punctuation">.</span><span class="token function">getIcebergParquetDictPageSize</span><span class="token punctuation">(</span>msTbl<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token comment">// 通过IcebergUtil.getIcebergFiles()方法可以获取Iceberg表的数据文件集合</span>
+  <span class="token comment">// 这个方法还支持传入谓词列表和时间旅行描述来进行谓词下推和时间旅行，得到对应的文件集合</span>
+  <span class="token comment">// 这里要获取最新快照的全部数据文件来缓存，所以传入空列表和空指针</span>
+  <span class="token class-name">GroupedContentFiles</span> icebergFiles <span class="token operator">=</span> <span class="token class-name">IcebergUtil</span><span class="token punctuation">.</span><span class="token function">getIcebergFiles</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">,</span>
+      <span class="token keyword">new</span> <span class="token class-name">ArrayList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token comment">/*timeTravelSpec=*/</span><span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token comment">// 最后我们还需要加载Iceberg内置的Hdfs表</span>
+  hdfsTable_<span class="token punctuation">.</span><span class="token function">setIcebergFiles</span><span class="token punctuation">(</span>icebergFiles<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  hdfsTable_<span class="token punctuation">.</span><span class="token function">setCanDataBeOutsideOfTableLocation</span><span class="token punctuation">(</span>
+      <span class="token operator">!</span><span class="token class-name">Utils</span><span class="token punctuation">.</span><span class="token function">requiresDataFilesInTableLocation</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  hdfsTable_<span class="token punctuation">.</span><span class="token function">load</span><span class="token punctuation">(</span>reuseMetadata<span class="token punctuation">,</span> msClient<span class="token punctuation">,</span> msTable_<span class="token punctuation">,</span> reason<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> <span class="token comment">// 省略一些非关键代码</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>可以看到加载过程中调用了许多其他方法，不过其中最关键的还是用来加载Iceberg API中的Table对象的<code>IcebergUtil.loadTable()</code>方法：</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token class-name">Table</span> <span class="token function">loadTable</span><span class="token punctuation">(</span><span class="token class-name">FeIcebergTable</span> feTable<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">IcebergTableLoadingException</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">// 调用下面的重载方法</span>
+  <span class="token keyword">return</span> <span class="token function">loadTable</span><span class="token punctuation">(</span>feTable<span class="token punctuation">.</span><span class="token function">getIcebergCatalog</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">getIcebergTableIdentifier</span><span class="token punctuation">(</span>feTable<span class="token punctuation">)</span><span class="token punctuation">,</span>
+      feTable<span class="token punctuation">.</span><span class="token function">getIcebergCatalogLocation</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> feTable<span class="token punctuation">.</span><span class="token function">getMetaStoreTable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getParameters</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token class-name">Table</span> <span class="token function">loadTable</span><span class="token punctuation">(</span><span class="token class-name">TIcebergCatalog</span> catalog<span class="token punctuation">,</span> <span class="token class-name">TableIdentifier</span> tableId<span class="token punctuation">,</span>
+    <span class="token class-name">String</span> location<span class="token punctuation">,</span> <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> tableProps<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">IcebergTableLoadingException</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+  <span class="token comment">// 根据Catalog类型获取对应的IcebergCatalog实例，然后使用该Catalog实例的loadTable方法加载Iceberg表</span>
+  <span class="token class-name">IcebergCatalog</span> cat <span class="token operator">=</span> <span class="token function">getIcebergCatalog</span><span class="token punctuation">(</span>catalog<span class="token punctuation">,</span> location<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">return</span> cat<span class="token punctuation">.</span><span class="token function">loadTable</span><span class="token punctuation">(</span>tableId<span class="token punctuation">,</span> location<span class="token punctuation">,</span> tableProps<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token class-name">IcebergCatalog</span> <span class="token function">getIcebergCatalog</span><span class="token punctuation">(</span><span class="token class-name">TIcebergCatalog</span> catalog<span class="token punctuation">,</span> <span class="token class-name">String</span> location<span class="token punctuation">)</span>
+    <span class="token keyword">throws</span> <span class="token class-name">ImpalaRuntimeException</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">switch</span> <span class="token punctuation">(</span>catalog<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 正如前文所述，Impala目前支持四种Iceberg Catalog，它们在Impala中都对应了各自的单例对象</span>
+    <span class="token comment">// 这些对象都实现了Impala的IcebergCatalog接口，提供诸如createTable()/loadTable()/dropTable()等方法</span>
+    <span class="token comment">// 这些IcebergCatalog类封装了对应的Iceberg API，比如IcebergHiveCatalog封装了Iceberg包的HiveCatalog</span>
+    <span class="token comment">// 它们的loadTable()实际上也就是调用了对应的Iceberg API中Catalog的loadTable()方法</span>
+    <span class="token keyword">case</span> <span class="token constant">HADOOP_TABLES</span><span class="token operator">:</span> <span class="token keyword">return</span> <span class="token class-name">IcebergHadoopTables</span><span class="token punctuation">.</span><span class="token function">getInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> <span class="token constant">HIVE_CATALOG</span><span class="token operator">:</span> <span class="token keyword">return</span> <span class="token class-name">IcebergHiveCatalog</span><span class="token punctuation">.</span><span class="token function">getInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> <span class="token constant">HADOOP_CATALOG</span><span class="token operator">:</span> <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">IcebergHadoopCatalog</span><span class="token punctuation">(</span>location<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> <span class="token constant">CATALOGS</span><span class="token operator">:</span> <span class="token keyword">return</span> <span class="token class-name">IcebergCatalogs</span><span class="token punctuation">.</span><span class="token function">getInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">default</span><span class="token operator">:</span> <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">ImpalaRuntimeException</span><span class="token punctuation">(</span><span class="token string">"Unexpected catalog type: "</span> <span class="token operator">+</span> catalog<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>Iceberg表的加载过程虽然步骤很多但还是比较清晰的，每部分逻辑都封装为了特定的方法来完成，从方法名也能大致了解其作用。</p> 
+<h3><a id="Iceberg_164"></a>Iceberg表的创建</h3> 
+<p>除了表的加载之外，表的创建也是元数据另外一个源头，在Impala中DDL由Coordinator解析&amp;分析为特定类型的参数集合，然后通过RPC远程调用Catalogd进程的方法来执行。建表的过程也不例外，在Catalogd进程的Catalog操作执行类<code>CatalogOpExecutor</code>中由方法<code>createTable()</code>完成：</p> 
+<pre><code class="prism language-java"><span class="token keyword">private</span> <span class="token keyword">boolean</span> <span class="token function">createTable</span><span class="token punctuation">(</span><span class="token class-name">TCreateTableParams</span> params<span class="token punctuation">,</span> <span class="token class-name">TDdlExecResponse</span> response<span class="token punctuation">,</span>
+    <span class="token class-name">EventSequence</span> catalogTimeline<span class="token punctuation">,</span> <span class="token keyword">boolean</span> syncDdl<span class="token punctuation">,</span> <span class="token keyword">boolean</span> wantMinimalResult<span class="token punctuation">)</span>
+    <span class="token keyword">throws</span> <span class="token class-name">ImpalaException</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> <span class="token comment">// 省略一些非关键代码</span>
+  <span class="token comment">// 根据建表参数params先创建一个基本的HMS Table对象，后续建表过程主要就依赖这个对象了</span>
+  <span class="token class-name"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>hadoop<span class="token punctuation">.</span>hive<span class="token punctuation">.</span>metastore<span class="token punctuation">.</span>api<span class="token punctuation">.</span></span>Table</span> tbl <span class="token operator">=</span> <span class="token function">createMetaStoreTable</span><span class="token punctuation">(</span>params<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">trace</span><span class="token punctuation">(</span><span class="token string">"Creating table {}"</span><span class="token punctuation">,</span> tableName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">KuduTable</span><span class="token punctuation">.</span><span class="token function">isKuduTable</span><span class="token punctuation">(</span>tbl<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 创建Kudu表的分支</span>
+    <span class="token keyword">return</span> <span class="token function">createKuduTable</span><span class="token punctuation">(</span>tbl<span class="token punctuation">,</span> params<span class="token punctuation">,</span> wantMinimalResult<span class="token punctuation">,</span> response<span class="token punctuation">,</span> catalogTimeline<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">IcebergTable</span><span class="token punctuation">.</span><span class="token function">isIcebergTable</span><span class="token punctuation">(</span>tbl<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 创建Iceberg表的分支，调用更具体的createIcebergTable()方法来进行</span>
+    <span class="token keyword">return</span> <span class="token function">createIcebergTable</span><span class="token punctuation">(</span>tbl<span class="token punctuation">,</span> wantMinimalResult<span class="token punctuation">,</span> response<span class="token punctuation">,</span> catalogTimeline<span class="token punctuation">,</span>
+        params<span class="token punctuation">.</span>if_not_exists<span class="token punctuation">,</span> params<span class="token punctuation">.</span><span class="token function">getColumns</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> params<span class="token punctuation">.</span><span class="token function">getPartition_spec</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+        params<span class="token punctuation">.</span><span class="token function">getTable_properties</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> params<span class="token punctuation">.</span><span class="token function">getComment</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> <span class="token comment">// 省略一些非关键代码</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>我们接着看<code>createIcebergTable()</code>方法：</p> 
+<pre><code class="prism language-java"><span class="token keyword">private</span> <span class="token keyword">boolean</span> <span class="token function">createIcebergTable</span><span class="token punctuation">(</span><span class="token class-name"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>hadoop<span class="token punctuation">.</span>hive<span class="token punctuation">.</span>metastore<span class="token punctuation">.</span>api<span class="token punctuation">.</span></span>Table</span> newTable<span class="token punctuation">,</span>
+    <span class="token keyword">boolean</span> wantMinimalResult<span class="token punctuation">,</span> <span class="token class-name">TDdlExecResponse</span> response<span class="token punctuation">,</span> <span class="token class-name">EventSequence</span> catalogTimeline<span class="token punctuation">,</span>
+    <span class="token keyword">boolean</span> ifNotExists<span class="token punctuation">,</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">TColumn</span><span class="token punctuation">&gt;</span></span> columns<span class="token punctuation">,</span> <span class="token class-name">TIcebergPartitionSpec</span> partitionSpec<span class="token punctuation">,</span>
+    <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> tableProperties<span class="token punctuation">,</span> <span class="token class-name">String</span> tblComment<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">ImpalaException</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> <span class="token comment">// 省略部分代码</span>
+  <span class="token comment">// 首先获取Iceberg表的Catalog类型，这直接决定了Iceberg表的创建方法</span>
+  <span class="token class-name">TIcebergCatalog</span> catalog <span class="token operator">=</span> <span class="token class-name">IcebergUtil</span><span class="token punctuation">.</span><span class="token function">getTIcebergCatalog</span><span class="token punctuation">(</span>newTable<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token class-name">String</span> location <span class="token operator">=</span> newTable<span class="token punctuation">.</span><span class="token function">getSd</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getLocation</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token comment">// 如果用户在通过Impala创建一张全新的Iceberg表，也就是同步表，则需要先通过Iceberg API创建一张Iceberg表</span>
+  <span class="token comment">// 所谓同步表也就是非外表或设置了Purge的外表，这两种情况下我们都期望目标Iceberg表还不存在</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">IcebergTable</span><span class="token punctuation">.</span><span class="token function">isSynchronizedTable</span><span class="token punctuation">(</span>newTable<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 在使用Iceberg API创建Iceberg表前先需要明确表的创建位置</span>
+    <span class="token comment">// 如果SQL中没有指定表位置，我们需要根据Catalog类型指定一个表位置</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>location <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span>catalog <span class="token operator">==</span> <span class="token class-name">TIcebergCatalog</span><span class="token punctuation">.</span><span class="token constant">HADOOP_CATALOG</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 使用Hadoop Catalog时，建表时应当通过表属性iceberg.catalog_location明确指定Hadoop Catalog的位置</span>
+        location <span class="token operator">=</span> <span class="token class-name">IcebergUtil</span><span class="token punctuation">.</span><span class="token function">getIcebergCatalogLocation</span><span class="token punctuation">(</span>newTable<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 使用其他Catalog时，使用HMS的API为新表生成一个位置</span>
+        location <span class="token operator">=</span> <span class="token class-name">MetastoreShim</span><span class="token punctuation">.</span><span class="token function">getPathForNewTable</span><span class="token punctuation">(</span>
+            msClient<span class="token punctuation">.</span><span class="token function">getHiveClient</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getDatabase</span><span class="token punctuation">(</span>newTable<span class="token punctuation">.</span><span class="token function">getDbName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+            newTable<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// 通过IcebergCatalogOpExecutor调用Iceberg API创建一张Iceberg表</span>
+    <span class="token comment">// IcebergCatalogOpExecutor.createTable()方法会创建Iceberg API的Schema、PartitionSpec对象</span>
+    <span class="token comment">// 然后根据Catalog类型获取对应的IcebergCatalog实例，然后使用其createTable方法创建Iceberg表</span>
+    <span class="token comment">// 这一过程与加载Iceberg表时的操作还有些类似</span>
+    <span class="token class-name">String</span> tableLoc <span class="token operator">=</span> <span class="token class-name">IcebergCatalogOpExecutor</span><span class="token punctuation">.</span><span class="token function">createTable</span><span class="token punctuation">(</span>catalog<span class="token punctuation">,</span>
+        <span class="token class-name">IcebergUtil</span><span class="token punctuation">.</span><span class="token function">getIcebergTableIdentifier</span><span class="token punctuation">(</span>newTable<span class="token punctuation">)</span><span class="token punctuation">,</span> location<span class="token punctuation">,</span> columns<span class="token punctuation">,</span>
+        partitionSpec<span class="token punctuation">,</span> newTable<span class="token punctuation">.</span><span class="token function">getOwner</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> tableProperties<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">location</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    newTable<span class="token punctuation">.</span><span class="token function">getSd</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">setLocation</span><span class="token punctuation">(</span>tableLoc<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    catalogTimeline<span class="token punctuation">.</span><span class="token function">markEvent</span><span class="token punctuation">(</span><span class="token constant">CREATED_ICEBERG_TABLE</span> <span class="token operator">+</span> catalog<span class="token punctuation">.</span><span class="token function">name</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 如果不是在创建同步表，那我们期望Iceberg Catalog中已经存在我们需要的Iceberg表了</span>
+    <span class="token comment">// 此时Impala创建Iceberg表的行为更类似于加载现有的Iceberg表并将其注册到HMS中</span>
+    <span class="token comment">// 首先同样是先需要得到目标表的Catalog类型</span>
+    <span class="token class-name">TIcebergCatalog</span> underlyingCatalog <span class="token operator">=</span> <span class="token class-name">IcebergUtil</span><span class="token punctuation">.</span><span class="token function">getUnderlyingCatalog</span><span class="token punctuation">(</span>newTable<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token class-name">String</span> locationToLoadFrom<span class="token punctuation">;</span>
+    <span class="token comment">// 然后根据Catalog类型确定我们从何处加载Iceberg表</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>underlyingCatalog <span class="token operator">==</span> <span class="token class-name">TIcebergCatalog</span><span class="token punctuation">.</span><span class="token constant">HADOOP_TABLES</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">// 对于Hadoop Tables，直接从建表SQL指定的locatin加载表</span>
+      <span class="token keyword">if</span> <span class="token punctuation">(</span>location <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">addSummary</span><span class="token punctuation">(</span>response<span class="token punctuation">,</span>
+            <span class="token string">"Location is necessary for external iceberg table."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+      <span class="token punctuation">}</span>
+      locationToLoadFrom <span class="token operator">=</span> location<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">// 对于Hadoop Catalog，依然从表属性iceberg.catalog_location获取Hadoop Catalog的位置</span>
+      locationToLoadFrom <span class="token operator">=</span> <span class="token class-name">IcebergUtil</span><span class="token punctuation">.</span><span class="token function">getIcebergCatalogLocation</span><span class="token punctuation">(</span>newTable<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// 然后通过上文介绍过的IcebergUtil.loadTable()将Iceberg表加载起来</span>
+    <span class="token class-name">TableIdentifier</span> identifier <span class="token operator">=</span> <span class="token class-name">IcebergUtil</span><span class="token punctuation">.</span><span class="token function">getIcebergTableIdentifier</span><span class="token punctuation">(</span>newTable<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token class-name"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>iceberg<span class="token punctuation">.</span></span>Table</span> iceTable <span class="token operator">=</span> <span class="token class-name">IcebergUtil</span><span class="token punctuation">.</span><span class="token function">loadTable</span><span class="token punctuation">(</span>
+        catalog<span class="token punctuation">,</span> identifier<span class="token punctuation">,</span> locationToLoadFrom<span class="token punctuation">,</span> newTable<span class="token punctuation">.</span><span class="token function">getParameters</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> <span class="token comment">// 省略部分代码</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>可以发现Iceberg表的创建过程和加载过程还是有些类似的，主要都是根据Catalog类型来调用对应的Iceberg Catalog API来实现Iceberg表本身的元数据操作，然后Impala自身负责完成Schema转换、分区转换和配置填充等工作。</p> 
+<h3><a id="_255"></a>总结</h3> 
+<p>这篇文章主要是从Iceberg表的相关接口和类以及表的加载和创建两个方面分析了Iceberg表元数据在Impala中是如何管理的，总的来说为了在Impala中方便且高效地实现Iceberg表的各种功能，代码中定义了许多相关的类，虽然看起来比较复杂，但是每个类的功能用途都很明确。而在表的加载和创建方面，Impala也支持了多种Iceberg Catalog，并能和现有的基于HMS的元数据缓存框架结合起来，这使得用户不用操心诸如元数据同步等问题，使用起来还是比较丝滑的。限于文章篇幅，实际上代码中还有许多内容无法详细展开分析，而且Impala社区目前也在重点开发Iceberg相关的特性，代码变化也比较快，有兴趣的同学也可以直接关注Impala的<a href="https://github.com/apache/impala">Github仓库</a>和<a href="https://issues.apache.org/jira/projects/IMPALA/issues" rel="nofollow">Jira</a>关注社区最新进展。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ad823ffddd36453669737a63906c4138/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Redis常见问题汇总</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8b4c0b0afd43271eba623595c2650173/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">无需翻墙｜Stable Diffusion WebUI 安装｜AI绘画</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

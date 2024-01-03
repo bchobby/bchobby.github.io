@@ -1,0 +1,912 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>从零开始手写一个http-basic认证服务器 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="从零开始手写一个http-basic认证服务器" />
+<meta property="og:description" content="简单了解HTTP
+HTTP是英文HyperText Transfer Protocol首字母缩写，是目前WWW万维网通讯标准协议，在属于OSI第七层（应用层）协议，要实现HTTP协议通常需要基于TCP-Socket套接字作为传输层的支撑。
+什么是http-basic
+http-basic是http协议的认证模块，http-basic也是http协议下的协议。下面先来看一下http-basic协议流程图：
+流程图说明：
+第一步：当客户端通过浏览器访问实现了http-basic的后端服务器时，后端服务器首先会校验是否携带Authorization请求头，如果没有则返回Code=401:
+http.setCode(401); http.setStatus(&#34;Unauthorized&#34;); // 其中Basic表示认证类型为Basic，Realm用来描述后端应用名称，例如OA，CRM，可自定义 // 除了Basic认证类型外，后面还会将另一种类型：Digest http.setHeader(&#34;WWW-Authenticate&#34;, &#34;Basic Reaml=\&#34;HTTP Demo Server\&#34;&#34;); 下面是谷歌浏览器默认抓包截图：
+此时用户就会收到浏览器弹出的登陆输入框：
+第二步：当用户输入用户名和密码，点击登陆按钮时，浏览器会将表单的用户名和密码按规则：BASE64(用户名:密码)编码后放到请求头为HTTP-Request-Header=Authorization: Basic cm9vdDoxMjM0NTY= 方式提交给服务器进行认证，具体截图如下：
+第三步：后端服务器接收到请求后，仍然会校验是否携带Authorization请求头，如果携带，则通过BASE64解码出来得到用户名:密码字符串，然后通过&#34;:&#34;进行分隔得到用户名和密码进行验证，如果验证失败，继续第一步的内容，如果验证成功，后端服务可能会进一步验证URL资源权限等，如果验证资源权限不通过，此时参考第一步的方式返回（注意此时返回Code=403）：
+http.setCode(401); http.setStatus(&#34;Forbidden&#34;); http.setHeader(&#34;WWW-Authenticate&#34;, &#34;Basic Reaml=\&#34;HTTP Demo Server\&#34;&#34;); 如果验证通过，则返回Code=200即可：
+http.setCode(200); http.setStatus(&#34;OK&#34;); http-basic缺陷
+http-basic（当响应头WWW-Authenticate：Basic Reaml=xxx）存在以下缺陷：
+1、用户名和密码明文（仅仅只是Base64编码而已）传输，需要配合HTTPS来保证信息传输的安全。
+2、就算HTTPS将密码加密传输，也仍然存在重放攻击风险。
+3、代理和中间节点的防护措施弱，很容易通过伪装服务器来骗过认证，诱导用户输入用户名和密码。
+下面将介绍http-basic升级版更为安全的摘要认证http-digest。
+了解http-digest流程
+http-digest流程比http-basic流程复杂很多，流程图如下：
+下面对http-digest涉及的字段作用进行说明：
+WWW-Authentication：用来定义使用何种方式（Basic、Digest、Bearer等）去进行认证以获取受保护的资源。
+realm：表示Web服务器中受保护文档的安全域（比如OA、CRM系统域等），用来指示需要哪个域的认证。
+qop：保护质量，包含auth（默认的）和auth-int（增加了报文完整性检测）两种策略，可以为空，但不推荐为空值。
+nonce：服务端向客户端发送质询时附带的一个随机数，这个数会经常发生变化。客户端计算密码摘要时将其附加上去，使得多次生成同一用户的密码摘要各不相同，用来防止重放攻击。
+nc：nonce计数器，是一个16进制的数值，表示同一nonce下客户端发送出请求的数量。例如，在响应的第一个请求中，客户端将发送“nc=00000001”。这个指示值的目的是让服务器保持这个计数器的一个副本，以便检测重复的请求。
+cnonce：客户端随机数，这是一个不透明的字符串值，由客户端提供，并且客户端和服务器都会使用，以避免用明文文本。这使得双方都可以查验对方的身份，并对消息的完整性提供一些保护。
+response：这是由用户代理软件计算出的一个字符串，以证明用户知道口令。
+Authorization-Info：用于返回一些与授权会话相关的附加信息。
+nextnonce：下一个服务端随机数，使客户端可以预先发送正确的摘要
+rspauth：响应摘要，用于客户端对服务端进行认证。
+stale：当密码摘要使用的随机数过期时，服务器可以返回一个附带有新随机数的401响应，并指定stale=true，表示服务器在告知客户端用新的随机数来重试，而不再要求用户重新输入用户名和密码了。
+http-digest流程说明
+第一步：当客户端通过浏览器访问实现了http-digest的后端服务器时，后端服务器首先会校验是否携带Authorization请求头，如果没有则返回Code=401：
+http.setCode(401); http.setStatus(&#34;Unauthorized&#34;); // 其中Basic表示认证类型为Basic，Realm用来描述后端应用名称，例如OA，CRM，可自定义 // 除了Basic认证类型外，后面还会将另一种类型：Digest http.setHeader(&#34;WWW-Authenticate&#34;, &#34;Basic Reaml=\&#34;HTTP Demo Server\&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/a8f5af61eb4eb726f10597342446d236/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-05-17T09:10:02+08:00" />
+<meta property="article:modified_time" content="2023-05-17T09:10:02+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">从零开始手写一个http-basic认证服务器</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <p><strong>简单了解HTTP</strong></p> 
+ <p></p> 
+ <p>HTTP是英文HyperText Transfer Protocol首字母缩写，是目前WWW万维网通讯标准协议，在属于OSI第七层（应用层）协议，要实现HTTP协议通常需要基于TCP-Socket套接字作为传输层的支撑。</p> 
+ <p><strong>什么是http-basic</strong></p> 
+ <p>http-basic是http协议的认证模块，http-basic也是http协议下的协议。下面先来看一下http-basic协议流程图：</p> 
+ <p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/30/08/RBM2hIRe_o.png"></p> 
+ <p>流程图说明：</p> 
+ <p>第一步：当客户端通过浏览器访问实现了http-basic的后端服务器时，后端服务器首先会校验是否携带Authorization请求头，如果没有则返回Code=401:</p> 
+ <pre class="has"><code class="language-javascript">http.setCode(401);
+http.setStatus("Unauthorized");
+// 其中Basic表示认证类型为Basic，Realm用来描述后端应用名称，例如OA，CRM，可自定义
+// 除了Basic认证类型外，后面还会将另一种类型：Digest
+http.setHeader("WWW-Authenticate", "Basic Reaml=\"HTTP Demo Server\"");
+</code></pre> 
+ <p>下面是谷歌浏览器默认抓包截图：</p> 
+ <p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/90/47/rCEorE3r_o.png"></p> 
+ <p>此时用户就会收到浏览器弹出的登陆输入框：</p> 
+ <p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/ae/27/deI1wAR1_o.png"></p> 
+ <p>第二步：当用户输入用户名和密码，点击登陆按钮时，浏览器会将表单的用户名和密码按规则：BASE64(用户名:密码)编码后放到请求头为HTTP-Request-Header=Authorization: Basic cm9vdDoxMjM0NTY= 方式提交给服务器进行认证，具体截图如下：</p> 
+ <p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/07/d3/XM0yg8j7_o.png"></p> 
+ <p style="text-align:left;">第三步：后端服务器接收到请求后，仍然会校验是否携带Authorization请求头，如果携带，则通过BASE64解码出来得到用户名:密码字符串，然后通过":"进行分隔得到用户名和密码进行验证，如果验证失败，继续第一步的内容，如果验证成功，后端服务可能会进一步验证URL资源权限等，如果验证资源权限不通过，此时参考第一步的方式返回（注意此时返回Code=403）：</p> 
+ <pre class="has"><code class="language-javascript">http.setCode(401);
+http.setStatus("Forbidden");
+http.setHeader("WWW-Authenticate", "Basic Reaml=\"HTTP Demo Server\"");
+</code></pre> 
+ <p>如果验证通过，则返回Code=200即可：</p> 
+ <pre class="has"><code class="language-css">http.setCode(200);
+http.setStatus("OK");
+</code></pre> 
+ <p><strong>http-basic缺陷</strong></p> 
+ <p>http-basic（当响应头WWW-Authenticate：Basic Reaml=xxx）存在以下缺陷：</p> 
+ <p>1、用户名和密码明文（仅仅只是Base64编码而已）传输，需要配合HTTPS来保证信息传输的安全。</p> 
+ <p>2、就算HTTPS将密码加密传输，也仍然存在重放攻击风险。</p> 
+ <p>3、代理和中间节点的防护措施弱，很容易通过伪装服务器来骗过认证，诱导用户输入用户名和密码。</p> 
+ <p>下面将介绍http-basic升级版更为安全的摘要认证http-digest。</p> 
+ <p><strong>了解http-digest流程</strong></p> 
+ <p>http-digest流程比http-basic流程复杂很多，流程图如下：</p> 
+ <p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/d1/a6/VuoqLpF0_o.png"></p> 
+ <p>下面对http-digest涉及的字段作用进行说明：</p> 
+ <ul><li> <p>WWW-Authentication：用来定义使用何种方式（Basic、Digest、Bearer等）去进行认证以获取受保护的资源。</p> </li><li> <p>realm：表示Web服务器中受保护文档的安全域（比如OA、CRM系统域等），用来指示需要哪个域的认证。</p> </li><li> <p>qop：保护质量，包含auth（默认的）和auth-int（增加了报文完整性检测）两种策略，可以为空，但不推荐为空值。</p> </li><li> <p>nonce：服务端向客户端发送质询时附带的一个随机数，这个数会经常发生变化。客户端计算密码摘要时将其附加上去，使得多次生成同一用户的密码摘要各不相同，用来防止重放攻击。</p> </li><li> <p>nc：nonce计数器，是一个16进制的数值，表示同一nonce下客户端发送出请求的数量。例如，在响应的第一个请求中，客户端将发送“nc=00000001”。这个指示值的目的是让服务器保持这个计数器的一个副本，以便检测重复的请求。</p> </li><li> <p>cnonce：客户端随机数，这是一个不透明的字符串值，由客户端提供，并且客户端和服务器都会使用，以避免用明文文本。这使得双方都可以查验对方的身份，并对消息的完整性提供一些保护。</p> </li><li> <p>response：这是由用户代理软件计算出的一个字符串，以证明用户知道口令。</p> </li><li> <p>Authorization-Info：用于返回一些与授权会话相关的附加信息。</p> </li><li> <p>nextnonce：下一个服务端随机数，使客户端可以预先发送正确的摘要</p> </li><li> <p>rspauth：响应摘要，用于客户端对服务端进行认证。</p> </li><li> <p>stale：当密码摘要使用的随机数过期时，服务器可以返回一个附带有新随机数的401响应，并指定stale=true，表示服务器在告知客户端用新的随机数来重试，而不再要求用户重新输入用户名和密码了。</p> </li></ul> 
+ <p><strong>http-digest流程说明</strong></p> 
+ <p>第一步：当客户端通过浏览器访问实现了http-digest的后端服务器时，后端服务器首先会校验是否携带Authorization请求头，如果没有则返回Code=401：</p> 
+ <pre class="has"><code class="language-javascript">http.setCode(401);
+http.setStatus("Unauthorized");
+// 其中Basic表示认证类型为Basic，Realm用来描述后端应用名称，例如OA，CRM，可自定义
+// 除了Basic认证类型外，后面还会将另一种类型：Digest
+http.setHeader("WWW-Authenticate", "Basic Reaml=\"HTTP Demo Server\"");
+</code></pre> 
+ <p>并且返回（注意和http-basic的区别）：</p> 
+ <pre class="has"><code class="language-http">WWW-Authenticate: Digest nonce=MTYyMTA4OTE3MDgyODo6ODQzMjU0NjMwNTE0MTYzNzEy,realm=LazyAgentConsole,qop=auth,algorithm=MD5
+</code></pre> 
+ <p>下面是谷歌浏览器默认抓包截图：</p> 
+ <p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/12/31/2fpfoUst_o.png"></p> 
+ <p>此时用户就会收到浏览器弹出的登陆输入框：</p> 
+ <p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/c5/a9/qSYKyQSy_o.png"></p> 
+ <p>第二步：当用户输入用户名和密码，点击登陆按钮时，浏览器会将表单的用户名和密码进行加密后放到请求头，浏览器抓包截图如下：</p> 
+ <p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/76/25/1RfeHP6d_o.png"></p> 
+ <pre class="has"><code class="language-javascript">Authorization: Digest username="root", realm="LazyAgentConsole", nonce="MTYyMTA4OTMyNjUyMzo6ODQzMjU1MjgzNTQ2MzI0OTky", uri="/", algorithm=MD5, response="7497e20c827e0de40ac28379ab52afe6", qop=auth, nc=00000002, cnonce="5ec74e43305c2a56"
+</code></pre> 
+ <p style="text-align:left;">第三步：后端服务器接收到请求后，仍然会校验是否携带Authorization请求头，如果携带，则通过算法解密（后面介绍）出来得到用户名和密码信息进行验证，如果验证失败，继续第一步的内容，如果验证成功，后端服务可能会进一步验证URL资源权限等，如果验证资源权限不通过，此时参考第一步的方式返回（注意此时返回Code=403）：</p> 
+ <pre class="has"><code class="language-javascript">http.setCode(401);
+http.setStatus("Forbidden");
+http.setHeader("WWW-Authenticate", "Basic Reaml=\"HTTP Demo Server\"");
+</code></pre> 
+ <p>如果验证通过，则返回Code=200即可：</p> 
+ <pre class="has"><code class="language-css">http.setCode(200);
+http.setStatus("OK");
+</code></pre> 
+ <p><strong>http-digest解密算法</strong></p> 
+ <p>传给后台请求头Authorization中response值就是客户端通过计算得到的密码摘要，后端解密response时根据不同的保护质量qos解密方式也有所不同，当qos策略为auth，计算方式如下：</p> 
+ <pre class="has"><code class="language-xml">// 使用默认的MD5加密算法
+MD5(MD5(A1):&lt;nonce&gt;:&lt;nc&gt;:&lt;cnonce&gt;:&lt;qop&gt;:MD5(A2))
+</code></pre> 
+ <table style="width:564px;"><tbody><tr><td> <p style="text-align:left;"><strong>算法</strong></p> </td><td> <p style="text-align:left;"><strong>A1</strong></p> </td></tr><tr><td> <p style="text-align:left;">MD5（默认）</p> </td><td> <p style="text-align:left;">&lt;username&gt;:&lt;realm&gt;:&lt;password&gt;</p> </td></tr><tr><td> <p style="text-align:left;">MD5-sess</p> </td><td> <p style="text-align:left;">MD5(&lt;username&gt;:&lt;realm&gt;:&lt;password&gt;):&lt;nonce&gt;:&lt;cnonce&gt;</p> </td></tr><tr><td> <p style="text-align:left;"><strong>qop</strong></p> </td><td> <p style="text-align:left;"><strong>A2</strong></p> </td></tr><tr><td> <p style="text-align:left;">auth（默认）</p> </td><td> <p style="text-align:left;">&lt;request-method&gt;:&lt;uri&gt;</p> </td></tr><tr><td> <p style="text-align:left;">auth-int</p> </td><td> <p style="text-align:left;">&lt;request-method&gt;:&lt;uri&gt;:MD5(&lt;request-entity-body&gt;)</p> </td></tr></tbody></table> 
+ <p>到这里，理论性的内容就讲解完毕，接下来进入http-digest协议代码实战环节。</p> 
+ <p><strong>项目结构</strong></p> 
+ <p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/aa/06/0qjkLmnI_o.png"></p> 
+ <p><strong>pom.xml源码：</strong></p> 
+ <pre class="has"><code class="language-xml">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd"&gt;
+    &lt;modelVersion&gt;4.0.0&lt;/modelVersion&gt;
+
+
+    &lt;groupId&gt;groupId&lt;/groupId&gt;
+    &lt;artifactId&gt;lazy-httpbasic&lt;/artifactId&gt;
+    &lt;version&gt;1.0-SNAPSHOT&lt;/version&gt;
+
+
+    &lt;properties&gt;
+        &lt;project.build.sourceEncoding&gt;UTF-8&lt;/project.build.sourceEncoding&gt;
+        &lt;maven.compiler.source&gt;1.8&lt;/maven.compiler.source&gt;
+        &lt;maven.compiler.target&gt;1.8&lt;/maven.compiler.target&gt;
+    &lt;/properties&gt;
+
+
+    &lt;build&gt;
+        &lt;finalName&gt;lazy-httpbasic&lt;/finalName&gt;
+        &lt;plugins&gt;
+            &lt;plugin&gt;
+                &lt;artifactId&gt;maven-jar-plugin&lt;/artifactId&gt;
+                &lt;version&gt;3.2.0&lt;/version&gt;
+                &lt;configuration&gt;
+                    &lt;includes&gt;
+                        &lt;include&gt;**/*.*&lt;/include&gt;
+                    &lt;/includes&gt;
+                    &lt;archive&gt;
+                        &lt;manifest&gt;
+                            &lt;!--配置jar包内创建MANIFEST。MF文件 --&gt;
+                            &lt;addClasspath&gt;true&lt;/addClasspath&gt;
+                            &lt;classpathPrefix&gt;classes/&lt;/classpathPrefix&gt;
+                            &lt;!--指定jar包启动类 --&gt;
+                            &lt;mainClass&gt;com.lazy.httpbasic.Boostrap&lt;/mainClass&gt;
+                        &lt;/manifest&gt;
+                    &lt;/archive&gt;
+                &lt;/configuration&gt;
+            &lt;/plugin&gt;
+        &lt;/plugins&gt;
+    &lt;/build&gt;
+&lt;/project&gt;
+</code></pre> 
+ <p><strong>Config.java源码：</strong></p> 
+ <pre class="has"><code class="language-swift">package com.lazy.httpbasic.conf;
+
+
+public class Config {
+
+
+    /**
+     * 控制台会话超时时间，单位毫秒, 默认10分钟
+     */
+    public static final long CONSOLE_HTTP_SESSION_TIME = 600000;
+    /**
+     * 心跳控制台监听默认端口
+     */
+    public static final int HEARTBEAT_CONSOLE_PORT = 9550;
+    /**
+     * 控制台HTTP BASIC 用户名
+     */
+    public static final String CONSOLE_HTTP_BASIC_USERNAME = "root";
+    /**
+     * 控制台HTTP BASIC 密码
+     */
+    public static final String CONSOLE_HTTP_BASIC_PASSWORD = "123456";
+    /**
+     * realm
+     */
+    public static final String REALM = "HttpBasicServer";
+
+
+}
+
+
+</code></pre> 
+ <p><strong>HttpRequest.java类源码：</strong></p> 
+ <pre class="has"><code class="language-typescript">package com.lazy.httpbasic.bean;
+
+
+import java.util.HashMap;
+import java.util.Map;
+
+
+public class HttpRequest {
+    /**
+     * 请求方法 GET/POST/PUT/DELETE/OPTION...
+     */
+    private String method;
+    /**
+     * 请求的uri
+     */
+    private String uri;
+    /**
+     * http版本
+     */
+    private String version;
+    /**
+     * 请求头
+     */
+    private Map&lt;String, String&gt; headers = new HashMap&lt;&gt;();
+    /**
+     * 请求参数
+     */
+    private Map&lt;String, Object&gt; parameters = new HashMap&lt;&gt;();
+    /**
+     * 请求参数相关
+     */
+    private String message;
+
+
+    public String getHeader(String name) {
+        return this.headers.get(name);
+    }
+
+
+    public void setHeader(String name, String val) {
+        this.headers.put(name, val);
+    }
+
+
+    public void setParameters(Map&lt;String, Object&gt; parameters) {
+        this.parameters = parameters;
+    }
+
+
+// 省略getter setter...
+}
+
+
+</code></pre> 
+ <p><strong>HttpResponse.java类源码：</strong></p> 
+ <pre class="has"><code class="language-typescript">package com.lazy.httpbasic.bean;
+
+
+import java.util.Map;
+
+
+public class HttpResponse {
+
+
+    private String version;
+    private int code;
+    private String status;
+    private Map&lt;String, String&gt; headers;
+    private String message;
+ // 省略getter setter... 
+}
+
+
+</code></pre> 
+ <p><strong>HttpRequestParser.java源码：</strong></p> 
+ <pre class="has"><code class="language-java">package com.lazy.httpbasic.bean;
+
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
+
+
+public class HttpRequestParser {
+
+
+
+
+    /**
+     * 根据标准的http协议，解析请求行
+     * 请求行，包含三个基本要素：请求方法 + URI + http版本，用空格进行分割，所以解析代码如下
+     *
+     * @param reader
+     * @param request
+     */
+    private static void decodeRequestLine(BufferedReader reader, HttpRequest request) throws IOException {
+        String[] strs = reader.readLine().split(" ");
+        assert strs.length == 3;
+        request.setMethod(strs[0]);
+        request.setUri(strs[1]);
+        request.setVersion(strs[2]);
+
+
+        //解析参数
+        String[] params = null;
+        String[] uriAndParam = strs[1].split("\\?");
+        if (uriAndParam.length == 2) {
+            String param = uriAndParam[1];
+            params = param.split("&amp;");
+            for (int i = 0; i &lt; params.length; i++) {
+                String[] p = params[i].split("=");
+                if (p.length == 2) {
+                    request.getParameters().put(p[0], p[1]);
+                }
+            }
+            request.setUri(uriAndParam[0]);
+        }
+    }
+
+
+    /**
+     * 根据标准http协议，解析请求头
+     * 请求头的解析，从第二行，到第一个空白行之间的所有数据，都是请求头；请求头的格式也比较清晰， 形如 key:value
+     *
+     * @param reader
+     * @param request
+     * @throws IOException
+     */
+    private static void decodeRequestHeader(BufferedReader reader, HttpRequest request) throws IOException {
+        Map&lt;String, String&gt; headers = new HashMap&lt;&gt;(16);
+        String line = reader.readLine();
+        String[] kv;
+        while (!"".equals(line)) {
+            kv = line.split(":");
+            assert kv.length == 2;
+            headers.put(kv[0].trim(), kv[1].replaceAll("\"", "").trim());
+            line = reader.readLine();
+        }
+        request.setHeaders(headers);
+    }
+
+
+    /**
+     * 根据标注http协议，解析正文
+     *
+     * @param reader
+     * @param request
+     * @throws IOException
+     */
+    private static void decodeRequestMessage(BufferedReader reader, HttpRequest request) throws IOException {
+        int contentLen = Integer.parseInt(request.getHeaders().getOrDefault("Content-Length", "0"));
+        if (contentLen == 0) {
+            // 表示没有message，直接返回
+            // 如get/options请求就没有message
+            return;
+        }
+        char[] message = new char[contentLen];
+        reader.read(message);
+        request.setMessage(new String(message));
+    }
+
+
+    /**
+     * http的请求可以分为三部分
+     * &lt;p&gt;
+     * 第一行为请求行: 即 方法 + URI + 版本
+     * 第二部分到一个空行为止，表示请求头
+     * 空行
+     * 第三部分为接下来所有的，表示发送的内容,message-body；其长度由请求头中的 Content-Length 决定
+     * &lt;p&gt;
+     * 几个实例如下
+     *
+     * @param reqStream
+     * @return
+     */
+    public static HttpRequest parse2request(InputStream reqStream) throws IOException {
+        BufferedReader httpReader = new BufferedReader(new InputStreamReader(reqStream, StandardCharsets.UTF_8));
+        HttpRequest httpRequest = new HttpRequest();
+        decodeRequestLine(httpReader, httpRequest);
+        decodeRequestHeader(httpReader, httpRequest);
+        decodeRequestMessage(httpReader, httpRequest);
+        return httpRequest;
+    }
+
+
+}
+
+
+</code></pre> 
+ <p><strong>HttpResponseParser.java源码：</strong></p> 
+ <pre class="has"><code class="language-typescript">package com.lazy.httpbasic.bean;
+
+
+import java.util.HashMap;
+import java.util.Map;
+
+
+public class HttpResponseParser {
+
+
+    public static String buildResponse(HttpRequest request, String response) {
+        HttpResponse httpResponse = ofResponse(request, response);
+        StringBuilder builder = new StringBuilder();
+        buildResponseLine(httpResponse, builder);
+        buildResponseHeaders(httpResponse, builder);
+        buildResponseMessage(httpResponse, builder);
+        return builder.toString();
+    }
+
+
+    public static String ofResponseStr(HttpResponse httpResponse) {
+        StringBuilder builder = new StringBuilder();
+        buildResponseLine(httpResponse, builder);
+        buildResponseHeaders(httpResponse, builder);
+        buildResponseMessage(httpResponse, builder);
+        return builder.toString();
+    }
+
+
+    public static HttpResponse ofResponse(HttpRequest request, String response) {
+        if (response == null) {
+            response = "";
+        }
+        HttpResponse httpResponse = new HttpResponse();
+        httpResponse.setCode(200);
+        httpResponse.setStatus("ok");
+        httpResponse.setVersion(request.getVersion());
+        Map&lt;String, String&gt; headers = new HashMap&lt;&gt;();
+        headers.put("Content-Type", "text/html");
+        headers.put("Cache-Control", "no-store");
+        headers.put("Content-Length", String.valueOf(response.getBytes().length));
+        httpResponse.setHeaders(headers);
+        httpResponse.setMessage(response);
+        return httpResponse;
+    }
+
+
+    private static void buildResponseLine(HttpResponse response, StringBuilder stringBuilder) {
+        stringBuilder.append(response.getVersion()).append(" ").append(response.getCode()).append(" ")
+                .append(response.getStatus()).append("\n");
+    }
+
+
+    private static void buildResponseHeaders(HttpResponse response, StringBuilder stringBuilder) {
+        for (Map.Entry&lt;String, String&gt; entry : response.getHeaders().entrySet()) {
+            stringBuilder.append(entry.getKey()).append(":").append(entry.getValue()).append("\n");
+        }
+        stringBuilder.append("\n");
+    }
+
+
+    private static void buildResponseMessage(HttpResponse response, StringBuilder stringBuilder) {
+        stringBuilder.append(response.getMessage());
+    }
+
+
+}
+
+
+</code></pre> 
+ <p><strong>HttpDigest.java源码：</strong></p> 
+ <pre class="has"><code class="language-typescript">package com.lazy.httpbasic.bean;
+
+
+
+
+import com.lazy.httpbasic.conf.Config;
+import com.lazy.httpbasic.util.MD5Util;
+import com.lazy.httpbasic.util.StringUtil;
+
+
+import java.util.Locale;
+
+
+public class HttpDigest {
+
+
+    private String username;
+    private String nonce;
+    private String realm;
+    private String qop;
+    private String nc;
+    private String cnonce;
+    private String response;
+    private String uri;
+    private String stale;
+    private String rspauth;
+    private String algorithm;
+    private String method;
+    private String nextnonce;
+
+
+    public String getNextnonce() {
+        return nextnonce;
+    }
+
+
+    public void setNextnonce(String nextnonce) {
+        this.nextnonce = nextnonce;
+    }
+
+
+    public String md5() {
+        String a1 = this.getUsername() + ":" + this.getRealm() + ":" + Config.CONSOLE_HTTP_BASIC_PASSWORD;
+        String ha1 = MD5Util.encodeByMD5(a1);
+
+
+        String a2 = this.getMethod() + ":" + this.getUri();
+        String ha2 = MD5Util.encodeByMD5(a2);
+        //服务器计算出的摘要
+        String responseBefore = ha1 + ":" + this.getNonce() + ":" + this.getNc()
+                + ":" + this.getCnonce() + ":" + this.getQop() + ":" + ha2;
+        String responseMD5 = MD5Util.encodeByMD5(responseBefore);
+        return responseMD5;
+    }
+
+
+    public void parse(String str) {
+        String[] pair = str.split(",");
+        for (String s : pair) {
+            String[] kv = s.split("=");
+            if (kv.length != 2) {
+                continue;
+            }
+            String k = kv[0].toLowerCase(Locale.ENGLISH).trim();
+            String v = kv[1];
+            if ("username".equals(k)) {
+                this.username = v;
+            }
+            if ("nonce".equals(k)) {
+                this.nonce = v;
+            }
+            if ("realm".equals(k)) {
+                this.realm = v;
+            }
+            if ("qop".equals(k)) {
+                this.qop = v;
+            }
+            if ("nc".equals(k)) {
+                this.nc = v;
+            }
+            if ("cnonce".equals(k)) {
+                this.cnonce = v;
+            }
+            if ("response".equals(k)) {
+                this.response = v;
+            }
+            if ("uri".equals(k)) {
+                this.uri = v;
+            }
+            if ("stale".equals(k)) {
+                this.stale = v;
+            }
+            if ("rspauth".equals(k)) {
+                this.rspauth = v;
+            }
+            if ("algorithm".equals(k)) {
+                this.algorithm = v;
+            }
+            if ("nextnonce".equals(k)) {
+                this.nextnonce = v;
+            }
+        }
+    }
+
+
+    public String ofString() {
+        StringBuilder s = new StringBuilder("Digest ");
+        if (StringUtil.isNotBlank(username)) {
+            s.append("username=").append(username).append(",");
+        }
+        if (StringUtil.isNotBlank(nonce)) {
+            s.append("nonce=").append(nonce).append(",");
+        }
+        if (StringUtil.isNotBlank(realm)) {
+            s.append("realm=").append(realm).append(",");
+        }
+        if (StringUtil.isNotBlank(qop)) {
+            s.append("qop=").append(qop).append(",");
+        }
+        if (StringUtil.isNotBlank(nc)) {
+            s.append("nc=").append(nc).append(",");
+        }
+        if (StringUtil.isNotBlank(cnonce)) {
+            s.append("cnonce=").append(cnonce).append(",");
+        }
+        if (StringUtil.isNotBlank(response)) {
+            s.append("response=").append(response).append(",");
+        }
+        if (StringUtil.isNotBlank(uri)) {
+            s.append("uri=").append(uri).append(",");
+        }
+        if (StringUtil.isNotBlank(stale)) {
+            s.append("stale=").append(stale).append(",");
+        }
+        if (StringUtil.isNotBlank(rspauth)) {
+            s.append("rspauth=").append(rspauth).append(",");
+        }
+        if (StringUtil.isNotBlank(algorithm)) {
+            s.append("algorithm=").append(algorithm).append(",");
+        }
+        if (StringUtil.isNotBlank(nextnonce)) {
+            s.append("nextnonce=").append(nextnonce).append(",");
+        }
+        s.deleteCharAt(s.length() - 1);
+        return s.toString();
+    }
+}
+
+
+</code></pre> 
+ <p><strong>HttpBasicUtil.java源码：</strong></p> 
+ <pre class="has"><code class="language-java">package com.lazy.httpbasic.util;
+
+
+
+
+import com.lazy.httpbasic.bean.HttpDigest;
+import com.lazy.httpbasic.bean.HttpRequest;
+import com.lazy.httpbasic.conf.Config;
+import sun.misc.BASE64Decoder;
+import sun.misc.BASE64Encoder;
+
+
+import java.io.UnsupportedEncodingException;
+
+
+
+
+public class HttpBasicUtil {
+
+
+    /**
+     * Authorization: Digest username=“xxxxx”,realm=“myTomcat”,qop=“auth”,nonce=“xxxxx”,uri=“xxxx”,cnonce=“xxxxxx”,nc=00000001,response=“xxxxxxxxx”,opaque=“xxxxxxxxx” 。其中username是用户名；cnonce是客户端生成的随机字符串；nc是运行认证的次数；response就是最终计算得到的摘要。
+     *
+     * @param request
+     * @return
+     */
+    public static HttpDigest ofDigestRequest(HttpRequest request) {
+        String authorization = request.getHeader("Authorization");
+        if ((authorization != null) &amp;&amp; (authorization.length() &gt; 7)) {
+            authorization = authorization.substring(7);
+            HttpDigest digest = new HttpDigest();
+            digest.parse(authorization);
+            digest.setMethod(request.getMethod());
+            return digest;
+        }
+        return null;
+    }
+
+
+    public static String base64DecodeNonce() {
+        try {
+            return base64Encode((System.currentTimeMillis() + "::" + SnowflakeIdUtil.getInstance().nextId()).getBytes("utf-8"));
+        } catch (UnsupportedEncodingException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+
+
+
+    public static String base64DecodeNonce(String nonceBase64) {
+        return base64Decode(nonceBase64);
+    }
+
+
+    public static HttpDigest ofDigestResponse(HttpRequest request) {
+        HttpDigest digestResponse = new HttpDigest();
+        digestResponse.setNonce(base64DecodeNonce());
+        digestResponse.setQop("auth");
+        digestResponse.setAlgorithm("MD5");
+        digestResponse.setRealm(Config.REALM);
+        return digestResponse;
+    }
+
+
+    /**
+     * 编码
+     *
+     * @param bstr
+     * @return String
+     */
+    @SuppressWarnings("restriction")
+    public static String base64Encode(byte[] bstr) {
+        String strEncode = new BASE64Encoder().encode(bstr);
+        return strEncode;
+    }
+
+
+    /**
+     * 解码
+     *
+     * @param str
+     * @return
+     */
+    public static String base64Decode(String str) {
+        if (StringUtil.isBlank(str)) {
+            return null;
+        }
+        String s = null;
+        try {
+            BASE64Decoder decoder = new BASE64Decoder();
+            byte[] b = decoder.decodeBuffer(str);
+            s = new String(b, "utf-8");
+        } catch (Exception ignored) {
+
+
+        }
+        return s;
+    }
+
+
+}
+
+
+</code></pre> 
+ <p><strong>Boostrap.java源码：</strong></p> 
+ <pre class="has"><code class="language-java">package com.lazy.httpbasic;
+
+
+import com.lazy.httpbasic.conf.Config;
+import com.lazy.httpbasic.task.WorkTask;
+
+
+import java.io.IOException;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.util.concurrent.*;
+
+
+public class Boostrap {
+
+
+    private static final int nThreads = Runtime.getRuntime().availableProcessors();
+
+
+    /**
+     * 主线程池
+     */
+    private static final ExecutorService bootstrapExecutor = Executors.newFixedThreadPool(2);
+    /**
+     * 任务线程池
+     */
+    private static final ExecutorService taskExecutor = new ThreadPoolExecutor(
+            nThreads, nThreads, 0L, TimeUnit.MILLISECONDS,
+            new LinkedBlockingQueue&lt;&gt;(100),
+            new ThreadPoolExecutor.DiscardPolicy());
+
+
+    /**
+     * 启动方法
+     *
+     * @param args
+     */
+    public static void main(String[] args) {
+
+
+        //启动socket线程
+        bootstrapExecutor.submit(new Startup());
+    }
+
+
+
+
+    /**
+     * 启动线程
+     */
+    static class Startup implements Runnable {
+
+
+        @Override
+        public void run() {
+
+
+            ServerSocket serverSocket = null;
+            Socket socket = null;
+            try {
+                serverSocket = new ServerSocket(Config.HEARTBEAT_CONSOLE_PORT);
+                System.out.println("The Http-Basic Server is start in port:" + Config.HEARTBEAT_CONSOLE_PORT);
+                while (true) {
+                    socket = serverSocket.accept();
+                    //接受客户端请求后提交给任务线程池去执行
+                    taskExecutor.submit(new WorkTask(socket));
+                }
+            } catch (Exception ignored) {
+                if (socket != null) {
+                    try {
+                        socket.close();
+                    } catch (IOException e) {
+                        //ignored
+                    }
+                }
+                if (serverSocket != null) {
+                    try {
+                        serverSocket.close();
+                    } catch (IOException e) {
+                        //ignored
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+</code></pre> 
+ <p><strong>启动方式</strong></p> 
+ <p>1、直接IDE运行Boostrap的main方法。</p> 
+ <p>2、maven打包后通过java -jar lazy-httpbasic.jar 启动。</p> 
+ <p><strong>启动后测试</strong></p> 
+ <p>启动后控制台输入如下：</p> 
+ <p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/b5/c6/JjwbfQYH_o.png"></p> 
+ <p>浏览器访问: http://localhost:9550端口任何地址即可，截图如下（输入错误用户名或密码时仍然继续弹出登陆框）：</p> 
+ <p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/24/99/rmwYANpL_o.png"></p> 
+ <p>输入正确用户名和密码时，登陆成功，截图如下：</p> 
+ <p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/12/81/UC2akjYc_o.png"></p> 
+ <p><strong>完整源码获取可关注未新龚总浩【Java软件编程之家】后台回复：http-basic关键字即</strong></p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/344d76e371d4ed2bd63abc069686d3ed/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Element-UI el-select多选表单校验问题</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7ec2f02086f6b721c22aef5e32ea812f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">CSS transform属性</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

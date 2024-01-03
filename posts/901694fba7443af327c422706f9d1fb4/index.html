@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>HBase概念学习（八）开发一个类twitter系统之表设计 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="HBase概念学习（八）开发一个类twitter系统之表设计" />
+<meta property="og:description" content="这边文章先将可能的需求分析一下，设计出HBase表，下一步再开始编写客户端代码。
+TwiBase系统
+1、背景
+为了加深HBase基本概念的学习，参考HBase实战这本书实际动手做了这个例子。
+2、需求
+这是一个用户推特系统，用户登陆到系统，需要维护用户的基本信息，然后用户可以发帖和其他用户进行互动。用户之间可以相互关注，用户可以浏览关注用户的推文等等。
+这是一个比较简单的推特系统，不考虑用户之间的私信，用户评论推特等功能。
+3、概要设计
+3.1表设计
+首先需要设计三个表：用户表，推特表以及用户之间的关系表。
+（1）用户表
+用户表至少包含唯一的用户名，用户昵称，用户邮箱以及用户发帖数量，用一个列族存储。
+创建用户表的语句是：
+create&#39;users&#39;, &#39;info&#39;
+其中用户名用作rowkey，这样能够快速根据用户登陆ID查找到用户所有基本信息。
+（2）推特表
+推特表存储用户的发帖，至少包括用户名，发帖时间，以及发帖内容，用一个列族存储。
+创建推特表的语句是：
+create&#39;twits&#39;, &#39;twits&#39;
+为了能够快速查找到指定用户的所有推文（登陆个人推特时显示），需要将同一个用户的所有推文都存储在一块，所以考虑将用户ID作为行键的第一部分，另外希望每个用户的推文按照时间有序，所以将时间戳作为行键的第二部分，但是这里有个问题，用户名是变长的，怎么知道行键中前面到哪儿是用户名呢，这个时候可以对用户名做MD5散列，将变长的用户名变为定长的散列值。
+另外你希望用户显示自己的推文的时候按照时间顺序倒序排列，即读出来的推文时间新的排在前面，那么就需要利用一个小技巧，不存储真正的时间戳，而是存储倒序时间戳=Long.MAXVALUE -时间戳。所以表设计是这样的：
+rowKey:MD5(用户A)&#43;倒序时间戳#time:发帖时间，content:内容
+（3）关系表
+现在只有用户和推文功能，这明显不够，我们希望能够阅读其他人的推文，这就希望用户能够关注一些其他的用户。
+具体我们需要存储哪些关系呢？
+1用户A登陆，需要查看自己关注了谁，以及显示其关注的用户的推文，所以要存储用户A关注了谁？
+2用户A登陆，想要查看自己的粉丝，所以需要存储谁关注了用户A？
+3用户A登陆，访问用户B的推特，那么需要知道用户A有没有关注用户B？
+一开始你可能会想这样设计表：
+rowKey:用户A#1:用户B，2:用户C，3:用户D
+rowKey:用户B#1:用户H，2:用户C
+这样可以很轻松回答问题1和问题3.
+但是问题2似乎很难回答，除非扫描整个表，以及每一行的所有列，否则找不出所有关注某个用户的人。
+这个表设计还有一个大问题，就是当用户A关注用户B的时候，需要在用户A这一行加一列，但是我不知道现在加到哪一列了，即put数据的时候无法指定qualifier，你可能想到在每一行增加一列计数器来解决这个问题，即counter：x，但是不幸的是，HBase不支持事务操作，一旦多个客户端同时关注两个不同的用户，它们都需要取得计数器，然后插入新的一列，两个客户端很可能读到同一个计数器值，这样一个客户端的写入就会被另一个给覆盖，所以必须去掉计数器，可以用下面方式解决：
+这样设计表：
+rowKey:用户A#用户B:1，用户C:2，用户D:3
+rowKey:用户B#用户H:1，用户C:2
+到目前为止的设计还是没有高效的办法回答问题2.
+上面两种设计都是“宽表”的形式，现在可以考虑使用“高表”的形式。
+rowKey:用户A&#43;分隔符&#43;用户B#1:用户B昵称
+即行键存储用户A关注用户B，我们将用户B的昵称放入qualifier可以节省再去用户表找用户B的昵称的时间，这是一种反规范化（de-nomalize）处理。
+这样很容易就能想到这样一个设计：
+rowKey:用户A&#43;分隔符&#43;关注&#43;分隔符&#43;用户B#1:用户B昵称
+rowKey:用户A&#43;分隔符&#43;关注&#43;分隔符&#43;用户C#1:用户C昵称
+rowKey:用户A&#43;分隔符&#43;被关注&#43;分隔符&#43;用户D#1:用户D昵称
+rowKey:用户A&#43;分隔符&#43;被关注&#43;分隔符&#43;用户H#1:用户H昵称
+这样很容易就可以回答上面三个问题，分别是用户A关注了谁？用户A关注了用户B？谁关注了用户A。不过要注意，当查找用户A的粉丝列表时，往往不想把用户A关注了谁这些集合也返回给客户端，这个时候可以通过为扫描设置起始和停止键来做到。
+这里需要再次优化，即使用MD5对用户名进行处理，得到定长的散列值，这样做有几个好处：
+1 可以抛弃掉分隔符,为扫描操作计算起始和停止键更加容易。
+2 行键长度统一，可以帮助你很好地预测读写性能。
+3 MD5有助于数据更加均匀地分布在region上。
+所以关系表设计再次修改为这样：
+rowKey:MD5(用户A)&#43;关注&#43;MD5(用户B)#1:用户B的昵称
+rowKey:MD5(用户A)&#43;关注&#43;MD5(用户C)#1:用户C的昵称
+rowKey:MD5(用户A)&#43;被关注&#43;MD5(用户D)#1:用户D的昵称
+rowKey:MD5(用户A)&#43;被关注&#43;MD5(用户H)#1:用户H的昵称
+但是这样还不是最优的，之前已经说过了，当查找用户A的粉丝列表时，往往不想把用户A关注了谁这些集合也返回给客户端，虽然可以通过为扫描设置起始和停止键来做到，但是在region server上面仍然要将这些不关心的数据从硬盘上读出来，才会经过扫描过滤。
+所以考虑将被关注和关注两种类型分开，分别建立一个表，这下最终的表设计就这样了：
+关注表：
+rowKey:MD5(用户A)&#43;MD5(用户B)#1:用户B的昵称
+rowKey:MD5(用户A)&#43;MD5(用户C)#1:用户C的昵称
+被关注表：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/901694fba7443af327c422706f9d1fb4/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2014-06-29T23:51:46+08:00" />
+<meta property="article:modified_time" content="2014-06-29T23:51:46+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">HBase概念学习（八）开发一个类twitter系统之表设计</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>这边文章先将可能的需求分析一下，设计出HBase表，下一步再开始编写客户端代码。</p> 
+<p></p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">TwiBase</span></span></span>系统</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US"><strong>1</strong></span></span></span><strong>、背景</strong></p> 
+<p style="margin-bottom:0cm">为了加深<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">HBase</span></span></span>基本概念的学习，参考<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">HBase</span></span></span>实战这本书实际动手做了这个例子。</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US"><strong>2</strong></span></span></span><strong>、需求</strong></p> 
+<p style="margin-bottom:0cm">这是一个用户推特系统，用户登陆到系统，需要维护用户的基本信息，然后用户可以发帖和其他用户进行互动。用户之间可以相互关注，用户可以浏览关注用户的推文等等。</p> 
+<p style="margin-bottom:0cm">这是一个比较简单的推特系统，不考虑用户之间的私信，用户评论推特等功能。</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US"><strong>3</strong></span></span></span><strong>、概要设计</strong></p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">3.1</span></span></span>表设计</p> 
+<p style="margin-bottom:0cm">首先需要设计三个表：用户表，推特表以及用户之间的关系表。</p> 
+<p style="margin-bottom:0cm"><strong><u>（<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">1</span></span></span>）用户表</u></strong></p> 
+<p style="margin-bottom:0cm">用户表至少包含唯一的用户名，用户昵称，用户邮箱以及用户发帖数量，用一个列族存储。</p> 
+<p style="margin-bottom:0cm">创建用户表的语句是：</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">create'users', 'info'</span></span></span></p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm">其中用户名用作<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowkey</span></span></span>，这样能够快速根据用户登陆<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">ID</span></span></span>查找到用户所有基本信息。</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm"><strong><u>（<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">2</span></span></span>）推特表</u></strong></p> 
+<p style="margin-bottom:0cm">推特表存储用户的发帖，至少包括用户名，发帖时间，以及发帖内容，用一个列族存储。</p> 
+<p style="margin-bottom:0cm">创建推特表的语句是：</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">create'twits', 'twits'</span></span></span></p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm">为了能够快速查找到指定用户的所有推文（登陆个人推特时显示），需要将同一个用户的所有推文都存储在一块，所以考虑将用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">ID</span></span></span>作为行键的第一部分，另外希望每个用户的推文按照时间有序，所以将时间戳作为行键的第二部分，但是这里有个问题，用户名是变长的，怎么知道行键中前面到哪儿是用户名呢，这个时候可以对用户名做<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">MD5</span></span></span>散列，将变长的用户名变为定长的散列值。</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm">另外你希望用户显示自己的推文的时候按照时间顺序倒序排列，即读出来的推文时间新的排在前面，那么就需要利用一个小技巧，不存储真正的时间戳，而是存储倒序时间戳<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">=Long.MAXVALUE -</span></span></span>时间戳。所以表设计是这样的：</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:MD5(</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A)+</span></span></span>倒序时间戳<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">#time:</span></span></span>发帖时间，<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">content:</span></span></span>内容</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm"><strong><u>（<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">3</span></span></span>）关系表</u></strong></p> 
+<p style="margin-bottom:0cm">现在只有用户和推文功能，这明显不够，我们希望能够阅读其他人的推文，这就希望用户能够关注一些其他的用户。</p> 
+<p style="margin-bottom:0cm">具体我们需要存储哪些关系呢？</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">1</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A</span></span></span>登陆，需要查看自己关注了谁，以及显示其关注的用户的推文，所以要存储用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A</span></span></span>关注了谁？</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">2</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A</span></span></span>登陆，想要查看自己的粉丝，所以需要存储谁关注了用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A</span></span></span>？</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">3</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A</span></span></span>登陆，访问用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B</span></span></span>的推特，那么需要知道用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A</span></span></span>有没有关注用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B</span></span></span>？</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm">一开始你可能会想这样设计表：</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A#1:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B</span></span></span>，<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">2:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">C</span></span></span>，<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">3:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">D</span></span></span></p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B#1:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">H</span></span></span>，<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">2:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">C</span></span></span></p> 
+<p style="margin-bottom:0cm">这样可以很轻松回答问题<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">1</span></span></span>和问题<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">3.</span></span></span></p> 
+<p style="margin-bottom:0cm">但是问题<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">2</span></span></span>似乎很难回答，除非扫描整个表，以及每一行的所有列，否则找不出所有关注某个用户的人。</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm">这个表设计还有一个大问题，就是当用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A</span></span></span>关注用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B</span></span></span>的时候，需要在用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A</span></span></span>这一行加一列，但是我不知道现在加到哪一列了，即<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">put</span></span></span>数据的时候无法指定<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">qualifier</span></span></span>，你可能想到在每一行增加一列计数器来解决这个问题，即<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">counter</span></span></span>：<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">x</span></span></span>，但是不幸的是，<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">HBase</span></span></span>不支持事务操作，一旦多个客户端同时关注两个不同的用户，它们都需要取得计数器，然后插入新的一列，两个客户端很可能读到同一个计数器值，这样一个客户端的写入就会被另一个给覆盖，所以必须去掉计数器，可以用下面方式解决：</p> 
+<p style="margin-bottom:0cm">这样设计表：</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A#</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B:1</span></span></span>，用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">C:2</span></span></span>，用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">D:3</span></span></span></p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B#</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">H:1</span></span></span>，用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">C:2</span></span></span></p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm"><strong>到目前为止的设计还是没有高效的办法回答问题</strong><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US"><strong>2.</strong></span></span></span></p> 
+<p style="margin-bottom:0cm">上面两种设计都是“宽表”的形式，现在可以考虑使用“高表”的形式。</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A+</span></span></span>分隔符<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B#1:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B</span></span></span>昵称</p> 
+<p style="margin-bottom:0cm">即行键存储用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A</span></span></span>关注用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B</span></span></span>，我们将用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B</span></span></span>的昵称放入<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">qualifier</span></span></span>可以节省再去用户表找用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B</span></span></span>的昵称的时间，这是一种反规范化（<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">de-nomalize</span></span></span>）处理。</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm">这样很容易就能想到这样一个设计：</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A+</span></span></span>分隔符<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+</span></span></span>关注<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+</span></span></span>分隔符<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B#1:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B</span></span></span>昵称</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A+</span></span></span>分隔符<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+</span></span></span>关注<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+</span></span></span>分隔符<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">C#1:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">C</span></span></span>昵称</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A+</span></span></span>分隔符<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+</span></span></span>被关注<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+</span></span></span>分隔符<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">D#1:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">D</span></span></span>昵称</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A+</span></span></span>分隔符<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+</span></span></span>被关注<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+</span></span></span>分隔符<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">H#1:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">H</span></span></span>昵称</p> 
+<p style="margin-bottom:0cm">这样很容易就可以回答上面三个问题，分别是用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A</span></span></span>关注了谁？用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A</span></span></span>关注了用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B</span></span></span>？谁关注了用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A</span></span></span>。不过要注意，当查找用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A</span></span></span>的粉丝列表时，往往不想把用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A</span></span></span>关注了谁这些集合也返回给客户端，这个时候可以通过为扫描设置起始和停止键来做到。</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm">这里需要再次优化，即使用<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">MD5</span></span></span>对用户名进行处理，得到定长的散列值，这样做有几个好处：</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">1 </span></span></span>可以抛弃掉分隔符<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">,</span></span></span>为扫描操作计算起始和停止键更加容易。</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">2 </span></span></span>行键长度统一，可以帮助你很好地预测读写性能。</p> 
+<p style="margin-bottom:0cm">3  MD5有助于数据更加均匀地分布在region上。</p> 
+<p style="margin-bottom:0cm">所以关系表设计再次修改为这样：</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:MD5(</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A)+</span></span></span>关注<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+MD5(</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B)#1:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B</span></span></span>的昵称</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:MD5(</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A)+</span></span></span>关注<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+MD5(</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">C)#1:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">C</span></span></span>的昵称</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:MD5(</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A)+</span></span></span>被关注<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+MD5(</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">D)#1:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">D</span></span></span>的昵称</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:MD5(</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A)+</span></span></span>被关注<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">+MD5(</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">H)#1:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">H</span></span></span>的昵称</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm">但是这样还不是最优的，之前已经说过了，当查找用户<span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">A</span></span></span>的粉丝列表时，往往不想把用户<span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">A</span></span></span>关注了谁这些集合也返回给客户端，虽然可以通过为扫描设置起始和停止键来做到，但是在region server上面仍然要将这些不关心的数据从硬盘上读出来，才会经过扫描过滤。</p> 
+<p style="margin-bottom:0cm">所以考虑将被关注和关注两种类型分开，分别建立一个表，这下最终的表设计就这样了：</p> 
+<p style="margin-bottom:0cm"><span style="font-family:'DejaVu Serif',serif; font-size:14px">关注表：</span></p> 
+<p style="margin-bottom:0cm"></p> 
+<p style="margin-bottom:0cm"><span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">rowKey:MD5(</span></span></span>用户<span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">A)+</span></span></span><span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">MD5(</span></span></span>用户<span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">B)#1:</span></span></span>用户<span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">B</span></span></span>的昵称</p> 
+<p style="margin-bottom:0cm"><span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">rowKey:MD5(</span></span></span>用户<span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">A)+</span></span></span><span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">MD5(</span></span></span>用户<span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">C)#1:</span></span></span>用户<span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">C</span></span></span>的昵称</p> 
+<p style="margin-bottom:0cm"><span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US"><br> </span></span></span></p> 
+<p style="margin-bottom:0cm"><span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">被关注表：</span></span></span></p> 
+<p style="margin-bottom:0cm"><span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">rowKey:MD5(</span></span></span>用户<span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">A)+</span></span></span><span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">MD5(</span></span></span>用户<span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">D)#1:</span></span></span>用户<span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">D</span></span></span>的昵称</p> 
+<p style="margin-bottom:0cm"><span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">rowKey:MD5(</span></span></span>用户<span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">A)+</span></span></span><span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">MD5(</span></span></span>用户<span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">H)#1:</span></span></span>用户<span style="font-family:'DejaVu Serif',serif"><span style="font-size:14px"><span lang="en-US">H</span></span></span>的昵称</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm"></p> 
+<p style="margin-bottom:0cm">创建关系表的命令是：</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">create'follows', 'f'</span></span></span></p> 
+<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">create'follow<span style="font-size:14px"><span style="font-family:DejaVu Serif,serif">edBy</span></span>', 'f'</span></span></span> 
+<br> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm"><strong><u>（<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">4</span></span></span>）推贴流表</u></strong></p> 
+<p style="margin-bottom:0cm"><strong>进一步优化 </strong><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US"><strong>---</strong></span></span></span><strong>反规范化处理！</strong></p> 
+<p style="margin-bottom:0cm">设计<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">HBase</span></span></span>表的一个关键概念叫做反规范化。</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm">截止目前为止，我们已经维护了单个用户的关注用户列表，当用户登陆账户的时候，希望看到他关注的所有人的推特，你的应用会提取关注用户列表，然后到推特表中获取每一个被关注用户的推特，然后集合这些推特按照时间排序显示出来。</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm">随着系统用户数量增长，用户关注的用户的数量增长，这个过程会花费很长的时间。</p> 
+<p style="margin-bottom:0cm">此外，如果一个用户被许多人关注，那么当他的所有粉丝登陆的时候，他的推特都会被访问，他的推特都是物理上存放在一起的，所以托管这个受欢迎的人的推特的<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">region</span></span></span>将会不断回应请求，这样就制造了一个读热点。</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm">解决这个问题的办法就是为每一个用户维护一个推特流，一旦某一个人写了推特，就将这个内容写入到关注他的人的推特流里面。这就是反规范化。</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm"><strong>概念介绍：规范化和反规范化</strong></p> 
+<p style="margin-bottom:0cm">规范化是关系型数据库里面的概念，每种重复信息都会放进一个自己的表，这样有两个好处：当发生更新和删除的时候，不用担心更新指定的数据的所有副本；通过保存单一副本，而不是多个副本，减少了占用的存储空间。需要查询时，使用<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">SQL</span></span></span>语句里面的<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">join</span></span></span>子句就可以轻易连接这些数据。</p> 
+<p style="margin-bottom:0cm">反规范化是一个相反的概念，数据是重复的，存储在多个地方，因为你不需要开销很大的<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">join</span></span></span>操作，这时候查询数据更加容易和快速。</p> 
+<p style="margin-bottom:0cm">规范化为写操作进行了优化，在读取数据时付出了连接数据的开销。</p> 
+<p style="margin-bottom:0cm">反规范化为读操作进行了优化，在写入时付出写多个副本的开销。</p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm">所以，为了为每个用户维护一个推特流，我们建立一张新表（不打算为<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">users</span></span></span>表增加一个列族，因为<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">users</span></span></span>表的行键不是为了这个目的而优化的）。</p> 
+<p style="margin-bottom:0cm">推特流表创建的命令是：</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">create'twitsStream', 'info'</span></span></span></p> 
+<p style="margin-bottom:0cm"><br> </p> 
+<p style="margin-bottom:0cm">推特流表设计是这样的：</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:MD5(</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A)+</span></span></span>倒序时间戳<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">#</span></span></span>1:用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">B</span></span></span>的昵称，2:推贴内容</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:MD5(</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A)+</span></span></span>倒序时间戳<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">#</span></span></span>1:用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">D</span></span></span>的昵称，2:推贴内容</p> 
+<p style="margin-bottom:0cm"><span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">rowKey:MD5(</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">A)+</span></span></span>倒序时间戳<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">#1:</span></span></span>用户<span style="font-family:DejaVu Serif,serif"><span style="font-size:14px"><span lang="en-US">H</span></span></span>的昵称，2:推贴内容</p> 
+<br> 
+<p>（未完待续。。。）</p> 
+<p>若有什么疑问和指教，欢迎交流，联系邮箱： jiq408694711@163.com  季义钦<br> 作为兴趣点，目前本人正在研究HBase和Hadoop<br> </p> 
+<br>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/fefc7f51f97a09bcf491bcb6546d83b4/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Wireshark多条件过滤设置</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ba70af035f1f1ad4374dca9ec499f6b2/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">jquery mobile实现拨打电话功能</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

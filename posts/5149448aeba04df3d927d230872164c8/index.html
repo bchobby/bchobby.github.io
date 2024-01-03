@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>SpringBoot 配置多数据源并支持事务及其原理 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="SpringBoot 配置多数据源并支持事务及其原理" />
+<meta property="og:description" content="在项目中，有时会遇到使用多个数据源的情况，并且需要支持事务。解决方式可以有以下几种：
+对每个数据源手动配置orm框架（mybatis、jpa等）及事务管理器使用 dynamic-datasource-spring-boot-starter 配置动态数据源 这里以同时使用jpa和mybatis-plus两种orm框架操作不同数据源为例，分别介绍两种实现方式。
+首先了解一下 spring 事务实现的方式 以 @Transactional 注解为例 (也可以看 TransactionTemplate， 这个流程更简单一点)。
+入口：ProxyTransactionManagementConfiguration （从 config 类入手，需要哪些bean一目了然，然后直接顺着看下去就可以了）
+主要有以下3个bean
+TransactionAttributeSource：实现是 AnnotationTransactionAttributeSource， 提供从（存在 @Transactional 注解的）方法上读取事务的属性（注解的属性）的功能TransactionInterceptor：事务方法拦截器的bean，在执行事务方法时，转到 (TransactionAspectSupport#invokeWithinTransaction) 方法，即spring事务处理的主要逻辑。BeanFactoryTransactionAttributeSourceAdvisor：一个advisor（包含一个 Pointcut 切点和一个 Advice 通知），advice就是上面的事务拦截器，Pointcut 切点匹配能通过 TransactionAttributeSource 获取到事务信息的方法。 拦截器逻辑大概如下
+在执行被拦截的事务方法中对数据进行crud时，orm框架会从 TransactionSynchronizationManager 中的 ThradLocal 获取 之前创建的 connection (DataSourceUtils)；
+多数据源实现事务 每个数据源手动配置orm框架 这种方式是通过手动声明创建orm框架对应的bean来实现多数据源的操作，即每个数据源都自己手动创建一套对用的bean。
+（其实如果使用的spring而不是springboot的话，就不会有这种多数据源的疑问，因为本来就要自己声明bean。）
+依赖
+&lt;dependency&gt; &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt; &lt;artifactId&gt;spring-boot-starter-data-jpa&lt;/artifactId&gt; &lt;/dependency&gt; &lt;!-- 也可以直接依赖 mybatis-plus --&gt; &lt;dependency&gt; &lt;groupId&gt;com.baomidou&lt;/groupId&gt; &lt;artifactId&gt;mybatis-plus-boot-starter&lt;/artifactId&gt; &lt;version&gt;3.4.2&lt;/version&gt; &lt;/dependency&gt; 复制代码 配置文件
+datasource: test2: driverClassName: com.mysql.cj.jdbc.Driver jdbcUrl: jdbc:mysql://127.0.0.1:3306/test2?useSSL=true&amp;maxAllowedPacket=16777216&amp;pinGlobalTxToPhysicalConnection=true&amp;nullNamePatternMatchesAll=true&amp;autoReconnect=true&amp;failOverReadOnly=false&amp;useLegacyDatetimeCode=false&amp;serverTimezone=Asia/Shanghai username: password: poolName: test2 test: driverClassName: com." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/5149448aeba04df3d927d230872164c8/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-09-21T11:57:08+08:00" />
+<meta property="article:modified_time" content="2022-09-21T11:57:08+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">SpringBoot 配置多数据源并支持事务及其原理</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>在项目中，有时会遇到使用多个数据源的情况，并且需要支持事务。解决方式可以有以下几种：</p> 
+<ul><li>对每个数据源手动配置orm框架（mybatis、jpa等）及事务管理器</li><li>使用 dynamic-datasource-spring-boot-starter 配置动态数据源</li></ul> 
+<p>这里以同时使用jpa和mybatis-plus两种orm框架操作不同数据源为例，分别介绍两种实现方式。</p> 
+<h3>首先了解一下 spring 事务实现的方式</h3> 
+<p>以 <code>@Transactional</code> 注解为例 (也可以看 TransactionTemplate， 这个流程更简单一点)。</p> 
+<p>入口：<code>ProxyTransactionManagementConfiguration</code> （从 config 类入手，需要哪些bean一目了然，然后直接顺着看下去就可以了）</p> 
+<p>主要有以下3个bean</p> 
+<ul><li><code>TransactionAttributeSource</code>：实现是 AnnotationTransactionAttributeSource， 提供从（存在 <code>@Transactional</code> 注解的）方法上读取事务的属性（注解的属性）的功能</li><li><code>TransactionInterceptor</code>：事务方法拦截器的bean，在执行事务方法时，转到 (<code>TransactionAspectSupport#invokeWithinTransaction</code>) 方法，即spring事务处理的主要逻辑。</li><li><code>BeanFactoryTransactionAttributeSourceAdvisor</code>：一个advisor（包含一个 Pointcut 切点和一个 Advice 通知），advice就是上面的事务拦截器，Pointcut 切点匹配能通过 <code>TransactionAttributeSource</code> 获取到事务信息的方法。</li></ul> 
+<p>拦截器逻辑大概如下</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/23/1e/1THpqBrC_o.png"></p> 
+<p>在执行被拦截的事务方法中对数据进行crud时，orm框架会从 TransactionSynchronizationManager 中的 ThradLocal 获取 之前创建的 connection (DataSourceUtils)；</p> 
+<hr> 
+<h3>多数据源实现事务</h3> 
+<h4>每个数据源手动配置orm框架</h4> 
+<p>这种方式是通过手动声明创建orm框架对应的bean来实现多数据源的操作，即每个数据源都自己手动创建一套对用的bean。</p> 
+<p>（其实如果使用的spring而不是springboot的话，就不会有这种多数据源的疑问，因为本来就要自己声明bean。）</p> 
+<p>依赖</p> 
+<pre><code>&lt;dependency&gt;
+    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+    &lt;artifactId&gt;spring-boot-starter-data-jpa&lt;/artifactId&gt;
+&lt;/dependency&gt;
+
+&lt;!-- 也可以直接依赖 mybatis-plus --&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;com.baomidou&lt;/groupId&gt;
+    &lt;artifactId&gt;mybatis-plus-boot-starter&lt;/artifactId&gt;
+    &lt;version&gt;3.4.2&lt;/version&gt;
+&lt;/dependency&gt;
+
+复制代码</code></pre> 
+<p>配置文件</p> 
+<pre><code>datasource:
+  test2:
+    driverClassName: com.mysql.cj.jdbc.Driver
+    jdbcUrl: jdbc:mysql://127.0.0.1:3306/test2?useSSL=true&amp;maxAllowedPacket=16777216&amp;pinGlobalTxToPhysicalConnection=true&amp;nullNamePatternMatchesAll=true&amp;autoReconnect=true&amp;failOverReadOnly=false&amp;useLegacyDatetimeCode=false&amp;serverTimezone=Asia/Shanghai
+    username: 
+    password: 
+    poolName: test2
+
+  test:
+    driverClassName: com.mysql.cj.jdbc.Driver
+    jdbcUrl: jdbc:mysql://127.0.0.1:3306/test?useSSL=true&amp;maxAllowedPacket=16777216&amp;pinGlobalTxToPhysicalConnection=true&amp;nullNamePatternMatchesAll=true&amp;autoReconnect=true&amp;failOverReadOnly=false&amp;useLegacyDatetimeCode=false&amp;serverTimezone=Asia/Shanghai
+    username: 
+    password: 
+    poolName: test
+复制代码</code></pre> 
+<p>配置jpa</p> 
+<pre><code>@Configuration
+@EnableTransactionManagement
+@EnableJpaRepositories(
+        entityManagerFactoryRef = "testEntityManagerFactory",
+        basePackages = {"demo.jpa.repository"}
+)
+public class JpaConfig {
+
+    /**
+     * 配置 DataSource，读取 datasource.test 下的配置
+     * @Primary 设置为默认的datasource
+     */
+    @Primary
+    @Bean(name = "testDataSource")
+    @ConfigurationProperties(prefix = "datasource.test")
+    public DataSource dataSource() {
+        HikariDataSource hikariDataSource = DataSourceBuilder.create().type(HikariDataSource.class).build();
+        hikariDataSource.setConnectionInitSql("set names utf8mb4");
+        return hikariDataSource;
+    }
+
+    @Bean(name = "testEntityManagerFactory")
+    public LocalContainerEntityManagerFactoryBean entityManagerFactory(
+            EntityManagerFactoryBuilder builder,
+            @Qualifier("testDataSource") DataSource dataSource) {
+        return builder
+                .dataSource(dataSource)
+                .packages("demo.jpa.entity")
+                .build();
+    }
+
+    @Bean(name = "testEntityManager")
+    public EntityManager entityManager(@Qualifier("testEntityManagerFactory") EntityManagerFactory factory) {
+        return factory.createEntityManager();
+    }
+
+    // 配置 jpa 事务管理器
+    @Primary
+    @Bean(name = "transactionManager")
+    public PlatformTransactionManager transactionManager(
+            @Qualifier("testEntityManagerFactory") EntityManagerFactory
+                    entityManagerFactory) {
+        return new JpaTransactionManager(entityManagerFactory);
+    }
+}
+
+复制代码</code></pre> 
+<p>配置 mybatis-plus</p> 
+<pre><code>@Configuration
+public class MybaticConfig {
+
+    @Bean(name = "test2Datasource")
+    @ConfigurationProperties(prefix = "datasource.test2")
+    public DataSource dataSource() {
+        HikariDataSource hikariDataSource = DataSourceBuilder.create().type(HikariDataSource.class).build();
+        hikariDataSource.setConnectionInitSql("set names utf8mb4");
+        return hikariDataSource;
+    }
+
+    /**
+     * 手动配置mybatis-plus sqlSessionFactory
+     * 注意: 部分mybatis-plus-starter中的默认配置得手动加上
+     */
+    @Bean(name = "test2SqlSessionFactory")
+    public MybatisSqlSessionFactoryBean tikuSqlSessionFactory(@Qualifier("test2Datasource") DataSource dataSource) throws IOException {
+        MybatisSqlSessionFactoryBean mybatisSqlSessionFactoryBean = new MybatisSqlSessionFactoryBean();
+        mybatisSqlSessionFactoryBean.setTypeAliasesPackage("demo.mybatisplus.entity");
+        mybatisSqlSessionFactoryBean.setMapperLocations(new PathMatchingResourcePatternResolver().getResources("classpath:/mapper/*.xml"));
+        mybatisSqlSessionFactoryBean.setDataSource(dataSource);
+        // 设置分页插件
+        mybatisSqlSessionFactoryBean.setPlugins(mybatisPlusInterceptor());
+        return mybatisSqlSessionFactoryBean;
+    }
+
+    // 配置 mapper 扫描路径
+    @Bean(name = "test2MapperScannerConfigurer")
+    public MapperScannerConfigurer mapperScannerConfigurer() {
+        MapperScannerConfigurer mapperScannerConfigurer = new MapperScannerConfigurer();
+        mapperScannerConfigurer.setBasePackage("demo.mybatisplus.mapper");
+        mapperScannerConfigurer.setSqlSessionFactoryBeanName("test2SqlSessionFactory");
+        return mapperScannerConfigurer;
+    }
+
+    // 分页插件
+    @Bean
+    public MybatisPlusInterceptor mybatisPlusInterceptor() {
+        MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();
+        interceptor.addInnerInterceptor(new PaginationInnerInterceptor(DbType.MYSQL));
+        return interceptor;
+    }
+
+    // 配置 事务管理器   
+    @Bean(name = "test2TransactionManager")
+    public DataSourceTransactionManager tikuTransactionManager(@Qualifier("test2Datasource") DataSource dataSource) {
+        return new DataSourceTransactionManager(dataSource);
+    }
+
+}
+
+复制代码</code></pre> 
+<p>使用</p> 
+<p>在使用事务的时候，在 @Transactional 注解中指定对应的事务管理器的bean就可以了。</p> 
+<pre><code>    // jpa 事务，（配置了primary，所以不用指定事务管理器）
+    @Transactional
+    public void testJpaTx() {
+        UserInfo userInfo = new UserInfo();
+        userInfo.setName("name-1");
+        userInfoRepository.save(userInfo);
+
+        // 这里debug断点，验证事务是否生效
+        userInfo = new UserInfo();
+        userInfo.setName("name-2");
+        userInfoRepository.save(userInfo);
+    }
+    
+    // mybatis-plus, 指定 事务管理器
+    @Transactional(transactionManager = "test2TransactionManager")
+    public void testMbTx() {
+        UserInfo2 userInfo = new UserInfo2();
+        userInfo.setName("name-1");
+        userInfo2Mapper.insert(userInfo);
+
+        userInfo2 = new UserInfo2();
+        userInfo.setName("name-2");
+        userInfo2Mapper.insert(userInfo);
+    }
+
+复制代码</code></pre> 
+<p>不支持多个数据源事务，手动配置较繁琐</p> 
+<h4>动态数据源</h4> 
+<p>dynamic-datasource-spring-boot-starter 也是 baomidou 提供的（同mybatis-plus），通过 @DS 注解就能实现多数据源的操作。</p> 
+<p>依赖</p> 
+<pre><code>    &lt;dependency&gt;
+        &lt;groupId&gt;com.baomidou&lt;/groupId&gt;
+        &lt;artifactId&gt;dynamic-datasource-spring-boot-starter&lt;/artifactId&gt;
+        &lt;version&gt;3.4.1&lt;/version&gt;
+    &lt;/dependency&gt;
+    
+    &lt;dependency&gt;
+        &lt;groupId&gt;com.baomidou&lt;/groupId&gt;
+        &lt;artifactId&gt;mybatis-plus-boot-starter&lt;/artifactId&gt;
+        &lt;version&gt;3.4.2&lt;/version&gt;
+    &lt;/dependency&gt;
+        
+    &lt;dependency&gt;
+        &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+        &lt;artifactId&gt;spring-boot-starter-data-jpa&lt;/artifactId&gt;
+    &lt;/dependency&gt;
+复制代码</code></pre> 
+<p>配置文件</p> 
+<pre><code>spring:
+  datasource:
+    dynamic:
+      # 指定默认的数据源
+      primary: test 
+      datasource:
+        test:
+          driverClassName: com.mysql.cj.jdbc.Driver
+          url: jdbc:mysql://127.0.0.1:3306/test?useSSL=true&amp;maxAllowedPacket=16777216&amp;pinGlobalTxToPhysicalConnection=true&amp;nullNamePatternMatchesAll=true&amp;autoReconnect=true&amp;failOverReadOnly=false&amp;useLegacyDatetimeCode=false&amp;serverTimezone=Asia/Shanghai
+          username: 
+          password: 
+          poolName: test
+        test2:
+          driverClassName: com.mysql.cj.jdbc.Driver
+          url: jdbc:mysql://127.0.0.1:3306/test2?useSSL=true&amp;maxAllowedPacket=16777216&amp;pinGlobalTxToPhysicalConnection=true&amp;nullNamePatternMatchesAll=true&amp;autoReconnect=true&amp;failOverReadOnly=false&amp;useLegacyDatetimeCode=false&amp;serverTimezone=Asia/Shanghai
+          username: 
+          password: 
+          poolName: test2
+复制代码</code></pre> 
+<p>使用示例</p> 
+<p>只需要在对应的类或方法上加上 @DS 注解并指定数据源就可以了。</p> 
+<p>注意：<strong>@DS 必须加在 @Transactional 对应的类或者方法上</strong>。 如在 mapper中加了@DS，但是 @Transactional 加在 service 方法中，此时获取为默认的datasource。（因为在事务中已经获取了一次datasource的connection，而此时无DS注解）</p> 
+<pre><code>@DS("test")
+@Repository
+public interface UserInfoRepository extends JpaRepository&lt;UserInfo, Integer&gt; {
+}
+
+
+@DS("test2")
+@Mapper
+public interface UserInfo2Mapper extends BaseMapper&lt;UserInfo&gt; {
+}
+
+@Service
+public class TestService {
+
+    // 同一个数据源中的事务
+    @DS("test")
+    @Transactional
+    public void testJpaTx() {
+        UserInfo userInfo = new UserInfo();
+        userInfo.setName("name-1");
+        userInfoRepository.save(userInfo);
+
+        // 这里debug断点，验证事务是否生效
+        userInfo = new UserInfo();
+        userInfo.setName("name-2");
+        userInfoRepository.save(userInfo);
+    }
+    
+    // 多数据源事务
+    @DSTransactional
+    public void testMulti() {
+
+        UserInfo userInfo = new UserInfo();
+        userInfo.setName("name-1");
+        userInfoRepository.save(userInfo);
+
+        UserInfo2 userInfo = new UserInfo2();
+        userInfo.setName("name-2");
+        userInfo2Mapper.insert(userInfo);
+    }
+    
+}
+复制代码</code></pre> 
+<p>动态数据源实现原理</p> 
+<p>同样看一下 <code>DynamicDataSourceAutoConfiguration</code> 这个配置相关的类就大概了解了。</p> 
+<ul><li><code>DynamicRoutingDataSource</code>: 动态数据源，内部使用 Map 保存了多个数据源。获取 connection 时，根据 ThreadLocal 中的 dsKey 获取对应的数据源 
+  <ul><li>另：对于多数据源事务 （<code>TransactionContext.getXID() isNotEmpty</code>），会返回一个 <code>ConnectionProxy</code> 并暂存到 ConnectionFactory 中， 该 ConnectionProxy 不会执行 commit、rollback、close 操作事务相关的方法。</li></ul><pre><code>public Connection getConnection() throws SQLException {
+    String xid = TransactionContext.getXID();
+    if (StringUtils.isEmpty(xid)) {
+        // 非多数据源事务直接获取对应 connection
+        return determineDataSource().getConnection();
+    } else {
+        String ds = DynamicDataSourceContextHolder.peek();
+        ds = StringUtils.isEmpty(ds) ? "default" : ds;
+        // 多数据源事务，使用代理的 connection (屏蔽了 commit 等操作)
+        ConnectionProxy connection = ConnectionFactory.getConnection(ds);
+        return connection == null ? getConnectionProxy(ds, determineDataSource().getConnection()) : connection;
+    }
+}
+
+// 获取 代理的 connection， 并将其存入 ConnectionFactory， 内部维护一个 ThreadLocal&lt;Map&gt;， 同时会 setAutoCommit(false) 开启事务
+private Connection getConnectionProxy(String ds, Connection connection) {
+    ConnectionProxy connectionProxy = new ConnectionProxy(connection, ds);
+    ConnectionFactory.putConnection(ds, connectionProxy);
+    return connectionProxy;
+}
+
+// DynamicRoutingDataSource
+// 从 ThreadLocal 获取当前 dsKey 然后获取对应 datasource
+public DataSource determineDataSource() {
+    String dsKey = DynamicDataSourceContextHolder.peek();
+    return getDataSource(dsKey);
+}
+复制代码</code></pre> </li><li><code>DynamicDataSourceAnnotationInterceptor</code>: 处理 @DS 注解的拦截器，获取 @DS 指定的 datasource 并存入 ThreadLocal 中， 供 DynamicRoutingDataSource 使用</li><li><code>dynamicTransactionAdvisor</code>: 处理 <code>@DSTransactional</code> 多数据源事务注解的拦截器，在执行目标方法前，标记为多数据源事务 (<code>TransactionContext.bind(xid)</code>)， 执行完后， 通知 ConnectionFactory 中的 connectionProxy 进行事务的 commit 或 rollback。 <pre><code>// DynamicLocalTransactionAdvisor
+public Object invoke(MethodInvocation methodInvocation) throws Throwable {
+    if (!StringUtils.isEmpty(TransactionContext.getXID())) {
+        return methodInvocation.proceed();
+    }
+    // 事务是否成功
+    boolean state = true;
+    Object o;
+    String xid = UUID.randomUUID().toString();
+    // 标记当前为 多数据源事务
+    TransactionContext.bind(xid);
+    try {
+        o = methodInvocation.proceed();
+    } catch (Exception e) {
+        state = false;
+        throw e;
+    } finally {
+        // 通知 connectionProxy 进行 commit 或 rollback
+        ConnectionFactory.notify(state);
+        TransactionContext.remove();
+    }
+    return o;
+}</code></pre> </li></ul> 
+<p></p> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/fd18b797df6dabb06e42553245b19c07/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">力扣 第435题 无重叠区间</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/6e954d673de310787246a38bcf33a268/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Cesium 车辆跟踪事件气泡弹窗追随</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

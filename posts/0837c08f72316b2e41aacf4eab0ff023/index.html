@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>转：dubbo新增最短响应时间-负载均衡策略分析 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="转：dubbo新增最短响应时间-负载均衡策略分析" />
+<meta property="og:description" content="2020 年 5 月 15 日，Dubbo 发布 2.7.7 release 版本。其中有这么一个 Features
+新增一个负载均衡策略。
+先看一下提交记录：
+https://github.com/chickenlj/incubator-dubbo/commit/6d2ba7ec7b5a1cb7971143d4262d0a1bfc826d45
+负载均衡是基于 SPI 实现的，我们看到对应的文件中多了一个名为 shortestresponse 的 key。
+这个，就是新增的负载均衡策略了。看名字，你也知道了这个策略的名称就叫：最短响应。
+所以截止 2.7.7 版本，官方提供了五种负载均衡算法了，他们分别是：
+ConsistentHashLoadBalance 一致性哈希负载均衡LeastActiveLoadBalance 最小活跃数负载均衡RandomLoadBalance 加权随机负载均衡RoundRobinLoadBalance 加权轮询负载均衡ShortestResponseLoadBalance 最短响应时间负载均衡 最短响应时间负载均衡
+首先，我们看一下这个类上的注解，先有个整体的认知。
+org.apache.dubbo.rpc.cluster.loadbalance.ShortestResponseLoadBalance
+我来翻译一下是什么意思：
+从多个服务提供者中选择出调用成功的且响应时间最短的服务提供者，由于满足这样条件的服务提供者有可能有多个。所以当选择出多个服务提供者后要根据他们的权重做分析。但是如果只选择出来了一个，直接用选出来这个。如果真的有多个，看它们的权重是否一样，如果不一样，则走加权随机算法的逻辑。如果它们的权重是一样的，则随机调用一个。 再配个图，就好理解了，可以先不管图片中的标号：
+有了上面的整体概念的铺垫了，接下来分析源码的时候就简单了。
+源码一共就 66 行，我把它分为 5 个片段去一一分析。
+这里一到五的标号，对应上面流程图中的标号。我们一个个的说。
+标号为①的部分 这一部分是定义并初始化一些参数，为接下来的代码服务的，翻译一下每个参数对应的注释：
+length 参数：服务提供者的数量。
+shortestResponse 参数：所有服务提供者的估计最短响应时间。（这个地方我觉得注释描述的不太准确，看后面的代码可以知道这只是一个零时变量，在循环中存储当前最短响应时间是多少。）
+shortCount 参数：具有相同最短响应时间的服务提供者个数，初始化为 0。
+shortestIndexes 参数：数组里面放的是具有相同最短响应时间的服务提供者的下标。
+weights 参数：每一个服务提供者的权重。
+totalWeight 参数：多个具有相同最短响应时间的服务提供者对应的预热（预热这个点还是挺重要的，在下面讲最小活跃数负载均衡的时候有详细说明）权重之和。
+firstWeight 参数：第一个具有最短响应时间的服务提供者的权重。
+sameWeight 参数：多个满足条件的提供者的权重是否一致。
+标号为②的部分 这一部分代码的关键，就在上面框起来的部分。而框起来的部分，最关键的地方，就在于第一行。
+获取调用成功的平均时间。
+成功调用的平均时间怎么算的？
+调用成功的请求数总数对应的总耗时 / 调用成功的请求数总数 = 成功调用的平均时间。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/0837c08f72316b2e41aacf4eab0ff023/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-06-05T19:44:03+08:00" />
+<meta property="article:modified_time" content="2020-06-05T19:44:03+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">转：dubbo新增最短响应时间-负载均衡策略分析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><strong><span style="color:#f33b45;"><u>2020 年 5 月 15 日，Dubbo 发布 2.7.7 release 版本。其中有这么一个 Features</u></span></strong></p> 
+<p><img alt="" src="https://images2.imgbox.com/04/c0/a9j6XG9d_o.png"></p> 
+<p>新增一个负载均衡策略。</p> 
+<p>先看一下提交记录：</p> 
+<p><code>https://github.com/chickenlj/incubator-dubbo/commit/6d2ba7ec7b5a1cb7971143d4262d0a1bfc826d45</code></p> 
+<p><img alt="" src="https://images2.imgbox.com/6f/b4/hBJY2bMF_o.png"></p> 
+<p>负载均衡是基于 SPI 实现的，我们看到对应的文件中多了一个名为 shortestresponse 的 key。</p> 
+<p>这个，就是新增的负载均衡策略了。看名字，你也知道了这个策略的名称就叫：最短响应。</p> 
+<p>所以截止 2.7.7 版本，官方提供了五种负载均衡算法了，他们分别是：</p> 
+<ol><li>ConsistentHashLoadBalance 一致性哈希负载均衡</li><li>LeastActiveLoadBalance 最小活跃数负载均衡</li><li>RandomLoadBalance 加权随机负载均衡</li><li>RoundRobinLoadBalance 加权轮询负载均衡</li><li>ShortestResponseLoadBalance 最短响应时间负载均衡</li></ol> 
+<p>最短响应时间负载均衡</p> 
+<p>首先，我们看一下这个类上的注解，先有个整体的认知。</p> 
+<p><code>org.apache.dubbo.rpc.cluster.loadbalance.ShortestResponseLoadBalance</code></p> 
+<p><img alt="" src="https://images2.imgbox.com/cd/03/oP8xnbnx_o.png"></p> 
+<p>我来翻译一下是什么意思：</p> 
+<ol><li>从多个服务提供者中选择出调用成功的且响应时间最短的服务提供者，由于满足这样条件的服务提供者有可能有多个。所以当选择出多个服务提供者后要根据他们的权重做分析。</li><li>但是如果只选择出来了一个，直接用选出来这个。</li><li>如果真的有多个，看它们的权重是否一样，如果不一样，则走加权随机算法的逻辑。</li><li>如果它们的权重是一样的，则随机调用一个。</li></ol> 
+<p>再配个图，就好理解了，可以先不管图片中的标号：</p> 
+<p><img alt="" src="https://images2.imgbox.com/23/7f/skWR6BaY_o.png"></p> 
+<p>有了上面的整体概念的铺垫了，接下来分析源码的时候就简单了。</p> 
+<p>源码一共就 66 行，我把它分为 5 个片段去一一分析。</p> 
+<p><img alt="" src="https://images2.imgbox.com/40/b5/6rjY9dl9_o.png"></p> 
+<p>这里一到五的标号，对应上面流程图中的标号。我们一个个的说。</p> 
+<h3 id="autoid-0-0-0">标号为①的部分</h3> 
+<p><img alt="" src="https://images2.imgbox.com/89/a2/RwQeh85A_o.png"></p> 
+<p>这一部分是定义并初始化一些参数，为接下来的代码服务的，翻译一下每个参数对应的注释：</p> 
+<p>length 参数：服务提供者的数量。</p> 
+<p>shortestResponse 参数：所有服务提供者的估计最短响应时间。（这个地方我觉得注释描述的不太准确，看后面的代码可以知道这只是一个零时变量，在循环中存储当前最短响应时间是多少。）</p> 
+<p>shortCount 参数：具有相同最短响应时间的服务提供者个数，初始化为 0。</p> 
+<p>shortestIndexes 参数：数组里面放的是具有相同最短响应时间的服务提供者的下标。</p> 
+<p>weights 参数：每一个服务提供者的权重。</p> 
+<p>totalWeight 参数：多个具有相同最短响应时间的服务提供者对应的预热（预热这个点还是挺重要的，在下面讲最小活跃数负载均衡的时候有详细说明）权重之和。</p> 
+<p>firstWeight 参数：第一个具有最短响应时间的服务提供者的权重。</p> 
+<p>sameWeight 参数：多个满足条件的提供者的权重是否一致。</p> 
+<h3>标号为②的部分</h3> 
+<p><img alt="" src="https://images2.imgbox.com/77/ec/yhIW3rxH_o.png"></p> 
+<p>这一部分代码的关键，就在上面框起来的部分。而框起来的部分，最关键的地方，就在于第一行。</p> 
+<p><img alt="" src="https://images2.imgbox.com/1c/70/U2KFt0kt_o.png"></p> 
+<p>获取调用成功的平均时间。</p> 
+<p>成功调用的平均时间怎么算的？</p> 
+<p>调用成功的请求数总数对应的总耗时 / 调用成功的请求数总数 = 成功调用的平均时间。</p> 
+<p>所以，在下面这个方法中，首先获取到了调用成功的请求数总数：</p> 
+<p><img alt="" src="https://images2.imgbox.com/53/b5/3j6ceIYf_o.png"></p> 
+<p>这个 succeeded 参数是怎么来的呢？</p> 
+<p><img alt="" src="https://images2.imgbox.com/c1/37/mgARwVMF_o.png"></p> 
+<p>答案就是：总的请求数减去请求失败的数量，就是请求成功的总数！</p> 
+<p><img alt="" src="https://images2.imgbox.com/c7/e5/Zh5kGAG0_o.png"></p> 
+<p>那么为什么不能直接获取请求成功的总数呢？</p> 
+<p>别问，问就是没有这个选项啊。你看，在 RpcStatus 里面没有这个参数呀。</p> 
+<p><img alt="" src="https://images2.imgbox.com/e6/6d/JgNITuN6_o.png"></p> 
+<p>请求成功的总数我们有了，接下来成功总耗时怎么拿到的呢？</p> 
+<p><img alt="" src="https://images2.imgbox.com/38/b9/fc5YJlEB_o.png"></p> 
+<p>答案就是：总的请求时间减去请求失败的总时间，就是请求成功的总耗时！</p> 
+<p>那么为什么不能直接获取请求成功的总耗时呢？</p> 
+<p>别问，问就是......</p> 
+<p>我们看一下 RpcStatus 中的这几个参数是在哪里维护的：</p> 
+<p><code>org.apache.dubbo.rpc.RpcStatus#endCount(org.apache.dubbo.rpc.RpcStatus, long, boolean)</code></p> 
+<p><img alt="" src="https://images2.imgbox.com/5b/96/UYtrTyGz_o.png">其中的第二个入参是本次请求调用时长，第三个入参是本次调用是否成功。</p> 
+<p>具体的方法不必细说了吧，已经显而易见了。</p> 
+<p>再回去看框起来的那三行代码：</p> 
+<p><img alt="" src="https://images2.imgbox.com/8f/c2/wMdPsu6k_o.png"></p> 
+<ol><li>第一行获取到了该服务提供者成功请求的平均耗时。</li><li>第二行获取的是该服务提供者的活跃数，也就是堆积的请求数。</li><li>第三行获取的就是如果当前这个请求发给这个服务提供者预计需要等待的时间。乘以 active 的原因是因为它需要排在堆积的请求的后面嘛。</li></ol> 
+<p>这里，我们就获取到了如果选择当前循环中的服务提供者的预计等待时间是多长。</p> 
+<p>后面的代码怎么写？</p> 
+<p>当然是出来一个更短的就把这个踢出去呀，或者出来一个一样长时间的就记录一下，接着去 pk 权重了。</p> 
+<p>所以，接下来 shortestIndexes 参数和 weights 参数就排上用场了：</p> 
+<p><img alt="" src="https://images2.imgbox.com/6c/ed/fkBd6Lx8_o.png"></p> 
+<p>另外，多说一句的，它里面有这样的一行注释：</p> 
+<p><img alt="" src="https://images2.imgbox.com/36/01/ISjtV3W2_o.png"></p> 
+<p>和 LeastActiveLoadBalance 负载均衡策略一致，我给你截图对比一下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/47/f2/TvEeUBIr_o.png">可以看到，确实是非常的相似，只是一个是判断谁的响应时间短，一个是判断谁的活跃数低。</p> 
+<h3>标号为③的地方</h3> 
+<p>标号为③的地方是这样的：</p> 
+<p><img alt="" src="https://images2.imgbox.com/af/ea/7n1oesC9_o.png"></p> 
+<p>里面参数的含义我们都知道了，所以，标号为③的地方的含义就很好解释了：经过选择后只有一个服务提供者满足条件。所以，直接使用这个服务提供者。</p> 
+<h2>标号为④的地方</h2> 
+<p><img alt="" src="https://images2.imgbox.com/92/0e/w3zrL2zU_o.png"></p> 
+<p>这个地方我就不展开讲了（后面的加权随机负载均衡那一小节有详细说明），熟悉的朋友一眼就看出来这是加权随机负载均衡的写法了。</p> 
+<p>不信？我给你对比一下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/db/79/reUpF9Kb_o.png"></p> 
+<p>你看，是不是一模一样的。</p> 
+<h2>标号为⑤的地方</h2> 
+<p><img alt="" src="https://images2.imgbox.com/9a/68/6MNxKUXF_o.png"></p> 
+<p>一行代码，没啥说的。就是从多个满足条件的且权重一样的服务提供者中随机选择一个。</p> 
+<p>如果一定要多说一句的话，我截个图吧：</p> 
+<p><img alt="" src="https://images2.imgbox.com/9c/39/xJ7wgzf5_o.png">可以看到，这行代码在最短响应时间、加权随机、最小活跃数负载均衡策略中都出现了，且都在最后一行。</p> 
+<p>好了，到这里最短响应时间负载均衡策略就讲完了，你再回过头去看那张流程图，会发现其实流程非常的清晰，完全可以根据代码结构画出流程图。一个是说明这个算法是真的不复杂，另一个是说明好的代码会说话。</p> 
+<h3>优雅</h3> 
+<p>你知道 Dubbo 加入这个新的负载均衡算法提交了几个文件吗？</p> 
+<p>四个文件，其中还包含两个测试文件：</p> 
+<p><img alt="" src="https://images2.imgbox.com/9b/94/5Dx1AkBS_o.png"></p> 
+<p>这里就是策略模式和 SPI 的好处。对原有的负载均衡策略没有任何侵略性。只需要按照规则扩展配置文件，实现对应接口即可。</p> 
+<p>这是什么？</p> 
+<p>这就是值得学习优雅！</p> 
+<p>那我们优雅的进入下一议题。</p> 
+<h2>最小活跃数负载均衡</h2> 
+<p>这一小节所示源码，没有特别标注的地方均为 2.6.0 版本。</p> 
+<p>为什么没有用截止目前（我当时写这段文章的时候是2019年12月01日）的最新的版本号 2.7.4.1 呢？因为 2.6.0 这个版本里面有两个 bug 。从 bug 讲起来，印象更加深刻。</p> 
+<p>最后会对 2.6.0/2.6.5/2.7.4.1 版本进行对比，通过对比学习，加深印象。</p> 
+<p>我这里补充一句啊，仅仅半年的时间，版本号就从 2.7.4.1 到了 2.7.7。其中还包含一个 2.7.5 这样的大版本。</p> 
+<p>所以还有人说 Dubbo 不够活跃？</p> 
+<h3>Demo 准备</h3> 
+<p>我看源码的习惯是先搞个 Demo 把调试环境搭起来。然后带着疑问去抽丝剥茧的 Debug，<strong>不放过在这个过程中在脑海里面一闪而过的任何疑问。</strong></p> 
+<p>这一小节分享的是Dubbo负载均衡策略之一最小活跃数(LeastActiveLoadBalance)。所以我先搭建一个 Dubbo 的项目，并启动三个 provider 供 consumer 调用。</p> 
+<p>三个 provider 的 loadbalance 均配置的是 leastactive。权重分别是默认权重、200、300。</p> 
+<p><img alt="" src="https://images2.imgbox.com/fe/eb/8tehbVw5_o.png">**默认权重是多少？**后面看源码的时候，源码会告诉你。</p> 
+<p>三个不同的服务提供者会给调用方返回自己是什么权重的服务。</p> 
+<p><img alt="" src="https://images2.imgbox.com/87/ea/Nm8iVoSe_o.png"></p> 
+<p>启动三个实例。(注:上面的 provider.xml 和 DemoServiceImpl 其实只有一个，每次启动的时候手动修改端口、权重即可。)</p> 
+<p><img alt="" src="https://images2.imgbox.com/e2/8d/ZqkzGi0O_o.png"></p> 
+<p>到 zookeeper 上检查一下，服务提供者是否正常：</p> 
+<p><img alt="" src="https://images2.imgbox.com/fd/f8/8BXoSgIh_o.png">可以看到三个服务提供者分别在 20880、20881、20882 端口。（每个红框的最后5个数字就是端口号）。</p> 
+<p>最后，我们再看服务消费者。消费者很简单，配置consumer.xml</p> 
+<p><img alt="" src="https://images2.imgbox.com/dc/2f/1ExFl2Pa_o.png"></p> 
+<p>直接调用接口并打印返回值即可。</p> 
+<p><img alt="" src="https://images2.imgbox.com/a0/b2/NB7l15zp_o.png"></p> 
+<h3>断点打在哪？</h3> 
+<p>相信很多朋友也很想看源码，但是不知道从何处下手。处于一种在源码里面"乱逛"的状态，一圈逛下来，收获并不大。</p> 
+<p>这一部分我想分享一下我是怎么去看源码。首先我会带着问题去源码里面寻找答案，即有针对性的看源码。</p> 
+<p>如果是这种框架类的，正如上面写的，我会先翻一翻官网（Dubbo 的官方文档其实写的挺好了），然后搭建一个简单的 Demo 项目，然后 Debug 跟进去看。Debug 的时候当然需要是设置断点的，那么这个断点如何设置呢？</p> 
+<p>第一个断点，当然毋庸置疑，是打在调用方法的地方，比如本文中，第一个断点是在这个地方：</p> 
+<p><img alt="" src="https://images2.imgbox.com/1a/f9/iwu0wsSB_o.png"></p> 
+<p>接下里怎么办？</p> 
+<p>你当然可以从第一个断点处，一步一步的跟进去。但是在这个过程中，你发现了吗？大多数情况你都是被源码牵着鼻子走的。本来你就只带着一个问题去看源码的，有可能你Debug了十分钟，还没找到关键的代码。也有可能你Debug了十分钟，问题从一个变成了无数个。</p> 
+<p>所以不要慌，慢慢分析。</p> 
+<p>首先怎么避免被源码牵着四处乱逛呢？</p> 
+<p>我们得找到一个突破口，还记得我在《很开心，在使用mybatis的过程中我踩到一个坑》这篇文章中提到的逆向排查的方法吗？这次的文章,我再次展示一下该方法。</p> 
+<p>看源码之前，我们的目标要十分明确，就是想要找到 Dubbo 最小活跃数算法的具体实现类以及实现类的具体逻辑是什么。</p> 
+<p>根据我们的 provider.xml 里面的：</p> 
+<p><img alt="" src="https://images2.imgbox.com/95/10/8nMj3ARc_o.png"></p> 
+<p>很明显，我们知道 loadbalance 是关键字。所以我们拿着 loadbalance 全局搜索，可以看到 Dubbo 包下面的 LoadBalance。</p> 
+<p><img alt="" src="https://images2.imgbox.com/80/f9/LGMEKLCC_o.png"></p> 
+<p>这是一个 SPI 接口 com.alibaba.dubbo.rpc.cluster.LoadBalance：</p> 
+<p><img alt="" src="https://images2.imgbox.com/86/79/ADgkPEmb_o.png"></p> 
+<p>其实现类为:</p> 
+<p><code>com.alibaba.dubbo.rpc.cluster.loadbalance.AbstractLoadBalance</code></p> 
+<p>AbstractLoadBalance 是一个抽象类，该类里面有一个抽象方法doSelect。这个抽象方法其中的一个实现类就是我们要分析的最少活跃次数负载均衡的源码。</p> 
+<p><img alt="" src="https://images2.imgbox.com/ac/64/fXaPhAUv_o.png"></p> 
+<p>同时，到这里我们知道了 LoadBalance 是一个 SPI 接口，说明我们可以扩展自己的负载均衡策略。抽象方法 doSelect 有四个实现类。这个四个实现类，就是 Dubbo 官方提供的负载均衡策略（截止 2.7.7 版本之前），他们分别是:</p> 
+<ol><li>ConsistentHashLoadBalance 一致性哈希算法</li><li>LeastActiveLoadBalance 最小活跃数算法</li><li>RandomLoadBalance 加权随机算法</li><li>RoundRobinLoadBalance 加权轮询算法</li></ol> 
+<p>我们已经找到了 LeastActiveLoadBalance 这个类了，那么我们的第二个断点打在哪里已经很明确了。</p> 
+<p><img alt="" src="https://images2.imgbox.com/be/00/4kHhOnBZ_o.png"></p> 
+<p>目前看来，两个断点就可以支撑我们的分析了。</p> 
+<p>有的朋友可能想问，那我想知道 Dubbo 是怎么识别出我们想要的是最少活跃次数算法，而不是其他的算法呢？其他的算法是怎么实现的呢？从第一个断点到第二个断点直接有着怎样的调用链呢？</p> 
+<p><strong>在没有彻底搞清楚最少活跃数算法之前，这些统统先记录在案但不予理睬</strong>。一定要明确目标，带着一个问题进来，就先把带来的问题解决了。之后再去解决在这个过程中碰到的其他问题。<strong>在这样环环相扣解决问题的过程中，你就慢慢的把握了源码的精髓</strong>。这是我个人的一点看源码的心得。供诸君参考。</p> 
+<h3>模拟环境</h3> 
+<p>既然叫做最小活跃数策略。那我们得让现有的三个消费者都有一些调用次数。所以我们得改造一下服务提供者和消费者。</p> 
+<p>服务提供者端的改造如下:</p> 
+<p><img alt="" src="https://images2.imgbox.com/64/94/QhcNKG75_o.png">!</p> 
+<p><img alt="" src="https://images2.imgbox.com/f2/0b/uwGiaqsv_o.png"></p> 
+<p>PS：这里以权重为 300 的服务端为例。另外的两个服务端改造点相同。</p> 
+<p>客户端的改造点如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/37/f8/3M4wnhuc_o.png">一共发送 21 个请求：其中前 20 个先发到服务端让其 hold 住(因为服务端有 sleep)，最后一个请求就是我们需要 Debug 跟踪的请求。</p> 
+<p>运行一下，让程序停在断点的地方,然后看看控制台的输出:</p> 
+<p><img alt="" src="https://images2.imgbox.com/0a/f7/kYRFiY17_o.png"><img alt="" src="https://images2.imgbox.com/39/9f/q8qmHauI_o.png"><img alt="" src="https://images2.imgbox.com/01/e5/j8djDT1K_o.png"></p> 
+<p>权重为300的服务端共计收到9个请求</p> 
+<p>权重为200的服务端共计收到6个请求</p> 
+<p>默认权重的服务端共计收到5个请求</p> 
+<p>我们还有一个请求在 Debug。直接进入到我们的第二个断点的位置，并 Debug 到下图所示的一行代码(可以点看查看大图):</p> 
+<p><img alt="" src="https://images2.imgbox.com/4c/78/JlP1DJei_o.png"></p> 
+<p>正如上面这图所说的：weight=100 回答了一个问题，active=0 提出的一个问题。</p> 
+<p>weight=100 回答了什么问题呢？</p> 
+<p><strong>默认权重是多少？是 100。</strong></p> 
+<p>我们服务端的活跃数分别应该是下面这样的</p> 
+<ul><li>权重为300的服务端，active=9</li><li>权重为200的服务端，active=6</li><li>默认权重(100)的服务端，active=5</li></ul> 
+<p>但是这里<strong>为什么截图中的active会等于 0 呢</strong>？这是一个问题。</p> 
+<p>继续往下 Debug 你会发现，每一个服务端的 active 都是 0。所以相比之下没有一个 invoker 有最小 active 。于是程序走到了根据权重选择 invoker 的逻辑中。</p> 
+<p><img alt="" src="https://images2.imgbox.com/2a/86/LYKeWMZN_o.png"></p> 
+<h3>active为什么是0？</h3> 
+<p>active 为 0 说明在 Dubbo 调用的过程中 active 并没有发生变化。那 active 为什么是 0，其实就是在问 <strong>active 什么时候发生变化</strong>？</p> 
+<p>要回答这个问题我们得知道 active 是在哪里定义的，因为在其定义的地方，必有其修改的方法。</p> 
+<p>下面这图说明了active是定义在RpcStatus类里面的一个类型为AtomicInteger 的成员变量。</p> 
+<p><img alt="" src="https://images2.imgbox.com/0f/3c/XpDHIpwi_o.png"></p> 
+<p>在 RpcStatus 类中，有三处()调用 active 值的方法，一个增加、一个减少、一个获取：</p> 
+<p><img alt="" src="https://images2.imgbox.com/2e/c5/626QNhwn_o.png"></p> 
+<p>很明显，我们需要看的是第一个，在哪里增加。</p> 
+<p>所以我们找到了 beginCount(URL,String) 方法，该方法只有两个 Filter 调用。ActiveLimitFilter，见名知意，这就是我们要找的东西。</p> 
+<p><img alt="" src="https://images2.imgbox.com/e7/23/zzmSxqXR_o.png"></p> 
+<p>com.alibaba.dubbo.rpc.filter.ActiveLimitFilter具体如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/38/c6/ynl5nQTP_o.png"></p> 
+<p>看到这里，我们就知道怎么去回答这个问题了：<strong>为什么active是0呢？因为在客户端没有配置ActiveLimitFilter</strong>。所以，ActiveLimitFilter没有生效，导致active没有发生变化。</p> 
+<p>怎么让其生效呢？已经呼之欲出了。</p> 
+<p><img alt="" src="https://images2.imgbox.com/4e/49/sEb6ukN5_o.png"></p> 
+<p>好了，再来试验一次:</p> 
+<p><img alt="" src="https://images2.imgbox.com/41/89/592awyjy_o.png"><img alt="" src="https://images2.imgbox.com/3d/bc/Djwa2jmi_o.png"></p> 
+<p><img alt="" src="https://images2.imgbox.com/cf/b2/1EzXDwkP_o.png">加上Filter之后，我们通过Debug可以看到，对应权重的活跃数就和我们预期的是一致的了。</p> 
+<p>1.权重为300的活跃数为6</p> 
+<p>2.权重为200的活跃数为11</p> 
+<p>3.默认权重(100)的活跃数为3</p> 
+<p><img alt="" src="https://images2.imgbox.com/b5/30/oP5pW983_o.png"></p> 
+<p>根据活跃数我们可以分析出来，最后我们Debug住的这个请求，<strong>一定会选择默认权重的invoker去执行</strong>，因为他是当前活跃数最小的invoker。如下所示：</p> 
+<p><img alt="" src="https://images2.imgbox.com/9b/19/L6exUUl8_o.png"></p> 
+<p>虽然到这里我们还没开始进行源码的分析，只是把流程梳理清楚了。但是把Demo完整的搭建了起来，而且知道了<strong>最少活跃数负载均衡算法必须配合ActiveLimitFilter使用</strong>，位于RpcStatus类的active字段才会起作用，否则，它就是一个基于权重的算法。</p> 
+<p>比起其他地方直接告诉你，要配置ActiveLimitFilter才行哦，我们自己实验得出的结论，能让我们的印象更加深刻。</p> 
+<p>我们再仔细看一下加上ActiveLimitFilter之后的各个服务的活跃数情况：</p> 
+<ul><li>权重为300的活跃数为6</li><li>权重为200的活跃数为11</li><li>默认权重(100)的活跃数为3</li></ul> 
+<p>你不觉得奇怪吗，<strong>为什么权重为200的活跃数是最高的</strong>？</p> 
+<p><img alt="" src="https://images2.imgbox.com/8e/28/PuHi5LT0_o.png"></p> 
+<p>其在业务上的含义是：我们有三台性能各异的服务器，A服务器性能最好，所以权重为300，B服务器性能中等，所以权重为200，C服务器性能最差，所以权重为100。</p> 
+<p>当我们选择最小活跃次数的负载均衡算法时，我们期望的是性能最好的A服务器承担更多的请求，而真实的情况是性能中等的B服务器承担的请求更多。这与我们的设定相悖。</p> 
+<p>如果你说20个请求数据量太少，可能是巧合，不足以说明问题。说明你还没被我带偏，我们不能基于巧合编程。</p> 
+<p>所以为了验证这个地方确实有问题，我把请求扩大到一万个。</p> 
+<p><img alt="" src="https://images2.imgbox.com/b6/29/5uxKsHJX_o.png"></p> 
+<p>同时，记得扩大 provider 端的 Dubbo 线程池：</p> 
+<p><img alt="" src="https://images2.imgbox.com/a0/b2/FBgWGRti_o.png">由于每个服务端运行的代码都是一样的，所以我们期望的结果应该是权重最高的承担更多的请求。但是最终的结果如图所示:</p> 
+<p><img alt="" src="https://images2.imgbox.com/26/1b/CtGVkOCs_o.png"></p> 
+<p><strong>各个服务器均摊了请求。这就是我文章最开始的时候说的Dubbo 2.6.0 版本中最小活跃数负载均衡算法的Bug之一。</strong></p> 
+<p>接下来，我们带着这个问题，去分析源码。</p> 
+<h3>剖析源码</h3> 
+<p>com.alibaba.dubbo.rpc.cluster.loadbalance.LeastActiveLoadBalance的源码如下，我逐行进行了解读。可以点开查看大图，细细品读，非常爽：</p> 
+<p><img alt="" src="https://images2.imgbox.com/49/58/4ByN2vx3_o.png"></p> 
+<p>下图中红框框起来的部分就是一个基于权重选择invoker的逻辑：</p> 
+<p><img alt="" src="https://images2.imgbox.com/ae/35/buhA2l5Z_o.png">我给大家画图分析一下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/28/f3/ActqZUer_o.png"></p> 
+<p>请仔细分析图中给出的举例说明。同时，上面这图也是按照比例画的，可以直观的看到，<strong>对于某一个请求，区间(权重)越大的服务器，就越可能会承担这个请求。所以，当请求足够多的时候，各个服务器承担的请求数，应该就是区间，即权重的比值。</strong></p> 
+<p>其中第 81 行有调用 getWeight 方法，位于抽象类 AbstractLoadBalance 中，也需要进行重点解读的代码。</p> 
+<p>com.alibaba.dubbo.rpc.cluster.loadbalance.AbstractLoadBalance 的源码如下，我也进行了大量的备注:</p> 
+<p><img alt="" src="https://images2.imgbox.com/b1/ba/q6kDMAyl_o.png"></p> 
+<p>在 AbstractLoadBalance 类中提到了一个<strong>预热</strong>的概念。官网中是这样的介绍该功能的：</p> 
+<p><code>权重的计算过程主要用于保证当服务运行时长小于服务预热时间时，对服务进行降权，避免让服务在启动之初就处于高负载状态。服务预热是一个优化手段，与此类似的还有 JVM 预热。主要目的是让服务启动后“低功率”运行一段时间，使其效率慢慢提升至最佳状态。</code></p> 
+<p>从上图代码里面的公式(演变后)：*<em>计算后的权重=(uptime/warmup)<em>weight</em></em> 可以看出：随着服务启动时间的增加(uptime)，计算后的权重会越来越接近weight。从实际场景的角度来看，随着服务启动时间的增加，服务承担的流量会慢慢上升，没有一个陡升的过程。所以这是一个优化手段。同时 Dubbo 接口还支持延迟暴露。</p> 
+<p>在仔细的看完上面的源码解析图后，配合官网的总结加上我的灵魂画作，相信你可以对最小活跃数负载均衡算法有一个比较深入的理解：</p> 
+<ol><li>遍历 invokers 列表，寻找活跃数最小的 Invoker</li><li>如果有多个 Invoker 具有相同的最小活跃数，此时记录下这些 Invoker 在 invokers 集合中的下标，并累加它们的权重，比较它们的权重值是否相等</li><li>如果只有一个 Invoker 具有最小的活跃数，此时直接返回该 Invoker 即可</li><li>如果有多个 Invoker 具有最小活跃数，且它们的权重不相等，此时处理方式和 RandomLoadBalance 一致</li><li>如果有多个 Invoker 具有最小活跃数，但它们的权重相等，此时随机返回一个即可</li></ol> 
+<p><img alt="" src="https://images2.imgbox.com/34/58/4rKQOH8J_o.png"></p> 
+<p>所以我觉得最小活跃数负载均衡的全称应该叫做：<strong>有最小活跃数用最小活跃数，没有最小活跃数根据权重选择，权重一样则随机返回的负载均衡算法。</strong></p> 
+<h3>Bug在哪里？</h3> 
+<h4>Dubbo2.6.0最小活跃数算法Bug一</h4> 
+<p><img alt="" src="https://images2.imgbox.com/4a/2b/PXjksdnN_o.png"></p> 
+<p>问题出在标号为 ① 和 ② 这两行代码中：</p> 
+<p>标号为 ① 的代码在url中取出的是没有经过 getWeight 方法降权处理的权重值，这个值会被累加到权重总和(totalWeight)中。</p> 
+<p>标号为 ② 的代码取的是经过 getWeight 方法处理后的权重值。</p> 
+<p>取值的差异会导致一个问题，标号为 ② 的代码的左边，offsetWeight 是一个在 [0，totalWeight) 范围内的随机数，右边是经过 getWeight 方法降权后的权重。<strong>所以在经过 leastCount 次的循环减法后，offsetWeight 在服务启动时间还没到热启动设置（默认10分钟）的这段时间内，极大可能仍然大于 0</strong>。导致不会进入到标号为 ③ 的代码中。直接到标号为 ④ 的代码处，变成了随机调用策略。这与设计不符，所以是个 bug。</p> 
+<p>前面章节说的情况就是这个Bug导致的。</p> 
+<p>这个Bug对应的issues地址和pull request分为:</p> 
+<p><code>https://github.com/apache/dubbo/issues/904</code></p> 
+<p><code>https://github.com/apache/dubbo/pull/2172</code></p> 
+<p>那怎么修复的呢？我们直接对比 Dubbo 2.7.4.1 的代码:</p> 
+<p><img alt="" src="https://images2.imgbox.com/5e/42/WkviHmix_o.png"></p> 
+<p>可以看到<strong>获取weight的方法变了</strong>：从url中直接获取变成了通过getWeight方法获取。<strong>获取到的变量名称也变了</strong>：从weight变成了afterWarmup，更加的见名知意。</p> 
+<p>还有一处变化是<strong>获取随机值的方法的变化</strong>，从Randmo变成了ThreadLoaclRandom，性能得到了提升。这处变化就不展开讲了，有兴趣的朋友可以去了解一下。</p> 
+<p><img alt="" src="https://images2.imgbox.com/22/12/NOmTn54y_o.png"></p> 
+<h4 id="autoid-1-0-0">Dubbo2.6.0最小活跃数算法Bug二</h4> 
+<p>这个Bug我没有遇到，但是我在官方文档上看了其描述（官方文档中的版本是2.6.4），引用如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/80/7e/6bgkDgNc_o.png"></p> 
+<p>官网上说这个问题在2.6.5版本进行修复。我对比了2.6.0/2.6.5/2.7.4.1三个版本，发现每个版本都略有不同。如下所示：</p> 
+<p><img alt="" src="https://images2.imgbox.com/58/e8/MZzgbSNX_o.png"></p> 
+<p>图中标记为①的三处代码：</p> 
+<p>2.6.0版本的是有Bug的代码，原因在上面说过了。</p> 
+<p>2.6.5版本的修复方式是获取随机数的时候加一，所以取值范围就从**[0,totalWeight)<strong>变成了</strong>[0,totalWeight]**，这样就可以避免这个问题。</p> 
+<p>2.7.4.1版本的取值范围还是[0,totalWeight)，但是它的修复方法体现在了标记为②的代码处。2.6.0/2.6.5版本标记为②的地方都是<strong>if(offsetWeight&lt;=0)</strong>，而2.7.4.1版本变成了<strong>if(offsetWeight&lt;0)</strong>。</p> 
+<p>你品一品，是不是效果是一样的，但是更加优雅了。</p> 
+<p><img alt="" src="https://images2.imgbox.com/79/87/phbzowJW_o.png">朋友们，魔鬼，都在细节里啊！</p> 
+<p>好了，进入下一议题。</p> 
+<h2 id="autoid-2-0-0">一致性哈希负载均衡</h2> 
+<p>这一部分是对于Dubbo负载均衡策略之一的一致性哈希负载均衡的详细分析。对源码逐行解读、根据实际运行结果，配以丰富的图片，可能是东半球讲一致性哈希算法在Dubbo中的实现最详细的文章了。</p> 
+<p><img alt="" src="https://images2.imgbox.com/49/1b/KKZSOONn_o.png">本小节所示源码，没有特别标注的地方，均为2.7.4.1版本。</p> 
+<p>在撰写本文的过程中，发现了Dubbo2.7.0版本之后的一个bug。会导致性能问题，如果你们的负载均衡配置的是一致性哈希或者考虑使用一致性哈希的话，可以了解一下。</p> 
+<h3>哈希算法</h3> 
+<p>在介绍一致性哈希算法之前，我们看看哈希算法，以及它解决了什么问题，带来了什么问题。</p> 
+<p><img alt="" src="https://images2.imgbox.com/0a/e7/nHJOCL3R_o.png">如上图所示，假设0,1,2号服务器都存储的有用户信息，那么当我们需要获取某用户信息时，因为我们不知道该用户信息存放在哪一台服务器中，所以需要分别查询0,1,2号服务器。这样获取数据的效率是极低的。</p> 
+<p>对于这样的场景，我们可以引入哈希算法。</p> 
+<p><img alt="" src="https://images2.imgbox.com/ee/7b/Sk9651U0_o.png">还是上面的场景，但<strong>前提是每一台服务器存放用户信息时是根据某一种哈希算法存放的</strong>。所以取用户信息的时候，也按照同样的哈希算法取即可。</p> 
+<p>假设我们要查询用户号为100的用户信息，经过某个哈希算法，比如这里的userId mod n，即100 mod 3结果为1。所以用户号100的这个请求最终会被1号服务器接收并处理。</p> 
+<p>这样就解决了无效查询的问题。</p> 
+<p>但是这样的方案会带来什么问题呢？</p> 
+<p><strong>扩容或者缩容时，会导致大量的数据迁移。最少也会影响百分之50的数据。</strong></p> 
+<p><img alt="" src="https://images2.imgbox.com/1b/42/hZUkDAG0_o.png">为了说明问题，我们加入一台服务器3。服务器的数量n就从3变成了4。还是查询用户号为100的用户信息时，100 mod 4结果为0。这时，请求就被0号服务器接收了。</p> 
+<p>当服务器数量为3时，用户号为100的请求会被1号服务器处理。</p> 
+<p>当服务器数量为4时，用户号为100的请求会被0号服务器处理。</p> 
+<p>所以，当服务器数量增加或者减少时，一定会涉及到大量数据迁移的问题。可谓是牵一发而动全身。</p> 
+<p>对于上诉哈希算法其<strong>优点</strong>是简单易用，大多数分库分表规则就采取的这种方式。一般是提前根据数据量，预先估算好分区数。</p> 
+<p>其<strong>缺点</strong>是由于扩容或收缩节点导致节点数量变化时，节点的映射关系需要重新计算，会导致数据进行迁移。所以<strong>扩容时通常采用翻倍扩容</strong>，避免数据映射全部被打乱，导致全量迁移的情况，这样只会发生50%的数据迁移。</p> 
+<p>假设这是一个缓存服务，数据的迁移会导致在迁移的时间段内，有缓存是失效的。</p> 
+<p>缓存失效，可怕啊。还记得我之前的文章吗，《当周杰伦把QQ音乐干翻的时候，作为程序猿我看到了什么？》就是讲缓存击穿、缓存穿透、缓存雪崩的场景和对应的解决方案。</p> 
+<h2>一致性哈希算法</h2> 
+<p>为了解决哈希算法带来的数据迁移问题，一致性哈希算法应运而生。</p> 
+<p>对于一致性哈希算法，官方说法如下：</p> 
+<p><code>一致性哈希算法在1997年由麻省理工学院提出，是一种特殊的哈希算法，在移除或者添加一个服务器时，能够尽可能小地改变已存在的服务请求与处理请求服务器之间的映射关系。一致性哈希解决了简单哈希算法在分布式哈希表( Distributed Hash Table，DHT) 中存在的动态伸缩等问题。</code></p> 
+<p>什么意思呢？我用大白话加画图的方式给你简单的介绍一下。</p> 
+<p>一致性哈希，你可以想象成一个哈希环，它由0到2^32-1个点组成。A，B，C分别是三台服务器，每一台的IP加端口经过哈希计算后的值，在哈希环上对应如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/74/de/s3rQjHVo_o.png"></p> 
+<p>当请求到来时，对请求中的某些参数进行哈希计算后，也会得出一个哈希值，此值在哈希环上也会有对应的位置，<strong>这个请求会沿着顺时针的方向，寻找最近的服务器来处理它</strong>，如下图所示：</p> 
+<p><img alt="" src="https://images2.imgbox.com/fa/9c/VKSZgNrE_o.png"></p> 
+<p>一致性哈希就是这么个东西。那它是怎么解决服务器的扩容或收缩导致大量的数据迁移的呢？</p> 
+<p>看一下当我们使用一致性哈希算法时，<strong>加入服务器</strong>会发什么事情。</p> 
+<p>当我们加入一个D服务器后，假设其<strong>IP加端口</strong>，经过哈希计算后落在了哈希环上图中所示的位置。</p> 
+<p><img alt="" src="https://images2.imgbox.com/19/47/1WXgMIW8_o.png">这时影响的范围只有图中标注了五角星的区间。这个区间的请求从原来的由C服务器处理变成了由D服务器请求。而D到C，C到A，A到B这个区间的请求没有影响，加入D节点后，A、B服务器是无感知的。</p> 
+<p>所以，在一致性哈希算法中，如果增加一台服务器，则受影响的区间仅仅是新服务器(D)在哈希环空间中，<strong>逆时针</strong>方向遇到的第一台服务器(B)之间的区间，其它区间(D到C，C到A，A到B)不会受到影响。</p> 
+<p>在加入了D服务器的情况下，我们再假设一段时间后，C服务器宕机了：</p> 
+<p><img alt="" src="https://images2.imgbox.com/10/a9/lBLrwXWD_o.png">当C服务器宕机后，影响的范围也是图中标注了五角星的区间。C节点宕机后，B、D服务器是无感知的。</p> 
+<p>所以，在一致性哈希算法中，如果宕机一台服务器，则受影响的区间仅仅是宕机服务器(C)在哈希环空间中，<strong>逆时针</strong>方向遇到的第一台服务器(D)之间的区间，其它区间(C到A，A到B，B到D)不会受到影响。</p> 
+<p>综上所述，<strong>在一致性哈希算法中，不管是增加节点，还是宕机节点，受影响的区间仅仅是增加或者宕机服务器在哈希环空间中，逆时针方向遇到的第一台服务器之间的区间，其它区间不会受到影响。</strong></p> 
+<p>是不是很完美？</p> 
+<p>不是的，理想和现实的差距是巨大的。</p> 
+<p>一致性哈希算法带来了什么问题？</p> 
+<p><img alt="" src="https://images2.imgbox.com/ed/0f/6JIFi7Cs_o.png">当节点很少的时候可能会出现这样的分布情况，A服务会承担大部分请求。这种情况就叫做数据倾斜。</p> 
+<p><strong>怎么解决数据倾斜呢？加入虚拟节点。</strong></p> 
+<p>怎么去理解这个虚拟节点呢？</p> 
+<p>首先一个服务器根据需要可以有多个虚拟节点。假设一台服务器有n个虚拟节点。那么哈希计算时，可以使用<strong>IP+端口+编号</strong>的形式进行哈希值计算。其中的编号就是0到n的数字。由于IP+端口是一样的，所以这n个节点都是指向的同一台机器。</p> 
+<p>如下图所示：</p> 
+<p><img alt="" src="https://images2.imgbox.com/a6/1e/lfaud4sz_o.png">在没有加入虚拟节点之前，A服务器承担了绝大多数的请求。但是假设每个服务器有一个虚拟节点（A-1，B-1，C-1），经过哈希计算后落在了如上图所示的位置。那么A服务器的承担的请求就在一定程度上（图中标注了五角星的部分）分摊给了B-1、C-1虚拟节点，实际上就是分摊给了B、C服务器。</p> 
+<p><strong>一致性哈希算法中，加入虚拟节点，可以解决数据倾斜问题。</strong></p> 
+<p>当你在面试的过程中，如果听到了类似于数据倾斜的字眼。那大概率是在问你一致性哈希算法和虚拟节点。</p> 
+<p>在介绍了相关背景后，我们可以去看看一致性哈希算法在Dubbo中的应用了。</p> 
+<h3>一致性哈希算法在Dubbo中的应用</h3> 
+<p>前面我们说了Dubbo中负载均衡的实现是通过org.apache.dubbo.rpc.cluster.loadbalance.AbstractLoadBalance中的 doSelect 抽象方法实现的，一致性哈希负载均衡的实现类如下所示：</p> 
+<p>org.apache.dubbo.rpc.cluster.loadbalance.ConsistentHashLoadBalance</p> 
+<p><img alt="" src="https://images2.imgbox.com/90/a8/Nfz3xM4K_o.png"></p> 
+<p>由于一致性哈希实现类看起来稍微有点抽象，不太好演示，所以我想到了一个"骚"操作。前面的文章说过 LoadBalance 是一个 SPI 接口：</p> 
+<p><img alt="" src="https://images2.imgbox.com/fb/44/BW4wrPvx_o.png"></p> 
+<p>既然是一个 SPI 接口，那我们可以自己扩展一个一模一样的算法，只是在算法里面加入一点输出语句方便我们观察情况。怎么扩展 SPI 接口就不描述了，<strong>只要记住代码里面的输出语句都是额外加的，此外没有任何改动即可</strong>，如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/a8/a1/oktljxKX_o.png"></p> 
+<p>整个类如下图片所示，请先看完整个类，有一个整体的概念后，我会进行方法级别的分析。</p> 
+<p>图片很长，其中我加了很多注释和输出语句，可以点开大图查看，一定会帮你更加好的理解一致性哈希在Dubbo中的应用：</p> 
+<p>改造之后，我们先把程序跑起来，有了输出就好分析了。</p> 
+<p><img alt="" src="https://images2.imgbox.com/df/a7/0bSCzcBP_o.png">服务端代码如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/72/7f/THjB5cbo_o.png">其中的端口是需要手动修改的，我分别启动服务在20881和20882端口。</p> 
+<p>项目中provider.xml配置如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/76/a1/Bb2oz060_o.png">consumer.xml配置如下:</p> 
+<p><img alt="" src="https://images2.imgbox.com/e2/97/4sUgAORj_o.png">然后，启动在20881和20882端口分别启动两个服务端。客户端消费如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/e2/07/GGxOvITp_o.png"></p> 
+<p>运行结果输出如下，可以先看个大概的输出，<strong>下面会对每一部分输出进行逐一的解读</strong>。</p> 
+<p><img alt="" src="https://images2.imgbox.com/31/2b/yBADqPOl_o.png"></p> 
+<p>好了，用例也跑起来了，日志也有了。接下来开始结合代码和日志进行方法级别的分析。</p> 
+<p>首先是doSelect方法的入口：</p> 
+<p><img alt="" src="https://images2.imgbox.com/22/c6/LW8nWY7p_o.png">从上图我们知道了，第一次调用需要对selectors进行put操作，selectors的 <strong>key 是接口中定义的方法，value 是 ConsistentHashSelector 内部类</strong>。</p> 
+<p>ConsistentHashSelector通过调用其构造函数进行初始化的。invokers(服务端)作为参数传递到了构造函数中，构造函数里面的逻辑，就是把服务端映射到哈希环上的过程，请看下图，结合代码，仔细分析输出数据：</p> 
+<p><img alt="" src="https://images2.imgbox.com/dd/ce/EqxE0FHc_o.png">从上图可以看出，当 ConsistentHashSelector 的构造方法调用完成后，8个虚拟节点在哈希环上已经映射完成。两台服务器，每一台4个虚拟节点组成了这8个虚拟节点。</p> 
+<p>doSelect方法继续执行，并打印出每个虚拟节点的哈希值和对应的服务端，请仔细品读下图：</p> 
+<p><img alt="" src="https://images2.imgbox.com/11/c3/jesxCtim_o.png"></p> 
+<p>说明一下：上面图中的哈希环是<strong>没有考虑比例</strong>的，<strong>仅仅是展现了两个服务器在哈希环上的相对位置</strong>。而且为了演示说明方便，仅仅只有8个节点。假设我们有4台服务器，每台服务器的虚拟节点是默认值(160)，这个情况下哈希环上一共有160*4=640个节点。</p> 
+<p>哈希环映射完成后，接下来的逻辑是把这次请求经过哈希计算后，映射到哈希环上，并<strong>顺时针方向</strong>寻找遇到的第一个节点，让该节点处理该请求：</p> 
+<p><img alt="" src="https://images2.imgbox.com/5d/53/msCJ77mk_o.png"></p> 
+<p>还记得地址为 468e8565 的 A 服务器是什么端口吗？前面的图片中有哦，该服务对应的端口是 20882 。</p> 
+<p><img alt="" src="https://images2.imgbox.com/20/49/USLZyfXF_o.png"></p> 
+<p>最后我们看看输出结果:</p> 
+<p><img alt="" src="https://images2.imgbox.com/23/81/18tGeKr6_o.png"></p> 
+<p>和我们预期的一致。整个调用就算是完成了。</p> 
+<p>再对两个方法进行一个补充说明。</p> 
+<p>第一个方法是 selectForKey，这个方法里面逻辑如下图所示：</p> 
+<p><img alt="" src="https://images2.imgbox.com/20/c1/sJlX2tPu_o.png"></p> 
+<p>虚拟节点都存储在 TreeMap 中。顺时针查询的逻辑由 TreeMap 保证。看一下下面的 Demo 你就明白了。</p> 
+<p><img alt="" src="https://images2.imgbox.com/2a/1c/uZXqYBrj_o.png"></p> 
+<p>第二个方法是 hash 方法，其中的 &amp; 0xFFFFFFFFL 的目的如下:</p> 
+<p><img alt="" src="https://images2.imgbox.com/f6/19/a1Qv1T2m_o.png"></p> 
+<p>&amp;是位运算符，而 0xFFFFFFFFL 转换为四字节表现后，其低32位全是1，所以保证了哈希环的范围是 [0,Integer.MAX_VALUE]：</p> 
+<p><img alt="" src="https://images2.imgbox.com/d0/c9/5JDdaIDY_o.png"></p> 
+<p>所以这里我们可以改造这个哈希环的范围，假设我们改为 100000。十进制的 100000 对于的 16 进制为 186A0 。所以我们改造后的哈希算法为：</p> 
+<p><img alt="" src="https://images2.imgbox.com/1e/0c/NqIKOBXT_o.png"></p> 
+<p>再次调用后可以看到，计算后的哈希值都在10万以内。但是分布极不均匀，说明修改数据后这个哈希算法不是一个优秀的哈希算法：</p> 
+<p><img alt="" src="https://images2.imgbox.com/d7/a3/pdHQy82o_o.png">以上，就是对一致性哈希算法在Dubbo中的实现的解读。需要特殊说明一下的是，<strong>一致性哈希负载均衡策略和权重没有任何关系</strong>。</p> 
+<h3>我又发现了一个BUG</h3> 
+<p>前面我介绍了Dubbo 2.6.5版本之前，最小活跃数算法的两个 bug。</p> 
+<p>很不幸，这次我又发现了Dubbo 2.7.4.1版本，一致性哈希负载均衡策略的一个bug，我提交了issue 地址如下：</p> 
+<p><code>https://github.com/apache/dubbo/issues/5429</code></p> 
+<p><img alt="" src="https://images2.imgbox.com/74/23/vkHyicFi_o.png"></p> 
+<p>我在这里详细说一下这个Bug现象、原因和我的解决方案。</p> 
+<p>现象如下，我们调用三次服务端：</p> 
+<p><img alt="" src="https://images2.imgbox.com/22/73/re9xbnAL_o.png"></p> 
+<p>输出日志如下（有部分删减）：</p> 
+<p><img alt="" src="https://images2.imgbox.com/13/31/mmSRSaFM_o.png"></p> 
+<p>可以看到，在三次调用的过程中并没有发生服务的上下线操作，但是<strong>每一次调用都重新进行了哈希环的映射</strong>。而我们预期的结果是<strong>应该只有在第一次调用的时候进行哈希环的映射</strong>，如果没有服务上下线的操作，后续请求根据已经映射好的哈希环进行处理。</p> 
+<p>上面输出的原因是由于每次调用的invokers的identityHashCode发生了变化：</p> 
+<p><img alt="" src="https://images2.imgbox.com/b3/3a/Cq3zlmP3_o.png"></p> 
+<p>我们看一下三次调用invokers的情况：</p> 
+<p><img alt="" src="https://images2.imgbox.com/11/d6/MnmPiutL_o.png"></p> 
+<p>经过debug我们可以看出因为每次调用的invokers地址值不是同一个，所以System.identityHashCode(invokers)方法返回的值都不一样。</p> 
+<p>接下来的问题就是<strong>为什么每次调用的invokers地址值都不一样呢？</strong></p> 
+<p>经过Debug之后，可以找到这个地方：</p> 
+<p>org.apache.dubbo.rpc.cluster.RouterChain#route</p> 
+<p><img alt="" src="https://images2.imgbox.com/0e/f1/IvhQvDve_o.png"></p> 
+<p>问题就出在这个TagRouter中：</p> 
+<p>org.apache.dubbo.rpc.cluster.router.tag.TagRouter#filterInvoker</p> 
+<p><img alt="" src="https://images2.imgbox.com/91/74/SJdHJyzK_o.png"></p> 
+<p>所以，在TagRouter中的stream操作，改变了invokers，导致每次调用时其</p> 
+<p>System.identityHashCode(invokers)返回的值不一样。所以<strong>每次调用都会进行哈希环的映射操作</strong>，在服务节点多，虚拟节点多的情况下会有一定的性能问题。</p> 
+<p>到这一步，问题又发生了变化。<strong>这个TagRouter怎么来的呢</strong>？</p> 
+<p>如果了解Dubbo 2.7.x版本新特性的朋友可能知道，标签路由是Dubbo2.7引入的新功能。</p> 
+<p><img alt="" src="https://images2.imgbox.com/dd/a6/CLRAx8uB_o.png"></p> 
+<p>通过加载下面的配置加载了RouterFactrory：</p> 
+<p>META-INF\dubbo\internal\org.apache.dubbo.rpc.cluster.RouterFactory（Dubbo 2.7.0版本之前）</p> 
+<p>META-INF\dubbo\internal\com.alibaba.dubbo.rpc.cluster.RouterFactory（Dubbo 2.7.0之前）</p> 
+<p>下面是Dubbo 2.6.7(2.6.x的最后一个版本)和Dubbo 2.7.0版本该文件的对比:</p> 
+<p><img alt="" src="https://images2.imgbox.com/34/aa/Jlz2WAu6_o.png">可以看到确实是在 Dubbo 2.7.0 之后引入了 TagRouter。</p> 
+<p>至此，Dubbo 2.7.0 版本之后，一致性哈希负载均衡算法的 Bug 的来龙去脉也介绍清楚了。</p> 
+<p>解决方案是什么呢？特别简单，把获取 identityHashCode 的方法从 System.identityHashCode(invokers) 修改为 invokers.hashCode() 即可。</p> 
+<p>此方案是我提的 issue 里面的评论，这里 System.identityHashCode 和 hashCode 之间的联系和区别就不进行展开讲述了，不清楚的大家可以自行了解一下。</p> 
+<p>（我的另外一篇文章：够强！一行代码就修复了我提的Dubbo的Bug。）</p> 
+<p><img alt="" src="https://images2.imgbox.com/7a/61/QnKpfklO_o.png"></p> 
+<p>改完之后，我们再看看运行效果：</p> 
+<p><img alt="" src="https://images2.imgbox.com/7c/52/YZ49Ztmu_o.png"></p> 
+<p>可以看到第二次调用的时候并没有进行哈希环的映射操作，而是直接取到了值，进行调用。</p> 
+<h2>加入节点，画图分析</h2> 
+<p>最后，我再分析一种情况。在A、B、C三个服务器(20881、20882、20883端口)都在正常运行，哈希映射已经完成的情况下，我们再启动一个D节点（20884端口），这时的日志输出和对应的哈希环变化情况如下:</p> 
+<p><img alt="" src="https://images2.imgbox.com/ab/28/um4PdaiR_o.png"></p> 
+<p>根据日志作图如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/06/c6/txo5A9w1_o.png"></p> 
+<p>根据输出日志和上图再加上源码，你再细细回味一下。我个人觉得还是讲的非常详细了。</p> 
+<h2>一致性哈希的应用场景</h2> 
+<p>当大家谈到一致性哈希算法的时候，首先的第一印象应该是在缓存场景下的使用，因为在一个优秀的哈希算法加持下，其上下线节点对整体数据的影响(迁移)都是比较友好的。</p> 
+<p>但是想一下为什么 Dubbo 在负载均衡策略里面提供了基于一致性哈希的负载均衡策略？它的实际使用场景是什么？</p> 
+<p>我最开始也想不明白。我想的是在 Dubbo 的场景下，假设需求是想要一个用户的请求一直让一台服务器处理，那我们可以采用一致性哈希负载均衡策略，把用户号进行哈希计算，可以实现这样的需求。但是这样的需求未免有点太牵强了，适用场景略小。</p> 
+<p>直到有天晚上，我睡觉之前，电光火石之间突然想到了一个稍微适用的场景了。</p> 
+<p><strong>如果需求是需要保证某一类请求必须顺序处理呢？</strong></p> 
+<p>如果你用其他负载均衡策略，请求分发到了不同的机器上去，就很难保证请求的顺序处理了。比如A，B请求要求顺序处理，现在A请求先发送，被负载到了A服务器上，B请求后发送，被负载到了B服务器上。而B服务器由于性能好或者当前没有其他请求或者其他原因极有可能在A服务器还在处理A请求之前就把B请求处理完成了。这样不符合我们的要求。</p> 
+<p>这时，一致性哈希负载均衡策略就上场了，它帮我们保证了某一类请求都发送到固定的机器上去执行。比如把同一个用户的请求发送到同一台机器上去执行，就意味着把某一类请求发送到同一台机器上去执行。所以我们只需要在该机器上运行的程序中保证顺序执行就行了，比如你加一个队列。</p> 
+<p><strong>一致性哈希算法+队列，可以实现顺序处理的需求。</strong></p> 
+<p>好了，一致性哈希负载均衡算法就写到这里。</p> 
+<p>继续进入下一个议题。</p> 
+<h2>加权轮询负载均衡</h2> 
+<p>这一小节是对于Dubbo负载均衡策略之一的加权随机算法的详细分析。</p> 
+<p><strong>从 2.6.4 版本聊起，该版本在某些情况下存在着比较严重的性能问题。由问题入手，层层深入，了解该算法在 Dubbo 中的演变过程，读懂它的前世今生。</strong></p> 
+<h3>什么是轮询？</h3> 
+<p>在描述加权轮询之前，先解释一下什么是轮询算法，如下图所示：</p> 
+<p><img alt="" src="https://images2.imgbox.com/42/59/K0ltAjF1_o.png">假设我们有A、B、C三台服务器，共计处理6个请求，服务处理请求的情况如下:</p> 
+<ol><li>第一个请求发送给了A服务器</li><li>第二个请求发送给了B服务器</li><li>第三个请求发送给了C服务器</li><li>第四个请求发送给了A服务器</li><li>第五个请求发送给了B服务器</li><li>第六个请求发送给了C服务器</li><li>......</li></ol> 
+<p>上面这个例子演示的过程就叫做轮询。可以看出，<strong>所谓轮询就是将请求轮流分配给每台服务器</strong>。</p> 
+<p>轮询的<strong>优点</strong>是无需记录当前所有服务器的链接状态，所以它一种无状态负载均衡算法，实现简单，适用于每台服务器性能相近的场景下。</p> 
+<p>轮询的<strong>缺点</strong>也是显而易见的，它的应用场景要求所有服务器的性能都相同，非常的局限。</p> 
+<p>大多数实际情况下，服务器性能是各有差异，针对性能好的服务器，我们需要让它承担更多的请求，即需要给它配上更高的权重。</p> 
+<p>所以加权轮询，应运而生。</p> 
+<h2>什么是加权轮询？</h2> 
+<p>为了解决轮询算法应用场景的局限性。当遇到每台服务器的性能不一致的情况，我们需要对轮询过程进行加权，以调控每台服务器的负载。</p> 
+<p>经过加权后，每台服务器能够得到的请求数比例，<strong>接近或等于他们的权重比</strong>。比如服务器 A、B、C 权重比为 5:3:2。那么在10次请求中，服务器 A 将收到其中的5次请求，服务器 B 会收到其中的3次请求，服务器 C 则收到其中的2次请求。</p> 
+<p><img alt="" src="https://images2.imgbox.com/5c/09/GTjysXeD_o.png"></p> 
+<p><strong>这里要和加权随机算法做区分哦</strong>。直接把前面介绍的加权随机算法画的图拿过来：</p> 
+<p><img alt="" src="https://images2.imgbox.com/dd/cd/ag2TIcei_o.png">上面这图是按照比例画的，可以直观的看到，对于某一个请求，区间(权重)越大的服务器，就越可能会承担这个请求。所以，<strong>当请求足够多的时候</strong>，各个服务器承担的请求数，应该就是区间，即权重的比值。</p> 
+<p>假设有A、B、C三台服务器，权重之比为5:3:2，一共处理10个请求。</p> 
+<p><strong>那么负载均衡采用加权随机算法时，很有可能A、B服务就处理完了这10个请求，因为它是随机调用。</strong></p> 
+<p><strong>采用负载均衡采用轮询加权算法时，A、B、C服务一定是分别承担5、3、2个请求。</strong></p> 
+<h3>Dubbo2.6.4版本的实现</h3> 
+<p>对于Dubbo2.6.4版本的实现分析，可以看下图，我加了很多注释，其中的输出语句都是我加的：</p> 
+<p><img alt="" src="https://images2.imgbox.com/09/18/5kQ3oQKc_o.png"></p> 
+<p>示例代码还是沿用之前文章中的Demo，这里分别在 20881、20882、20883 端口启动三个服务，各自的权重分别为 1，2，3。</p> 
+<p>客户端调用 8 次：</p> 
+<p><img alt="" src="https://images2.imgbox.com/68/80/DlzA9qBN_o.png">输出结果如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/27/7e/nv2uSqha_o.png">可以看到第七次调用后mod=0，回到了第一次调用的状态。<strong>形成了一个闭环。</strong></p> 
+<p>再看看判断的条件是什么：</p> 
+<p><img alt="" src="https://images2.imgbox.com/57/07/bWV9o7X1_o.png">其中<strong>mod在代码中扮演了极其重要的角色，mod根据一个方法的调用次数不同而不同，取值范围是[0，weightSum)。</strong></p> 
+<p>因为weightSum=6，所以列举mod不同值时，最终的选择结果和权重变化：</p> 
+<p><img alt="" src="https://images2.imgbox.com/7d/8b/nEVjJ7Ku_o.png"></p> 
+<p>可以看到20881,20882,20883承担的请求数量比值为1:2:3。同时我们可以看出，当 <strong>mod &gt;= 1 后，20881端口的服务就不会被选中了</strong>，因为它的权重被减为0了。<strong>当 mod &gt;= 4 后，20882端口的服务就不会被选中了</strong>，因为它的权重被减为0了。</p> 
+<p>结合判断条件和输出结果，我们详细分析一下(下面内容稍微有点绕，如果看不懂，多结合上面的图片看几次):</p> 
+<h4>第一次调用</h4> 
+<p>mod=0，第一次循环就满足代码块①的条件，直接返回当前循环的invoker，即20881端口的服务。此时各端口的权重情况如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/fe/40/jEQQtMLY_o.png"><img alt="" src="https://images2.imgbox.com/75/2b/AOU1PRfF_o.png"></p> 
+<h4 id="autoid-3-0-0">第二次调用</h4> 
+<p>mod=1，需要进入代码块②，对mod进行一次递减。</p> 
+<p>第一次循环对20881端口的服务权重减一，mod-1=0。</p> 
+<p>第二次循环，mod=0，循环对象是20882端口的服务，权重为2，满足代码块①，返回当前循环的20882端口的服务。</p> 
+<p>此时各端口的权重情况如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/b6/fe/xsMwZXyY_o.png"><img alt="" src="https://images2.imgbox.com/6e/98/myhlriLZ_o.png"></p> 
+<h4 id="autoid-4-0-0">第三次调用</h4> 
+<p>mod=2，需要进入代码块②，对mod进行两次递减。</p> 
+<p>第一次循环对20881端口的服务权重减一，mod-1=1；</p> 
+<p>第二次循环对20882端口的服务权重减一，mod-1=0；</p> 
+<p>第三次循环时，mod已经为0，当前循环的是20883端口的服务，权重为3，满足代码块①，返回当前循环的20883端口的服务。</p> 
+<p>此时各端口的权重情况如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/90/dc/agcgV1dR_o.png"><img alt="" src="https://images2.imgbox.com/ca/0d/weOF6Z6s_o.png"></p> 
+<h4 id="autoid-5-0-0">第四次调用</h4> 
+<p>mod=3，需要进入代码块②，对mod进行三次递减。</p> 
+<p>第一次循环对20881端口的服务权重减一，从1变为0，mod-1=2；</p> 
+<p>第二次循环对20882端口的服务权重减一，从2变为1，mod-1=1；</p> 
+<p>第三次循环对20883端口的服务权重减一，从3变为2，mod-1=0；</p> 
+<p>第四次循环的是20881端口的服务，此时mod已经为0，但是20881端口的服务的权重已经变为0了，不满足代码块①和代码块②，进入第五次循环。</p> 
+<p>第五次循环的是20882端口的服务，当前权重为1，mod=0，满足代码块①，返回20882端口的服务。</p> 
+<p>此时各端口的权重情况如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/2f/ce/XK1UtGxA_o.png"><img alt="" src="https://images2.imgbox.com/df/31/7euAzpZV_o.png"></p> 
+<h4 id="autoid-6-0-0">第五次调用</h4> 
+<p>mod=4，需要进入代码块②，对mod进行四次递减。</p> 
+<p>第一次循环对20881端口的服务权重减一，从1变为0，mod-1=3；</p> 
+<p>第二次循环对20882端口的服务权重减一，从2变为1，mod-1=2；</p> 
+<p>第三次循环对20883端口的服务权重减一，从3变为2，mod-1=1；</p> 
+<p>第四次循环的是20881端口的服务，此时mod为1，但是20881端口的服务的权重已经变为0了，不满足代码块②，mod不变，进入第五次循环。</p> 
+<p>第五次循环时，mod为1，循环对象是20882端口的服务，权重为1，满足代码块②，权重从1变为0，mod从1变为0，进入第六次循环。</p> 
+<p>第六次循环时，mod为0，循环对象是20883端口的服务，权重为2，满足条件①，返回当前20883端口的服务。</p> 
+<p>此时各端口的权重情况如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/65/b6/IKSQcxrg_o.png"><img alt="" src="https://images2.imgbox.com/da/6c/vtorNQJ6_o.png"></p> 
+<h4 id="autoid-7-0-0">第六次调用</h4> 
+<p>第六次调用，mod=5，会循环九次，最终选择20883端口的服务，读者可以自行分析一波，分析出来了，就了解的透透的了。</p> 
+<p><img alt="" src="https://images2.imgbox.com/f2/9f/D3v4xwYb_o.png"><img alt="" src="https://images2.imgbox.com/07/a9/UgTlNWDh_o.png"></p> 
+<h4 id="autoid-8-0-0">第七次调用</h4> 
+<p>第七次调用，又回到mod=0的状态：</p> 
+<p><img alt="" src="https://images2.imgbox.com/91/bb/9cGkA9be_o.png"><img alt="" src="https://images2.imgbox.com/68/65/Xj5AZAZt_o.png"></p> 
+<p>2.6.4版本的加权轮询就分析完了，但是事情并没有这么简单。这个版本的加权轮询是有性能问题的。</p> 
+<p><img alt="" src="https://images2.imgbox.com/62/ca/1ArFm9bU_o.png"></p> 
+<p>该问题对应的issue地址如下:</p> 
+<p><code>https://github.com/apache/dubbo/issues/2578</code></p> 
+<p>问题出现在invoker返回的时机上：</p> 
+<p><img alt="" src="https://images2.imgbox.com/d1/5b/JRHsXIRk_o.png"></p> 
+<p>截取issue里面的一个回答：</p> 
+<p><img alt="" src="https://images2.imgbox.com/91/99/2dgSU54V_o.png"></p> 
+<p>10分钟才选出一个invoker，还怎么玩？</p> 
+<p><strong>有时间可以读一读这个issue，里面各路大神针对该问题进行了激烈的讨论</strong>，第一种改造方案被接受后，很快就被推翻，被第二种方案代替，可以说优化思路十分值得学习，很精彩，接下来的行文路线就是按照该issue展开的。</p> 
+<h3 id="autoid-9-0-0">推翻，重建。</h3> 
+<p><strong>上面的代码时间复杂度是O(mod)</strong>,而第一次修复之后时间复杂度降低到了常量级别。可以说是一次非常优秀的优化，值得我们学习，看一下优化之后的代码：</p> 
+<p><img alt="" src="https://images2.imgbox.com/54/e3/sceYvxdU_o.png"></p> 
+<p>其关键优化的点是这段代码，我加入输出语句，便于分析。</p> 
+<p><img alt="" src="https://images2.imgbox.com/f3/94/zHnTckqJ_o.png"></p> 
+<p>输出日志如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/b9/67/3fI57by7_o.png"></p> 
+<p>把上面的输出转化到表格中去，7次请求的选择过程如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/87/aa/aH1uedjj_o.png"></p> 
+<p>该算法的原理是：</p> 
+<p>把服务端都放到集合中(invokerToWeightList)，然后获取服务端个数(length)，并计算出服务端权重最大的值(maxWeight)。</p> 
+<p>index表示本次请求到来时，处理该请求的服务端下标，初始值为0，取值范围是[0,length)。</p> 
+<p>currentWeight表示当前调度的权重，初始值为0，取值范围是[0,maxWeight)。</p> 
+<p>当请求到来时，从index(就是0)开始轮询服务端集合(invokerToWeightList)，如果是一轮循环的开始(index=0)时，则对currentWeight进行加一操作（不会超过maxWeight），在循环中找出第一个权重大于currentWeight的服务并返回。</p> 
+<p><strong>这里说的一轮循环是指index再次变为0所经历过的循环，这里可以把index=0看做是一轮循环的开始。每一轮循环的次数与Invoker的数量有关，Invoker数量通常不会太多，所以我们可以认为上面代码的时间复杂度为常数级。</strong></p> 
+<p>从issue上看出，这个算法最终被merged了。</p> 
+<p><img alt="" src="https://images2.imgbox.com/b9/4a/euvkjNcP_o.png"></p> 
+<p>但是很快又被推翻了：</p> 
+<p><img alt="" src="https://images2.imgbox.com/f5/b3/rJxmeB0C_o.png"></p> 
+<p>这个算法不够平滑。什么意思呢？</p> 
+<p>翻译一下上面的内容就是：服务器[A, B, C]对应权重[5, 1, 1]。进行7次负载均衡后，选择出来的序列为[A, A, A, A, A, B, C]。前5个请求全部都落在了服务器A上，这将会使服务器A短时间内接收大量的请求，压力陡增。而B和C此时无请求，处于空闲状态。而我们期望的结果是这样的[A, A, B, A, C, A, A]，不同服务器可以穿插获取请求。</p> 
+<p>我们设置20881端口的权重为5，20882、20883端口的权重均为1。</p> 
+<p>进行实验，发现确实如此：可以看到一共进行7次请求，第1次到5次请求都分发给了权重为5的20881端口的服务，前五次请求，20881和20882都处于空闲状态：</p> 
+<p><img alt="" src="https://images2.imgbox.com/03/7f/Mt5J0IVk_o.png"></p> 
+<p>转化为表格如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/5b/55/RQzRUtR6_o.png"></p> 
+<p>从表格的最终结果一栏也可以直观的看出，七次请求对应的服务器端口为：</p> 
+<p><img alt="" src="https://images2.imgbox.com/d6/54/I0xDtKqO_o.png"></p> 
+<p>分布确实不够均匀。</p> 
+<h2>再推翻，再重建，平滑加权。</h2> 
+<p>从issue中可以看到，再次重构的加权算法的灵感来源是<strong>Nginx的平滑加权轮询负载均衡</strong>：</p> 
+<p><img alt="" src="https://images2.imgbox.com/5b/ac/64z9qfrs_o.png"></p> 
+<p>看代码之前，先介绍其计算过程。</p> 
+<p>假设每个服务器有两个权重，一个是配置的weight,不会变化，一个是currentWeight会动态调整，初始值为0。当有新的请求进来时，遍历服务器列表，让它的currentWeight加上自身权重。遍历完成后，找到最大的currentWeight，并将其减去权重总和，然后返回相应的服务器即可。</p> 
+<p><img alt="" src="https://images2.imgbox.com/89/54/Hk7G1PyT_o.png"></p> 
+<p>如果你还是不知道上面的表格是如何算出来的，我再给你详细的分析一下第1、2个请求的计算过程：</p> 
+<p>第一个请求计算过程如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/22/e0/fMIbjBwG_o.png"></p> 
+<p>第二个请求计算过程如下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/c5/4f/7GqW6hOF_o.png"></p> 
+<p>后面的请求你就可以自己分析了。</p> 
+<p>从表格的最终结果一栏也可以直观的看出，七次请求对应的服务器端口为：</p> 
+<p><img alt="" src="https://images2.imgbox.com/e1/bd/DmmXMKER_o.png"></p> 
+<p>可以看到，权重之比同样是5:1:1，但是最终的请求分发的就比较的"平滑"。对比一下：</p> 
+<p><img alt="" src="https://images2.imgbox.com/d7/55/dT7CJ34C_o.png">对于平滑加权算法，我想多说一句。我觉得这个算法非常的神奇，我是彻底的明白了它每一步的计算过程，知道它最终会形成一个闭环，但是我想了很久，我还是不知道背后的数学原理是什么，不明白为什么会形成一个闭环，非常的神奇。</p> 
+<p>很正常，我不纠结的，程序猿的工作不就是这样吗？我也不知道为什么，它能工作。别问，问就是玄学，如果一定要说出点什么的话，我想，我愿称之为：绝活吧。</p> 
+<p><img alt="" src="https://images2.imgbox.com/a6/6b/VBgu1sHa_o.png">但是我们只要能够理解我前面所表达的平滑加权轮询算法的计算过程，知道其最终会形成闭环，就能理解下面的代码。配合代码中的注释食用，效果更佳。</p> 
+<p>以下代码以及注释来源官网：</p> 
+<p>http://dubbo.apache.org/zh-cn/docs/source_code_guide/loadbalance.html</p> 
+<p><img alt="" src="https://images2.imgbox.com/6e/75/9Wri81fd_o.png"></p> 
+<h2>总结</h2> 
+<p>好了，到这里关于Dubbo的五种负载均衡策略就讲完了。简单总结一下：（加权随机算法在讲最小活跃数算法的时候提到过，因为原理十分简单，这里就不专门拿出章节来描述了。）</p> 
+<p><strong>最短响应时间负载均衡</strong>：在所有服务提供者中选出平均响应时间最短的一个，如果能选出来，则使用选出来的一个。如果不能选出来多个，再根据权重选，如果权重也一样，则随机选择。</p> 
+<p><strong>一致性哈希负载均衡</strong>：在一致性哈希算法中，不管是增加节点，还是宕机节点，受影响的区间仅仅是增加或者宕机服务器在哈希环空间中，逆时针方向遇到的第一台服务器之间的区间，其它区间不会受到影响。为了解决数据倾斜的问题，引入了虚拟节点的概念。一致性哈希算法是 Dubbo 中唯一一个与权重没有任何关系的负载均衡算法，可以保证相同参数的请求打到同一台机器上。</p> 
+<p><strong>最小活跃数负载均衡</strong>：需要配合 activeFilter 使用，活跃数在方法调用前后进行维护，响应越快的服务器堆积的请求越少，对应的活跃数也少。Dubbo 在选择的时候遵循下面的规则，有最小活跃数用最小活跃数，没有最小活跃数根据权重选择，权重一样则随机返回的负载均衡算法。</p> 
+<p><strong>加权随机算法</strong>：随机，顾名思义，就是从多个服务提供者中随机选择一个出来。加权，就是指需要按照权重设置随机概率。常见场景就是对于性能好的机器可以把对应的权重设置的大一点，而性能相对较差的，权重设置的小一点。哎，像极了这个社会上的某些现象，对外宣传是随机摇号，背后指不定有一群权重高的人呢。</p> 
+<p><strong>加权轮询负载均衡</strong>：轮询就是雨露均沾的意思，所有的服务提供者都需要调用。而当轮询遇到加权则可以让请求（不论多少）严格按照我们的权重之比进行分配。比如有A、B、C三台服务器，权重之比为5:3:2，一共处理10个请求。那么采用负载均衡采用轮询加权算法时，A、B、C服务一定是分别承担5、3、2个请求。同时需要注意的是加权轮询算法的两次升级过程，以及最终的“平滑”的解决方案。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0121d952a57f81968d89bab67d60a467/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">IDEA Smart Checkout和Force Checkout区别</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/24e787c5546abe1c257bde66d05e28d2/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">同一Wifi下允许手机访问电脑（win10）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

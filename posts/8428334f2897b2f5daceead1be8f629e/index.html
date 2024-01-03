@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>八怪：再谈 MySQL 8 这两个精准的时间戳 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="八怪：再谈 MySQL 8 这两个精准的时间戳" />
+<meta property="og:description" content="MySQL 8.0 的 binlog 中多了 immediate_commit_timestamp 和 original_commit_timestamp 的信息，网上也有很多文章进行解释，最近也刚好遇到相关问题，刚好稍微学习一下。
+作者：高鹏（八怪），《MySQL 主从原理》作者，深入透彻理解 MySQL 主从，GTID 相关技术知识。
+爱可生开源社区出品，原创内容未经授权不得随意使用，转载请联系小编并注明来源。
+本文共约 1700 字，预计阅读需要 6 分钟。
+相关解释 immediate_commit_timestamp：代表是当前数据库提交的时间，从库/主库都分别代表其提交的时间。original_commit_timestamp：代表主库提交的时间，不管有多少级联的从库这个时间永远是主库提交事务时候的时间。当然在主库上其就等于 immediate_commit_timestamp 的时间。 它们的生成时间都是在从 binlog cache 写入到 binlog 文件的时候，生成 GTID event 的时候，也就是 commit 的 flush 阶段，我们简称这个为 提交时间。
+但是需要注意的是 MGR 中主库的 original_commit_timestamp 和 immediate_commit_timestamp 生成稍有提前（group_replication_trans_before_commit），并不是这里说的提交时间。
+生成流程 2.1 关于 thd-&gt;variables.original_commit_timestamp 因为 original_commit_timestamp 来自这个值，一般情况下其值都是 UNDEFINED_COMMIT_TIMESTAMP，但是从库上这个值会在应用 GTID event 的时候更改为主库带过来的 original_commit_timestamp*，因为主库 *original_commit_timestamp 就是提交时间，因此从库的 thd-&gt;variables.original_commit_timestamp 也就设置为了主库的提交时间。
+但是有一个例外，就是 5.7 向 8.0 同步的时候，因为没有这个值因此会被设置为 0。如下：
+# original_commit_timestamp=0 (1970-01-01 08:00:00." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/8428334f2897b2f5daceead1be8f629e/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-27T09:53:27+08:00" />
+<meta property="article:modified_time" content="2023-12-27T09:53:27+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">八怪：再谈 MySQL 8 这两个精准的时间戳</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>MySQL 8.0 的 binlog 中多了 <em>immediate_commit_timestamp</em> 和 <em>original_commit_timestamp</em> 的信息，网上也有很多文章进行解释，最近也刚好遇到相关问题，刚好稍微学习一下。</p> 
+<blockquote> 
+ <p>作者：高鹏（八怪），《MySQL 主从原理》作者，深入透彻理解 MySQL 主从，GTID 相关技术知识。</p> 
+ <p>爱可生开源社区出品，原创内容未经授权不得随意使用，转载请联系小编并注明来源。</p> 
+ <p>本文共约 1700 字，预计阅读需要 6 分钟。</p> 
+</blockquote> 
+<h2 id="相关解释">相关解释</h2> 
+<ul><li><strong>immediate_commit_timestamp：</strong>代表是当前数据库提交的时间，从库/主库都分别代表其提交的时间。</li><li><strong>original_commit_timestamp：</strong>代表主库提交的时间，不管有多少级联的从库这个时间永远是主库提交事务时候的时间。当然在主库上其就等于 immediate_commit_timestamp 的时间。</li></ul> 
+<p>它们的生成时间都是在从 binlog cache 写入到 binlog 文件的时候，生成 GTID event 的时候，也就是 commit 的 flush 阶段，我们简称这个为 <strong>提交时间</strong>。</p> 
+<p>但是需要注意的是 MGR 中主库的 <em>original_commit_timestamp</em> 和 <em>immediate_commit_timestamp</em> 生成稍有提前（<em>group_replication_trans_before_commit</em>），并不是这里说的提交时间。</p> 
+<h2 id="生成流程">生成流程</h2> 
+<h3 id="21-关于-thd-variablesoriginal_commit_timestamp">2.1 关于 thd-&gt;variables.original_commit_timestamp</h3> 
+<p>因为 <em>original_commit_timestamp</em> 来自这个值，一般情况下其值都是 <code>UNDEFINED_COMMIT_TIMESTAMP</code>，但是从库上这个值会在应用 GTID event 的时候更改为主库带过来的 <em>original_commit_timestamp*，因为主库 *original_commit_timestamp</em> 就是提交时间，因此从库的 <code>thd-&gt;variables.original_commit_timestamp</code> 也就设置为了主库的提交时间。</p> 
+<p>但是有一个例外，就是 5.7 向 8.0 同步的时候，因为没有这个值因此会被设置为 0。如下：</p> 
+<pre><code class="language-text"># original_commit_timestamp=0 (1970-01-01 08:00:00.000000 CST)
+# immediate_commit_timestamp=1703237689977004 (2023-12-22 17:34:49.977004 CST)</code></pre> 
+<h3 id="22-生成方式">2.2 生成方式</h3> 
+<p>这个其实比较简单，就是在函数 <code>MYSQL_BIN_LOG::write_transaction</code> 中生成的，大概为：</p> 
+<pre><code class="language-text">immediate_commit_timestamp = 获取的当前时间
+original_commit_timestamp = thd-&gt;variables.original_commit_timestamp
+（前面描述了thd-&gt;variables.original_commit_timestamp主库不会设置为特定的值，其为 UNDEFINED_COMMIT_TIMESTAMP）
+
+如果 original_commit_timestamp 等于 UNDEFINED_COMMIT_TIMESTAMP，那么它就是主库，应该将设置
+original_commit_timestamp = immediate_commit_timestamp，这样主库的 original_commit_timestamp 
+和 immediate_commit_timestamp 就相同了
+
+否则 original_commit_timestamp 有特定的值，那么就是从库，因为这个值来自 
+thd-&gt;variables.original_commit_timestamp，前面说了他是应用 GTID event 的值。</code></pre> 
+<h3 id="23-相关警告">2.3 相关警告</h3> 
+<p>当发现从库的提交时间还比主库的提交时间更慢的时候，显然这是不合适的，就会出现这个警告如下：</p> 
+<pre><code>if (original_commit_timestamp &gt; immediate_commit_timestamp &amp;&amp;
+        !thd-&gt;rli_slave-&gt;get_c_rli()-&gt;gtid_timestamps_warning_logged) { //如果原始时间 还在于了当前服务器的提交时间，这是常见的警告
+      LogErr(WARNING_LEVEL, ER_INVALID_REPLICATION_TIMESTAMPS);         //则报警</code></pre> 
+<p>这就是大家经常遇到的警告。</p> 
+<pre><code>Invalid replication timestamps: original commit timestamp is more recent than the 
+immediate commit timestamp. This may be an issue if delayed replication is active.
+ Make sure that servers have their clocks set to the correct time. No further 
+message will be emitted until after timestamps become valid again." </code></pre> 
+<h2 id="其运维中的意义">其运维中的意义</h2> 
+<h3 id="31-在延时从库中的应用">3.1 在延时从库中的应用</h3> 
+<p>如果配置了延迟从库，则使用的是 <em>immediate_commit_timestamp</em> 作为延迟从库应用 event 的计算标准，因为这里 event 来自 <code>relay log</code>，因此 <em>immediate_commit_timestamp</em> 是 IO 线程连接库（A-&gt;B-&gt;C，C 为延迟从库，则这里为B库提交事务的时间）的事务提交时间，在函数 <code>sql_delay_event</code> 中有如下计算方式：</p> 
+<pre><code class="language-c++">sql_delay_end = ceil((static_cast&lt;Gtid_log_event *&gt;(ev)
+                          -&gt;immediate_commit_timestamp) /
+                     1000000.00) +
+                sql_delay; </code></pre> 
+<p>而对于不支持的延时从库则计算为：</p> 
+<pre><code class="language-c++">sql_delay_end = ev-&gt;common_header-&gt;when.tv_sec +
+                rli-&gt;mi-&gt;clock_diff_with_master + sql_delay;</code></pre> 
+<p>对于 <em>immediate_commit_timestamp</em> 和 <em>ev-&gt;common_header-&gt;when.tv_sec</em> 是有很大区别的，后者为 binlog header 中 timestamp 的时间，其在整个复制链路中并不会改变，其几乎为命令发起的时间，而不是事务提交的时间。我们以 A-&gt;B-&gt;C 为列，其中 C 为一个延迟从库。</p> 
+<ul><li>支持 <em>immediate_commit_timestamp</em> 的情况：C 的延迟计算是以B库提交时刻的时间为计算标准的。也就是其延迟是 B 库提交后多久 C 库应用。</li><li>不支持 <em>immediate_commit_timestamp</em> 的情况：C 的延迟计算是以 A 库命令发起的时间为计算标准的。也就是其延迟是 A 库命令发起后多久 C 库应用。</li></ul> 
+<p>很显然前者的计算方式更为靠谱。在延迟从库在等待的时候其线程的状态为：</p> 
+<pre><code>Waiting until MASTER_DELAY seconds after master executed event</code></pre> 
+<h3 id="32-主库判定事务的提交时刻和语句发起时间">3.2 主库判定事务的提交时刻和语句发起时间</h3> 
+<p>某些时候我们可能需要知道语句什么时候发起执行的，什么时候提交完成的，这个时候我们考虑使用 <em>immediate_commit_timestamp</em> 和 event header 的 <em>timestamp</em> 进行对比。</p> 
+<ul><li>对于自动提交的 DML 语句，则 GTID event header 的 timestamp 为语句发起的时间，而 GTID event 的 <em>immediate_commit_timestamp</em> 为事务提交的时间，如果差值太大，可能是遇到了锁（MDL LOCK 或 row lock）之类的问题。如下图：</li></ul> 
+<p><img src="https://images2.imgbox.com/35/d2/J3S4wJH3_o.png" alt="image-1.png"></p> 
+<p><img src="https://images2.imgbox.com/99/b0/Zak9qzlG_o.png" alt="image-2.png"></p> 
+<ul><li>对于非自动提交的事务，则 GTID event 的 <em>immediate_commit_timestamp</em> 为事务提交的时间，但是语句开始执行的时间需要查看具体语句的 event 才可以，不能查看 GTID event header 的 timestamp，这是 commit 命令发起的时间，如下图：</li></ul> 
+<p><img src="https://images2.imgbox.com/85/a6/MNEtcIWT_o.png" alt="image-3.png"></p> 
+<p><img src="https://images2.imgbox.com/10/95/1eqgekHH_o.png" alt="image-4.png"></p> 
+<p>当然类似，还可以获取从库的 binlog 信息来比对主库是什么时候发起语句的，什么时候提交事务的，从库又是什么时候提交事务的。类似如下图，这是我的一个从库，我这里是一个<strong>自动提交的 DML 语句</strong>：</p> 
+<p><img src="https://images2.imgbox.com/b6/94/UHAUqkb7_o.png" alt="image-5.png"></p> 
+<p>很明显，主库发起语句时间和主库提交时间以及从库提交时间都有一定的差值。</p> 
+<ul><li>主库发起语句时间：12:02:09</li><li>主库提交事务时间：12:02:13</li><li>从库提交事务时间：12:03:59</li></ul> 
+<h3 id="33-更加精确的延迟">3.3 更加精确的延迟</h3> 
+<p>这部分你在官方文档有说明，其中主要包含 3 个视图：</p> 
+<ul><li><strong>ps.replication_applier_status_by_worker：</strong> SQL 线程或者 WORKER 执行相关</li><li><strong>ps.replication_connection_status：</strong> IO 线程相关</li><li><strong>ps.replication_applier_status_by_coordinator：</strong> 协调线程相关</li></ul> 
+<p>其中大部分和 <em>timestamp</em> 相关的字段的都是自解释的，而在 <em>ps.replication_applier_status_by_coordinator</em> 和 <em>ps.replication_applier_status_by_worker</em> 中有两类字段类似 <code>XXX_BUFFER_TIMESTAMP</code>，<code>XXX_APPLY_TIMESTAMP</code> 比如：</p> 
+<ul><li><strong>LAST_PROCESSED_TRANSACTION_END_BUFFER_TIMESTAMP：</strong> 表示协调线程将事务分发给 WORKER 线程的时间</li><li><strong>LAST_APPLIED_TRANSACTION_END_APPLY_TIMESTAMP：</strong> 表示应用完事务的时间</li></ul> 
+<p>具体代码中可以断点在：</p> 
+<ul><li>Relay_log_info::finished_processing</li><li>Relay_log_info::started_processing</li></ul> 
+<p>上进行观察，实际上是 <code>Relay_log_info</code> 中多了如下信息：</p> 
+<pre><code class="language-text">  /**
+    Stores information on the last processed transaction or the transaction
+    that is currently being processed.
+
+    STS:
+    - timestamps of the currently applying/last applied transaction
+
+    MTS:
+    - coordinator thread: timestamps of the currently scheduling/last scheduled
+      transaction in a worker's queue
+    - worker thread: timestamps of the currently applying/last applied
+      transaction
+  */
+  Gtid_monitoring_info *gtid_monitoring_info;</code></pre> 
+<p>每个 WORKER 和协调线程都包含了这样一个事务的监控信息，因此可以在视图中打印出来。</p> 
+<p>显然我们就可以通过各种从库中执行的 <em>timestamp</em> 的时间和主库提交时间也就是 <em>ORIGINAL_COMMIT_TIMESTAMP</em> 计算出来精确的延迟。</p> 
+<p>更多技术文章，请访问：<a href="https://opensource.actionsky.com/" rel="nofollow">https://opensource.actionsky.com/</a></p> 
+<h3 id="关于-sqle">关于 SQLE</h3> 
+<p>SQLE 是一款全方位的 SQL 质量管理平台，覆盖开发至生产环境的 SQL 审核和管理。支持主流的开源、商业、国产数据库，为开发和运维提供流程自动化能力，提升上线效率，提高数据质量。</p> 
+<h3 id="sqle-获取">SQLE 获取</h3> 
+<table><thead><tr><th>类型</th><th>地址</th></tr></thead><tbody><tr><td>版本库</td><td><a href="https://github.com/actiontech/sqle">https://github.com/actiontech/sqle</a></td></tr><tr><td>文档</td><td><a href="https://actiontech.github.io/sqle-docs/" rel="nofollow">https://actiontech.github.io/sqle-docs/</a></td></tr><tr><td>发布信息</td><td><a href="https://github.com/actiontech/sqle/releases">https://github.com/actiontech/sqle/releases</a></td></tr><tr><td>数据审核插件开发文档</td><td><a href="https://actiontech.github.io/sqle-docs/docs/dev-manual/plugins/howtouse" rel="nofollow">https://actiontech.github.io/sqle-docs/docs/dev-manual/plugins/howtouse</a></td></tr></tbody></table>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/d8321e0b022a3d1b5d71c5601837dd38/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">vue3&#43;luckyexcel&#43;php在线编辑excel文件</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8a107a6aa5fa1afcdfe6ec510a398233/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">使用Python编写自动传输脚本详解</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

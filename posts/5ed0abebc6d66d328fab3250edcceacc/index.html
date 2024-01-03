@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>java培训：Netty的内存管理 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="java培训：Netty的内存管理" />
+<meta property="og:description" content="前言
+正是 Netty 的易用性和高性能成就了 Netty，让其能够如此流行。而作为一款通信框架，首当其冲的便是对 IO 性能的高要求。
+不少读者都知道 Netty底层通过使用Direct Memory，减少了内核态与用户态之间的内存拷贝，加快了IO速率。但是频繁的向系统申请Direct Memory，并在使用完成后释放本身就是一件影响性能的事情。为此，Netty内部实现了一套自己的内存管理机制，在申请时，Netty会一次性向操作系统申请较大的一块内存，然后再将大内存进行管理，按需拆分成小块分配。而释放时，Netty并不着急直接释放内存，而是将内存回收以待下次使用。
+这套内存管理机制不仅可以管理Directory Memory，同样可以管理Heap Memory。
+内存的终端消费者——ByteBuf
+这里，我想向读者们强调一点，ByteBuf和内存其实是两个概念，要区分理解。
+ByteBuf是一个对象，需要给他分配一块内存，它才能正常工作。
+而内存可以通俗的理解成我们操作系统的内存，虽然申请到的内存也是需要依赖载体存储的:堆内存时，通过byte[]， 而Direct内存，则是Nio的ByteBuffer(因此Java使用Direct Memory的能力是JDK中Nio包提供的)。
+为什么要强调这两个概念，是因为Netty的内存池(或者称内存管理机制)涉及的是针对内存的分配和回收，而Netty的ByteBuf的回收则是另一种叫做对象池的技术(通过Recycler实现)。
+虽然这两者总是伴随着一起使用，但这二者是独立的两套机制。可能存在着某次创建ByteBuf时，ByteBuf是回收使用的，而内存却是新向操作系统申请的。也可能存在某次创建ByteBuf时，ByteBuf是新创建的，而内存却是回收使用的。
+因为对于一次创建过程而言，可以分成三个步骤：
+获取ByteBuf实例(可能新建，也可能是之间缓存的)向Netty内存管理机制申请内存(可能新向操作系统申请，也可能是之前回收的)将申请到的内存分配给ByteBuf使用 本文只关注内存的管理机制，因此不会过多的对对象回收机制做解释。
+Netty中内存管理的相关类
+Netty中与内存管理相关的类有很多。框架内部提供了PoolArena,PoolChunkList,PoolChunk,PoolSubpage等用来管理一块或一组内存。
+而对外，提供了ByteBufAllocator供用户进行操作java培训。
+接下来，我们会先对这几个类做一定程度的介绍，在通过ByteBufAllocator了解内存分配和回收的流程。
+为了篇幅和可读性考虑，本文不会涉及到大量很详细的代码说明，而主要是通过图辅之必要的代码进行介绍。
+针对代码的注解，感兴趣的网友可加我微信：xttblog2，免费获取！
+PoolChunck——Netty向OS申请的最小内存
+上文已经介绍了，为了减少频繁的向操作系统申请内存的情况，Netty会一次性申请一块较大的内存。而后对这块内存进行管理，每次按需将其中的一部分分配给内存使用者(即ByteBuf)。这里的内存就是PoolChunk,其大小由ChunkSize决定(默认为16M，即一次向OS申请16M的内存)。
+Page——PoolChunck所管理的最小内存单位
+PoolChunk所能管理的最小内存叫做Page，大小由PageSize(默认为8K)，即一次向PoolChunk申请的内存都要以Page为单位(一个或多个Page)。
+当需要由PoolChunk分配内存时，PoolChunk会查看通过内部记录的信息找出满足此次内存分配的Page的位置，分配给使用者。
+PoolChunck如何管理Page
+我们已经知道PoolChunk内部会以Page为单位组织内存，同样以Page为单位分配内存。
+那么PoolChunk要如何管理才能兼顾分配效率(指尽可能快的找出可分配的内存且保证此次分配的内存是连续的)和使用效率(尽可能少的避免内存浪费，做到物尽其用)的？
+Netty采用了Jemalloc的想法。
+首先PoolChunk通过一个完全二叉树来组织内部的内存。以默认的ChunkSize为16M, PageSize为8K为例，一个PoolChunk可以划分成2048个Page。将这2048个Page看作是叶子节点的宽度，可以得到一棵深度为11的树(2^11=2048)。
+我们让每个叶子节点管理一个Page,那么其父节点管理的内存即为两个Page(其父节点有左右两个叶子节点)，以此类推，树的根节点管理了这个PoolChunk所有的Page(因为所有的叶子结点都是其子节点)，而树中某个节点所管理的内存大小即是以该节点作为根的子树所包含的叶子节点管理的全部Page。
+这样做的好处就是当你需要内存时，很快可以找到从何处分配内存（你只需要从上往下找到所管理的内存为你需要的内存的节点，然后将该节点所管理的内存分配出去即可)，并且所分配的内存还是连续的(只要保证相邻叶子节点对应的Page是连续的即可)。
+上图中编号为512的节点管理了4个Page，为Page0, Page1, Page2, Page3(因为其下面有四个叶子节点2048，2049，2050， 2051)。
+而编号为1024的节点管理了2个Page，为Page0和Page1(其对应的叶子节点为Page0和Page1)。
+当需要分配32K的内存时，只需要将编号512的节点分配出去即可(512分配出去后会默认其下所有子节点都不能分配)。而当需要分配16K的内存时，只需要将编号1024的节点分配出去即可(一旦节点1024被分配，下面的2048和2049都不允许再被分配)。
+了解了PoolChunk内部的内存管理机制后，读者可能会产生几个问题：
+PoolChunk内部如何标记某个节点已经被分配？当某个节点被分配后，其父节点所能分配的内存如何更新？即一旦节点2048被分配后，当你再需要16K的内存时，就不能从节点1024分配，因为现在节点1024可用的内存仅有8K。 为了解决以上这两点问题，PoolChunk都是内部维护了的byte[] memeoryMap和byte[] depthMap两个变量。
+这两个数组的长度是相同的，长度等于树的节点数&#43;1。因为它们把根节点放在了1的位置上。而数组中父节点与子节点的位置关系为:
+假设parnet的下标为i,则子节点的下标为2i和2i&#43;1
+用数组表示一颗二叉树，你们是不是想到了堆这个数据结构。
+已经知道了两个数组都是表示二叉树，且数组中的每个元素可以看成二叉树的节点。那么再来看看元素的值分别代码什么意思。
+对于depthMap而言，该值就代表该节点所处的树的层数。例如：depthMap[1] == 1，因为它是根节点，而depthMap[2] = depthMap[3] = 2，表示这两个节点均在第二层。由于树一旦确定后，结构就不在发生改变，因此depthMap在初始化后，各元素的值也就不发生变化了。
+而对于memoryMap而言，其值表示该节点下可用于完整内存分配的最小层数(或者说最靠近根节点的层数)。
+这话理解起来可能有点别扭，还是用上文的例子为例。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/5ed0abebc6d66d328fab3250edcceacc/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-02-25T11:26:04+08:00" />
+<meta property="article:modified_time" content="2022-02-25T11:26:04+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">java培训：Netty的内存管理</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><strong>前言</strong></p> 
+<p>正是 Netty 的易用性和高性能成就了 Netty，让其能够如此流行。而作为一款通信框架，首当其冲的便是对 IO 性能的高要求。</p> 
+<p>不少读者都知道 Netty底层通过使用Direct Memory，减少了内核态与用户态之间的内存拷贝，加快了IO速率。但是频繁的向系统申请Direct Memory，并在使用完成后释放本身就是一件影响性能的事情。为此，Netty内部实现了一套自己的内存管理机制，在申请时，Netty会一次性向操作系统申请较大的一块内存，然后再将大内存进行管理，按需拆分成小块分配。而释放时，Netty并不着急直接释放内存，而是将内存回收以待下次使用。</p> 
+<p>这套内存管理机制不仅可以管理Directory Memory，同样可以管理Heap Memory。</p> 
+<p><strong>内存的终端消费者——ByteBuf</strong></p> 
+<p>这里，我想向读者们强调一点，ByteBuf和内存其实是两个概念，要区分理解。</p> 
+<p>ByteBuf是一个对象，需要给他分配一块内存，它才能正常工作。</p> 
+<p>而内存可以通俗的理解成我们操作系统的内存，虽然申请到的内存也是需要依赖载体存储的:堆内存时，通过byte[]， 而Direct内存，则是Nio的ByteBuffer(因此Java使用Direct Memory的能力是JDK中Nio包提供的)。</p> 
+<p>为什么要强调这两个概念，是因为Netty的内存池(或者称内存管理机制)涉及的是针对内存的分配和回收，而Netty的ByteBuf的回收则是另一种叫做对象池的技术(通过Recycler实现)。</p> 
+<p>虽然这两者总是伴随着一起使用，但这二者是独立的两套机制。可能存在着某次创建ByteBuf时，ByteBuf是回收使用的，而内存却是新向操作系统申请的。也可能存在某次创建ByteBuf时，ByteBuf是新创建的，而内存却是回收使用的。</p> 
+<p>因为对于一次创建过程而言，可以分成三个步骤：</p> 
+<ol><li>获取ByteBuf实例(可能新建，也可能是之间缓存的)</li><li>向Netty内存管理机制申请内存(可能新向操作系统申请，也可能是之前回收的)</li><li>将申请到的内存分配给ByteBuf使用</li></ol> 
+<p>本文只关注内存的管理机制，因此不会过多的对对象回收机制做解释。</p> 
+<p><strong>Netty中内存管理的相关类</strong></p> 
+<p>Netty中与内存管理相关的类有很多。框架内部提供了PoolArena,PoolChunkList,PoolChunk,PoolSubpage等用来管理一块或一组内存。</p> 
+<p>而对外，提供了ByteBufAllocator供用户进行操作<a class="link-info" href="http://www.atguigu.com" rel="nofollow" title="java培训">java培训</a>。</p> 
+<p>接下来，我们会先对这几个类做一定程度的介绍，在通过ByteBufAllocator了解内存分配和回收的流程。</p> 
+<p>为了篇幅和可读性考虑，本文不会涉及到大量很详细的代码说明，而主要是通过图辅之必要的代码进行介绍。</p> 
+<p>针对代码的注解，感兴趣的网友可加我微信：xttblog2，免费获取！</p> 
+<p><strong>PoolChunck——Netty向OS申请的最小内存</strong></p> 
+<p>上文已经介绍了，为了减少频繁的向操作系统申请内存的情况，Netty会一次性申请一块较大的内存。而后对这块内存进行管理，每次按需将其中的一部分分配给内存使用者(即ByteBuf)。这里的内存就是PoolChunk,其大小由ChunkSize决定(默认为16M，即一次向OS申请16M的内存)。</p> 
+<p><strong>Page——PoolChunck所管理的最小内存单位</strong></p> 
+<p>PoolChunk所能管理的最小内存叫做Page，大小由PageSize(默认为8K)，即一次向PoolChunk申请的内存都要以Page为单位(一个或多个Page)。</p> 
+<p>当需要由PoolChunk分配内存时，PoolChunk会查看通过内部记录的信息找出满足此次内存分配的Page的位置，分配给使用者。</p> 
+<p><strong>PoolChunck如何管理Page</strong></p> 
+<p>我们已经知道PoolChunk内部会以Page为单位组织内存，同样以Page为单位分配内存。<br> 那么PoolChunk要如何管理才能兼顾分配效率(指尽可能快的找出可分配的内存且保证此次分配的内存是连续的)和使用效率(尽可能少的避免内存浪费，做到物尽其用)的？<br> Netty采用了Jemalloc的想法。</p> 
+<p>首先PoolChunk通过一个完全二叉树来组织内部的内存。以默认的ChunkSize为16M, PageSize为8K为例，一个PoolChunk可以划分成2048个Page。将这2048个Page看作是叶子节点的宽度，可以得到一棵深度为11的树(2^11=2048)。</p> 
+<p>我们让每个叶子节点管理一个Page,那么其父节点管理的内存即为两个Page(其父节点有左右两个叶子节点)，以此类推，树的根节点管理了这个PoolChunk所有的Page(因为所有的叶子结点都是其子节点)，而树中某个节点所管理的内存大小即是以该节点作为根的子树所包含的叶子节点管理的全部Page。</p> 
+<p>这样做的好处就是当你需要内存时，很快可以找到从何处分配内存（你只需要从上往下找到所管理的内存为你需要的内存的节点，然后将该节点所管理的内存分配出去即可)，并且所分配的内存还是连续的(只要保证相邻叶子节点对应的Page是连续的即可)。</p> 
+<p></p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/d5/ce/w3kYqz9w_o.png"></p> 
+<p> </p> 
+<p>上图中编号为512的节点管理了4个Page，为Page0, Page1, Page2, Page3(因为其下面有四个叶子节点2048，2049，2050， 2051)。</p> 
+<p>而编号为1024的节点管理了2个Page，为Page0和Page1(其对应的叶子节点为Page0和Page1)。<br> 当需要分配32K的内存时，只需要将编号512的节点分配出去即可(512分配出去后会默认其下所有子节点都不能分配)。而当需要分配16K的内存时，只需要将编号1024的节点分配出去即可(一旦节点1024被分配，下面的2048和2049都不允许再被分配)。</p> 
+<p>了解了PoolChunk内部的内存管理机制后，读者可能会产生几个问题：</p> 
+<ul><li>PoolChunk内部如何标记某个节点已经被分配？</li><li>当某个节点被分配后，其父节点所能分配的内存如何更新？即一旦节点2048被分配后，当你再需要16K的内存时，就不能从节点1024分配，因为现在节点1024可用的内存仅有8K。</li></ul> 
+<p>为了解决以上这两点问题，PoolChunk都是内部维护了的byte[] memeoryMap和byte[] depthMap两个变量。</p> 
+<p>这两个数组的长度是相同的，长度等于树的节点数+1。因为它们把根节点放在了1的位置上。而数组中父节点与子节点的位置关系为:</p> 
+<p>假设parnet的下标为i,则子节点的下标为2i和2i+1</p> 
+<p>用数组表示一颗二叉树，你们是不是想到了堆这个数据结构。</p> 
+<p>已经知道了两个数组都是表示二叉树，且数组中的每个元素可以看成二叉树的节点。那么再来看看元素的值分别代码什么意思。</p> 
+<p>对于depthMap而言，该值就代表该节点所处的树的层数。例如：depthMap[1] == 1，因为它是根节点，而depthMap[2] = depthMap[3] = 2，表示这两个节点均在第二层。由于树一旦确定后，结构就不在发生改变，因此depthMap在初始化后，各元素的值也就不发生变化了。</p> 
+<p>而对于memoryMap而言，其值表示该节点下可用于完整内存分配的最小层数(或者说最靠近根节点的层数)。</p> 
+<p>这话理解起来可能有点别扭，还是用上文的例子为例。</p> 
+<p>首先在内存都未分配的情况下，每个节点所能分配的内存大小就是该层最初始的状态(即memoryMap的初始状态和depthMap的一致的)。而一旦其有个子节点被分配出后去，父节点所能分配的完整内存(完整内存是指该节点所管理的连续的内存块，而非该节点剩余的内存大小)就减小了(内存的分配和回收会修改关联的mermoryMap中相关节点的值)。</p> 
+<p>譬如，节点2048被分配后，那么对于节点1024来说，能完整分配的内存(原先为16K)就已经和编号2049节点(其右子节点)相同(减为了8K)，换句话说节点1024的能力已经退化到了2049节点所在的层节点所拥有的能力。</p> 
+<p>这一退化可能会影响所有的父节点。</p> 
+<p>而此时，512节点能分配的完整内存是16K，而非24K(因为内存分配都是按2的幂进行分配，尽管一个消费者真实需要的内存可能是21K，但是Netty的内存管理机制会直接分配32K的内存)。</p> 
+<p>但是这并不是说节点512管理的另一个8K内存就浪费了，8K内存还可以用来在申请内存为8K的时候分配。</p> 
+<p>用图片演示PoolChunk内存分配的过程。其中value表示该节点在memoeryMap的值，而depth表示该节点在depthMap的值。</p> 
+<p>第一次内存分配，申请者实际需要6K的内存:</p> 
+<p></p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/8d/88/NVnl3NPc_o.png"></p> 
+<p> </p> 
+<p>这次分配造成的后果是其所有父节点的 memoryMap 的值都往下加了一层。<br> 之后申请者需要申请 12K 的内存:</p> 
+<p></p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/55/69/frcsKYMI_o.png"></p> 
+<p> </p> 
+<p>由于节点1024已经无法分配所需的内存，而节点512还能够分配，因此节点512让其右节点再尝试。</p> 
+<p>上述介绍的是内存分配的过程，而内存回收的过程就是上述过程的逆过程——回收后将对应节点的memoryMap的值修改回去。这里不过多介绍。</p> 
+<p><strong>PoolChunkList——对PoolChunk的管理</strong></p> 
+<p>PoolChunkList内部有一个PoolChunk组成的链表。通常一个PoolChunkList中的所有PoolChunk使用率(已分配内存/ChunkSize)都在相同的范围内。</p> 
+<p>每个PoolChunkList有自己的最小使用率或者最大使用率的范围，PoolChunkList与PoolChunkList之间又会形成链表，<a class="link-info" href="http://java.atguigu.com" rel="nofollow" title="java培训班">java培训班</a>并且使用率范围小的PoolChunkList会在链表中更加靠前。</p> 
+<p>而随着PoolChunk的内存分配和使用，其使用率发生变化后，PoolChunk会在PoolChunkList的链表中，前后调整，移动到合适范围的PoolChunkList内。</p> 
+<p>这样做的好处是，使用率的小的PoolChunk可以先被用于内存分配，从而维持PoolChunk的利用率都在一个较高的水平，避免内存浪费。</p> 
+<p><strong>PoolSubpage——小内存的管理者</strong></p> 
+<p>PoolChunk管理的最小内存是一个Page(默认8K)，而当我们需要的内存比较小时，直接分配一个Page无疑会造成内存浪费。<br> PoolSubPage就是用来管理这类细小内存的管理者。</p> 
+<p>小内存是指小于一个Page的内存，可以分为Tiny和Smalll，Tiny是小于512B的内存，而Small则是512到4096B的内存。如果内存块大于等于一个Page，称之为Normal，而大于一个Chunk的内存块称之为Huge。</p> 
+<p>而Tiny和Small内部又会按具体内存的大小进行细分。</p> 
+<p>对Tiny而言，会分成16，32，48...496(以16的倍数递增)，共31种情况。</p> 
+<p>对Small而言，会分成512，1024，2048，4096四种情况。</p> 
+<p>PoolSubpage会先向PoolChunk申请一个Page的内存，然后将这个page按规格划分成相等的若干个内存块(一个PoolSubpage仅会管理一种规格的内存块，例如仅管理16B,就将一个Page的内存分成512个16B大小的内存块)。</p> 
+<p>每个PoolSubpage仅会选一种规格的内存管理，因此处理相同规格的PoolSubpage往往是通过链表的方式组织在一起，不同的规格则分开存放在不同的地方。</p> 
+<p>并且总是管理一个规格的特性，让PoolSubpage在内存管理时不需要使用PoolChunk的完全二叉树方式来管理内存(例如，管理16B的PoolSubpage只需要考虑分配16B的内存，当申请32B的内存时，必须交给管理32B的内存来处理)，仅用 long[] bitmap (可以看成是位数组)来记录所管理的内存块中哪些已经被分配(第几位就表示第几个内存块)。</p> 
+<p>实现方式要简单很多。</p> 
+<p><strong>PoolArena——内存管理的统筹者</strong></p> 
+<p>PoolArena是内存管理的统筹者。</p> 
+<p>它内部有一个PoolChunkList组成的链表(上文已经介绍过了，链表是按PoolChunkList所管理的使用率划分)。</p> 
+<p>此外，它还有两个PoolSubpage的数组，PoolSubpage[] tinySubpagePools 和 PoolSubpage[] smallSubpagePools。</p> 
+<p>默认情况下，tinySubpagePools的长度为31，即存放16，32，48...496这31种规格的PoolSubpage(不同规格的PoolSubpage存放在对应的数组下标中，相同规格的PoolSubpage在同一个数组下标中形成链表)。</p> 
+<p>同理，默认情况下，smallSubpagePools的长度为4，存放512，1024，2048，4096这四种规格的PoolSubpage。</p> 
+<p>PoolArena会根据所申请的内存大小决定是找PoolChunk还是找对应规格的PoolSubpage来分配。</p> 
+<p>值得注意的是，PoolArena在分配内存时，是会存在竞争的，因此在关键的地方，PoolArena会通过sychronize来保证线程的安全。</p> 
+<p>Netty对这种竞争做了一定程度的优化，它会分配多个PoolArena，让线程尽量使用不同的PoolArena，减少出现竞争的情况。</p> 
+<p><strong>PoolThreadCache——线程本地缓存，减少内存分配时的竞争</strong></p> 
+<p>PoolArena免不了产生竞争，Netty除了创建多个PoolArena减少竞争外，还让线程在释放内存时缓存已经申请过的内存，而不立即归还给PoolArena。</p> 
+<p>缓存的内存被存放在PoolThreadCache内，它是一个线程本地变量，因此是线程安全的，对它的访问也不需要上锁。</p> 
+<p>PoolThreadCache内部是由MemeoryRegionCache的缓存池(数组)，同样按等级可以分为Tiny,Small和Normal(并不缓存Huge，因为Huge效益不高)。</p> 
+<p>其中Tiny和Small这两个等级下的划分方式和PoolSubpage的划分方式相同，而Normal因为组合太多，会有一个参数控制缓存哪些规格(例如，一个Page, 两个Page和四个Page等...)，不在Normal缓存规格内的内存块将不会被缓存，直接还给PoolArena。</p> 
+<p>再看MemoryRegionCache, 它内部是一个队列，同一队列内的所有节点可以看成是该线程使用过的同一规格的内存块。同时，它还有个size属性控制队列过长(队列满后，将不在缓存该规格的内存块，而是直接还给PoolArena)。</p> 
+<p>当线程需要内存时，会先从自己的PoolThreadCache中找对应等级的缓存池(对应的数组)。然后再从数组中找出对应规格的MemoryRegionCache。最后从其队列中取出内存块进行分配。</p> 
+<p><strong>Netty内存机构总览和PooledByteBufAllocator申请内存步骤</strong></p> 
+<p>在了解了上述这么多概念后，通过一张图给读者加深下印象。</p> 
+<p></p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/b6/97/wSH8g621_o.png"></p> 
+<p> </p> 
+<p>上图仅详细画了针对Heap Memory的部分，Directory Memory也是类似的。</p> 
+<p>最后在由PooledByteBufAllocator作为入口，重头梳理一遍内存申请的过程:</p> 
+<ol><li>PooledByteBufAllocator.newHeapBuffer()开始申请内存</li><li>获取线程本地的变量PoolThreadCache以及和线程绑定的PoolArena</li><li>通过PoolArena分配内存，先获取ByteBuf对象(可能是对象池回收的也可能是创建的)，在开始内存分配</li><li>分配前先判断此次内存的等级，尝试从PoolThreadCache的找相同规格的缓存内存块使用，没有则从PoolArena中分配内存</li><li>对于Normal等级内存而言，从PoolChunkList的链表中找合适的PoolChunk来分配内存，如果没有则先像OS申请一个PoolChunk，在由PoolChunk分配相应的Page</li><li>对于Tiny和Small等级的内存而言，从对应的PoolSubpage缓存池中找内存分配，如果没有PoolSubpage，线会到第5步，先分配PoolChunk，再由PoolChunk分配Page给PoolSubpage使用</li><li>对于Huge等级的内存而言，不会缓存，会在用的时候申请，释放的时候直接回收</li><li>将得到的内存给ByteBuf使用，就完成了一次内存申请的过程</li></ol> 
+<p><span style="color:#d7d8d9;">文章来源于业余草</span></p> 
+<hr> 
+<p>推荐阅读：</p> 
+<p>java开发技术之Netty几个核心类介绍</p> 
+<p>java开发之Java 虚拟机栈</p> 
+<p>Java开发技术之浅谈Statement的不足</p> 
+<p>Java开发基础篇SE中this关键字</p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/d0975217bd96043ce1238ae5cf4f0a63/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">文献管理工具EndNote使用</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/09ce6b66e902a32004ebec9e556069f1/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C# .net 6 通用文件哈希修改 项目源码（快速开发框架开源版）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

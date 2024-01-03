@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink原理：定时器 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Flink原理：定时器" />
+<meta property="og:description" content="文章目录 1. 用途2. 示例3. 原理3.1 注册3.2 触发3.3 延迟队列state3.4 定时器注意事项 1. 用途 Flink定时器存在于窗口的触发，TTL等诸多用途，因此搞清楚其原理对于理解这些知识点至关重要。
+2. 示例 在flink实时处理中，涉及到延时处理可使用KeyedProcessFunction来完成，KeyedProcessFunction是flink提供面向用户的low level api，可以访问状态、当前的watermark或者当前的processingtime, 更重要的是提供了注册定时器的功能，分为：
+注册处理时间定时器，直到系统的processingTime超过了注册的时间就会触发定时任务注册事件时间定时器，直到watermark值超过了注册的时间就会触发定时任务另外也可以删除已经注册的定时器。 示例代码如下：
+// 创建bean类CountWithTimestamp，里面有三个字段 package com.bolingcavalry.keyedprocessfunction; public class CountWithTimestamp { public String key; public long count; public long lastModified; } // 创建FlatMapFunction的实现类Splitter，作用是将字符串分割后生成多个Tuple2实例，f0是分隔后的单词，f1等于1： package com.bolingcavalry; import org.apache.flink.api.common.functions.FlatMapFunction; import org.apache.flink.api.java.tuple.Tuple2; import org.apache.flink.util.Collector; import org.apache.flink.util.StringUtils; public class Splitter implements FlatMapFunction&lt;String, Tuple2&lt;String, Integer&gt;&gt; { @Override public void flatMap(String s, Collector&lt;Tuple2&lt;String, Integer&gt;&gt; collector) throws Exception { if(StringUtils." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/c2baf5e8b7e9609c96bf342040227bd8/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-09-01T09:32:05+08:00" />
+<meta property="article:modified_time" content="2020-09-01T09:32:05+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink原理：定时器</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><ul><li><a href="#1__1" rel="nofollow">1. 用途</a></li><li><a href="#2__3" rel="nofollow">2. 示例</a></li><li><a href="#3__225" rel="nofollow">3. 原理</a></li><li><ul><li><a href="#31__263" rel="nofollow">3.1 注册</a></li><li><a href="#32__420" rel="nofollow">3.2 触发</a></li><li><a href="#33_state_454" rel="nofollow">3.3 延迟队列state</a></li><li><a href="#34__457" rel="nofollow">3.4 定时器注意事项</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h4><a id="1__1"></a>1. 用途</h4> 
+<p>Flink定时器存在于窗口的触发，TTL等诸多用途，因此搞清楚其原理对于理解这些知识点至关重要。</p> 
+<h4><a id="2__3"></a>2. 示例</h4> 
+<p>在flink实时处理中，涉及到延时处理可使用KeyedProcessFunction来完成，KeyedProcessFunction是flink提供面向用户的low level api，可以访问状态、当前的watermark或者当前的processingtime, 更重要的是提供了注册定时器的功能，分为：</p> 
+<ol><li>注册处理时间定时器，直到系统的processingTime超过了注册的时间就会触发定时任务</li><li>注册事件时间定时器，直到watermark值超过了注册的时间就会触发定时任务另外也可以删除已经注册的定时器。</li></ol> 
+<p>示例代码如下：</p> 
+<pre><code class="prism language-java"><span class="token comment">// 创建bean类CountWithTimestamp，里面有三个字段</span>
+<span class="token keyword">package</span> com<span class="token punctuation">.</span>bolingcavalry<span class="token punctuation">.</span>keyedprocessfunction<span class="token punctuation">;</span>
+
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">CountWithTimestamp</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> String key<span class="token punctuation">;</span>
+    <span class="token keyword">public</span> <span class="token keyword">long</span> count<span class="token punctuation">;</span>
+    <span class="token keyword">public</span> <span class="token keyword">long</span> lastModified<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token comment">// 创建FlatMapFunction的实现类Splitter，作用是将字符串分割后生成多个Tuple2实例，f0是分隔后的单词，f1等于1：</span>
+<span class="token keyword">package</span> com<span class="token punctuation">.</span>bolingcavalry<span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>api<span class="token punctuation">.</span>common<span class="token punctuation">.</span>functions<span class="token punctuation">.</span>FlatMapFunction<span class="token punctuation">;</span>
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>api<span class="token punctuation">.</span>java<span class="token punctuation">.</span>tuple<span class="token punctuation">.</span>Tuple2<span class="token punctuation">;</span>
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>util<span class="token punctuation">.</span>Collector<span class="token punctuation">;</span>
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>util<span class="token punctuation">.</span>StringUtils<span class="token punctuation">;</span>
+
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">Splitter</span> <span class="token keyword">implements</span> <span class="token class-name">FlatMapFunction</span><span class="token operator">&lt;</span>String<span class="token punctuation">,</span> Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Integer<span class="token punctuation">&gt;</span></span><span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">flatMap</span><span class="token punctuation">(</span>String s<span class="token punctuation">,</span> Collector<span class="token operator">&lt;</span>Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Integer<span class="token punctuation">&gt;</span></span><span class="token operator">&gt;</span> collector<span class="token punctuation">)</span> <span class="token keyword">throws</span> Exception <span class="token punctuation">{<!-- --></span>
+
+        <span class="token keyword">if</span><span class="token punctuation">(</span>StringUtils<span class="token punctuation">.</span><span class="token function">isNullOrWhitespaceOnly</span><span class="token punctuation">(</span>s<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            System<span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"invalid line"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">for</span><span class="token punctuation">(</span>String word <span class="token operator">:</span> s<span class="token punctuation">.</span><span class="token function">split</span><span class="token punctuation">(</span><span class="token string">" "</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            collector<span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Tuple2</span><span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Integer<span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>word<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token comment">// 最后是整个逻辑功能的主体：ProcessTime.java，这里面有自定义的KeyedProcessFunction子类，还有程序入口的main方法</span>
+<span class="token keyword">package</span> com<span class="token punctuation">.</span>bolingcavalry<span class="token punctuation">.</span>keyedprocessfunction<span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> com<span class="token punctuation">.</span>bolingcavalry<span class="token punctuation">.</span>Splitter<span class="token punctuation">;</span>
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>api<span class="token punctuation">.</span>common<span class="token punctuation">.</span>state<span class="token punctuation">.</span>ValueState<span class="token punctuation">;</span>
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>api<span class="token punctuation">.</span>common<span class="token punctuation">.</span>state<span class="token punctuation">.</span>ValueStateDescriptor<span class="token punctuation">;</span>
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>api<span class="token punctuation">.</span>java<span class="token punctuation">.</span>tuple<span class="token punctuation">.</span>Tuple<span class="token punctuation">;</span>
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>api<span class="token punctuation">.</span>java<span class="token punctuation">.</span>tuple<span class="token punctuation">.</span>Tuple2<span class="token punctuation">;</span>
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>configuration<span class="token punctuation">.</span>Configuration<span class="token punctuation">;</span>
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>api<span class="token punctuation">.</span>TimeCharacteristic<span class="token punctuation">;</span>
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>api<span class="token punctuation">.</span>datastream<span class="token punctuation">.</span>DataStream<span class="token punctuation">;</span>
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>api<span class="token punctuation">.</span>environment<span class="token punctuation">.</span>StreamExecutionEnvironment<span class="token punctuation">;</span>
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>api<span class="token punctuation">.</span>functions<span class="token punctuation">.</span>AssignerWithPeriodicWatermarks<span class="token punctuation">;</span>
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>api<span class="token punctuation">.</span>functions<span class="token punctuation">.</span>KeyedProcessFunction<span class="token punctuation">;</span>
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>api<span class="token punctuation">.</span>watermark<span class="token punctuation">.</span>Watermark<span class="token punctuation">;</span>
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>util<span class="token punctuation">.</span>Collector<span class="token punctuation">;</span>
+<span class="token keyword">import</span> java<span class="token punctuation">.</span>text<span class="token punctuation">.</span>SimpleDateFormat<span class="token punctuation">;</span>
+<span class="token keyword">import</span> java<span class="token punctuation">.</span>util<span class="token punctuation">.</span>Date<span class="token punctuation">;</span>
+
+
+<span class="token comment">/**
+ * @author will
+ * @email zq2599@gmail.com
+ * @date 2020-05-17 13:43
+ * @description 体验KeyedProcessFunction类(时间类型是处理时间)
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">ProcessTime</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token comment">/**
+     * KeyedProcessFunction的子类，作用是将每个单词最新出现时间记录到backend，并创建定时器，
+     * 定时器触发的时候，检查这个单词距离上次出现是否已经达到10秒，如果是，就发射给下游算子
+     */</span>
+    <span class="token keyword">static</span> <span class="token keyword">class</span> <span class="token class-name">CountWithTimeoutFunction</span> <span class="token keyword">extends</span> <span class="token class-name">KeyedProcessFunction</span><span class="token operator">&lt;</span>Tuple<span class="token punctuation">,</span> Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Integer<span class="token punctuation">&gt;</span></span><span class="token punctuation">,</span> Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Long<span class="token punctuation">&gt;</span></span><span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+
+        <span class="token comment">// 自定义状态</span>
+        <span class="token keyword">private</span> ValueState<span class="token generics function"><span class="token punctuation">&lt;</span>CountWithTimestamp<span class="token punctuation">&gt;</span></span> state<span class="token punctuation">;</span>
+
+        <span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">open</span><span class="token punctuation">(</span>Configuration parameters<span class="token punctuation">)</span> <span class="token keyword">throws</span> Exception <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 初始化状态，name是myState</span>
+            state <span class="token operator">=</span> <span class="token function">getRuntimeContext</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getState</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">ValueStateDescriptor</span><span class="token operator">&lt;</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token string">"myState"</span><span class="token punctuation">,</span> CountWithTimestamp<span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">processElement</span><span class="token punctuation">(</span>
+                Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Integer<span class="token punctuation">&gt;</span></span> value<span class="token punctuation">,</span>
+                Context ctx<span class="token punctuation">,</span>
+                Collector<span class="token operator">&lt;</span>Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Long<span class="token punctuation">&gt;</span></span><span class="token operator">&gt;</span> out<span class="token punctuation">)</span> <span class="token keyword">throws</span> Exception <span class="token punctuation">{<!-- --></span>
+
+            <span class="token comment">// 取得当前是哪个单词</span>
+            Tuple currentKey <span class="token operator">=</span> ctx<span class="token punctuation">.</span><span class="token function">getCurrentKey</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token comment">// 从backend取得当前单词的myState状态</span>
+            CountWithTimestamp current <span class="token operator">=</span> state<span class="token punctuation">.</span><span class="token function">value</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token comment">// 如果myState还从未没有赋值过，就在此初始化</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>current <span class="token operator">==</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                current <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">CountWithTimestamp</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                current<span class="token punctuation">.</span>key <span class="token operator">=</span> value<span class="token punctuation">.</span>f0<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token comment">// 单词数量加一</span>
+            current<span class="token punctuation">.</span>count<span class="token operator">++</span><span class="token punctuation">;</span>
+
+            <span class="token comment">// 取当前元素的时间戳，作为该单词最后一次出现的时间</span>
+            current<span class="token punctuation">.</span>lastModified <span class="token operator">=</span> ctx<span class="token punctuation">.</span><span class="token function">timestamp</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token comment">// 重新保存到backend，包括该单词出现的次数，以及最后一次出现的时间</span>
+            state<span class="token punctuation">.</span><span class="token function">update</span><span class="token punctuation">(</span>current<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token comment">// 为当前单词创建定时器，十秒后后触发</span>
+            <span class="token keyword">long</span> timer <span class="token operator">=</span> current<span class="token punctuation">.</span>lastModified <span class="token operator">+</span> <span class="token number">10000</span><span class="token punctuation">;</span>
+
+            ctx<span class="token punctuation">.</span><span class="token function">timerService</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">registerProcessingTimeTimer</span><span class="token punctuation">(</span>timer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token comment">// 打印所有信息，用于核对数据正确性</span>
+            System<span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>String<span class="token punctuation">.</span><span class="token function">format</span><span class="token punctuation">(</span><span class="token string">"process, %s, %d, lastModified : %d (%s), timer : %d (%s)\n\n"</span><span class="token punctuation">,</span>
+                    currentKey<span class="token punctuation">.</span><span class="token function">getField</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                    current<span class="token punctuation">.</span>count<span class="token punctuation">,</span>
+                    current<span class="token punctuation">.</span>lastModified<span class="token punctuation">,</span>
+                    <span class="token function">time</span><span class="token punctuation">(</span>current<span class="token punctuation">.</span>lastModified<span class="token punctuation">)</span><span class="token punctuation">,</span>
+                    timer<span class="token punctuation">,</span>
+                    <span class="token function">time</span><span class="token punctuation">(</span>timer<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">/**
+         * 定时器触发后执行的方法
+         * @param timestamp 这个时间戳代表的是该定时器的触发时间
+         * @param ctx
+         * @param out
+         * @throws Exception
+         */</span>
+        <span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">onTimer</span><span class="token punctuation">(</span>
+                <span class="token keyword">long</span> timestamp<span class="token punctuation">,</span>
+                OnTimerContext ctx<span class="token punctuation">,</span>
+                Collector<span class="token operator">&lt;</span>Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Long<span class="token punctuation">&gt;</span></span><span class="token operator">&gt;</span> out<span class="token punctuation">)</span> <span class="token keyword">throws</span> Exception <span class="token punctuation">{<!-- --></span>
+
+            <span class="token comment">// 取得当前单词</span>
+            Tuple currentKey <span class="token operator">=</span> ctx<span class="token punctuation">.</span><span class="token function">getCurrentKey</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token comment">// 取得该单词的myState状态</span>
+            CountWithTimestamp result <span class="token operator">=</span> state<span class="token punctuation">.</span><span class="token function">value</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token comment">// 当前元素是否已经连续10秒未出现的标志</span>
+            <span class="token keyword">boolean</span> isTimeout <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+
+            <span class="token comment">// timestamp是定时器触发时间，如果等于最后一次更新时间+10秒，就表示这十秒内已经收到过该单词了，</span>
+            <span class="token comment">// 这种连续十秒没有出现的元素，被发送到下游算子</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>timestamp <span class="token operator">==</span> result<span class="token punctuation">.</span>lastModified <span class="token operator">+</span> <span class="token number">10000</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">// 发送</span>
+                out<span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Tuple2</span><span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Long<span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>result<span class="token punctuation">.</span>key<span class="token punctuation">,</span> result<span class="token punctuation">.</span>count<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                isTimeout <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token comment">// 打印数据，用于核对是否符合预期</span>
+            System<span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>String<span class="token punctuation">.</span><span class="token function">format</span><span class="token punctuation">(</span><span class="token string">"ontimer, %s, %d, lastModified : %d (%s), stamp : %d (%s), isTimeout : %s\n\n"</span><span class="token punctuation">,</span>
+                    currentKey<span class="token punctuation">.</span><span class="token function">getField</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                    result<span class="token punctuation">.</span>count<span class="token punctuation">,</span>
+                    result<span class="token punctuation">.</span>lastModified<span class="token punctuation">,</span>
+                    <span class="token function">time</span><span class="token punctuation">(</span>result<span class="token punctuation">.</span>lastModified<span class="token punctuation">)</span><span class="token punctuation">,</span>
+                    timestamp<span class="token punctuation">,</span>
+                    <span class="token function">time</span><span class="token punctuation">(</span>timestamp<span class="token punctuation">)</span><span class="token punctuation">,</span>
+                    String<span class="token punctuation">.</span><span class="token function">valueOf</span><span class="token punctuation">(</span>isTimeout<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span>String<span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token keyword">throws</span> Exception <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">final</span> StreamExecutionEnvironment env <span class="token operator">=</span> StreamExecutionEnvironment<span class="token punctuation">.</span><span class="token function">getExecutionEnvironment</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 并行度1</span>
+        env<span class="token punctuation">.</span><span class="token function">setParallelism</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+       <span class="token comment">// 处理时间</span>
+        env<span class="token punctuation">.</span><span class="token function">setStreamTimeCharacteristic</span><span class="token punctuation">(</span>TimeCharacteristic<span class="token punctuation">.</span>ProcessingTime<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 监听本地9999端口，读取字符串</span>
+        DataStream<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">&gt;</span></span> socketDataStream <span class="token operator">=</span> env<span class="token punctuation">.</span><span class="token function">socketTextStream</span><span class="token punctuation">(</span><span class="token string">"localhost"</span><span class="token punctuation">,</span> <span class="token number">9999</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 所有输入的单词，如果超过10秒没有再次出现，都可以通过CountWithTimeoutFunction得到</span>
+        DataStream<span class="token operator">&lt;</span>Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Long<span class="token punctuation">&gt;</span></span><span class="token operator">&gt;</span> timeOutWord <span class="token operator">=</span> socketDataStream
+                <span class="token comment">// 对收到的字符串用空格做分割，得到多个单词</span>
+                <span class="token punctuation">.</span><span class="token function">flatMap</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Splitter</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token comment">// 设置时间戳分配器，用当前时间作为时间戳</span>
+                <span class="token punctuation">.</span><span class="token function">assignTimestampsAndWatermarks</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">AssignerWithPeriodicWatermarks</span><span class="token operator">&lt;</span>Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Integer<span class="token punctuation">&gt;</span></span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+                    <span class="token annotation punctuation">@Override</span>
+                    <span class="token keyword">public</span> <span class="token keyword">long</span> <span class="token function">extractTimestamp</span><span class="token punctuation">(</span>Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Integer<span class="token punctuation">&gt;</span></span> element<span class="token punctuation">,</span> <span class="token keyword">long</span> previousElementTimestamp<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token comment">// 使用当前系统时间作为时间戳</span>
+                        <span class="token keyword">return</span> System<span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+
+                    <span class="token annotation punctuation">@Override</span>
+                    <span class="token keyword">public</span> Watermark <span class="token function">getCurrentWatermark</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token comment">// 本例不需要watermark，返回null</span>
+                        <span class="token keyword">return</span> null<span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span><span class="token punctuation">)</span>
+                <span class="token comment">// 将单词作为key分区</span>
+                <span class="token punctuation">.</span><span class="token function">keyBy</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span>
+                <span class="token comment">// 按单词分区后的数据，交给自定义KeyedProcessFunction处理</span>
+                <span class="token punctuation">.</span><span class="token function">process</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">CountWithTimeoutFunction</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 所有输入的单词，如果超过10秒没有再次出现，就在此打印出来</span>
+        timeOutWord<span class="token punctuation">.</span><span class="token function">print</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        env<span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span><span class="token string">"ProcessFunction demo : KeyedProcessFunction"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> String <span class="token function">time</span><span class="token punctuation">(</span><span class="token keyword">long</span> timeStamp<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">SimpleDateFormat</span><span class="token punctuation">(</span><span class="token string">"yyyy-MM-dd hh:mm:ss"</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">format</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Date</span><span class="token punctuation">(</span>timeStamp<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="3__225"></a>3. 原理</h4> 
+<p><img src="https://images2.imgbox.com/5a/b3/5oyk3o4Z_o.jpg" alt="在这里插入图片描述"><br> 上图表示flink延时调用的总体流程，其设计也是借助于优先级队列（小顶堆）来完成，堆使用二叉树实现，而二叉树使用数组存储。队列中存储的数据结构如下：</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Internal</span>
+<span class="token keyword">public</span> <span class="token keyword">final</span> <span class="token keyword">class</span> <span class="token class-name">TimerHeapInternalTimer</span><span class="token generics function"><span class="token punctuation">&lt;</span>K<span class="token punctuation">,</span> N<span class="token punctuation">&gt;</span></span> <span class="token keyword">implements</span> <span class="token class-name">InternalTimer</span><span class="token generics function"><span class="token punctuation">&lt;</span>K<span class="token punctuation">,</span> N<span class="token punctuation">&gt;</span></span><span class="token punctuation">,</span> HeapPriorityQueueElement <span class="token punctuation">{<!-- --></span>
+
+	<span class="token comment">// Key 表示KeyedStream中提取的Key</span>
+	<span class="token annotation punctuation">@Nonnull</span>
+	<span class="token keyword">private</span> <span class="token keyword">final</span> K key<span class="token punctuation">;</span>
+
+	<span class="token comment">// Namespace 表示命名空间，在普通的KeyedStream中是固定的VoidNamespace,在WindowedStream表示的是Window</span>
+	<span class="token annotation punctuation">@Nonnull</span>
+	<span class="token keyword">private</span> <span class="token keyword">final</span> N namespace<span class="token punctuation">;</span>
+
+	<span class="token comment">// Timestamp表示触发的时间戳，在优先级队列中升序排序               </span>
+	<span class="token comment">// 由于该类重写了equals方法，在插入队列，即使尝试重复插入相同的TimerHeapInternalTimer对象多次，也会确保只有一个TimerHeapInternalTimer对象入队成功。详情见下文。</span>
+	<span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token keyword">long</span> timestamp<span class="token punctuation">;</span>
+
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> <span class="token keyword">boolean</span> <span class="token function">equals</span><span class="token punctuation">(</span>Object o<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span> <span class="token operator">==</span> o<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>o <span class="token keyword">instanceof</span> <span class="token class-name">InternalTimer</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			InternalTimer<span class="token operator">&lt;</span><span class="token operator">?</span><span class="token punctuation">,</span> <span class="token operator">?</span><span class="token operator">&gt;</span> timer <span class="token operator">=</span> <span class="token punctuation">(</span>InternalTimer<span class="token operator">&lt;</span><span class="token operator">?</span><span class="token punctuation">,</span> <span class="token operator">?</span><span class="token operator">&gt;</span><span class="token punctuation">)</span> o<span class="token punctuation">;</span>
+			<span class="token keyword">return</span> timestamp <span class="token operator">==</span> timer<span class="token punctuation">.</span><span class="token function">getTimestamp</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+				<span class="token operator">&amp;&amp;</span> key<span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>timer<span class="token punctuation">.</span><span class="token function">getKey</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+				<span class="token operator">&amp;&amp;</span> namespace<span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>timer<span class="token punctuation">.</span><span class="token function">getNamespace</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+
+		<span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="31__263"></a>3.1 注册</h5> 
+<ul><li>ProcessingTime类型注册使用registerProcessingTimeTimer，传入的是一个触发的时间戳，内部会将获取到当前的Key、VoidNamespace 、timestamp封装成为一个InternalTimer对象存入优先级队列（小顶堆）中。并且会针对堆顶元素，使用ScheduledThreadPoolExecutor注册一个<strong>堆顶元素触发时间与当前时间差值大小</strong>的延时调用；</li><li>EventTime类型注册使用registerEventTimeTimer，与ProcessingTime类型注册不同的是不需要做延时调用，并且二者使用的是不同的队列</li></ul> 
+<p>下面以<code>TimerService#registerProcessingTimeTimer</code>为入口，分析一下基于process time的定时器的入队过程：</p> 
+<pre><code class="prism language-java"><span class="token comment">// 自定义KeyedProcessFunction</span>
+<span class="token keyword">static</span> <span class="token keyword">class</span> <span class="token class-name">CountWithTimeoutFunction</span> <span class="token keyword">extends</span> <span class="token class-name">KeyedProcessFunction</span><span class="token operator">&lt;</span>Tuple<span class="token punctuation">,</span> Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Integer<span class="token punctuation">&gt;</span></span><span class="token punctuation">,</span> Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Long<span class="token punctuation">&gt;</span></span><span class="token operator">&gt;</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">// 每来一条数据，都会经过此方法进行处理</span>
+       <span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">processElement</span><span class="token punctuation">(</span>
+        		Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Integer<span class="token punctuation">&gt;</span></span> value<span class="token punctuation">,</span>
+                Context ctx<span class="token punctuation">,</span>
+                Collector<span class="token operator">&lt;</span>Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Long<span class="token punctuation">&gt;</span></span><span class="token operator">&gt;</span> out<span class="token punctuation">)</span> <span class="token keyword">throws</span> Exception <span class="token punctuation">{<!-- --></span>
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+	        <span class="token keyword">long</span> timer <span class="token operator">=</span> current<span class="token punctuation">.</span>lastModified <span class="token operator">+</span> <span class="token number">10000</span><span class="token punctuation">;</span>
+	        <span class="token comment">// 注册定时器</span>
+			ctx<span class="token punctuation">.</span><span class="token function">timerService</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">registerProcessingTimeTimer</span><span class="token punctuation">(</span>timer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+		<span class="token punctuation">}</span>
+
+		<span class="token comment">// 定时器回调函数</span>
+       <span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">onTimer</span><span class="token punctuation">(</span>
+                <span class="token keyword">long</span> timestamp<span class="token punctuation">,</span>
+                OnTimerContext ctx<span class="token punctuation">,</span>
+                Collector<span class="token operator">&lt;</span>Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Long<span class="token punctuation">&gt;</span></span><span class="token operator">&gt;</span> out<span class="token punctuation">)</span> <span class="token keyword">throws</span> Exception <span class="token punctuation">{<!-- --></span>
+		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+		CountWithTimestamp result <span class="token operator">=</span> state<span class="token punctuation">.</span><span class="token function">value</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// 定时器到达时间，则往下游发送数据</span>
+		out<span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Tuple2</span><span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Long<span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>result<span class="token punctuation">.</span>key<span class="token punctuation">,</span> result<span class="token punctuation">.</span>count<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+		<span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Internal</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">SimpleTimerService</span> <span class="token keyword">implements</span> <span class="token class-name">TimerService</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">registerProcessingTimeTimer</span><span class="token punctuation">(</span><span class="token keyword">long</span> time<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">// 注册定时器</span>
+		internalTimerService<span class="token punctuation">.</span><span class="token function">registerProcessingTimeTimer</span><span class="token punctuation">(</span>VoidNamespace<span class="token punctuation">.</span>INSTANCE<span class="token punctuation">,</span> time<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">InternalTimerServiceImpl</span><span class="token generics function"><span class="token punctuation">&lt;</span>K<span class="token punctuation">,</span> N<span class="token punctuation">&gt;</span></span> <span class="token keyword">implements</span> <span class="token class-name">InternalTimerService</span><span class="token generics function"><span class="token punctuation">&lt;</span>N<span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">registerProcessingTimeTimer</span><span class="token punctuation">(</span>N namespace<span class="token punctuation">,</span> <span class="token keyword">long</span> time<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		InternalTimer<span class="token generics function"><span class="token punctuation">&lt;</span>K<span class="token punctuation">,</span> N<span class="token punctuation">&gt;</span></span> oldHead <span class="token operator">=</span> processingTimeTimersQueue<span class="token punctuation">.</span><span class="token function">peek</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// 定时器入队</span>
+		<span class="token comment">// 一旦if条件满足，则证明入队成功且入队的是小顶堆的堆顶元素，要针对小顶堆堆顶元素创建延迟调用</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>processingTimeTimersQueue<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">TimerHeapInternalTimer</span><span class="token operator">&lt;</span><span class="token operator">&gt;</span><span class="token punctuation">(</span>time<span class="token punctuation">,</span> <span class="token punctuation">(</span>K<span class="token punctuation">)</span> keyContext<span class="token punctuation">.</span><span class="token function">getCurrentKey</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> namespace<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">long</span> nextTriggerTime <span class="token operator">=</span> oldHead <span class="token operator">!=</span> null <span class="token operator">?</span> oldHead<span class="token punctuation">.</span><span class="token function">getTimestamp</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">:</span> Long<span class="token punctuation">.</span>MAX_VALUE<span class="token punctuation">;</span>
+			<span class="token comment">// check if we need to re-schedule our timer to earlier</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>time <span class="token operator">&lt;</span> nextTriggerTime<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">if</span> <span class="token punctuation">(</span>nextTimer <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+					nextTimer<span class="token punctuation">.</span><span class="token function">cancel</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token punctuation">}</span>
+				nextTimer <span class="token operator">=</span> processingTimeService<span class="token punctuation">.</span><span class="token function">registerTimer</span><span class="token punctuation">(</span>time<span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token operator">:</span><span class="token operator">:</span>onProcessingTime<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">HeapPriorityQueueSet</span><span class="token operator">&lt;</span>T <span class="token keyword">extends</span> <span class="token class-name">HeapPriorityQueueElement</span><span class="token operator">&gt;</span>
+	<span class="token keyword">extends</span> <span class="token class-name">HeapPriorityQueue</span><span class="token generics function"><span class="token punctuation">&lt;</span>T<span class="token punctuation">&gt;</span></span>
+	<span class="token keyword">implements</span> <span class="token class-name">KeyGroupedInternalPriorityQueue</span><span class="token generics function"><span class="token punctuation">&lt;</span>T<span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> <span class="token keyword">boolean</span> <span class="token function">add</span><span class="token punctuation">(</span><span class="token annotation punctuation">@Nonnull</span> T element<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">// 定时器入队</span>
+		<span class="token comment">// 获取keygroup对应的hashmap，并往其中插入定时器，如果key、namespace、time均相同，则不让其入队</span>
+		<span class="token comment">// 这里一旦super.add(element)返回true，则表明当前插入的是小顶堆的堆顶元素，需要针对堆顶元素建立延迟</span>
+		<span class="token keyword">return</span> <span class="token function">getDedupMapForElement</span><span class="token punctuation">(</span>element<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">putIfAbsent</span><span class="token punctuation">(</span>element<span class="token punctuation">,</span> element<span class="token punctuation">)</span> <span class="token operator">==</span> null <span class="token operator">&amp;&amp;</span> <span class="token keyword">super</span><span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>element<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token comment">// keyedstream在shuffle时，是将一批key放入到一个key group中，然后根据key group进行shuffle的</span>
+	<span class="token comment">// 该方法拿到当前key所在keygroup，一个keygroup维护了一个hashmap，获取该hashmap</span>
+	<span class="token keyword">private</span> HashMap<span class="token generics function"><span class="token punctuation">&lt;</span>T<span class="token punctuation">,</span> T<span class="token punctuation">&gt;</span></span> <span class="token function">getDedupMapForElement</span><span class="token punctuation">(</span>T element<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">int</span> keyGroup <span class="token operator">=</span> KeyGroupRangeAssignment<span class="token punctuation">.</span><span class="token function">assignToKeyGroup</span><span class="token punctuation">(</span>
+			keyExtractor<span class="token punctuation">.</span><span class="token function">extractKeyFromElement</span><span class="token punctuation">(</span>element<span class="token punctuation">)</span><span class="token punctuation">,</span>
+			totalNumberOfKeyGroups<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token function">getDedupMapForKeyGroup</span><span class="token punctuation">(</span>keyGroup<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">abstract</span> <span class="token keyword">class</span> <span class="token class-name">AbstractHeapPriorityQueue</span><span class="token operator">&lt;</span>T <span class="token keyword">extends</span> <span class="token class-name">HeapPriorityQueueElement</span><span class="token operator">&gt;</span> <span class="token keyword">implements</span> <span class="token class-name">InternalPriorityQueue</span><span class="token generics function"><span class="token punctuation">&lt;</span>T<span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> <span class="token keyword">boolean</span> <span class="token function">add</span><span class="token punctuation">(</span><span class="token annotation punctuation">@Nonnull</span> T toAdd<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">// 定时器入队</span>
+		<span class="token function">addInternal</span><span class="token punctuation">(</span>toAdd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// 如果入队后的定时器是堆顶节点，则返回true，后面的逻辑会根据这里是否返回true，来判断是否需要建立ScheduledThreadPoolExecutor延迟调用；换言之，延迟调用只会根据堆顶节点来建立</span>
+		<span class="token keyword">return</span> toAdd<span class="token punctuation">.</span><span class="token function">getInternalIndex</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token function">getHeadElementIndex</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">HeapPriorityQueue</span><span class="token operator">&lt;</span>T <span class="token keyword">extends</span> <span class="token class-name">HeapPriorityQueueElement</span><span class="token operator">&gt;</span>
+	<span class="token keyword">extends</span> <span class="token class-name">AbstractHeapPriorityQueue</span><span class="token generics function"><span class="token punctuation">&lt;</span>T<span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// 定时器入队</span>
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">protected</span> <span class="token keyword">void</span> <span class="token function">addInternal</span><span class="token punctuation">(</span><span class="token annotation punctuation">@Nonnull</span> T element<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">final</span> <span class="token keyword">int</span> newSize <span class="token operator">=</span> <span class="token function">increaseSizeByOne</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// 先将定时器插入数组</span>
+		<span class="token function">moveElementToIdx</span><span class="token punctuation">(</span>element<span class="token punctuation">,</span> newSize<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// 然后对有序的队列进行siftup操作，以保持小顶堆的特性</span>
+		<span class="token comment">// 这里有个有意思的现象，由于小顶堆按照定时器中的时间戳来比大小，而后来的定时器时间必然大于先来的定时器时间，底层数组一直就是一个单调递增的序列。因此，siftup操作其实并没有做任何调整，天然能保持小顶堆的特性。</span>
+		<span class="token function">siftUp</span><span class="token punctuation">(</span>newSize<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>经过以上步骤，就完成了定时器的入队操作。如果入队的是小顶堆的堆顶元素，则需要针对其创建延迟调用。代码如下：</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">SystemProcessingTimeService</span> <span class="token keyword">implements</span> <span class="token class-name">TimerService</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> ScheduledFuture<span class="token operator">&lt;</span><span class="token operator">?</span><span class="token operator">&gt;</span> <span class="token function">registerTimer</span><span class="token punctuation">(</span><span class="token keyword">long</span> timestamp<span class="token punctuation">,</span> ProcessingTimeCallback callback<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">// 这里延迟调用的时间颇有讲究，并非是用定时器时间减去当前时间这么简单，而是要将相减的值再加1ms</span>
+		<span class="token comment">// 这么做是为了与watemark的语义保持一致（虽然基于processtime的定时器用不到watermark）</span>
+		<span class="token comment">// 例如，在窗口 [20000, 30000)中，30000这个时间点是不会触发窗口计算的，只有当watermark至少为30001时，才会触发窗口操作。有兴趣的同学可以看一下该方法源码中的注释。</span>
+		<span class="token keyword">long</span> delay <span class="token operator">=</span> ProcessingTimeServiceUtil<span class="token punctuation">.</span><span class="token function">getProcessingTimeDelay</span><span class="token punctuation">(</span>timestamp<span class="token punctuation">,</span> <span class="token function">getCurrentProcessingTime</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token comment">// we directly try to register the timer and only react to the status on exception</span>
+		<span class="token comment">// that way we save unnecessary volatile accesses for each timer</span>
+		<span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+		    <span class="token comment">// 这里wrapOnTimerCallback(callback, timestamp)中的一波lambda操作秀我一脸，看似复杂，其实直接看作是callback即可</span>
+		    <span class="token comment">// 往上追溯一下，你就会发现callback其实就是InternalTimerServiceImpl#onProcessingTime方法</span>
+			<span class="token keyword">return</span> timerService<span class="token punctuation">.</span><span class="token function">schedule</span><span class="token punctuation">(</span><span class="token function">wrapOnTimerCallback</span><span class="token punctuation">(</span>callback<span class="token punctuation">,</span> timestamp<span class="token punctuation">)</span><span class="token punctuation">,</span> delay<span class="token punctuation">,</span> TimeUnit<span class="token punctuation">.</span>MILLISECONDS<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">RejectedExecutionException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">final</span> <span class="token keyword">int</span> status <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>status<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>status <span class="token operator">==</span> STATUS_QUIESCED<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">NeverCompleteFuture</span><span class="token punctuation">(</span>delay<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+			<span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>status <span class="token operator">==</span> STATUS_SHUTDOWN<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">IllegalStateException</span><span class="token punctuation">(</span><span class="token string">"Timer service is shut down"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+			<span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token comment">// something else happened, so propagate the exception</span>
+				<span class="token keyword">throw</span> e<span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>到这里，保存定时器的小顶堆维护好了，基于堆顶元素触发时间创建的延时调用也创建好了，接下来到时间就会触发回调函数了。</p> 
+<h5><a id="32__420"></a>3.2 触发</h5> 
+<ul><li>ProcessingTime类型的定时触发由注册的时候的延时调度触发，会不断从小顶堆堆顶弹出定时器，触发<code>KeyedProcessFunction#onTimer</code>方法，onTimer方法中可以从上下文OnTimerContext中获取到当前的key以及触发时间，有了key就可以从ValueState中提取出当前key对应的值（ValueState是一个散列表，其根据上下文中key获取value的逻辑对用户不可见，详情可以参考<a href="https://blog.csdn.net/a1240466196/article/details/109688700">《Flink源码剖析：ValueState》</a>），进而进行某些计算。<br> 当获取到InternalTimer对象中的时间大于延时调度时间，停止弹出定时器并处罚onTimer方法，重新针对堆顶元素建立新的延迟调用</li></ul> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">InternalTimerServiceImpl</span><span class="token generics function"><span class="token punctuation">&lt;</span>K<span class="token punctuation">,</span> N<span class="token punctuation">&gt;</span></span> <span class="token keyword">implements</span> <span class="token class-name">InternalTimerService</span><span class="token generics function"><span class="token punctuation">&lt;</span>N<span class="token punctuation">&gt;</span></span><span class="token punctuation">,</span> ProcessingTimeCallback <span class="token punctuation">{<!-- --></span>
+
+  <span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">onProcessingTime</span><span class="token punctuation">(</span><span class="token keyword">long</span> time<span class="token punctuation">)</span> <span class="token keyword">throws</span> Exception <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">// null out the timer in case the Triggerable calls registerProcessingTimeTimer()</span>
+		<span class="token comment">// inside the callback.</span>
+		nextTimer <span class="token operator">=</span> null<span class="token punctuation">;</span>
+
+		InternalTimer<span class="token generics function"><span class="token punctuation">&lt;</span>K<span class="token punctuation">,</span> N<span class="token punctuation">&gt;</span></span> timer<span class="token punctuation">;</span>
+		<span class="token comment">// 从小顶堆堆顶依次弹出到达时间的定时器，调用用户自定义的KeyedProcessFunction#onTimer方法</span>
+		<span class="token comment">// 一旦堆顶元素不满足触发时间，则重新针对堆顶元素建立延迟调用</span>
+		<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>timer <span class="token operator">=</span> processingTimeTimersQueue<span class="token punctuation">.</span><span class="token function">peek</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">!=</span> null <span class="token operator">&amp;&amp;</span> timer<span class="token punctuation">.</span><span class="token function">getTimestamp</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;=</span> time<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			processingTimeTimersQueue<span class="token punctuation">.</span><span class="token function">poll</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			keyContext<span class="token punctuation">.</span><span class="token function">setCurrentKey</span><span class="token punctuation">(</span>timer<span class="token punctuation">.</span><span class="token function">getKey</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			triggerTarget<span class="token punctuation">.</span><span class="token function">onProcessingTime</span><span class="token punctuation">(</span>timer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+
+    <span class="token comment">// 这段逻辑调用processingTimeService实现类SystemProcessingTimeService中的registerTimer方法，该方法中将上次遍历中的最后一个timer的触发时间注册到ScheduledThreadPoolExecutor线程池中，实现再次延迟调用当前  InternalTimerServiceImpl#onProcessingTime，以此实现while逻辑的不断执行，即优先级队列的不断遍历</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>timer <span class="token operator">!=</span> null <span class="token operator">&amp;&amp;</span> nextTimer <span class="token operator">==</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			nextTimer <span class="token operator">=</span> processingTimeService<span class="token punctuation">.</span><span class="token function">registerTimer</span><span class="token punctuation">(</span>timer<span class="token punctuation">.</span><span class="token function">getTimestamp</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+  
+<span class="token punctuation">}</span> 
+</code></pre> 
+<ul><li>EventTime类型的定时器触发是由Watermark决定的，同样会不断遍历优先级队列触发任务，直到获取到InternalTimer对象中的时间大于Watermark值；</li></ul> 
+<h5><a id="33_state_454"></a>3.3 延迟队列state</h5> 
+<p>为了保证任务重启仍然能够执行未完成的延时调用，flink会在checkpoint过程中将优先级队列中的数据一起持久化到hdfs上，待下次任务重启仍然能够获取到这部分数据。由于EventTime类型定时器是由Watermark,那么只要任务产生watermark就能正常触发恢复的定时任务，但是ProcessingTime类型的定时器是由系统注册的延时调度来触发，所以在重启的时候获取到队列中第一个元素来注册延时调度，保证其恢复之后的正常触发。</p> 
+<h5><a id="34__457"></a>3.4 定时器注意事项</h5> 
+<ol><li> <p>优先级队列默认使用的是内存存储，在一些数据量比较大并且重度依赖定时触发的任务会占用比较大的内存，可以选择Rocksdb存储定时信息</p> </li><li> <p>flink为了保证定时触发操作(onTimer)与正常处理(processElement)操作的线程安全，做了同步处理，在调用触发时必须要获取到锁，也就是二者同时只能有一个执行，因此一定要保证onTimer处理的速度，以免任务发生阻塞。</p> 
+  <blockquote> 
+   <p>如果不做同步处理，processElement方法中会进行state.update()，onTimer中会进行state.value()，两者会发生不一致从而引发线程安全问题</p> 
+  </blockquote> </li></ol> 
+<blockquote> 
+ <p>参考：<br> https://blog.csdn.net/u013516966/article/details/102927825<br> https://mp.weixin.qq.com/s/kRpG2lQRgvIi7VHBBXV-KQ<br> https://www.jianshu.com/p/95b168bea405<br> https://www.jianshu.com/p/502f9952c09b<br> https://blog.csdn.net/m0_37637141/article/details/81775082</p> 
+</blockquote>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b1c0c559af71cc6e6edb863608a00297/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">[学习笔记] Python【第034讲：丰富的else语句及简洁的with语句】总结</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/1dd174636832120bb4d3d7de3977f95b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Python 读取Excel的一列并计算所有对象出现次数</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

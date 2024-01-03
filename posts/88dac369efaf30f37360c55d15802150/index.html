@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Doris Rollup物化视图及应用实践 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Doris Rollup物化视图及应用实践" />
+<meta property="og:description" content="详情观看官网: Roll up与查询 &amp;&amp; 物化视图
+Rollup 与查询 在 Doris 里 Rollup 作为一份聚合物化视图，其在查询中可以起到两个作用：
+索引聚合数据（仅用于聚合模型，即aggregate key） 但是为了命中 Rollup 需要满足一定的条件，并且可以通过执行计划中 ScanNdoe 节点的 PreAggregation 的值来判断是否可以命中 Rollup，以及 Rollup 字段来判断命中的是哪一张 Rollup 表。
+名词解释 Base：基表。
+Rollup：一般指基于 Base 表创建的 Rollup 表，但在一些场景包括 Base 以及 Rollup 表。
+索引 前面的查询实践中已经介绍过 Doris 的前缀索引，即 Doris 会把 Base/Rollup 表中的前 36 个字节（有 varchar 类型则可能导致前缀索引不满 36 个字节，varchar 会截断前缀索引，并且最多使用 varchar 的 20 个字节）在底层存储引擎单独生成一份排序的稀疏索引数据(数据也是排序的，用索引定位，然后在数据中做二分查找)，然后在查询的时候会根据查询中的条件来匹配每个 Base/Rollup 的前缀索引，并且选择出匹配前缀索引最长的一个 Base/Rollup。
+-----&gt; 从左到右匹配 &#43;----&#43;----&#43;----&#43;----&#43;----&#43;----&#43; | c1 | c2 | c3 | c4 | c5 |." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/88dac369efaf30f37360c55d15802150/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-01-21T14:27:32+08:00" />
+<meta property="article:modified_time" content="2022-01-21T14:27:32+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Doris Rollup物化视图及应用实践</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-github-gist">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>详情观看官网: <a href="http://doris.apache.org/branch-0.13/zh-CN/getting-started/hit-the-rollup.html#%E5%90%8D%E8%AF%8D%E8%A7%A3%E9%87%8A" rel="nofollow">Roll up与查询</a> &amp;&amp; <a href="http://doris.apache.org/branch-0.13/zh-CN/administrator-guide/materialized_view.html#%E9%80%82%E7%94%A8%E5%9C%BA%E6%99%AF" rel="nofollow">物化视图</a></p> 
+<h2><a id="Rollup__4"></a>Rollup 与查询</h2> 
+<p>在 Doris 里 Rollup 作为一份聚合物化视图，其在查询中可以起到两个作用：</p> 
+<ul><li>索引</li><li>聚合数据（仅用于聚合模型，即aggregate key）</li></ul> 
+<p>但是为了命中 Rollup 需要满足一定的条件，并且可以通过执行计划中 ScanNdoe 节点的 PreAggregation 的值来判断是否可以命中 Rollup，以及 Rollup 字段来判断命中的是哪一张 Rollup 表。</p> 
+<h3><a id="_13"></a>名词解释</h3> 
+<p>Base：基表。</p> 
+<p>Rollup：一般指基于 Base 表创建的 Rollup 表，但在一些场景包括 Base 以及 Rollup 表。</p> 
+<h3><a id="_19"></a>索引</h3> 
+<p>前面的查询实践中已经介绍过 Doris 的前缀索引，即 Doris 会把 Base/Rollup 表中的前 36 个字节（有 varchar 类型则可能导致前缀索引不满 36 个字节，varchar 会截断前缀索引，并且最多使用 varchar 的 20 个字节）在底层存储引擎单独生成一份排序的稀疏索引数据(数据也是排序的，用索引定位，然后在数据中做二分查找)，然后在查询的时候会根据查询中的条件来匹配每个 Base/Rollup 的前缀索引，并且选择出匹配前缀索引最长的一个 Base/Rollup。</p> 
+<pre><code class="prism language-plain">-----&gt; 从左到右匹配
++----+----+----+----+----+----+
+| c1 | c2 | c3 | c4 | c5 |... |
+</code></pre> 
+<p>如上图，取查询中 where 以及 on 上下推到 ScanNode 的条件，从前缀索引的第一列开始匹配，检查条件中是否有这些列，有则累计匹配的长度，直到匹配不上或者36字节结束（varchar类型的列只能匹配20个字节，并且会匹配不足36个字节截断前缀索引），然后选择出匹配长度最长的一个 Base/Rollup，下面举例说明，创建了一张Base表以及四张rollup：</p> 
+<pre><code class="prism language-plain">+---------------+-------+--------------+------+-------+---------+-------+
+| IndexName     | Field | Type         | Null | Key   | Default | Extra |
++---------------+-------+--------------+------+-------+---------+-------+
+| test          | k1    | TINYINT      | Yes  | true  | N/A     |       |
+|               | k2    | SMALLINT     | Yes  | true  | N/A     |       |
+|               | k3    | INT          | Yes  | true  | N/A     |       |
+|               | k4    | BIGINT       | Yes  | true  | N/A     |       |
+|               | k5    | DECIMAL(9,3) | Yes  | true  | N/A     |       |
+|               | k6    | CHAR(5)      | Yes  | true  | N/A     |       |
+|               | k7    | DATE         | Yes  | true  | N/A     |       |
+|               | k8    | DATETIME     | Yes  | true  | N/A     |       |
+|               | k9    | VARCHAR(20)  | Yes  | true  | N/A     |       |
+|               | k10   | DOUBLE       | Yes  | false | N/A     | MAX   |
+|               | k11   | FLOAT        | Yes  | false | N/A     | SUM   |
+|               |       |              |      |       |         |       |
+| rollup_index1 | k9    | VARCHAR(20)  | Yes  | true  | N/A     |       |
+|               | k1    | TINYINT      | Yes  | true  | N/A     |       |
+|               | k2    | SMALLINT     | Yes  | true  | N/A     |       |
+|               | k3    | INT          | Yes  | true  | N/A     |       |
+|               | k4    | BIGINT       | Yes  | true  | N/A     |       |
+|               | k5    | DECIMAL(9,3) | Yes  | true  | N/A     |       |
+|               | k6    | CHAR(5)      | Yes  | true  | N/A     |       |
+|               | k7    | DATE         | Yes  | true  | N/A     |       |
+|               | k8    | DATETIME     | Yes  | true  | N/A     |       |
+|               | k10   | DOUBLE       | Yes  | false | N/A     | MAX   |
+|               | k11   | FLOAT        | Yes  | false | N/A     | SUM   |
+|               |       |              |      |       |         |       |
+| rollup_index2 | k9    | VARCHAR(20)  | Yes  | true  | N/A     |       |
+|               | k2    | SMALLINT     | Yes  | true  | N/A     |       |
+|               | k1    | TINYINT      | Yes  | true  | N/A     |       |
+|               | k3    | INT          | Yes  | true  | N/A     |       |
+|               | k4    | BIGINT       | Yes  | true  | N/A     |       |
+|               | k5    | DECIMAL(9,3) | Yes  | true  | N/A     |       |
+|               | k6    | CHAR(5)      | Yes  | true  | N/A     |       |
+|               | k7    | DATE         | Yes  | true  | N/A     |       |
+|               | k8    | DATETIME     | Yes  | true  | N/A     |       |
+|               | k10   | DOUBLE       | Yes  | false | N/A     | MAX   |
+|               | k11   | FLOAT        | Yes  | false | N/A     | SUM   |
+|               |       |              |      |       |         |       |
+| rollup_index3 | k4    | BIGINT       | Yes  | true  | N/A     |       |
+|               | k5    | DECIMAL(9,3) | Yes  | true  | N/A     |       |
+|               | k6    | CHAR(5)      | Yes  | true  | N/A     |       |
+|               | k1    | TINYINT      | Yes  | true  | N/A     |       |
+|               | k2    | SMALLINT     | Yes  | true  | N/A     |       |
+|               | k3    | INT          | Yes  | true  | N/A     |       |
+|               | k7    | DATE         | Yes  | true  | N/A     |       |
+|               | k8    | DATETIME     | Yes  | true  | N/A     |       |
+|               | k9    | VARCHAR(20)  | Yes  | true  | N/A     |       |
+|               | k10   | DOUBLE       | Yes  | false | N/A     | MAX   |
+|               | k11   | FLOAT        | Yes  | false | N/A     | SUM   |
+|               |       |              |      |       |         |       |
+| rollup_index4 | k4    | BIGINT       | Yes  | true  | N/A     |       |
+|               | k6    | CHAR(5)      | Yes  | true  | N/A     |       |
+|               | k5    | DECIMAL(9,3) | Yes  | true  | N/A     |       |
+|               | k1    | TINYINT      | Yes  | true  | N/A     |       |
+|               | k2    | SMALLINT     | Yes  | true  | N/A     |       |
+|               | k3    | INT          | Yes  | true  | N/A     |       |
+|               | k7    | DATE         | Yes  | true  | N/A     |       |
+|               | k8    | DATETIME     | Yes  | true  | N/A     |       |
+|               | k9    | VARCHAR(20)  | Yes  | true  | N/A     |       |
+|               | k10   | DOUBLE       | Yes  | false | N/A     | MAX   |
+|               | k11   | FLOAT        | Yes  | false | N/A     | SUM   |
++---------------+-------+--------------+------+-------+---------+-------+
+</code></pre> 
+<p>三张表的前缀索引分别为</p> 
+<pre><code class="prism language-plain">Base(k1 ,k2, k3, k4, k5, k6, k7)
+rollup_index1(k9)，rollup_index2(k9)
+rollup_index3(k4, k5, k6, k1, k2, k3, k7)
+rollup_index4(k4, k6, k5, k1, k2, k3, k7)
+</code></pre> 
+<p>能用的上前缀索引的列上的条件需要是 <code>=</code> <code>&lt;</code> <code>&gt;</code> <code>&lt;=</code> <code>&gt;=</code> <code>in</code> <code>between</code> 这些并且这些条件是并列的且关系使用 <code>and</code> 连接，对于<code>or</code>、<code>!=</code> 等这些不能命中，然后看以下查询：</p> 
+<pre><code>SELECT * FROM test WHERE k1 = 1 AND k2 &gt; 3;
+</code></pre> 
+<p>有 k1 以及 k2 上的条件，检查只有 Base 的第一列含有条件里的 k1，所以匹配最长的前缀索引即 test，explain一下：</p> 
+<pre><code class="prism language-plain">|   0:OlapScanNode                                                                                                                                                                                                                                                                                                                                                                                                 
+|      TABLE: test                                                                                                                                                                                                                                                                                                                                                                                                  
+|      PREAGGREGATION: OFF. Reason: No AggregateInfo                                                                                                                                                                                                                                                                                                                                                                
+|      PREDICATES: `k1` = 1, `k2` &gt; 3                                                                                                                                                                                                                                                                                                                                                                               
+|      partitions=1/1                                                                                                                                                                                                                                                                                                                                                                                               
+|      rollup: test                                                                                                                                                                                                                                                                                                                                                                                                 
+|      buckets=1/10                                                                                                                                                                                                                                                                                                                                                                                                 
+|      cardinality=-1                                                                                                                                                                                                                                                                                                                                                                                               
+|      avgRowSize=0.0                                                                                                                                                                                                                                                                                                                                                                                               
+|      numNodes=0                                                                                                                                                                                                                                                                                                                                                                                                   
+|      tuple ids: 0
+</code></pre> 
+<p>再看以下查询：</p> 
+<pre><code>SELECT * FROM test WHERE k4 = 1 AND k5 &gt; 3;
+</code></pre> 
+<p>有 k4 以及 k5 的条件，检查 rollup_index3、rollup_index4 的第一列含有 k4，但是 rollup_index3 的第二列含有k5，所以匹配的前缀索引最长。</p> 
+<pre><code class="prism language-plain">|   0:OlapScanNode                                                                                                                                                                                                                                                                                                                                                                                                
+|      TABLE: test                                                                                                                                                                                                                                                                                                                                                                                                  
+|      PREAGGREGATION: OFF. Reason: No AggregateInfo                                                                                                                                                                                                                                                                                                                                                                
+|      PREDICATES: `k4` = 1, `k5` &gt; 3                                                                                                                                                                                                                                                                                                                                                                              
+|      partitions=1/1                                                                                                                                                                                                                                                                                                                                                                                               
+|      rollup: rollup_index3                                                                                                                                                                                                                                                                                                                                                                                        
+|      buckets=10/10                                                                                                                                                                                                                                                                                                                                                                                                
+|      cardinality=-1                                                                                                                                                                                                                                                                                                                                                                                               
+|      avgRowSize=0.0                                                                                                                                                                                                                                                                                                                                                                                               
+|      numNodes=0                                                                                                                                                                                                                                                                                                                                                                                                   
+|      tuple ids: 0
+</code></pre> 
+<p>现在我们尝试匹配含有 varchar 列上的条件，如下：</p> 
+<pre><code>SELECT * FROM test WHERE k9 IN ("xxx", "yyyy") AND k1 = 10;
+</code></pre> 
+<p>有 k9 以及 k1 两个条件，rollup_index1 以及 rollup_index2 的第一列都含有 k9，按理说这里选择这两个 rollup 都可以命中前缀索引并且效果是一样的随机选择一个即可（因为这里 varchar 刚好20个字节，前缀索引不足36个字节被截断），但是当前策略这里还会继续匹配 k1，因为 rollup_index1 的第二列为 k1，所以选择了 rollup_index1，其实后面的 k1 条件并不会起到加速的作用。(如果对于前缀索引外的条件需要其可以起到加速查询的目的，可以通过建立 Bloom Filter 过滤器加速。一般对于字符串类型建立即可，因为 Doris 针对列存在 Block 级别对于整形、日期已经有 Min/Max 索引) 以下是 explain 的结果。</p> 
+<pre><code class="prism language-plain">|   0:OlapScanNode                                                                                                                                                                                                                                                                                                                                                                                                  
+|      TABLE: test                                                                                                                                                                                                                                                                                                                                                                                                  
+|      PREAGGREGATION: OFF. Reason: No AggregateInfo                                                                                                                                                                                                                                                                                                                                                                
+|      PREDICATES: `k9` IN ('xxx', 'yyyy'), `k1` = 10                                                                                                                                                                                                                                                                                                                                                               
+|      partitions=1/1                                                                                                                                                                                                                                                                                                                                                                                               
+|      rollup: rollup_index1                                                                                                                                                                                                                                                                                                                                                                                        
+|      buckets=1/10                                                                                                                                                                                                                                                                                                                                                                                                 
+|      cardinality=-1                                                                                                                                                                                                                                                                                                                                                                                               
+|      avgRowSize=0.0                                                                                                                                                                                                                                                                                                                                                                                               
+|      numNodes=0                                                                                                                                                                                                                                                                                                                                                                                                   
+|      tuple ids: 0
+</code></pre> 
+<p>最后看一个多张Rollup都可以命中的查询：</p> 
+<pre><code>SELECT * FROM test WHERE k4 &lt; 1000 AND k5 = 80 AND k6 &gt;= 10000;
+</code></pre> 
+<p>有 k4,k5,k6 三个条件，rollup_index3 以及 rollup_index4 的前3列分别含有这三列，所以两者匹配的前缀索引长度一致，选取两者都可以，当前默认的策略为选取了比较早创建的一张 rollup，这里为 rollup_index3。</p> 
+<pre><code class="prism language-plain">|   0:OlapScanNode                                                                                                                                                                                                                                                                                                                                                                                                  
+|      TABLE: test                                                                                                                                                                                                                                                                                                                                                                                                  
+|      PREAGGREGATION: OFF. Reason: No AggregateInfo                                                                                                                                                                                                                                                                                                                                                                
+|      PREDICATES: `k4` &lt; 1000, `k5` = 80, `k6` &gt;= 10000.0                                                                                                                                                                                                                                                                                                                                                          
+|      partitions=1/1                                                                                                                                                                                                                                                                                                                                                                                               
+|      rollup: rollup_index3                                                                                                                                                                                                                                                                                                                                                                                        
+|      buckets=10/10                                                                                                                                                                                                                                                                                                                                                                                                
+|      cardinality=-1                                                                                                                                                                                                                                                                                                                                                                                               
+|      avgRowSize=0.0                                                                                                                                                                                                                                                                                                                                                                                               
+|      numNodes=0                                                                                                                                                                                                                                                                                                                                                                                                   
+|      tuple ids: 0
+</code></pre> 
+<p>如果稍微修改上面的查询为：</p> 
+<pre><code>SELECT * FROM test WHERE k4 &lt; 1000 AND k5 = 80 OR k6 &gt;= 10000;
+</code></pre> 
+<p>则这里的查询不能命中前缀索引。（甚至 Doris 存储引擎内的任何 Min/Max,BloomFilter 索引都不能起作用)</p> 
+<h3><a id="_202"></a>聚合数据</h3> 
+<p>当然一般的聚合物化视图其聚合数据的功能是必不可少的，这类物化视图对于聚合类查询或报表类查询都有非常大的帮助，要命中聚合物化视图需要下面一些前提：</p> 
+<ol><li>查询或者子查询中涉及的所有列都存在一张独立的 Rollup 中。</li><li>如果查询或者子查询中有 Join，则 Join 的类型需要是 Inner join。</li></ol> 
+<p>以下是可以命中Rollup的一些聚合查询的种类，</p> 
+<table><thead><tr><th>列类型 查询类型</th><th>Sum</th><th>Distinct/Count Distinct</th><th>Min</th><th>Max</th><th>APPROX_COUNT_DISTINCT</th></tr></thead><tbody><tr><td>Key</td><td>false</td><td>true</td><td>true</td><td>true</td><td>true</td></tr><tr><td>Value(Sum)</td><td>true</td><td>false</td><td>false</td><td>false</td><td>false</td></tr><tr><td>Value(Replace)</td><td>false</td><td>false</td><td>false</td><td>false</td><td>false</td></tr><tr><td>Value(Min)</td><td>false</td><td>false</td><td>true</td><td>false</td><td>false</td></tr><tr><td>Value(Max)</td><td>false</td><td>false</td><td>false</td><td>true</td><td>false</td></tr></tbody></table> 
+<p>如果符合上述条件，则针对聚合模型在判断命中 Rollup 的时候会有两个阶段：</p> 
+<ol><li>首先通过条件匹配出命中前缀索引索引最长的 Rollup 表，见上述索引策略。</li><li>然后比较 Rollup 的行数，选择最小的一张 Rollup。</li></ol> 
+<p>如下 Base 表以及 Rollup：</p> 
+<pre><code class="prism language-plain">+-------------+-------+--------------+------+-------+---------+-------+
+| IndexName   | Field | Type         | Null | Key   | Default | Extra |
++-------------+-------+--------------+------+-------+---------+-------+
+| test_rollup | k1    | TINYINT      | Yes  | true  | N/A     |       |
+|             | k2    | SMALLINT     | Yes  | true  | N/A     |       |
+|             | k3    | INT          | Yes  | true  | N/A     |       |
+|             | k4    | BIGINT       | Yes  | true  | N/A     |       |
+|             | k5    | DECIMAL(9,3) | Yes  | true  | N/A     |       |
+|             | k6    | CHAR(5)      | Yes  | true  | N/A     |       |
+|             | k7    | DATE         | Yes  | true  | N/A     |       |
+|             | k8    | DATETIME     | Yes  | true  | N/A     |       |
+|             | k9    | VARCHAR(20)  | Yes  | true  | N/A     |       |
+|             | k10   | DOUBLE       | Yes  | false | N/A     | MAX   |
+|             | k11   | FLOAT        | Yes  | false | N/A     | SUM   |
+|             |       |              |      |       |         |       |
+| rollup2     | k1    | TINYINT      | Yes  | true  | N/A     |       |
+|             | k2    | SMALLINT     | Yes  | true  | N/A     |       |
+|             | k3    | INT          | Yes  | true  | N/A     |       |
+|             | k10   | DOUBLE       | Yes  | false | N/A     | MAX   |
+|             | k11   | FLOAT        | Yes  | false | N/A     | SUM   |
+|             |       |              |      |       |         |       |
+| rollup1     | k1    | TINYINT      | Yes  | true  | N/A     |       |
+|             | k2    | SMALLINT     | Yes  | true  | N/A     |       |
+|             | k3    | INT          | Yes  | true  | N/A     |       |
+|             | k4    | BIGINT       | Yes  | true  | N/A     |       |
+|             | k5    | DECIMAL(9,3) | Yes  | true  | N/A     |       |
+|             | k10   | DOUBLE       | Yes  | false | N/A     | MAX   |
+|             | k11   | FLOAT        | Yes  | false | N/A     | SUM   |
++-------------+-------+--------------+------+-------+---------+-------+
+</code></pre> 
+<p>看以下查询：</p> 
+<pre><code>SELECT SUM(k11) FROM test_rollup WHERE k1 = 10 AND k2 &gt; 200 AND k3 in (1,2,3);
+</code></pre> 
+<p>首先判断查询是否可以命中聚合的 Rollup表，经过查上面的图是可以的，然后条件中含有 k1,k2,k3 三个条件，这三个条件 test_rollup、rollup1、rollup2 的前三列都含有，所以前缀索引长度一致，然后比较行数显然 rollup2 的聚合程度最高行数最少所以选取 rollup2。</p> 
+<pre><code class="prism language-plain">|   0:OlapScanNode                                          |
+|      TABLE: test_rollup                                   |
+|      PREAGGREGATION: ON                                   |
+|      PREDICATES: `k1` = 10, `k2` &gt; 200, `k3` IN (1, 2, 3) |
+|      partitions=1/1                                       |
+|      rollup: rollup2                                      |
+|      buckets=1/10                                         |
+|      cardinality=-1                                       |
+|      avgRowSize=0.0                                       |
+|      numNodes=0                                           |
+|      tuple ids: 0                                         |
+</code></pre> 
+<h2><a id="_282"></a>物化视图</h2> 
+<p>物化视图是将预先计算（根据定义好的 SELECT 语句）好的数据集，存储在 Doris 中的一个特殊的表。</p> 
+<p>物化视图的出现主要是为了满足用户，既能对原始明细数据的任意维度分析，也能快速的对固定维度进行分析查询。</p> 
+<h3><a id="_288"></a>适用场景</h3> 
+<ul><li> <p>分析需求覆盖明细数据查询以及固定维度查询两方面。</p> </li><li> <p>查询仅涉及表中的很小一部分列或行。</p> </li><li> <p>查询包含一些耗时处理操作，比如：时间很久的聚合操作等。</p> </li><li> <p>查询需要匹配不同前缀索引。</p> </li></ul> 
+<h3><a id="_296"></a>优势</h3> 
+<ul><li> <p>对于那些经常重复的使用相同的子查询结果的查询性能大幅提升。</p> </li><li> <p>Doris自动维护物化视图的数据，无论是新的导入，还是删除操作都能保证base 表和物化视图表的数据一致性。无需任何额外的人工维护成本。</p> </li><li> <p>查询时，会自动匹配到最优物化视图，并直接从物化视图中读取数据。</p> </li></ul> 
+<p><em>自动维护物化视图的数据会造成一些维护开销，会在后面的物化视图的局限性中展开说明。</em></p> 
+<h3><a id="_VS_Rollup_305"></a>物化视图 VS Rollup</h3> 
+<p>在没有物化视图功能之前，用户一般都是使用 Rollup 功能通过预聚合方式提升查询效率的。但是 Rollup 具有一定的局限性，他不能基于明细模型做预聚合。</p> 
+<p>物化视图则在覆盖了 Rollup 的功能的同时，还能支持更丰富的聚合函数。所以物化视图其实是 Rollup 的一个超集。</p> 
+<p>也就是说，之前 <code>ALTER TABLE ADD ROLLUP</code> 语法支持的功能现在均可以通过 <code>CREATE MATERIALIZED VIEW</code> 实现。</p> 
+<h3><a id="_313"></a>使用物化视图</h3> 
+<p>Doris 系统提供了一整套对物化视图的 DDL 语法，包括创建，查看，删除。DDL 的语法和 PostgreSQL, Oracle都是一致的。</p> 
+<h4><a id="_317"></a>创建物化视图</h4> 
+<p>这里首先你要根据你的查询语句的特点来决定创建一个什么样的物化视图。这里并不是说你的物化视图定义和你的某个查询语句一模一样就最好。这里有两个原则：</p> 
+<ol><li>从查询语句中<strong>抽象</strong>出，多个查询共有的分组和聚合方式作为物化视图的定义。</li><li>不需要给所有维度组合都创建物化视图。</li></ol> 
+<p>首先第一个点，一个物化视图如果抽象出来，并且多个查询都可以匹配到这张物化视图。这种物化视图效果最好。因为物化视图的维护本身也需要消耗资源。</p> 
+<p>如果物化视图只和某个特殊的查询很贴合，而其他查询均用不到这个物化视图。则会导致这张物化视图的性价比不高，既占用了集群的存储资源，还不能为更多的查询服务。</p> 
+<p>所以用户需要结合自己的查询语句，以及数据维度信息去抽象出一些物化视图的定义。</p> 
+<p>第二点就是，在实际的分析查询中，并不会覆盖到所有的维度分析。所以给常用的维度组合创建物化视图即可，从而到达一个空间和时间上的平衡。</p> 
+<p>通过下面命令就可以创建物化视图了。创建物化视图是一个异步的操作，也就是说用户成功提交创建任务后，Doris 会在后台对存量的数据进行计算，直到创建成功。</p> 
+<pre><code class="prism language-plain">CREATE MATERIALIZED VIEW
+</code></pre> 
+<p>具体的语法可以通过下面命令查看：</p> 
+<pre><code class="prism language-plain">HELP CREATE MATERIALIZED VIEW
+</code></pre> 
+<h4><a id="_344"></a>支持聚合函数</h4> 
+<p>目前物化视图创建语句支持的聚合函数有：</p> 
+<ul><li> <p>SUM, MIN, MAX (Version 0.12)</p> </li><li> <p>COUNT, BITMAP_UNION, HLL_UNION (Version 0.13)</p> </li><li> <p>BITMAP_UNION 的形式必须为：<code>BITMAP_UNION(TO_BITMAP(COLUMN))</code> column 列的类型只能是整数（largeint也不支持), 或者 <code>BITMAP_UNION(COLUMN)</code> 且 base 表为 AGG 模型。</p> </li><li> <p>HLL_UNION 的形式必须为：<code>HLL_UNION(HLL_HASH(COLUMN))</code> column 列的类型不能是 DECIMAL , 或者 <code>HLL_UNION(COLUMN)</code> 且 base 表为 AGG 模型。</p> </li></ul> 
+<h4><a id="_354"></a>更新策略</h4> 
+<p>为保证物化视图表和 Base 表的数据一致性, Doris 会将导入，删除等对 base 表的操作都同步到物化视图表中。并且通过增量更新的方式来提升更新效率。通过事务方式来保证原子性。</p> 
+<p>比如如果用户通过 INSERT 命令插入数据到 base 表中，则这条数据会同步插入到物化视图中。当 base 表和物化视图表均写入成功后，INSERT 命令才会成功返回。</p> 
+<h4><a id="_360"></a>查询自动匹配</h4> 
+<p>物化视图创建成功后，用户的查询不需要发生任何改变，也就是还是查询的 base 表。Doris 会根据当前查询的语句去自动选择一个最优的物化视图，从物化视图中读取数据并计算。</p> 
+<p>用户可以通过 EXPLAIN 命令来检查当前查询是否使用了物化视图。</p> 
+<p>物化视图中的聚合和查询中聚合的匹配关系：</p> 
+<table><thead><tr><th>物化视图聚合</th><th>查询中聚合</th></tr></thead><tbody><tr><td>sum</td><td>sum</td></tr><tr><td>min</td><td>min</td></tr><tr><td>max</td><td>max</td></tr><tr><td>count</td><td>count</td></tr><tr><td>bitmap_union</td><td>bitmap_union, bitmap_union_count, count(distinct)</td></tr><tr><td>hll_union</td><td>hll_raw_agg, hll_union_agg, ndv, approx_count_distinct</td></tr></tbody></table> 
+<p>其中 bitmap 和 hll 的聚合函数在查询匹配到物化视图后，查询的聚合算子会根据物化视图的表结构进行一个改写。详细见实例2。</p> 
+<h4><a id="httpdorisapacheorgbranch013zhCNadministratorguidematerialized_viewhtml_379"></a><a href="http://doris.apache.org/branch-0.13/zh-CN/administrator-guide/materialized_view.html#%E6%9F%A5%E8%AF%A2%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE" rel="nofollow">#</a>查询物化视图</h4> 
+<p>查看当前表都有哪些物化视图，以及他们的表结构都是什么样的。通过下面命令：</p> 
+<pre><code class="prism language-plain">MySQL [test]&gt; desc mv_test all;
++-----------+---------------+-----------------+----------+------+-------+---------+--------------+
+| IndexName | IndexKeysType | Field           | Type     | Null | Key   | Default | Extra        |
++-----------+---------------+-----------------+----------+------+-------+---------+--------------+
+| mv_test   | DUP_KEYS      | k1              | INT      | Yes  | true  | NULL    |              |
+|           |               | k2              | BIGINT   | Yes  | true  | NULL    |              |
+|           |               | k3              | LARGEINT | Yes  | true  | NULL    |              |
+|           |               | k4              | SMALLINT | Yes  | false | NULL    | NONE         |
+|           |               |                 |          |      |       |         |              |
+| mv_2      | AGG_KEYS      | k2              | BIGINT   | Yes  | true  | NULL    |              |
+|           |               | k4              | SMALLINT | Yes  | false | NULL    | MIN          |
+|           |               | k1              | INT      | Yes  | false | NULL    | MAX          |
+|           |               |                 |          |      |       |         |              |
+| mv_3      | AGG_KEYS      | k1              | INT      | Yes  | true  | NULL    |              |
+|           |               | to_bitmap(`k2`) | BITMAP   | No   | false |         | BITMAP_UNION |
+|           |               |                 |          |      |       |         |              |
+| mv_1      | AGG_KEYS      | k4              | SMALLINT | Yes  | true  | NULL    |              |
+|           |               | k1              | BIGINT   | Yes  | false | NULL    | SUM          |
+|           |               | k3              | LARGEINT | Yes  | false | NULL    | SUM          |
+|           |               | k2              | BIGINT   | Yes  | false | NULL    | MIN          |
++-----------+---------------+-----------------+----------+------+-------+---------+--------------+
+</code></pre> 
+<p>可以看到当前 <code>mv_test</code> 表一共有三张物化视图：mv_1, mv_2 和 mv_3，以及他们的表结构。</p> 
+<h4><a id="_409"></a>删除物化视图</h4> 
+<p>如果用户不再需要物化视图，则可以通过下面命令删除物化视图：</p> 
+<pre><code class="prism language-plain">DROP MATERIALIZED VIEW
+</code></pre> 
+<p>具体的语法可以通过下面命令查看：</p> 
+<pre><code class="prism language-plain">HELP DROP MATERIALIZED VIEW
+</code></pre> 
+<h3><a id="1_423"></a>最佳实践1</h3> 
+<p>使用物化视图一般分为一下几个步骤：</p> 
+<ol><li> <p>创建物化视图</p> </li><li> <p>异步检查物化视图是否构建完成</p> </li><li> <p>查询并自动匹配物化视图</p> </li></ol> 
+<p><strong>首先是第一步：创建物化视图</strong></p> 
+<p>假设用户有一张销售记录明细表，存储了每个交易的交易id，销售员，售卖门店，销售时间，以及金额。建表语句为：</p> 
+<pre><code class="prism language-plain">create table sales_records(record_id int, seller_id int, store_id int, sale_date date, sale_amt bigint) distributed by hash(record_id) properties("replication_num" = "1");
+</code></pre> 
+<p>这张 <code>sales_records</code> 的表结构如下：</p> 
+<pre><code class="prism language-plain">MySQL [test]&gt; desc sales_records;
++-----------+--------+------+-------+---------+-------+
+| Field     | Type   | Null | Key   | Default | Extra |
++-----------+--------+------+-------+---------+-------+
+| record_id | INT    | Yes  | true  | NULL    |       |
+| seller_id | INT    | Yes  | true  | NULL    |       |
+| store_id  | INT    | Yes  | true  | NULL    |       |
+| sale_date | DATE   | Yes  | false | NULL    | NONE  |
+| sale_amt  | BIGINT | Yes  | false | NULL    | NONE  |
++-----------+--------+------+-------+---------+-------+
+</code></pre> 
+<p>这时候如果用户经常对不同门店的销售量进行一个分析查询，则可以给这个 <code>sales_records</code> 表创建一张以售卖门店分组，对相同售卖门店的销售额求和的一个物化视图。创建语句如下：</p> 
+<pre><code class="prism language-plain">MySQL [test]&gt; create materialized view store_amt as select store_id, sum(sale_amt) from sales_records group by store_id;
+</code></pre> 
+<p>后端返回下图，则说明创建物化视图任务提交成功。</p> 
+<pre><code class="prism language-plain">Query OK, 0 rows affected (0.012 sec)
+</code></pre> 
+<p><strong>第二步：检查物化视图是否构建完成</strong></p> 
+<p>由于创建物化视图是一个异步的操作，用户在提交完创建物化视图任务后，需要异步的通过命令检查物化视图是否构建完成。命令如下：</p> 
+<pre><code class="prism language-plain">SHOW ALTER TABLE ROLLUP FROM db_name; (Version 0.12)
+SHOW ALTER TABLE MATERIALIZED VIEW FROM db_name; (Version 0.13)
+</code></pre> 
+<p>这个命令中 <code>db_name</code> 是一个参数, 你需要替换成自己真实的 db 名称。命令的结果是显示这个 db 的所有创建物化视图的任务。结果如下：</p> 
+<pre><code class="prism language-plain">+-------+---------------+---------------------+---------------------+---------------+-----------------+----------+---------------+-----------+-------------------------------------------------------------------------------------------------------------------------+----------+---------+
+| JobId | TableName     | CreateTime          | FinishedTime        | BaseIndexName | RollupIndexName | RollupId | TransactionId | State     | Msg                                                                                                                     | Progress | Timeout |
++-------+---------------+---------------------+---------------------+---------------+-----------------+----------+---------------+-----------+-------------------------------------------------------------------------------------------------------------------------+----------+---------+
+| 22036 | sales_records | 2020-07-30 20:04:28 | 2020-07-30 20:04:57 | sales_records | store_amt       | 22037    | 5008          | FINISHED  |                                                                                                                         | NULL     | 86400   |
++-------+---------------+---------------------+---------------------+---------------+-----------------+----------+---------------+-----------+-------------------------------------------------------------------------------------------------------------------------+----------+---------+
+</code></pre> 
+<p>其中 TableName 指的是物化视图的数据来自于哪个表，RollupIndexName 指的是物化视图的名称叫什么。其中比较重要的指标是 State。</p> 
+<p>当创建物化视图任务的 State 已经变成 FINISHED 后，就说明这个物化视图已经创建成功了。这就意味着，查询的时候有可能自动匹配到这张物化视图了。</p> 
+<p><strong>第三步：查询</strong></p> 
+<p>当创建完成物化视图后，用户再查询不同门店的销售量时，就会直接从刚才创建的物化视图 <code>store_amt</code> 中读取聚合好的数据。达到提升查询效率的效果。</p> 
+<p>用户的查询依旧指定查询 <code>sales_records</code> 表，比如：</p> 
+<pre><code class="prism language-plain">SELECT store_id, sum(sale_amt) FROM sales_records GROUP BY store_id;
+</code></pre> 
+<p>上面查询就能自动匹配到 <code>store_amt</code>。用户可以通过下面命令，检验当前查询是否匹配到了合适的物化视图。</p> 
+<pre><code class="prism language-plain">EXPLAIN SELECT store_id, sum(sale_amt) FROM sales_records GROUP BY store_id;
++-----------------------------------------------------------------------------+
+| Explain String                                                              |
++-----------------------------------------------------------------------------+
+| PLAN FRAGMENT 0                                                             |
+|  OUTPUT EXPRS:&lt;slot 2&gt; `store_id` | &lt;slot 3&gt; sum(`sale_amt`)                |
+|   PARTITION: UNPARTITIONED                                                  |
+|                                                                             |
+|   RESULT SINK                                                               |
+|                                                                             |
+|   4:EXCHANGE                                                                |
+|                                                                             |
+| PLAN FRAGMENT 1                                                             |
+|  OUTPUT EXPRS:                                                              |
+|   PARTITION: HASH_PARTITIONED: &lt;slot 2&gt; `store_id`                          |
+|                                                                             |
+|   STREAM DATA SINK                                                          |
+|     EXCHANGE ID: 04                                                         |
+|     UNPARTITIONED                                                           |
+|                                                                             |
+|   3:AGGREGATE (merge finalize)                                              |
+|   |  output: sum(&lt;slot 3&gt; sum(`sale_amt`))                                  |
+|   |  group by: &lt;slot 2&gt; `store_id`                                          |
+|   |                                                                         |
+|   2:EXCHANGE                                                                |
+|                                                                             |
+| PLAN FRAGMENT 2                                                             |
+|  OUTPUT EXPRS:                                                              |
+|   PARTITION: RANDOM                                                         |
+|                                                                             |
+|   STREAM DATA SINK                                                          |
+|     EXCHANGE ID: 02                                                         |
+|     HASH_PARTITIONED: &lt;slot 2&gt; `store_id`                                   |
+|                                                                             |
+|   1:AGGREGATE (update serialize)                                            |
+|   |  STREAMING                                                              |
+|   |  output: sum(`sale_amt`)                                                |
+|   |  group by: `store_id`                                                   |
+|   |                                                                         |
+|   0:OlapScanNode                                                            |
+|      TABLE: sales_records                                                   |
+|      PREAGGREGATION: ON                                                     |
+|      partitions=1/1                                                         |
+|      rollup: store_amt                                                      |
+|      tabletRatio=10/10                                                      |
+|      tabletList=22038,22040,22042,22044,22046,22048,22050,22052,22054,22056 |
+|      cardinality=0                                                          |
+|      avgRowSize=0.0                                                         |
+|      numNodes=1                                                             |
++-----------------------------------------------------------------------------+
+45 rows in set (0.006 sec)
+</code></pre> 
+<p>其中最重要的就是 OlapScanNode 中的 rollup 属性。可以看到当前查询的 rollup 显示的是 <code>store_amt</code>。也就是说查询已经正确匹配到物化视图 <code>store_amt</code>, 并直接从物化视图中读取数据了。</p> 
+<h3><a id="2_PVUV_558"></a>最佳实践2 PV,UV</h3> 
+<p>业务场景: 计算广告的 UV，PV</p> 
+<p>假设用户的原始广告点击数据存储在 Doris，那么针对广告 PV, UV 查询就可以通过创建 <code>bitmap_union</code> 的物化视图来提升查询速度。</p> 
+<p>通过下面语句首先创建一个存储广告点击数据明细的表，包含每条点击的点击事件，点击的是什么广告，通过什么渠道点击，以及点击的用户是谁。</p> 
+<pre><code class="prism language-plain">MySQL [test]&gt; create table advertiser_view_record(time date, advertiser varchar(10), channel varchar(10), user_id int) distributed by hash(time) properties("replication_num" = "1");
+Query O
+K, 0 rows affected (0.014 sec)
+</code></pre> 
+<p>原始的广告点击数据表结构为：</p> 
+<pre><code class="prism language-plain">MySQL [test]&gt; desc advertiser_view_record;
++------------+-------------+------+-------+---------+-------+
+| Field      | Type        | Null | Key   | Default | Extra |
++------------+-------------+------+-------+---------+-------+
+| time       | DATE        | Yes  | true  | NULL    |       |
+| advertiser | VARCHAR(10) | Yes  | true  | NULL    |       |
+| channel    | VARCHAR(10) | Yes  | false | NULL    | NONE  |
+| user_id    | INT         | Yes  | false | NULL    | NONE  |
++------------+-------------+------+-------+---------+-------+
+4 rows in set (0.001 sec)
+</code></pre> 
+<ol><li>创建物化视图<br> 由于用户想要查询的是广告的 UV 值，也就是需要对相同广告的用户进行一个精确去重，则查询一般为：</li></ol> 
+<pre><code class="prism language-plain">SELECT advertiser, channel, count(distinct user_id) FROM advertiser_view_record GROUP BY advertiser, channel;
+</code></pre> 
+<ol><li>针对这种求 UV 的场景，我们就可以创建一个带 <code>bitmap_union</code> 的物化视图从而达到一个预先精确去重的效果。<br> 在 Doris 中，<code>count(distinct)</code> 聚合的结果和 <code>bitmap_union_count</code>聚合的结果是完全一致的。而<code>bitmap_union_count</code> 等于 <code>bitmap_union</code> 的结果求 count， 所以如果查询中<strong>涉及到</strong> <code>**count(distinct)**</code> <strong>则通过创建带</strong> <code>**bitmap_union**</code> <strong>聚合的物化视图方可加快查询</strong>。<br> 针对这个 case，则可以创建一个根据广告和渠道分组，对 <code>user_id</code> 进行精确去重的物化视图。</li></ol> 
+<pre><code class="prism language-plain">MySQL [test]&gt; create materialized view advertiser_uv as select advertiser, channel, bitmap_union(to_bitmap(user_id)) from advertiser_view_record group by advertiser, channel;
+Query OK, 0 rows affected (0.012 sec)
+</code></pre> 
+<ol><li><em>注意：因为本身 user_id 是一个 INT 类型，所以在 Doris 中需要先将字段通过函数</em> <code>*to_bitmap*</code> <em>转换为 bitmap 类型然后才可以进行</em> <code>*bitmap_union*</code> <em>聚合。</em><br> 创建完成后, 广告点击明细表和物化视图表的表结构如下：</li></ol> 
+<pre><code class="prism language-plain">MySQL [test]&gt; desc advertiser_view_record all;
++------------------------+---------------+----------------------+-------------+------+-------+---------+--------------+
+| IndexName              | IndexKeysType | Field                | Type        | Null | Key   | Default | Extra        |
++------------------------+---------------+----------------------+-------------+------+-------+---------+--------------+
+| advertiser_view_record | DUP_KEYS      | time                 | DATE        | Yes  | true  | NULL    |              |
+|                        |               | advertiser           | VARCHAR(10) | Yes  | true  | NULL    |              |
+|                        |               | channel              | VARCHAR(10) | Yes  | false | NULL    | NONE         |
+|                        |               | user_id              | INT         | Yes  | false | NULL    | NONE         |
+|                        |               |                      |             |      |       |         |              |
+| advertiser_uv          | AGG_KEYS      | advertiser           | VARCHAR(10) | Yes  | true  | NULL    |              |
+|                        |               | channel              | VARCHAR(10) | Yes  | true  | NULL    |              |
+|                        |               | to_bitmap(`user_id`) | BITMAP      | No   | false |         | BITMAP_UNION |
++------------------------+---------------+----------------------+-------------+------+-------+---------+--------------+
+</code></pre> 
+<ol><li>查询自动匹配<br> 当物化视图表创建完成后，查询广告 UV 时，Doris就会自动从刚才创建好的物化视图 <code>advertiser_uv</code> 中查询数据。比如原始的查询语句如下：</li></ol> 
+<pre><code class="prism language-plain">SELECT advertiser, channel, count(distinct user_id) FROM advertiser_view_record GROUP BY advertiser, channel;
+</code></pre> 
+<ol><li>在选中物化视图后，实际的查询会转化为：</li></ol> 
+<pre><code class="prism language-plain">SELECT advertiser, channel, bitmap_union_count(to_bitmap(user_id)) FROM advertiser_uv GROUP BY advertiser, channel;
+</code></pre> 
+<ol><li>通过 EXPLAIN 命令可以检验到 Doris 是否匹配到了物化视图：</li></ol> 
+<pre><code class="prism language-plain">MySQL [test]&gt; explain SELECT advertiser, channel, count(distinct user_id) FROM  advertiser_view_record GROUP BY advertiser, channel;
++-------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Explain String                                                                                                                                                    |
++-------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| PLAN FRAGMENT 0                                                                                                                                                   |
+|  OUTPUT EXPRS:&lt;slot 7&gt; `advertiser` | &lt;slot 8&gt; `channel` | &lt;slot 9&gt; bitmap_union_count(`default_cluster:test`.`advertiser_view_record`.`mv_bitmap_union_user_id`) |
+|   PARTITION: UNPARTITIONED                                                                                                                                        |
+|                                                                                                                                                                   |
+|   RESULT SINK                                                                                                                                                     |
+|                                                                                                                                                                   |
+|   4:EXCHANGE                                                                                                                                                      |
+|                                                                                                                                                                   |
+| PLAN FRAGMENT 1                                                                                                                                                   |
+|  OUTPUT EXPRS:                                                                                                                                                    |
+|   PARTITION: HASH_PARTITIONED: &lt;slot 4&gt; `advertiser`, &lt;slot 5&gt; `channel`                                                                                          |
+|                                                                                                                                                                   |
+|   STREAM DATA SINK                                                                                                                                                |
+|     EXCHANGE ID: 04                                                                                                                                               |
+|     UNPARTITIONED                                                                                                                                                 |
+|                                                                                                                                                                   |
+|   3:AGGREGATE (merge finalize)                                                                                                                                    |
+|   |  output: bitmap_union_count(&lt;slot 6&gt; bitmap_union_count(`default_cluster:test`.`advertiser_view_record`.`mv_bitmap_union_user_id`))                           |
+|   |  group by: &lt;slot 4&gt; `advertiser`, &lt;slot 5&gt; `channel`                                                                                                          |
+|   |                                                                                                                                                               |
+|   2:EXCHANGE                                                                                                                                                      |
+|                                                                                                                                                                   |
+| PLAN FRAGMENT 2                                                                                                                                                   |
+|  OUTPUT EXPRS:                                                                                                                                                    |
+|   PARTITION: RANDOM                                                                                                                                               |
+|                                                                                                                                                                   |
+|   STREAM DATA SINK                                                                                                                                                |
+|     EXCHANGE ID: 02                                                                                                                                               |
+|     HASH_PARTITIONED: &lt;slot 4&gt; `advertiser`, &lt;slot 5&gt; `channel`                                                                                                   |
+|                                                                                                                                                                   |
+|   1:AGGREGATE (update serialize)                                                                                                                                  |
+|   |  STREAMING                                                                                                                                                    |
+|   |  output: bitmap_union_count(`default_cluster:test`.`advertiser_view_record`.`mv_bitmap_union_user_id`)                                                        |
+|   |  group by: `advertiser`, `channel`                                                                                                                            |
+|   |                                                                                                                                                               |
+|   0:OlapScanNode                                                                                                                                                  |
+|      TABLE: advertiser_view_record                                                                                                                                |
+|      PREAGGREGATION: ON                                                                                                                                           |
+|      partitions=1/1                                                                                                                                               |
+|      rollup: advertiser_uv                                                                                                                                        |
+|      tabletRatio=10/10                                                                                                                                            |
+|      tabletList=22084,22086,22088,22090,22092,22094,22096,22098,22100,22102                                                                                       |
+|      cardinality=0                                                                                                                                                |
+|      avgRowSize=0.0                                                                                                                                               |
+|      numNodes=1                                                                                                                                                   |
++-------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+45 rows in set (0.030 sec)
+</code></pre> 
+<ol><li>在 EXPLAIN 的结果中，首先可以看到 OlapScanNode 的 rollup 属性值为 advertiser_uv。也就是说，查询会直接扫描物化视图的数据。说明匹配成功。<br> 其次对于 <code>user_id</code> 字段求 <code>count(distinct)</code> 被改写为求 <code>bitmap_union_count(to_bitmap)</code>。也就是通过 bitmap 的方式来达到精确去重的效果。</li></ol> 
+<h3><a id="3_694"></a>最佳实践3</h3> 
+<p>业务场景：匹配更丰富的前缀索引</p> 
+<p>用户的原始表有 （k1, k2, k3） 三列。其中 k1, k2 为前缀索引列。这时候如果用户查询条件中包含 <code>where k1=1 and k2=2</code> 就能通过索引加速查询。</p> 
+<p>但是有些情况下，用户的过滤条件无法匹配到前缀索引，比如 <code>where k3=3</code>。则无法通过索引提升查询速度。</p> 
+<p>创建以 k3 作为第一列的物化视图就可以解决这个问题。</p> 
+<ol><li>创建物化视图</li></ol> 
+<pre><code class="prism language-plain">CREATE MATERIALIZED VIEW mv_1 as SELECT k3, k2, k1 FROM tableA ORDER BY k3;
+</code></pre> 
+<ol><li>通过上面语法创建完成后，物化视图中既保留了完整的明细数据，且物化视图的前缀索引为 k3 列。表结构如下：</li></ol> 
+<pre><code class="prism language-plain">MySQL [test]&gt; desc tableA all;
++-----------+---------------+-------+------+------+-------+---------+-------+
+| IndexName | IndexKeysType | Field | Type | Null | Key   | Default | Extra |
++-----------+---------------+-------+------+------+-------+---------+-------+
+| tableA    | DUP_KEYS      | k1    | INT  | Yes  | true  | NULL    |       |
+|           |               | k2    | INT  | Yes  | true  | NULL    |       |
+|           |               | k3    | INT  | Yes  | true  | NULL    |       |
+|           |               |       |      |      |       |         |       |
+| mv_1      | DUP_KEYS      | k3    | INT  | Yes  | true  | NULL    |       |
+|           |               | k2    | INT  | Yes  | false | NULL    | NONE  |
+|           |               | k1    | INT  | Yes  | false | NULL    | NONE  |
++-----------+---------------+-------+------+------+-------+---------+-------+
+</code></pre> 
+<ol><li>查询匹配<br> 这时候如果用户的查询存在 k3 列的过滤条件是，比如：</li></ol> 
+<pre><code class="prism language-plain">select k1, k2, k3 from table A where k3=3;
+</code></pre> 
+<ol><li>这时候查询就会直接从刚才创建的 mv_1 物化视图中读取数据。物化视图对 k3 是存在前缀索引的，查询效率也会提升。</li></ol> 
+<h3><a id="_736"></a>局限性</h3> 
+<ol><li> <p>物化视图的聚合函数的参数不支持表达式仅支持单列，比如： sum(a+b)不支持。</p> </li><li> <p>如果删除语句的条件列，在物化视图中不存在，则不能进行删除操作。如果一定要删除数据，则需要先将物化视图删除，然后方可删除数据。</p> </li><li> <p>单表上过多的物化视图会影响导入的效率：导入数据时，物化视图和 base 表数据是同步更新的，如果一张表的物化视图表超过10张，则有可能导致导入速度很慢。这就像单次导入需要同时导入10张表数据是一样的。</p> </li><li> <p>相同列，不同聚合函数，不能同时出现在一张物化视图中，比如：select sum(a), min(a) from table 不支持。</p> </li></ol> 
+<h3><a id="_744"></a>异常错误</h3> 
+<ol><li>DATA_QUALITY_ERR: “The data quality does not satisfy, please check your data” 由于数据质量问题导致物化视图创建失败。 注意：bitmap类型仅支持正整型, 如果原始数据中存在负数，会导致物化视图创建失败</li></ol>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/7598f7e0abb488f2a2af5887f9463bce/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">操作系统怎么把文件放到docker容器里</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/33de628bde131b7f3a7521379b7661cc/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Windows11 拒绝访问压缩(zipped)文件夹</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

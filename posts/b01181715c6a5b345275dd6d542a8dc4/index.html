@@ -1,0 +1,971 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>[RocketMQ] Producer发送单向/异步/同步消息源码 (八) - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="[RocketMQ] Producer发送单向/异步/同步消息源码 (八)" />
+<meta property="og:description" content="文章目录 1.sendMessage方法发送消息2.invokeOneway单向发送2.1 invokeOnewayImpl单向调用 3.sendMessageSync同步发送3.1 invokeSync同步调用3.1.1 invokeSyncImpl同步调用实现3.1.2 processSendResponse处理响应结果 4.sendMessageAsync异步发送消息4.1 invokeAsync异步调用4.1.1 invokeAsyncImpl异步调用实现 4.2 onExceptionImpl异常处理 5.NettyClientHandler处理服务端消息5.1 processResponseCommand处理响应5.1.1 executeInvokeCallback执行回调函数5.1.2 putResponse存入响应 6.总结 1.sendMessage方法发送消息 DefaultMQProducerImpl#sendKernelImpl() -&gt; MQClientAPIImpl#sendMessage()
+MQClientAPIImpl#sendMessage : 异步、单向、同步发送模式都会调用MQClientAPIImpl#sendMessage方法发送消息。
+首先构建发送消息命令对象RemotingCommand, 此时会判断是否需要更换轻量级消息头, 如果sendSmartMsg属性为true或者为批量消息的话, 则使用轻量头。根据发送模式执行不同的发送逻辑, 单向发送模式调用NettyRemotingClient#invokeOneway, 异步发送调用MQClientAPIImpl#sendMessageAsync, 同步发送调用MQClientAPIImpl#sendMessageSync。 /** * MQClientAPIImpl的方法 * 同步、异步、单向消息的最终发送消息的方法 * * @param addr brokerAddr * @param brokerName brokerName * @param msg msg * @param requestHeader requestHeader * @param timeoutMillis 剩余超时时间 * @param communicationMode 发送模式 * @param sendCallback 发送回调函数 * @param topicPublishInfo topic信息 * @param instance MQClientInstance * @param retryTimesWhenSendFailed 异步发送失败时的重试次数，默认2 * @param context 发送消息上下文 * @param producer DefaultMQProducerImpl * @return * @throws RemotingException * @throws MQBrokerException * @throws InterruptedException */ public SendResult sendMessage( final String addr, final String brokerName, final Message msg, final SendMessageRequestHeader requestHeader, final long timeoutMillis, final CommunicationMode communicationMode, final SendCallback sendCallback, final TopicPublishInfo topicPublishInfo, final MQClientInstance instance, final int retryTimesWhenSendFailed, final SendMessageContext context, final DefaultMQProducerImpl producer ) throws RemotingException, MQBrokerException, InterruptedException { long beginStartTime = System." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/b01181715c6a5b345275dd6d542a8dc4/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-06-27T20:25:04+08:00" />
+<meta property="article:modified_time" content="2023-06-27T20:25:04+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">[RocketMQ] Producer发送单向/异步/同步消息源码 (八)</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-github-gist">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><ul><li><a href="#1sendMessage_1" rel="nofollow">1.sendMessage方法发送消息</a></li><li><a href="#2invokeOneway_133" rel="nofollow">2.invokeOneway单向发送</a></li><li><ul><li><a href="#21__invokeOnewayImpl_179" rel="nofollow">2.1 invokeOnewayImpl单向调用</a></li></ul> 
+    </li><li><a href="#3sendMessageSync_250" rel="nofollow">3.sendMessageSync同步发送</a></li><li><ul><li><a href="#31_invokeSync_282" rel="nofollow">3.1 invokeSync同步调用</a></li><li><ul><li><a href="#311_invokeSyncImpl_337" rel="nofollow">3.1.1 invokeSyncImpl同步调用实现</a></li><li><a href="#312_processSendResponse_461" rel="nofollow">3.1.2 processSendResponse处理响应结果</a></li></ul> 
+    </li></ul> 
+    </li><li><a href="#4sendMessageAsync_468" rel="nofollow">4.sendMessageAsync异步发送消息</a></li><li><ul><li><a href="#41_invokeAsync_601" rel="nofollow">4.1 invokeAsync异步调用</a></li><li><ul><li><a href="#411_invokeAsyncImpl_645" rel="nofollow">4.1.1 invokeAsyncImpl异步调用实现</a></li></ul> 
+     </li><li><a href="#42_onExceptionImpl_724" rel="nofollow">4.2 onExceptionImpl异常处理</a></li></ul> 
+    </li><li><a href="#5NettyClientHandler_810" rel="nofollow">5.NettyClientHandler处理服务端消息</a></li><li><ul><li><a href="#51_processResponseCommand_869" rel="nofollow">5.1 processResponseCommand处理响应</a></li><li><ul><li><a href="#511_executeInvokeCallback_910" rel="nofollow">5.1.1 executeInvokeCallback执行回调函数</a></li><li><a href="#512_putResponse_977" rel="nofollow">5.1.2 putResponse存入响应</a></li></ul> 
+    </li></ul> 
+    </li><li><a href="#6_1003" rel="nofollow">6.总结</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h4><a id="1sendMessage_1"></a>1.sendMessage方法发送消息</h4> 
+<p>DefaultMQProducerImpl#sendKernelImpl() -&gt; MQClientAPIImpl#sendMessage()</p> 
+<p><img src="https://images2.imgbox.com/29/21/mFKh8XE6_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/4f/1c/M1jIKJZW_o.png" alt="在这里插入图片描述"></p> 
+<p><code>MQClientAPIImpl#sendMessage</code> : 异步、单向、同步发送模式都会调用MQClientAPIImpl#sendMessage方法发送消息。</p> 
+<ol><li>首先构建发送消息命令对象RemotingCommand, 此时会判断是否需要更换轻量级消息头, 如果sendSmartMsg属性为true或者为批量消息的话, 则使用轻量头。</li><li>根据发送模式执行不同的发送逻辑, 单向发送模式调用NettyRemotingClient#invokeOneway, 异步发送调用MQClientAPIImpl#sendMessageAsync, 同步发送调用MQClientAPIImpl#sendMessageSync。</li></ol> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * MQClientAPIImpl的方法
+ * 同步、异步、单向消息的最终发送消息的方法
+ *
+ * @param addr                     brokerAddr
+ * @param brokerName               brokerName
+ * @param msg                      msg
+ * @param requestHeader            requestHeader
+ * @param timeoutMillis            剩余超时时间
+ * @param communicationMode        发送模式
+ * @param sendCallback             发送回调函数
+ * @param topicPublishInfo         topic信息
+ * @param instance                 MQClientInstance
+ * @param retryTimesWhenSendFailed 异步发送失败时的重试次数，默认2
+ * @param context                  发送消息上下文
+ * @param producer                 DefaultMQProducerImpl
+ * @return
+ * @throws RemotingException
+ * @throws MQBrokerException
+ * @throws InterruptedException
+ */</span>
+<span class="token keyword">public</span> <span class="token class-name">SendResult</span> <span class="token function">sendMessage</span><span class="token punctuation">(</span>
+        <span class="token keyword">final</span> <span class="token class-name">String</span> addr<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">String</span> brokerName<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">Message</span> msg<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">SendMessageRequestHeader</span> requestHeader<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token keyword">long</span> timeoutMillis<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">CommunicationMode</span> communicationMode<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">SendCallback</span> sendCallback<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">TopicPublishInfo</span> topicPublishInfo<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">MQClientInstance</span> instance<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token keyword">int</span> retryTimesWhenSendFailed<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">SendMessageContext</span> context<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">DefaultMQProducerImpl</span> producer
+<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">RemotingException</span><span class="token punctuation">,</span> <span class="token class-name">MQBrokerException</span><span class="token punctuation">,</span> <span class="token class-name">InterruptedException</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">long</span> beginStartTime <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token class-name">RemotingCommand</span> request <span class="token operator">=</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+    <span class="token comment">//消息类型</span>
+    <span class="token class-name">String</span> msgType <span class="token operator">=</span> msg<span class="token punctuation">.</span><span class="token function">getProperty</span><span class="token punctuation">(</span><span class="token class-name">MessageConst</span><span class="token punctuation">.</span>PROPERTY_MESSAGE_TYPE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//是否时重试消息</span>
+    <span class="token keyword">boolean</span> isReply <span class="token operator">=</span> msgType <span class="token operator">!=</span> <span class="token keyword">null</span> <span class="token operator">&amp;&amp;</span> msgType<span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span><span class="token class-name">MixAll</span><span class="token punctuation">.</span>REPLY_MESSAGE_FLAG<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">/*
+     * 1 构建发送消息命令对象RemotingCommand，更换轻量级消息头
+     *
+     * sendSmartMsg表示是否使用更轻量级的消息头SendMessageRequestHeaderV2
+     * 相比于requestHeader，其field 全为 a,b,c,d 等短变量名，可以加快FastJson反序列化过程。
+     */</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>isReply<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//sendSmartMsg默认为true</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>sendSmartMsg<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//构建轻量级消息头</span>
+            <span class="token class-name">SendMessageRequestHeaderV2</span> requestHeaderV2 <span class="token operator">=</span> <span class="token class-name">SendMessageRequestHeaderV2</span><span class="token punctuation">.</span><span class="token function">createSendMessageRequestHeaderV2</span><span class="token punctuation">(</span>requestHeader<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//创建发送消息命令对象，RequestCode为SEND_REPLY_MESSAGE_V2</span>
+            request <span class="token operator">=</span> <span class="token class-name">RemotingCommand</span><span class="token punctuation">.</span><span class="token function">createRequestCommand</span><span class="token punctuation">(</span><span class="token class-name">RequestCode</span><span class="token punctuation">.</span>SEND_REPLY_MESSAGE_V2<span class="token punctuation">,</span> requestHeaderV2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//创建发送消息命令对象，RequestCode为SEND_REPLY_MESSAGE</span>
+            request <span class="token operator">=</span> <span class="token class-name">RemotingCommand</span><span class="token punctuation">.</span><span class="token function">createRequestCommand</span><span class="token punctuation">(</span><span class="token class-name">RequestCode</span><span class="token punctuation">.</span>SEND_REPLY_MESSAGE<span class="token punctuation">,</span> requestHeader<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>sendSmartMsg <span class="token operator">||</span> msg <span class="token keyword">instanceof</span> <span class="token class-name">MessageBatch</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//构建轻量级消息头</span>
+            <span class="token class-name">SendMessageRequestHeaderV2</span> requestHeaderV2 <span class="token operator">=</span> <span class="token class-name">SendMessageRequestHeaderV2</span><span class="token punctuation">.</span><span class="token function">createSendMessageRequestHeaderV2</span><span class="token punctuation">(</span>requestHeader<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//如果是批量消息，则RequestCode为SEND_BATCH_MESSAGE，否则RequestCode为SEND_MESSAGE_V2</span>
+            request <span class="token operator">=</span> <span class="token class-name">RemotingCommand</span><span class="token punctuation">.</span><span class="token function">createRequestCommand</span><span class="token punctuation">(</span>msg <span class="token keyword">instanceof</span> <span class="token class-name">MessageBatch</span> <span class="token operator">?</span> <span class="token class-name">RequestCode</span><span class="token punctuation">.</span>SEND_BATCH_MESSAGE <span class="token operator">:</span> <span class="token class-name">RequestCode</span><span class="token punctuation">.</span>SEND_MESSAGE_V2<span class="token punctuation">,</span> requestHeaderV2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//创建发送消息命令对象，RequestCode为SEND_MESSAGE</span>
+            request <span class="token operator">=</span> <span class="token class-name">RemotingCommand</span><span class="token punctuation">.</span><span class="token function">createRequestCommand</span><span class="token punctuation">(</span><span class="token class-name">RequestCode</span><span class="token punctuation">.</span>SEND_MESSAGE<span class="token punctuation">,</span> requestHeader<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">//设置body</span>
+    request<span class="token punctuation">.</span><span class="token function">setBody</span><span class="token punctuation">(</span>msg<span class="token punctuation">.</span><span class="token function">getBody</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">/*
+     * 2 根据发送模式执行不同的发送逻辑
+     */</span>
+    <span class="token keyword">switch</span> <span class="token punctuation">(</span>communicationMode<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">case</span> ONEWAY<span class="token operator">:</span>
+            <span class="token comment">/*
+             * 单向发送，调用该方法之后不接收返回值，直接返回null
+             */</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>remotingClient<span class="token punctuation">.</span><span class="token function">invokeOneway</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> request<span class="token punctuation">,</span> timeoutMillis<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+        <span class="token keyword">case</span> ASYNC<span class="token operator">:</span>
+            <span class="token comment">//异步消息重试计数器</span>
+            <span class="token keyword">final</span> <span class="token class-name">AtomicInteger</span> times <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">AtomicInteger</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//计算是否超时，如果超时则不再发送</span>
+            <span class="token keyword">long</span> costTimeAsync <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> beginStartTime<span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>timeoutMillis <span class="token operator">&lt;</span> costTimeAsync<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingTooMuchRequestException</span><span class="token punctuation">(</span><span class="token string">"sendMessage call timeout"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token comment">/*
+             * 异步发送，调用该方法之后不接收返回值，直接返回null
+             */</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">sendMessageAsync</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> brokerName<span class="token punctuation">,</span> msg<span class="token punctuation">,</span> timeoutMillis <span class="token operator">-</span> costTimeAsync<span class="token punctuation">,</span> request<span class="token punctuation">,</span> sendCallback<span class="token punctuation">,</span> topicPublishInfo<span class="token punctuation">,</span> instance<span class="token punctuation">,</span>
+                    retryTimesWhenSendFailed<span class="token punctuation">,</span> times<span class="token punctuation">,</span> context<span class="token punctuation">,</span> producer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+        <span class="token keyword">case</span> SYNC<span class="token operator">:</span>
+            <span class="token comment">//计算是否超时，如果超时则不再发送</span>
+            <span class="token keyword">long</span> costTimeSync <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> beginStartTime<span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>timeoutMillis <span class="token operator">&lt;</span> costTimeSync<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingTooMuchRequestException</span><span class="token punctuation">(</span><span class="token string">"sendMessage call timeout"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token comment">/*
+             * 同步发送，调用该方法之后阻塞直至收到返回值
+             */</span>
+            <span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">sendMessageSync</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> brokerName<span class="token punctuation">,</span> msg<span class="token punctuation">,</span> timeoutMillis <span class="token operator">-</span> costTimeSync<span class="token punctuation">,</span> request<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">default</span><span class="token operator">:</span>
+            <span class="token keyword">assert</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/b6/01/iy72Q1Gz_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="2invokeOneway_133"></a>2.invokeOneway单向发送</h4> 
+<p>消息只会发送一次, 且不会返回结果, 不管发送的结果。不会进行任何重试。</p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * NettyRemotingClient的方法
+ * &lt;p&gt;
+ * 单向消息发送的通用方法
+ *
+ * @param addr          服务器地址
+ * @param request       请求命令对象
+ * @param timeoutMillis 超时时间
+ */</span>
+<span class="token annotation punctuation">@Override</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">invokeOneway</span><span class="token punctuation">(</span><span class="token class-name">String</span> addr<span class="token punctuation">,</span> <span class="token class-name">RemotingCommand</span> request<span class="token punctuation">,</span> <span class="token keyword">long</span> timeoutMillis<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">InterruptedException</span><span class="token punctuation">,</span>
+        <span class="token class-name">RemotingConnectException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingTooMuchRequestException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingTimeoutException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingSendRequestException</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//获取或者建立同服务器的通道，即连接</span>
+    <span class="token keyword">final</span> <span class="token class-name">Channel</span> channel <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getAndCreateChannel</span><span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>channel <span class="token operator">!=</span> <span class="token keyword">null</span> <span class="token operator">&amp;&amp;</span> channel<span class="token punctuation">.</span><span class="token function">isActive</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//执行rpcHook的前置方法doBeforeRequest</span>
+            <span class="token function">doBeforeRpcHooks</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> request<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">/*
+             * 调用另一个invokeOnewayImpl方法，发送单向消息
+             */</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">invokeOnewayImpl</span><span class="token punctuation">(</span>channel<span class="token punctuation">,</span> request<span class="token punctuation">,</span> timeoutMillis<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">RemotingSendRequestException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"invokeOneway: send request exception, so close the channel[{}]"</span><span class="token punctuation">,</span> addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">closeChannel</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> channel<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">throw</span> e<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">closeChannel</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> channel<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingConnectException</span><span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<ol><li>getAndCreateChannel方法获取或者建立同服务器的通道, 如果没有获取到, 则创建连接。</li><li>执行rpcHook的前置方法doBeforeRequest。</li><li>调用invokeOnewayImpl方法, 实现单向发送消息。</li></ol> 
+<h5><a id="21__invokeOnewayImpl_179"></a>2.1 invokeOnewayImpl单向调用</h5> 
+<p><img src="https://images2.imgbox.com/f2/88/UCUt38p8_o.png" alt="在这里插入图片描述"></p> 
+<ol><li>首先将请求标记为单向发送。</li><li>然后基于Semaphore信号量尝试获取单向发送的资源。通过信号量控制单向消息并发发送的消息数, 从而保护系统内存占用。客户端单向发送的Semaphore信号量默认为65535, 即单向发送的消息最大并发为65535。</li><li>获取信号量资源后, 构建SemaphoreReleaseOnlyOnce对象, 保证信号量本次只释放一次, 防止并发操作引起的线程安全问题, 通过channel发送请求。</li><li>在监听器ChannelFutureListener中, 会释放信号量, 如果发送失败了, 打印warn日志。如果没有获取到信号量资源, 那么直接抛出异常并且不再发送。</li></ol> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * NettyRemotingAbstract的方法
+ * &lt;p&gt;
+ * 单向消息发送的逻辑
+ *
+ * @param channel       通道
+ * @param request       请求
+ * @param timeoutMillis 超时时间
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">invokeOnewayImpl</span><span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token class-name">Channel</span> channel<span class="token punctuation">,</span> <span class="token keyword">final</span> <span class="token class-name">RemotingCommand</span> request<span class="token punctuation">,</span> <span class="token keyword">final</span> <span class="token keyword">long</span> timeoutMillis<span class="token punctuation">)</span>
+        <span class="token keyword">throws</span> <span class="token class-name">InterruptedException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingTooMuchRequestException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingTimeoutException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingSendRequestException</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//标记为单向发送</span>
+    request<span class="token punctuation">.</span><span class="token function">markOnewayRPC</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//基于Semaphore信号量尝试获取单向发送的资源，通过信号量控制单向消息并发发送的消息数，从而保护系统内存占用。</span>
+    <span class="token comment">//客户端单向发送的Semaphore信号量默认为65535，可通过配置"com.rocketmq.remoting.clientOnewaySemaphoreValue"系统变量更改</span>
+    <span class="token keyword">boolean</span> acquired <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>semaphoreOneway<span class="token punctuation">.</span><span class="token function">tryAcquire</span><span class="token punctuation">(</span>timeoutMillis<span class="token punctuation">,</span> <span class="token class-name">TimeUnit</span><span class="token punctuation">.</span>MILLISECONDS<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//如果获取到了信号量资源</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>acquired<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//构建SemaphoreReleaseOnlyOnce对象，保证信号量本次只被释放一次，防止并发操作引起线程安全问题</span>
+        <span class="token keyword">final</span> <span class="token class-name">SemaphoreReleaseOnlyOnce</span> once <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">SemaphoreReleaseOnlyOnce</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>semaphoreOneway<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//将请求发送出去即可</span>
+            channel<span class="token punctuation">.</span><span class="token function">writeAndFlush</span><span class="token punctuation">(</span>request<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">addListener</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">ChannelFutureListener</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token annotation punctuation">@Override</span>
+                <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">operationComplete</span><span class="token punctuation">(</span><span class="token class-name">ChannelFuture</span> f<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token comment">//释放信号量</span>
+                    once<span class="token punctuation">.</span><span class="token function">release</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token comment">//如果发送失败了，仅仅是打印一行warn日志，然后就不管了，这就是单向发送</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>f<span class="token punctuation">.</span><span class="token function">isSuccess</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"send a request command to channel &lt;"</span> <span class="token operator">+</span> channel<span class="token punctuation">.</span><span class="token function">remoteAddress</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">"&gt; failed."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//释放信号量</span>
+            once<span class="token punctuation">.</span><span class="token function">release</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"write send a request command to channel &lt;"</span> <span class="token operator">+</span> channel<span class="token punctuation">.</span><span class="token function">remoteAddress</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">"&gt; failed."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingSendRequestException</span><span class="token punctuation">(</span><span class="token class-name">RemotingHelper</span><span class="token punctuation">.</span><span class="token function">parseChannelRemoteAddr</span><span class="token punctuation">(</span>channel<span class="token punctuation">)</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//如果没有获取到信号量资源，那么直接抛出异常即可，并且不再发送</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>timeoutMillis <span class="token operator">&lt;=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingTooMuchRequestException</span><span class="token punctuation">(</span><span class="token string">"invokeOnewayImpl invoke too fast"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">String</span> info <span class="token operator">=</span> <span class="token class-name">String</span><span class="token punctuation">.</span><span class="token function">format</span><span class="token punctuation">(</span>
+                    <span class="token string">"invokeOnewayImpl tryAcquire semaphore timeout, %dms, waiting thread nums: %d semaphoreOnewayValue: %d"</span><span class="token punctuation">,</span>
+                    timeoutMillis<span class="token punctuation">,</span>
+                    <span class="token keyword">this</span><span class="token punctuation">.</span>semaphoreOneway<span class="token punctuation">.</span><span class="token function">getQueueLength</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                    <span class="token keyword">this</span><span class="token punctuation">.</span>semaphoreOneway<span class="token punctuation">.</span><span class="token function">availablePermits</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+            <span class="token punctuation">)</span><span class="token punctuation">;</span>
+            log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span>info<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingTimeoutException</span><span class="token punctuation">(</span>info<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="3sendMessageSync_250"></a>3.sendMessageSync同步发送</h4> 
+<ul><li>发送之后会同步阻塞直到结果返回。</li></ul> 
+<p><img src="https://images2.imgbox.com/68/09/7LdTpZc9_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * MQClientAPIImpl的方法
+ */</span>
+<span class="token keyword">private</span> <span class="token class-name">SendResult</span> <span class="token function">sendMessageSync</span><span class="token punctuation">(</span>
+        <span class="token keyword">final</span> <span class="token class-name">String</span> addr<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">String</span> brokerName<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">Message</span> msg<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token keyword">long</span> timeoutMillis<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">RemotingCommand</span> request
+<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">RemotingException</span><span class="token punctuation">,</span> <span class="token class-name">MQBrokerException</span><span class="token punctuation">,</span> <span class="token class-name">InterruptedException</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">/*
+     * 发送同步消息
+     */</span>
+    <span class="token class-name">RemotingCommand</span> response <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>remotingClient<span class="token punctuation">.</span><span class="token function">invokeSync</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> request<span class="token punctuation">,</span> timeoutMillis<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">assert</span> response <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+    <span class="token comment">/*
+     * 处理响应结果
+     */</span>
+    <span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">processSendResponse</span><span class="token punctuation">(</span>brokerName<span class="token punctuation">,</span> msg<span class="token punctuation">,</span> response<span class="token punctuation">,</span> addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>先发送同步消息, 再处理响应结果。</p> 
+<h5><a id="31_invokeSync_282"></a>3.1 invokeSync同步调用</h5> 
+<ol><li>首先获取或者创建通道进行连接。</li><li>在发送消息前后执行rpcHook钩子方法, RPCHook#doBeforeRequest。</li><li>调用invokeSyncImpl方法发起同步调用并获取响应结果返回。<br> <img src="https://images2.imgbox.com/e3/b5/LHkTF7qs_o.png" alt="在这里插入图片描述"></li></ol> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * NettyRemotingClient的方法
+ * &lt;p&gt;
+ * 同步调用
+ */</span>
+<span class="token annotation punctuation">@Override</span>
+<span class="token keyword">public</span> <span class="token class-name">RemotingCommand</span> <span class="token function">invokeSync</span><span class="token punctuation">(</span><span class="token class-name">String</span> addr<span class="token punctuation">,</span> <span class="token keyword">final</span> <span class="token class-name">RemotingCommand</span> request<span class="token punctuation">,</span> <span class="token keyword">long</span> timeoutMillis<span class="token punctuation">)</span>
+        <span class="token keyword">throws</span> <span class="token class-name">InterruptedException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingConnectException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingSendRequestException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingTimeoutException</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">long</span> beginStartTime <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//根据addr建立连接，获取channel</span>
+    <span class="token keyword">final</span> <span class="token class-name">Channel</span> channel <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getAndCreateChannel</span><span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>channel <span class="token operator">!=</span> <span class="token keyword">null</span> <span class="token operator">&amp;&amp;</span> channel<span class="token punctuation">.</span><span class="token function">isActive</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//执行rpc钩子的doBeforeRequest方法</span>
+            <span class="token function">doBeforeRpcHooks</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> request<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//检查超时，如果超时则抛出异常</span>
+            <span class="token keyword">long</span> costTime <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> beginStartTime<span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>timeoutMillis <span class="token operator">&lt;</span> costTime<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingTimeoutException</span><span class="token punctuation">(</span><span class="token string">"invokeSync call the addr["</span> <span class="token operator">+</span> addr <span class="token operator">+</span> <span class="token string">"] timeout"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token comment">//执行同步远程调用，或者调用结果</span>
+            <span class="token class-name">RemotingCommand</span> response <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">invokeSyncImpl</span><span class="token punctuation">(</span>channel<span class="token punctuation">,</span> request<span class="token punctuation">,</span> timeoutMillis <span class="token operator">-</span> costTime<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//执行rpc钩子的doAfterResponse方法</span>
+            <span class="token function">doAfterRpcHooks</span><span class="token punctuation">(</span><span class="token class-name">RemotingHelper</span><span class="token punctuation">.</span><span class="token function">parseChannelRemoteAddr</span><span class="token punctuation">(</span>channel<span class="token punctuation">)</span><span class="token punctuation">,</span> request<span class="token punctuation">,</span> response<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span> response<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">RemotingSendRequestException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"invokeSync: send request exception, so close the channel[{}]"</span><span class="token punctuation">,</span> addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">closeChannel</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> channel<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">throw</span> e<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">RemotingTimeoutException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>nettyClientConfig<span class="token punctuation">.</span><span class="token function">isClientCloseSocketIfTimeout</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">closeChannel</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> channel<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"invokeSync: close socket because of timeout, {}ms, {}"</span><span class="token punctuation">,</span> timeoutMillis<span class="token punctuation">,</span> addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"invokeSync: wait response timeout exception, the channel[{}]"</span><span class="token punctuation">,</span> addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">throw</span> e<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">closeChannel</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> channel<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingConnectException</span><span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h6><a id="311_invokeSyncImpl_337"></a>3.1.1 invokeSyncImpl同步调用实现</h6> 
+<p>invokeSyncImpl方法发起同步调用并获取响应结果。</p> 
+<ol><li>首先创建一个ResponseFuture, 将本次请求id和respone存入responseTable缓存。</li><li>随后执行调用, 并添加ChannelFutureListener, 消息发送完毕会进行回调。然后responseFuture通过waitResponse方法阻塞当前线程, 直到得到响应结果或者到达超时时间。</li><li>当ChannelFutureListener回调的时候会判断如果消息发送成功, 设置发送成功并返回, 否则设置发送失败标志和失败原因, 设置响应为null, 唤醒阻塞的responseFuture。</li><li>responseFuture被唤醒中, 如果响应为null, 根据不同情况抛出异常, 如果响应不为null, 返回响应结果。</li><li>最后在finaly块中从responseTable中移除响应结果缓存。</li></ol> 
+<p><img src="https://images2.imgbox.com/cd/e0/bolhuOme_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * NettyRemotingAbstract的方法
+ * &lt;p&gt;
+ * 执行同步调用
+ */</span>
+<span class="token keyword">public</span> <span class="token class-name">RemotingCommand</span> <span class="token function">invokeSyncImpl</span><span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token class-name">Channel</span> channel<span class="token punctuation">,</span> <span class="token keyword">final</span> <span class="token class-name">RemotingCommand</span> request<span class="token punctuation">,</span>
+                                      <span class="token keyword">final</span> <span class="token keyword">long</span> timeoutMillis<span class="token punctuation">)</span>
+        <span class="token keyword">throws</span> <span class="token class-name">InterruptedException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingSendRequestException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingTimeoutException</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//获取请求id，通过id可以获取请求结果</span>
+    <span class="token keyword">final</span> <span class="token keyword">int</span> opaque <span class="token operator">=</span> request<span class="token punctuation">.</span><span class="token function">getOpaque</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//创建一个Future的map成员ResponseFuture</span>
+        <span class="token keyword">final</span> <span class="token class-name">ResponseFuture</span> responseFuture <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ResponseFuture</span><span class="token punctuation">(</span>channel<span class="token punctuation">,</span> opaque<span class="token punctuation">,</span> timeoutMillis<span class="token punctuation">,</span> <span class="token keyword">null</span><span class="token punctuation">,</span> <span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//将请求id和responseFuture存入responseTable缓存中</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>responseTable<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span>opaque<span class="token punctuation">,</span> responseFuture<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">final</span> <span class="token class-name">SocketAddress</span> addr <span class="token operator">=</span> channel<span class="token punctuation">.</span><span class="token function">remoteAddress</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//发送请求，添加一个ChannelFutureListener，消息发送完毕会进行回调</span>
+        channel<span class="token punctuation">.</span><span class="token function">writeAndFlush</span><span class="token punctuation">(</span>request<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">addListener</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">ChannelFutureListener</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token annotation punctuation">@Override</span>
+            <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">operationComplete</span><span class="token punctuation">(</span><span class="token class-name">ChannelFuture</span> f<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">//如果消息发送成功，那么设置responseFuture发送成功并返回</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>f<span class="token punctuation">.</span><span class="token function">isSuccess</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    responseFuture<span class="token punctuation">.</span><span class="token function">setSendRequestOK</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">return</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                    responseFuture<span class="token punctuation">.</span><span class="token function">setSendRequestOK</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                <span class="token comment">//如果发送失败，那么从responseTable移除该缓存</span>
+                responseTable<span class="token punctuation">.</span><span class="token function">remove</span><span class="token punctuation">(</span>opaque<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token comment">//设置失败原因</span>
+                responseFuture<span class="token punctuation">.</span><span class="token function">setCause</span><span class="token punctuation">(</span>f<span class="token punctuation">.</span><span class="token function">cause</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token comment">//设置响应结果为null，唤醒阻塞的responseFuture</span>
+                <span class="token comment">//其内部调用了countDownLatch.countDown()方法</span>
+                responseFuture<span class="token punctuation">.</span><span class="token function">putResponse</span><span class="token punctuation">(</span><span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"send a request command to channel &lt;"</span> <span class="token operator">+</span> addr <span class="token operator">+</span> <span class="token string">"&gt; failed."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">/*
+         *  responseFuture同步阻塞等待直到得到响应结果或者到达超时时间
+         * 其内部调用了countDownLatch.await(timeoutMillis, TimeUnit.MILLISECONDS)方法
+         */</span>
+        <span class="token class-name">RemotingCommand</span> responseCommand <span class="token operator">=</span> responseFuture<span class="token punctuation">.</span><span class="token function">waitResponse</span><span class="token punctuation">(</span>timeoutMillis<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//如果响应结果为null</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">null</span> <span class="token operator">==</span> responseCommand<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//如果是发送成功，但是没有响应，表示等待响应超时，那么抛出超时异常</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>responseFuture<span class="token punctuation">.</span><span class="token function">isSendRequestOK</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingTimeoutException</span><span class="token punctuation">(</span><span class="token class-name">RemotingHelper</span><span class="token punctuation">.</span><span class="token function">parseSocketAddressAddr</span><span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">,</span> timeoutMillis<span class="token punctuation">,</span>
+                        responseFuture<span class="token punctuation">.</span><span class="token function">getCause</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">//如果是发送失败，抛出发送失败异常</span>
+                <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingSendRequestException</span><span class="token punctuation">(</span><span class="token class-name">RemotingHelper</span><span class="token punctuation">.</span><span class="token function">parseSocketAddressAddr</span><span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">,</span> responseFuture<span class="token punctuation">.</span><span class="token function">getCause</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">//否则返回响应结果</span>
+        <span class="token keyword">return</span> responseCommand<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">finally</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//最后从responseTable中移除响应结果缓存</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>responseTable<span class="token punctuation">.</span><span class="token function">remove</span><span class="token punctuation">(</span>opaque<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><mark>请求的阻塞和唤醒</mark>: responseFuture通过waitResponse方法阻塞当前线程。</p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * ResponseFuture的方法
+ * &lt;p&gt;
+ * 同步等待响应结果
+ *
+ * @param timeoutMillis 超时时间
+ */</span>
+<span class="token keyword">public</span> <span class="token class-name">RemotingCommand</span> <span class="token function">waitResponse</span><span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token keyword">long</span> timeoutMillis<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">InterruptedException</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//使用countDownLatch等待给定的时间</span>
+    <span class="token keyword">this</span><span class="token punctuation">.</span>countDownLatch<span class="token punctuation">.</span><span class="token function">await</span><span class="token punctuation">(</span>timeoutMillis<span class="token punctuation">,</span> <span class="token class-name">TimeUnit</span><span class="token punctuation">.</span>MILLISECONDS<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">.</span>responseCommand<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>利用CountDownLatch阻塞和唤醒。计数器默认为1, 当减为0时, 此前阻塞的请求线程将会被唤醒。</p> 
+<p><img src="https://images2.imgbox.com/e0/e7/KO2l94Zq_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/3b/82/6wFLIBbs_o.png" alt="在这里插入图片描述"></p> 
+<p>putResponse减少计数器:</p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * ResponseFuture的方法
+ * &lt;p&gt;
+ * 存入响应结果并且唤醒等待的线程
+ *
+ * @param responseCommand 响应结果
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">putResponse</span><span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token class-name">RemotingCommand</span> responseCommand<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//存入结果</span>
+    <span class="token keyword">this</span><span class="token punctuation">.</span>responseCommand <span class="token operator">=</span> responseCommand<span class="token punctuation">;</span>
+    <span class="token comment">//倒计数减去1，唤醒等待的线程</span>
+    <span class="token keyword">this</span><span class="token punctuation">.</span>countDownLatch<span class="token punctuation">.</span><span class="token function">countDown</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h6><a id="312_processSendResponse_461"></a>3.1.2 processSendResponse处理响应结果</h6> 
+<ul><li>获取响应后, 调用processSendResponse方法处理响应结果, 主要进行响应码的对应封装操作, 然后对正确和异常情况进行不同的处理并返回sendResult对象。</li></ul> 
+<p><img src="https://images2.imgbox.com/3d/9f/Xq1sRZKr_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/60/af/AnjMqOaq_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="4sendMessageAsync_468"></a>4.sendMessageAsync异步发送消息</h4> 
+<ul><li> <p>调用该方法之后不接收返回值, 直接返回null, 执行完毕后会自动执行回调函数operationComplete。</p> </li><li> <p>调用异步发送方法传递的SendCallback对象并不会被直接调用, 而是封装进了InvokeCallback内部调用对象, 当异步请求获得响应结果, 或者超时时间到了, 调用它的operationComplete方法。</p> </li><li> <p>该方法中会调用processSendResponse方法解析响应结果为SendResult, 如果响应成功的状态, 那么接着执行sendCallback的onSuccess方法。</p> </li><li> <p>随后会调用updateFaultItem更新本地更新本地错误表缓存数据, 用于延迟时间的故障转移的功能。</p> </li><li> <p>如果抛出了异常, 或者没有获取到broker的返回值, 调用onExceptionImpl方法处理异常, 该方法中会继续重试异步调用。</p> </li></ul> 
+<p><img src="https://images2.imgbox.com/72/8a/KxKon4Tf_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * MQClientAPIImpl的方法
+ * &lt;p&gt;
+ * 异步发送消息的方法，包含重试的逻辑
+ *
+ * @param retryTimesWhenSendFailed 异步发送失败重试次数
+ * @param times                    重试计数器
+ */</span>
+<span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">sendMessageAsync</span><span class="token punctuation">(</span>
+        <span class="token keyword">final</span> <span class="token class-name">String</span> addr<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">String</span> brokerName<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">Message</span> msg<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token keyword">long</span> timeoutMillis<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">RemotingCommand</span> request<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">SendCallback</span> sendCallback<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">TopicPublishInfo</span> topicPublishInfo<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">MQClientInstance</span> instance<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token keyword">int</span> retryTimesWhenSendFailed<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">AtomicInteger</span> times<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">SendMessageContext</span> context<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">DefaultMQProducerImpl</span> producer
+<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">InterruptedException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingException</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//起始时间</span>
+    <span class="token keyword">final</span> <span class="token keyword">long</span> beginStartTime <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">/*
+         * 发送异步消息，设置一个InvokeCallback回调对象
+         *
+         * InvokeCallback#operationComplete方法将会在得到结果之后进行回调
+         */</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>remotingClient<span class="token punctuation">.</span><span class="token function">invokeAsync</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> request<span class="token punctuation">,</span> timeoutMillis<span class="token punctuation">,</span> <span class="token keyword">new</span> <span class="token class-name">InvokeCallback</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">/**
+             * 异步执行的回调方法
+             */</span>
+            <span class="token annotation punctuation">@Override</span>
+            <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">operationComplete</span><span class="token punctuation">(</span><span class="token class-name">ResponseFuture</span> responseFuture<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">//花费的时间</span>
+                <span class="token keyword">long</span> cost <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> beginStartTime<span class="token punctuation">;</span>
+                <span class="token class-name">RemotingCommand</span> response <span class="token operator">=</span> responseFuture<span class="token punctuation">.</span><span class="token function">getResponseCommand</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token comment">//如果没有设置回调函数</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">null</span> <span class="token operator">==</span> sendCallback <span class="token operator">&amp;&amp;</span> response <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+                    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token comment">//调用processSendResponse方法处理响应结果</span>
+                        <span class="token class-name">SendResult</span> sendResult <span class="token operator">=</span> <span class="token class-name">MQClientAPIImpl</span><span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">processSendResponse</span><span class="token punctuation">(</span>brokerName<span class="token punctuation">,</span> msg<span class="token punctuation">,</span> response<span class="token punctuation">,</span> addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span>context <span class="token operator">!=</span> <span class="token keyword">null</span> <span class="token operator">&amp;&amp;</span> sendResult <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            context<span class="token punctuation">.</span><span class="token function">setSendResult</span><span class="token punctuation">(</span>sendResult<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            context<span class="token punctuation">.</span><span class="token function">getProducer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">executeSendMessageHookAfter</span><span class="token punctuation">(</span>context<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token punctuation">}</span>
+                    <span class="token comment">//更新本地错误表缓存数据，用于延迟时间的故障转移的功能</span>
+                    producer<span class="token punctuation">.</span><span class="token function">updateFaultItem</span><span class="token punctuation">(</span>brokerName<span class="token punctuation">,</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> responseFuture<span class="token punctuation">.</span><span class="token function">getBeginTimestamp</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">return</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                <span class="token comment">//如果存在响应结果</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>response <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token comment">//调用processSendResponse方法处理响应结果</span>
+                        <span class="token class-name">SendResult</span> sendResult <span class="token operator">=</span> <span class="token class-name">MQClientAPIImpl</span><span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">processSendResponse</span><span class="token punctuation">(</span>brokerName<span class="token punctuation">,</span> msg<span class="token punctuation">,</span> response<span class="token punctuation">,</span> addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">assert</span> sendResult <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span>context <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            context<span class="token punctuation">.</span><span class="token function">setSendResult</span><span class="token punctuation">(</span>sendResult<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token comment">//执行消息发送之后的钩子函数，即SendMessageHook#sendMessageAfter方法</span>
+                            context<span class="token punctuation">.</span><span class="token function">getProducer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">executeSendMessageHookAfter</span><span class="token punctuation">(</span>context<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+
+                        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token comment">//响应成功时调用，执行sendCallback的onSuccess方法</span>
+                            <span class="token comment">//这里的sendCallback就是发送消息时传入的回调函数</span>
+                            sendCallback<span class="token punctuation">.</span><span class="token function">onSuccess</span><span class="token punctuation">(</span>sendResult<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token punctuation">}</span>
+                        <span class="token comment">//更新本地错误表缓存数据，用于延迟时间的故障转移的功能</span>
+                        producer<span class="token punctuation">.</span><span class="token function">updateFaultItem</span><span class="token punctuation">(</span>brokerName<span class="token punctuation">,</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> responseFuture<span class="token punctuation">.</span><span class="token function">getBeginTimestamp</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        producer<span class="token punctuation">.</span><span class="token function">updateFaultItem</span><span class="token punctuation">(</span>brokerName<span class="token punctuation">,</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> responseFuture<span class="token punctuation">.</span><span class="token function">getBeginTimestamp</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token comment">//异常处理，不需要重试</span>
+                        <span class="token function">onExceptionImpl</span><span class="token punctuation">(</span>brokerName<span class="token punctuation">,</span> msg<span class="token punctuation">,</span> timeoutMillis <span class="token operator">-</span> cost<span class="token punctuation">,</span> request<span class="token punctuation">,</span> sendCallback<span class="token punctuation">,</span> topicPublishInfo<span class="token punctuation">,</span> instance<span class="token punctuation">,</span>
+                                retryTimesWhenSendFailed<span class="token punctuation">,</span> times<span class="token punctuation">,</span> e<span class="token punctuation">,</span> context<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">,</span> producer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token comment">//更新本地错误表缓存数据，用于延迟时间的故障转移的功能</span>
+                    producer<span class="token punctuation">.</span><span class="token function">updateFaultItem</span><span class="token punctuation">(</span>brokerName<span class="token punctuation">,</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> responseFuture<span class="token punctuation">.</span><span class="token function">getBeginTimestamp</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token comment">//异常处理，需要重试</span>
+                    <span class="token comment">//发送失败</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>responseFuture<span class="token punctuation">.</span><span class="token function">isSendRequestOK</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token class-name">MQClientException</span> ex <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">MQClientException</span><span class="token punctuation">(</span><span class="token string">"send request failed"</span><span class="token punctuation">,</span> responseFuture<span class="token punctuation">.</span><span class="token function">getCause</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token function">onExceptionImpl</span><span class="token punctuation">(</span>brokerName<span class="token punctuation">,</span> msg<span class="token punctuation">,</span> timeoutMillis <span class="token operator">-</span> cost<span class="token punctuation">,</span> request<span class="token punctuation">,</span> sendCallback<span class="token punctuation">,</span> topicPublishInfo<span class="token punctuation">,</span> instance<span class="token punctuation">,</span>
+                                retryTimesWhenSendFailed<span class="token punctuation">,</span> times<span class="token punctuation">,</span> ex<span class="token punctuation">,</span> context<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">,</span> producer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>responseFuture<span class="token punctuation">.</span><span class="token function">isTimeout</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token comment">//超时</span>
+                        <span class="token class-name">MQClientException</span> ex <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">MQClientException</span><span class="token punctuation">(</span><span class="token string">"wait response timeout "</span> <span class="token operator">+</span> responseFuture<span class="token punctuation">.</span><span class="token function">getTimeoutMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">"ms"</span><span class="token punctuation">,</span>
+                                responseFuture<span class="token punctuation">.</span><span class="token function">getCause</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token function">onExceptionImpl</span><span class="token punctuation">(</span>brokerName<span class="token punctuation">,</span> msg<span class="token punctuation">,</span> timeoutMillis <span class="token operator">-</span> cost<span class="token punctuation">,</span> request<span class="token punctuation">,</span> sendCallback<span class="token punctuation">,</span> topicPublishInfo<span class="token punctuation">,</span> instance<span class="token punctuation">,</span>
+                                retryTimesWhenSendFailed<span class="token punctuation">,</span> times<span class="token punctuation">,</span> ex<span class="token punctuation">,</span> context<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">,</span> producer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token class-name">MQClientException</span> ex <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">MQClientException</span><span class="token punctuation">(</span><span class="token string">"unknow reseaon"</span><span class="token punctuation">,</span> responseFuture<span class="token punctuation">.</span><span class="token function">getCause</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token function">onExceptionImpl</span><span class="token punctuation">(</span>brokerName<span class="token punctuation">,</span> msg<span class="token punctuation">,</span> timeoutMillis <span class="token operator">-</span> cost<span class="token punctuation">,</span> request<span class="token punctuation">,</span> sendCallback<span class="token punctuation">,</span> topicPublishInfo<span class="token punctuation">,</span> instance<span class="token punctuation">,</span>
+                                retryTimesWhenSendFailed<span class="token punctuation">,</span> times<span class="token punctuation">,</span> ex<span class="token punctuation">,</span> context<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">,</span> producer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> ex<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">long</span> cost <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> beginStartTime<span class="token punctuation">;</span>
+        <span class="token comment">//更新本地错误表缓存数据，用于延迟时间的故障转移的功能</span>
+        producer<span class="token punctuation">.</span><span class="token function">updateFaultItem</span><span class="token punctuation">(</span>brokerName<span class="token punctuation">,</span> cost<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//异常处理</span>
+        <span class="token function">onExceptionImpl</span><span class="token punctuation">(</span>brokerName<span class="token punctuation">,</span> msg<span class="token punctuation">,</span> timeoutMillis <span class="token operator">-</span> cost<span class="token punctuation">,</span> request<span class="token punctuation">,</span> sendCallback<span class="token punctuation">,</span> topicPublishInfo<span class="token punctuation">,</span> instance<span class="token punctuation">,</span>
+                retryTimesWhenSendFailed<span class="token punctuation">,</span> times<span class="token punctuation">,</span> ex<span class="token punctuation">,</span> context<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">,</span> producer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="41_invokeAsync_601"></a>4.1 invokeAsync异步调用</h5> 
+<ul><li>执行异步调用, 先获取或创建生产者与broker的通道, 然后发送消息前调用rpcHook钩子函数, 最后通过调用invokeAsyncImpl方法发起异步调用。</li></ul> 
+<p><img src="https://images2.imgbox.com/38/84/AUYZqlPL_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * NettyRemotingClient的方法
+ * 异步发送消息
+ */</span>
+<span class="token annotation punctuation">@Override</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">invokeAsync</span><span class="token punctuation">(</span><span class="token class-name">String</span> addr<span class="token punctuation">,</span> <span class="token class-name">RemotingCommand</span> request<span class="token punctuation">,</span> <span class="token keyword">long</span> timeoutMillis<span class="token punctuation">,</span> <span class="token class-name">InvokeCallback</span> invokeCallback<span class="token punctuation">)</span>
+        <span class="token keyword">throws</span> <span class="token class-name">InterruptedException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingConnectException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingTooMuchRequestException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingTimeoutException</span><span class="token punctuation">,</span>
+        <span class="token class-name">RemotingSendRequestException</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//开始时间</span>
+    <span class="token keyword">long</span> beginStartTime <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//获取或创建一个与broker的连接</span>
+    <span class="token keyword">final</span> <span class="token class-name">Channel</span> channel <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getAndCreateChannel</span><span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>channel <span class="token operator">!=</span> <span class="token keyword">null</span> <span class="token operator">&amp;&amp;</span> channel<span class="token punctuation">.</span><span class="token function">isActive</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//执行rpc钩子的doBeforeRequest方法</span>
+            <span class="token function">doBeforeRpcHooks</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> request<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//如果超时，则直接抛出异常，不再执行</span>
+            <span class="token keyword">long</span> costTime <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> beginStartTime<span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>timeoutMillis <span class="token operator">&lt;</span> costTime<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingTooMuchRequestException</span><span class="token punctuation">(</span><span class="token string">"invokeAsync call the addr["</span> <span class="token operator">+</span> addr <span class="token operator">+</span> <span class="token string">"] timeout"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token comment">//执行异步远程调用</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">invokeAsyncImpl</span><span class="token punctuation">(</span>channel<span class="token punctuation">,</span> request<span class="token punctuation">,</span> timeoutMillis <span class="token operator">-</span> costTime<span class="token punctuation">,</span> invokeCallback<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">RemotingSendRequestException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"invokeAsync: send request exception, so close the channel[{}]"</span><span class="token punctuation">,</span> addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">closeChannel</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> channel<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">throw</span> e<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">closeChannel</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> channel<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingConnectException</span><span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h6><a id="411_invokeAsyncImpl_645"></a>4.1.1 invokeAsyncImpl异步调用实现</h6> 
+<ul><li>invokeAsyncImpl方法发起异步调用, 也是基于Semaphore信号量尝试获取异步发送的资源, 通过信号量控制单向消息并发发送的消息数, 从而保护系统内存占用。客户端单向发送的Semaphore信号量默认为65535, 即单向发送的消息最大并发为65535。</li><li>获取信号量资源后, 构建SemaphoreReleaseOnlyOnce对象, 保证信号量本次只释放一次, 防止并发操作引起的线程安全问题, 通过channel发送请求。</li><li>然后创建一个ResponseFuture, 设置超时时间, 回调函数。将本次请求的id和response存入responseTable缓存中。</li><li>随后执行调用, 添加一个ChannelFutureListener, 消息发送完毕会进行回调。</li><li>如果发送成功了, InvokeCallback#operationComplete回调执行, 在processResponseCommand方法中会将执行InvokeCallback#operationComplete回调。</li></ul> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * NettyRemotingAbstract的方法
+ * &lt;p&gt;
+ * 异步调用实现
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">invokeAsyncImpl</span><span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token class-name">Channel</span> channel<span class="token punctuation">,</span> <span class="token keyword">final</span> <span class="token class-name">RemotingCommand</span> request<span class="token punctuation">,</span> <span class="token keyword">final</span> <span class="token keyword">long</span> timeoutMillis<span class="token punctuation">,</span>
+                            <span class="token keyword">final</span> <span class="token class-name">InvokeCallback</span> invokeCallback<span class="token punctuation">)</span>
+        <span class="token keyword">throws</span> <span class="token class-name">InterruptedException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingTooMuchRequestException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingTimeoutException</span><span class="token punctuation">,</span> <span class="token class-name">RemotingSendRequestException</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//起始时间</span>
+    <span class="token keyword">long</span> beginStartTime <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//获取请求id，通过id可以获取请求结果</span>
+    <span class="token keyword">final</span> <span class="token keyword">int</span> opaque <span class="token operator">=</span> request<span class="token punctuation">.</span><span class="token function">getOpaque</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//基于Semaphore信号量尝试获取异步发送的资源，通过信号量控制异步消息并发发送的消息数，从而保护系统内存占用。</span>
+    <span class="token comment">//客户端异步发送的Semaphore信号量默认为65535，可通过配置"com.rocketmq.remoting.clientOnewaySemaphoreValue"系统变量更改</span>
+    <span class="token keyword">boolean</span> acquired <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>semaphoreAsync<span class="token punctuation">.</span><span class="token function">tryAcquire</span><span class="token punctuation">(</span>timeoutMillis<span class="token punctuation">,</span> <span class="token class-name">TimeUnit</span><span class="token punctuation">.</span>MILLISECONDS<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//如果获取到了信号量资源</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>acquired<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//构建SemaphoreReleaseOnlyOnce对象，保证信号量本次只被释放一次，防止并发操作引起线程安全问题</span>
+        <span class="token keyword">final</span> <span class="token class-name">SemaphoreReleaseOnlyOnce</span> once <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">SemaphoreReleaseOnlyOnce</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>semaphoreAsync<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//如果超时，则不发送</span>
+        <span class="token keyword">long</span> costTime <span class="token operator">=</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> beginStartTime<span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>timeoutMillis <span class="token operator">&lt;</span> costTime<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            once<span class="token punctuation">.</span><span class="token function">release</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingTimeoutException</span><span class="token punctuation">(</span><span class="token string">"invokeAsyncImpl call timeout"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">//创建一个Future的map成员ResponseFuture，设置超时时间、回调函数</span>
+        <span class="token keyword">final</span> <span class="token class-name">ResponseFuture</span> responseFuture <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ResponseFuture</span><span class="token punctuation">(</span>channel<span class="token punctuation">,</span> opaque<span class="token punctuation">,</span> timeoutMillis <span class="token operator">-</span> costTime<span class="token punctuation">,</span> invokeCallback<span class="token punctuation">,</span> once<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//将请求id和responseFuture存入responseTable缓存中</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>responseTable<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span>opaque<span class="token punctuation">,</span> responseFuture<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//发送请求，添加一个ChannelFutureListener，消息发送完毕会进行回调</span>
+            channel<span class="token punctuation">.</span><span class="token function">writeAndFlush</span><span class="token punctuation">(</span>request<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">addListener</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">ChannelFutureListener</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token annotation punctuation">@Override</span>
+                <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">operationComplete</span><span class="token punctuation">(</span><span class="token class-name">ChannelFuture</span> f<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token comment">//如果消息发送成功，那么设置responseFuture发送成功并返回</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>f<span class="token punctuation">.</span><span class="token function">isSuccess</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        responseFuture<span class="token punctuation">.</span><span class="token function">setSendRequestOK</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">return</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                    <span class="token comment">/*
+                     * 如果发送失败，则移除缓存、设置false、并且执行InvokeCallback#operationComplete回调
+                     */</span>
+                    <span class="token function">requestFail</span><span class="token punctuation">(</span>opaque<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"send a request command to channel &lt;{}&gt; failed."</span><span class="token punctuation">,</span> <span class="token class-name">RemotingHelper</span><span class="token punctuation">.</span><span class="token function">parseChannelRemoteAddr</span><span class="token punctuation">(</span>channel<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//释放信号量</span>
+            responseFuture<span class="token punctuation">.</span><span class="token function">release</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"send a request command to channel &lt;"</span> <span class="token operator">+</span> <span class="token class-name">RemotingHelper</span><span class="token punctuation">.</span><span class="token function">parseChannelRemoteAddr</span><span class="token punctuation">(</span>channel<span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">"&gt; Exception"</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingSendRequestException</span><span class="token punctuation">(</span><span class="token class-name">RemotingHelper</span><span class="token punctuation">.</span><span class="token function">parseChannelRemoteAddr</span><span class="token punctuation">(</span>channel<span class="token punctuation">)</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//如果没有获取到信号量资源，那么直接抛出异常即可，并且不再发送</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>timeoutMillis <span class="token operator">&lt;=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingTooMuchRequestException</span><span class="token punctuation">(</span><span class="token string">"invokeAsyncImpl invoke too fast"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">String</span> info <span class="token operator">=</span>
+                    <span class="token class-name">String</span><span class="token punctuation">.</span><span class="token function">format</span><span class="token punctuation">(</span><span class="token string">"invokeAsyncImpl tryAcquire semaphore timeout, %dms, waiting thread nums: %d semaphoreAsyncValue: %d"</span><span class="token punctuation">,</span>
+                            timeoutMillis<span class="token punctuation">,</span>
+                            <span class="token keyword">this</span><span class="token punctuation">.</span>semaphoreAsync<span class="token punctuation">.</span><span class="token function">getQueueLength</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                            <span class="token keyword">this</span><span class="token punctuation">.</span>semaphoreAsync<span class="token punctuation">.</span><span class="token function">availablePermits</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                    <span class="token punctuation">)</span><span class="token punctuation">;</span>
+            log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span>info<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingTimeoutException</span><span class="token punctuation">(</span>info<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="42_onExceptionImpl_724"></a>4.2 onExceptionImpl异常处理</h5> 
+<ul><li> <p>异步调用如果发生了异常, 比如broker返回了错误的响应, 或者没有获得响应, 会执行onExceptionImpl异常处理。</p> </li><li> <p>所谓的重试实际上就是重复的调用sendMessageAsync方法, 首先会判断本次重试的次数是否大于重试总次数, 参数为retryTimesWhenSendFailed, 默认为2, 如果超过了最大重试次数, 则不会重试, 而是执行sendCallback#onException方法。</p> </li></ul> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * MQClientAPIImpl的方法
+ * &lt;p&gt;
+ * 异步发送消息的异常处理的方法，包含重试的逻辑
+ *
+ * @param e          抛出的异常
+ * @param timesTotal 异步发送失败重试次数
+ * @param curTimes   重试计数器
+ * @param needRetry  是否需要重试
+ */</span>
+<span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">onExceptionImpl</span><span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token class-name">String</span> brokerName<span class="token punctuation">,</span>
+                             <span class="token keyword">final</span> <span class="token class-name">Message</span> msg<span class="token punctuation">,</span>
+                             <span class="token keyword">final</span> <span class="token keyword">long</span> timeoutMillis<span class="token punctuation">,</span>
+                             <span class="token keyword">final</span> <span class="token class-name">RemotingCommand</span> request<span class="token punctuation">,</span>
+                             <span class="token keyword">final</span> <span class="token class-name">SendCallback</span> sendCallback<span class="token punctuation">,</span>
+                             <span class="token keyword">final</span> <span class="token class-name">TopicPublishInfo</span> topicPublishInfo<span class="token punctuation">,</span>
+                             <span class="token keyword">final</span> <span class="token class-name">MQClientInstance</span> instance<span class="token punctuation">,</span>
+                             <span class="token keyword">final</span> <span class="token keyword">int</span> timesTotal<span class="token punctuation">,</span>
+                             <span class="token keyword">final</span> <span class="token class-name">AtomicInteger</span> curTimes<span class="token punctuation">,</span>
+                             <span class="token keyword">final</span> <span class="token class-name">Exception</span> e<span class="token punctuation">,</span>
+                             <span class="token keyword">final</span> <span class="token class-name">SendMessageContext</span> context<span class="token punctuation">,</span>
+                             <span class="token keyword">final</span> <span class="token keyword">boolean</span> needRetry<span class="token punctuation">,</span>
+                             <span class="token keyword">final</span> <span class="token class-name">DefaultMQProducerImpl</span> producer
+<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//重试次数加1并获取</span>
+    <span class="token keyword">int</span> tmp <span class="token operator">=</span> curTimes<span class="token punctuation">.</span><span class="token function">incrementAndGet</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">/*
+     * 如果需要重试，并且本次重试次数小于等于总次数
+     */</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>needRetry <span class="token operator">&amp;&amp;</span> tmp <span class="token operator">&lt;=</span> timesTotal<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//保存brokerName，异步重试将会发送到相同的broker</span>
+        <span class="token class-name">String</span> retryBrokerName <span class="token operator">=</span> brokerName<span class="token punctuation">;</span><span class="token comment">//by default, it will send to the same broker</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>topicPublishInfo <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">//select one message queue accordingly, in order to determine which broker to send</span>
+            <span class="token comment">//选择一个消息队列</span>
+            <span class="token class-name">MessageQueue</span> mqChosen <span class="token operator">=</span> producer<span class="token punctuation">.</span><span class="token function">selectOneMessageQueue</span><span class="token punctuation">(</span>topicPublishInfo<span class="token punctuation">,</span> brokerName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            retryBrokerName <span class="token operator">=</span> mqChosen<span class="token punctuation">.</span><span class="token function">getBrokerName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token class-name">String</span> addr <span class="token operator">=</span> instance<span class="token punctuation">.</span><span class="token function">findBrokerAddressInPublish</span><span class="token punctuation">(</span>retryBrokerName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">.</span><span class="token function">format</span><span class="token punctuation">(</span><span class="token string">"async send msg by retry {} times. topic={}, brokerAddr={}, brokerName={}"</span><span class="token punctuation">,</span> tmp<span class="token punctuation">,</span> msg<span class="token punctuation">.</span><span class="token function">getTopic</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> addr<span class="token punctuation">,</span>
+                retryBrokerName<span class="token punctuation">)</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//设置请求id，通过id可以获取请求结果</span>
+            request<span class="token punctuation">.</span><span class="token function">setOpaque</span><span class="token punctuation">(</span><span class="token class-name">RemotingCommand</span><span class="token punctuation">.</span><span class="token function">createNewRequestId</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//调用sendMessageAsync再次发送异步消息</span>
+            <span class="token function">sendMessageAsync</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> retryBrokerName<span class="token punctuation">,</span> msg<span class="token punctuation">,</span> timeoutMillis<span class="token punctuation">,</span> request<span class="token punctuation">,</span> sendCallback<span class="token punctuation">,</span> topicPublishInfo<span class="token punctuation">,</span> instance<span class="token punctuation">,</span>
+                    timesTotal<span class="token punctuation">,</span> curTimes<span class="token punctuation">,</span> context<span class="token punctuation">,</span> producer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">InterruptedException</span> e1<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//不再重试，设置异常</span>
+            <span class="token function">onExceptionImpl</span><span class="token punctuation">(</span>retryBrokerName<span class="token punctuation">,</span> msg<span class="token punctuation">,</span> timeoutMillis<span class="token punctuation">,</span> request<span class="token punctuation">,</span> sendCallback<span class="token punctuation">,</span> topicPublishInfo<span class="token punctuation">,</span> instance<span class="token punctuation">,</span> timesTotal<span class="token punctuation">,</span> curTimes<span class="token punctuation">,</span> e1<span class="token punctuation">,</span>
+                    context<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">,</span> producer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">RemotingTooMuchRequestException</span> e1<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//不再重试，设置异常</span>
+            <span class="token function">onExceptionImpl</span><span class="token punctuation">(</span>retryBrokerName<span class="token punctuation">,</span> msg<span class="token punctuation">,</span> timeoutMillis<span class="token punctuation">,</span> request<span class="token punctuation">,</span> sendCallback<span class="token punctuation">,</span> topicPublishInfo<span class="token punctuation">,</span> instance<span class="token punctuation">,</span> timesTotal<span class="token punctuation">,</span> curTimes<span class="token punctuation">,</span> e1<span class="token punctuation">,</span>
+                    context<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">,</span> producer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">RemotingException</span> e1<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//更新异常表</span>
+            producer<span class="token punctuation">.</span><span class="token function">updateFaultItem</span><span class="token punctuation">(</span>brokerName<span class="token punctuation">,</span> <span class="token number">3000</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//继续重试</span>
+            <span class="token function">onExceptionImpl</span><span class="token punctuation">(</span>retryBrokerName<span class="token punctuation">,</span> msg<span class="token punctuation">,</span> timeoutMillis<span class="token punctuation">,</span> request<span class="token punctuation">,</span> sendCallback<span class="token punctuation">,</span> topicPublishInfo<span class="token punctuation">,</span> instance<span class="token punctuation">,</span> timesTotal<span class="token punctuation">,</span> curTimes<span class="token punctuation">,</span> e1<span class="token punctuation">,</span>
+                    context<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">,</span> producer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//如果本次重试次数大于总次数</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>context <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            context<span class="token punctuation">.</span><span class="token function">setException</span><span class="token punctuation">(</span>e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            context<span class="token punctuation">.</span><span class="token function">getProducer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">executeSendMessageHookAfter</span><span class="token punctuation">(</span>context<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//最后执行sendCallback的onException方法</span>
+            sendCallback<span class="token punctuation">.</span><span class="token function">onException</span><span class="token punctuation">(</span>e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> ignored<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="5NettyClientHandler_810"></a>5.NettyClientHandler处理服务端消息</h4> 
+<ul><li>RocketMQ启动时候, 在MQClientInstance的start方法中, 创建了一个netty客户端, 然后添加了处理器NettyClientHandler。</li><li>NettyClientHandler用于处理RemotingCommand消息, 即来处理自服务端的请求消息, 或者是客户端发出去的请求消息后, 服务返回的响应结果。</li></ul> 
+<p><img src="https://images2.imgbox.com/e7/34/f3Xk8NxN_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * NettyRemotingClient的内部类
+ * &lt;p&gt;
+ * 处理来自服务端的RemotingCommand消息
+ */</span>
+<span class="token keyword">class</span> <span class="token class-name">NettyClientHandler</span> <span class="token keyword">extends</span> <span class="token class-name">SimpleChannelInboundHandler</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">RemotingCommand</span><span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token comment">/**
+     * 处理来自服务端的RemotingCommand消息
+     */</span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">protected</span> <span class="token keyword">void</span> <span class="token function">channelRead0</span><span class="token punctuation">(</span><span class="token class-name">ChannelHandlerContext</span> ctx<span class="token punctuation">,</span> <span class="token class-name">RemotingCommand</span> msg<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">processMessageReceived</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>NettyClientHandler通过processMessageReceived方法处理RemotingCommand消息。</p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * NettyRemotingAbstract的方法
+ * &lt;p&gt;
+ * 处理RemotingCommand命令消息，传入的远程处理命令可能是：
+ * 1、来自远程对等组件的查询请求
+ * 2、对该参与者之前发出的请求的响应
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">processMessageReceived</span><span class="token punctuation">(</span><span class="token class-name">ChannelHandlerContext</span> ctx<span class="token punctuation">,</span> <span class="token class-name">RemotingCommand</span> msg<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">final</span> <span class="token class-name">RemotingCommand</span> cmd <span class="token operator">=</span> msg<span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>cmd <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">switch</span> <span class="token punctuation">(</span>cmd<span class="token punctuation">.</span><span class="token function">getType</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//处理来源服务端的请求request</span>
+            <span class="token keyword">case</span> REQUEST_COMMAND<span class="token operator">:</span>
+                <span class="token function">processRequestCommand</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> cmd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">break</span><span class="token punctuation">;</span>
+            <span class="token comment">//处理来源服务端的响应response</span>
+            <span class="token keyword">case</span> RESPONSE_COMMAND<span class="token operator">:</span>
+                <span class="token comment">//客户端发送消息之后服务端的响应会被processResponseCommand方法处理</span>
+                <span class="token function">processResponseCommand</span><span class="token punctuation">(</span>ctx<span class="token punctuation">,</span> cmd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">break</span><span class="token punctuation">;</span>
+            <span class="token keyword">default</span><span class="token operator">:</span>
+                <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>客户端发送消息之后服务端的响应会被processResponseCommand方法处理。</p> 
+<p><img src="https://images2.imgbox.com/93/40/3jgIhcDM_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="51_processResponseCommand_869"></a>5.1 processResponseCommand处理响应</h5> 
+<ol><li>根据请求id找到之前放到responseTable的ResponseFuture, 从responseTable移除ResponseFuture缓存。</li><li>判断如果存在回调函数, 则异步请求, 那么调用executeInvokeCallback方法, 这个方法会执行回调函数的方法。</li><li>如果没有回调函数, 则调用putResponse方法。该方法将响应数据设置到responseCommand, 然后调用countDownLatch.countDown, 计数器减一, 唤醒等待的线程。<br> <img src="https://images2.imgbox.com/0a/4d/WMod1M1K_o.png" alt="在这里插入图片描述"></li></ol> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * NettyRemotingAbstract的方法
+ * &lt;p&gt;
+ * 客户端发送消息之后服务端的响应会被processResponseCommand方法处理
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">processResponseCommand</span><span class="token punctuation">(</span><span class="token class-name">ChannelHandlerContext</span> ctx<span class="token punctuation">,</span> <span class="token class-name">RemotingCommand</span> cmd<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//获取请求id，通过id可以获取请求结果</span>
+    <span class="token keyword">final</span> <span class="token keyword">int</span> opaque <span class="token operator">=</span> cmd<span class="token punctuation">.</span><span class="token function">getOpaque</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//根据请求标识找到之前放到responseTable的ResponseFuture</span>
+    <span class="token keyword">final</span> <span class="token class-name">ResponseFuture</span> responseFuture <span class="token operator">=</span> responseTable<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>opaque<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>responseFuture <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        responseFuture<span class="token punctuation">.</span><span class="token function">setResponseCommand</span><span class="token punctuation">(</span>cmd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//从responseTable中移除该响应</span>
+        responseTable<span class="token punctuation">.</span><span class="token function">remove</span><span class="token punctuation">(</span>opaque<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>responseFuture<span class="token punctuation">.</span><span class="token function">getInvokeCallback</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//如果存在回调函数，即异步请求</span>
+            <span class="token comment">//那么调用回调函数的方法</span>
+            <span class="token function">executeInvokeCallback</span><span class="token punctuation">(</span>responseFuture<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//如果时同步请求，则调用putResponse方法</span>
+            <span class="token comment">//该方法将响应数据设置到responseCommand，然后调用countDownLatch.countDown，即倒计数减去1，唤醒等待的线程</span>
+            responseFuture<span class="token punctuation">.</span><span class="token function">putResponse</span><span class="token punctuation">(</span>cmd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            responseFuture<span class="token punctuation">.</span><span class="token function">release</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"receive response, but not matched any request, "</span> <span class="token operator">+</span> <span class="token class-name">RemotingHelper</span><span class="token punctuation">.</span><span class="token function">parseChannelRemoteAddr</span><span class="token punctuation">(</span>ctx<span class="token punctuation">.</span><span class="token function">channel</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span>cmd<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h6><a id="511_executeInvokeCallback_910"></a>5.1.1 executeInvokeCallback执行回调函数</h6> 
+<ul><li>该方法尝试在回调执行器中执行回调操作, 如果回调执行器为null, 则在当前线程中执行调用。</li></ul> 
+<p><img src="https://images2.imgbox.com/52/08/8xHNDb9M_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * NettyRemotingAbstract的方法
+ * &lt;p&gt;
+ * 在回调执行器中执行回调操作，如果回调执行器为null，则在当前线程中执行回调
+ */</span>
+<span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">executeInvokeCallback</span><span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token class-name">ResponseFuture</span> responseFuture<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">boolean</span> runInThisThread <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+    <span class="token comment">//获取回调执行器，如果没有设置回调执行器callbackExecutor（默认没有），那么使用publicExecutor</span>
+    <span class="token class-name">ExecutorService</span> executor <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getCallbackExecutor</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>executor <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            executor<span class="token punctuation">.</span><span class="token function">submit</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Runnable</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token annotation punctuation">@Override</span>
+                <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token comment">//通过线程池异步的执行回调操作</span>
+                        responseFuture<span class="token punctuation">.</span><span class="token function">executeInvokeCallback</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"execute callback in executor exception, and callback throw"</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">finally</span> <span class="token punctuation">{<!-- --></span>
+                        responseFuture<span class="token punctuation">.</span><span class="token function">release</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            runInThisThread <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+            log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"execute callback in executor exception, maybe executor busy"</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        runInThisThread <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">//在本线程中执行回调操作</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>runInThisThread<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            responseFuture<span class="token punctuation">.</span><span class="token function">executeInvokeCallback</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"executeInvokeCallback Exception"</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">finally</span> <span class="token punctuation">{<!-- --></span>
+            responseFuture<span class="token punctuation">.</span><span class="token function">release</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/c5/f5/Qon5ITNp_o.png" alt="在这里插入图片描述"></p> 
+<p>该方法将会调用invokeCallback.operationComplete回调方法。</p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * ResponseFuture的方法
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">executeInvokeCallback</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>invokeCallback <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//通过cas保证只允许一次调用</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>executeCallbackOnlyOnce<span class="token punctuation">.</span><span class="token function">compareAndSet</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//执行回调器的回调方法operationComplete</span>
+            invokeCallback<span class="token punctuation">.</span><span class="token function">operationComplete</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h6><a id="512_putResponse_977"></a>5.1.2 putResponse存入响应</h6> 
+<ul><li>在同步请求的时候被调用。该方法将响应数据设置到responseCommand, 然后调用countDownLatch.countDown, 计数器减一, 唤醒等待的线程。</li></ul> 
+<p><img src="https://images2.imgbox.com/7e/bf/n9wm9MAb_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/3a/b4/aMH9WJ5K_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * ResponseFuture的方法
+ * &lt;p&gt;
+ * 存入响应结果并且唤醒等待的线程
+ *
+ * @param responseCommand 响应结果
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">putResponse</span><span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token class-name">RemotingCommand</span> responseCommand<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//存入结果</span>
+    <span class="token keyword">this</span><span class="token punctuation">.</span>responseCommand <span class="token operator">=</span> responseCommand<span class="token punctuation">;</span>
+    <span class="token comment">//倒计数减去1，唤醒等待的线程</span>
+    <span class="token keyword">this</span><span class="token punctuation">.</span>countDownLatch<span class="token punctuation">.</span><span class="token function">countDown</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="6_1003"></a>6.总结</h4> 
+<p>发送消息的内部代码:</p> 
+<ol><li>根据不同模式去发送消息: 单向发送模式调用RemotingClient#invokeOneway方法, 异步调用MQClientAPIImpl#sendMessageAsync方法, 同步调用MQClientAPIImpl#sendMessageSync方法。异步和同步模式发送方法的调用前还会再检查是否超时, 超时则不会发送消息。</li><li>同步发送模式内部采用CountDownLatch工具实现线程的阻塞和唤醒。当发送了同步消息之后, 当前线程阻塞, 当服务端响应返回之后, 调用CountDownLatch减少计时器唤醒阻塞的线程。</li><li>同步发送和异步发送模式都会有消息重试。RemotingException, MQClientException, 以及部分MQBrokerException异常时, 默认重试2次,。如果是超时异常或者InterruptedException异常, 不会重试。</li></ol>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/5d3067de50a82bc686b9cb5a05f3b015/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【Linux】在Ubuntu下部署nginx——nginx的负载均衡</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/467533616cad66773f00fc00217f016f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Flask框架（一）——vs code中创建Flask项目</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

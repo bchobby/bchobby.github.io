@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Innodb执行insert造成死锁的问题 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Innodb执行insert造成死锁的问题" />
+<meta property="og:description" content="背景 起因是线上报了一个错误信息，Deadlock found when trying to get lock; try restarting transaction，这是Mysql检测到死锁后，自动回滚了事务引发的异常。spring框架里打印了异常堆栈，所以很快就定位到哪一行代码出了问题。
+业务的伪代码如下：
+val result = query(&#34;select * from game where user_id = xx and game_id = xx&#34;) if (result == null) { excute(&#34;Insert Into game_player(game_id,user_id) Values(?,?)&#34;) } -- table schema create table game ( id bigint, game_id bigint, user_id bigint, primary key(id), constraint unique_game_id_user_id unique (game_id, user_id) ) 看了代码逻辑，只有insert的时候会加一个行锁，死锁要有两个锁被多个线程账户等待，才会发生。就算有并发的情况，同时插入两条一样的记录，第二个事务也是处于等待锁的状态，等待锁超时后就报获取锁超时，也不会发生死锁。
+查看死锁信息 然后通过show engine innodb status命令看一下死锁的相关信息。
+------------------------ LATEST DETECTED DEADLOCK ------------------------ 2023-12-29 05:43:26 22399693092608 *** (1) TRANSACTION: TRANSACTION 3701497, ACTIVE 29 sec inserting mysql tables in use 1, locked 1 LOCK WAIT 4 lock struct(s), heap size 1128, 2 row lock(s), undo log entries 1 MySQL thread id 43921, OS thread handle 22399139387136, query id 225853288 122." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/504387f3774b9273c0aca7a98f9d90e6/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-30T23:39:21+08:00" />
+<meta property="article:modified_time" content="2023-12-30T23:39:21+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Innodb执行insert造成死锁的问题</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>背景</h2> 
+<p>起因是线上报了一个错误信息，Deadlock found when trying to get lock; try restarting transaction，这是Mysql检测到死锁后，自动回滚了事务引发的异常。spring框架里打印了异常堆栈，所以很快就定位到哪一行代码出了问题。</p> 
+<p>业务的伪代码如下：</p> 
+<pre><code>val result = query("select * from game where user_id = xx and game_id = xx")
+if (result == null) {
+	excute("Insert Into game_player(game_id,user_id) Values(?,?)")
+}
+
+-- table schema
+create table game (
+	id bigint,
+	game_id bigint,
+	user_id bigint,
+	primary key(id),
+  constraint unique_game_id_user_id unique (game_id, user_id)
+)
+</code></pre> 
+<p>看了代码逻辑，只有insert的时候会加一个行锁，死锁要有两个锁被多个线程账户等待，才会发生。就算有并发的情况，同时插入两条一样的记录，第二个事务也是处于等待锁的状态，等待锁超时后就报获取锁超时，也不会发生死锁。</p> 
+<h3>查看死锁信息</h3> 
+<p>然后通过show engine innodb status命令看一下死锁的相关信息。</p> 
+<pre><code>------------------------
+LATEST DETECTED DEADLOCK
+------------------------
+2023-12-29 05:43:26 22399693092608
+*** (1) TRANSACTION:
+TRANSACTION 3701497, ACTIVE 29 sec inserting
+mysql tables in use 1, locked 1
+LOCK WAIT 4 lock struct(s), heap size 1128, 2 row lock(s), undo log entries 1
+MySQL thread id 43921, OS thread handle 22399139387136, query id 225853288 122.225.228.122 admin update
+Insert Into game(game_id,user_id) Values(1,1)
+
+*** (1) HOLDS THE LOCK(S):
+RECORD LOCKS space id 77 page no 18 n bits 624 index unique_gameId_userId of table `demo`.`game` trx id 3701497 lock mode S locks gap before rec
+Record lock, heap no 237 PHYSICAL RECORD: n_fields 3; compact format; info bits 0
+ 0: len 8; hex 8f5b6f9141c00000; asc  [o A   ;;
+ 1: len 8; hex 8026440340000040; asc  &amp;D @  @;;
+ 2: len 8; hex 8f981c8273000000; asc     s   ;;
+
+*** (1) WAITING FOR THIS LOCK TO BE GRANTED:
+RECORD LOCKS space id 77 page no 18 n bits 624 index unique_gameId_userId of table `demo`.`game` trx id 3701497 lock_mode X locks gap before rec insert intention waiting
+Record lock, heap no 237 PHYSICAL RECORD: n_fields 3; compact format; info bits 0
+ 0: len 8; hex 8f5b6f9141c00000; asc  [o A   ;;
+ 1: len 8; hex 8026440340000040; asc  &amp;D @  @;;
+ 2: len 8; hex 8f981c8273000000; asc     s   ;;
+
+*** (2) TRANSACTION:
+TRANSACTION 3701499, ACTIVE 21 sec inserting
+mysql tables in use 1, locked 1
+LOCK WAIT 4 lock struct(s), heap size 1128, 2 row lock(s), undo log entries 1
+MySQL thread id 43945, OS thread handle 22399490520832, query id 225853305 122.225.228.122 admin update
+Insert Into game(game_id,user_id) Values(1,1)
+
+*** (2) HOLDS THE LOCK(S):
+RECORD LOCKS space id 77 page no 18 n bits 624 index unique_gameId_userId of table `demo`.`game` trx id 3701499 lock mode S locks gap before rec
+Record lock, heap no 237 PHYSICAL RECORD: n_fields 3; compact format; info bits 0
+ 0: len 8; hex 8f5b6f9141c00000; asc  [o A   ;;
+ 1: len 8; hex 8026440340000040; asc  &amp;D @  @;;
+ 2: len 8; hex 8f981c8273000000; asc     s   ;;
+
+*** (2) WAITING FOR THIS LOCK TO BE GRANTED:
+RECORD LOCKS space id 77 page no 18 n bits 624 index unique_gameId_userId of table `demo`.`game` trx id 3701499 lock_mode X locks gap before rec insert intention waiting
+Record lock, heap no 237 PHYSICAL RECORD: n_fields 3; compact format; info bits 0
+ 0: len 8; hex 8f5b6f9141c00000; asc  [o A   ;;
+ 1: len 8; hex 8026440340000040; asc  &amp;D @  @;;
+ 2: len 8; hex 8f981c8273000000; asc     s   ;;
+
+*** WE ROLL BACK TRANSACTION (2)
+</code></pre> 
+<p>从错误信息里，发现是事务3701497和3701499产生了死锁，我们简称事务1和事务2。</p> 
+<p>事务1里持有了unique_game_id_user_id这个索引上624这个位置的记录的共享间隙锁。它在等待unique_game_id_user_id索引同一个位置的插入意向锁，这是排他间隙锁的一种类型。</p> 
+<p>事务2的锁状态和事务1一样，也是获取了同个索引位置共享间隙锁，在等待这个位置的排他间隙锁，所以它们陷入了锁死。</p> 
+<h3>哪来的共享锁？</h3> 
+<p>从死锁日志描述里存在一个共享间隙锁，但代码里的查询语句：select * from game where user_id = xx and game_id = xx。没有加任何锁，也不会占用共享间隙锁。</p> 
+<p>既然问题不是出在select上，那就是在insert上了。</p> 
+<p>在Mysql官方文档里描述，insert语句插入的加锁过程是这样：</p> 
+<ol><li>插入意向间隙锁。加意向锁而不是排它间隙锁的好处是，在并发插入 时候，如果插入行没有重复就不会相互阻塞。</li><li>获得意向锁之后，如果插入行没有重复，则获得行锁，进行插入操作。</li><li>如果插入行重复了，就尝试获取一个共享的临键锁。这时，间隙锁获取成功，等待获取行的读锁。</li><li>如果上个一个事务提交，则会释放这行的行锁。当前事务就成功获得共享行锁，写入的时候提示行重复。</li><li>如果上一个事务回滚。则会释放这行的行锁。另外行不存在了，临键锁退化为间隙锁。当前事务就成功获得间隙锁，再申请插入意向锁，记录插入成功，再获得行锁。</li></ol> 
+<h3>共享锁来自并发insert</h3> 
+<p>再回到上面的死锁日志，里面描述的共享间隙锁其实是insert语句执行时，发现有重复记录，那么当前事务会尝试获得的共享锁。</p> 
+<p>完整的逻辑是这样的，有三个事务同时执行insert。事务1执行成功后获得了该记录的行锁，但是事务没提交，所以行锁没释放。事务2执行插入，发现记录冲突了，会尝试获取共享临键锁，因为事务1行锁未释放，事务2只能获取临键锁中的间隙锁，无法获得行锁。所以当前事务要排队等待获取共享行锁。事务3也是一样的逻辑。</p> 
+<p>这时，事务1没有提交，而是因为某些原因回滚了事务。接着事务2和3排队等待的共享行锁都不需要了，有之前获得的间隙锁就行。然后它们又一起去获取排它的插入意向锁，插入意向锁和间隙锁是互斥的，其他事务未释放间隙锁，当前事务就无法获得插入意向锁。这样，事务2个3的间隙锁和插入意向锁形成了死锁。</p> 
+<h2>小结</h2> 
+<p>至此，死锁的原因是找到了，因为并发原因导致同一个请求被多次触发。多个事务同时执行同样的insert，在第一个事务回滚时，导致出现死锁。</p> 
+<p>在官方文档的描述里，除了执行三个insert会有死锁，先执行delete再执行三个insert也会出现死锁。原因是一样的，第一个事务执行delete后，其他事务因为锁冲突，也会先拿到共享锁。等第一个事务回滚后，就产生死锁。</p> 
+<p>当出现死锁时，我们可以通过show engine innodb statue命令查看死锁信息。当然也可以打开全局的死锁日志，将每次死锁信息都记录下来。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8e6c9b7280ad9207b8a407a424abadb5/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【C&#43;&#43;】循环结构中的变量的生命周期</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/6324dd9d4d377ac552913d4dcf7d0b5d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【AI】注意力机制与深度学习模型</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

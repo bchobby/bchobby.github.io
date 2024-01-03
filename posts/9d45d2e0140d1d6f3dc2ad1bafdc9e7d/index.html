@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>MySQL Innodb引擎锁的分类及死锁排查 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="MySQL Innodb引擎锁的分类及死锁排查" />
+<meta property="og:description" content="​
+1、概览 在实际工作过程中遇到了数据库死锁的问题，在查阅资料的时候遇到了各种锁的概念。
+共享锁、排它锁、表级锁、行级锁、记录锁、间隙锁、临键锁、插入意向锁、自增锁等等等等，这些概念如果能够弄清楚其中区别自然最好，但理清这些概念是在是太麻烦了。而且从实际工作情况出发，理清这些概念再去解决实际的工作问题效率太低。
+所以我这里基于MySQL数据库的Innodb引擎（注意是MySQL数据库的Innodb引擎，其它引擎或数据库以下总结不完全适用，但有一定的参考价值），以及实际的工作场景，做了以下梳理：
+锁的概念进行简化以实际sql详细说明锁的产生条件常见解决死锁的方法 2、锁的分类 2.1、从产生锁的行为来划分 2.1.1、共享锁 又被称为读锁、S锁等，事务在对数据进行查询，需要先获取数据的共享锁
+2.1.2、排它锁 又被称为写锁、X锁等，事务在对数据进行修改时，需要先获取数据的排它锁
+2.1.3、注意 这里“需要先获取数据的共享锁、排它锁”不代表说操作哪条数据，就只锁哪条数据，有可能只操作一条数据，但却锁了某个数据区间、甚至是整张表。锁的范围见下方解释
+2.1.4、互斥关系 共享锁和排它锁的兼容和互斥关系想必大家都清楚，这里还是做个简单说明：
+如果一个事务给表已经加了S锁，则： 别的事务可以继续获得该表的S锁，也可以获得该表中某些记录的S锁。 别的事务不可以继续获得该表的X锁，也不可以获得该表中某些记录的X锁。 如果一个事务给表加了X锁，那么 别的事务不可以获得该表的S锁，也不可以获得该表某些记录的S锁。 别的事务不可以获得该表的X锁，也不可以继续获得该表某些记录的X锁。 2.2、从锁的范围来划分 2.2.1、表锁 即整张表的数据都被锁定了。
+产生场景 sql执行语句没有合理的构建索引;
+MySQL优化器自行进行了全表扫描
+2.2.2、行锁 即只锁定一行的数据。
+产生场景 主键索引精确查询且能查找到数据; 2.2.3、间隙锁; 即只锁定一个区间（间隙）的数据，这个产生场景最多，所以放在最后特别说明。
+产生场景 主键索引范围查询主键索引精确查询但这条数据不存在普通索引进行精确查询或者范围查询都会产生间隙锁 2.2.4、锁定的范围 既然间隙锁锁定的是一个区间，那么这个区间是如何划分的呢？
+根据检索条件向左寻找最靠近检索条件的记录值A，作为左区间，如果找不到记录值A，则左区间为无限小；
+向右寻找最靠近检索条件的记录值B，作为右区间，如果找不到记录值B，则右区间为无限大
+详细说明可以参考这里：https://blog.csdn.net/sfh2018/article/details/121016466，后续测试模拟的表格结构也参考自这里
+3、测试模拟 平常学习中可以自行建表模拟事务的执行，虽然不难，但还是在这里说明下，以Navicat为例：
+3.1、开启事务 新开一个sql执行界面运行命令，即可开启一个事务
+start transaction ; #开启事务 insert into test_gap_table value(16,5);#事务里面可以执行多条SQL语句 COMMIT#如果没有这条指令，则事务将会一直不提交，锁将一直持有，由此便可模拟多个事务进行锁的抢占 3.2、测试表结构如下 CREATE TABLE `test_gap_table` ( `id` bigint unsigned NOT NULL AUTO_INCREMENT, `number` bigint DEFAULT NULL, PRIMARY KEY (`id`), KEY `idx_number` (`number`) USING BTREE ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci; INSERT INTO test_gap_table ( id, number ) VALUE ( 1, 2 ); INSERT INTO test_gap_table ( id, number ) VALUE ( 3, 4 ); INSERT INTO test_gap_table ( id, number ) VALUE ( 6, 5 ); INSERT INTO test_gap_table ( id, number ) VALUE ( 8, 5 ); INSERT INTO test_gap_table ( id, number ) VALUE ( 10, 5 ); INSERT INTO test_gap_table ( id, number ) VALUE ( 13, 11 ); 4、死锁问题排查 4." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/9d45d2e0140d1d6f3dc2ad1bafdc9e7d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-10-14T09:04:34+08:00" />
+<meta property="article:modified_time" content="2022-10-14T09:04:34+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">MySQL Innodb引擎锁的分类及死锁排查</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>​</p> 
+<h2><a id="1_2"></a>1、概览</h2> 
+<p>  在实际工作过程中遇到了数据库死锁的问题，在查阅资料的时候遇到了各种锁的概念。<br>   共享锁、排它锁、表级锁、行级锁、记录锁、间隙锁、临键锁、插入意向锁、自增锁等等等等，这些概念如果能够弄清楚其中区别自然最好，但理清这些概念是在是太麻烦了。而且从实际工作情况出发，理清这些概念再去解决实际的工作问题效率太低。<br>   所以我这里基于MySQL数据库的Innodb引擎（注意是MySQL数据库的Innodb引擎，其它引擎或数据库以下总结不完全适用，但有一定的参考价值），以及实际的工作场景，做了以下梳理：</p> 
+<ul><li>锁的概念进行简化</li><li>以实际sql详细说明锁的产生条件</li><li>常见解决死锁的方法</li></ul> 
+<h2><a id="2_11"></a>2、锁的分类</h2> 
+<h3><a id="21_12"></a>2.1、从产生锁的行为来划分</h3> 
+<h4><a id="211_13"></a>2.1.1、共享锁</h4> 
+<p>  又被称为读锁、S锁等，事务在对数据进行查询，需要先获取数据的共享锁</p> 
+<h4><a id="212_16"></a>2.1.2、排它锁</h4> 
+<p>  又被称为写锁、X锁等，事务在对数据进行修改时，需要先获取数据的排它锁</p> 
+<h4><a id="213_19"></a>2.1.3、注意</h4> 
+<p>  这里“需要先获取数据的共享锁、排它锁”不代表说操作哪条数据，就只锁哪条数据，有可能只操作一条数据，但却锁了某个数据区间、甚至是整张表。锁的范围见下方解释</p> 
+<h4><a id="214_22"></a>2.1.4、互斥关系</h4> 
+<p>  共享锁和排它锁的兼容和互斥关系想必大家都清楚，这里还是做个简单说明：</p> 
+<pre><code>    如果一个事务给表已经加了S锁，则：
+
+            别的事务可以继续获得该表的S锁，也可以获得该表中某些记录的S锁。
+
+            别的事务不可以继续获得该表的X锁，也不可以获得该表中某些记录的X锁。
+
+    如果一个事务给表加了X锁，那么
+
+            别的事务不可以获得该表的S锁，也不可以获得该表某些记录的S锁。
+
+            别的事务不可以获得该表的X锁，也不可以继续获得该表某些记录的X锁。
+</code></pre> 
+<h3><a id="22_37"></a>2.2、从锁的范围来划分</h3> 
+<h4><a id="221_39"></a>2.2.1、表锁</h4> 
+<p>  即整张表的数据都被锁定了。</p> 
+<h5><a id="_42"></a>产生场景</h5> 
+<p>  sql执行语句没有合理的构建索引;<br>   MySQL优化器自行进行了全表扫描</p> 
+<h4><a id="222_46"></a>2.2.2、行锁</h4> 
+<p>  即只锁定一行的数据。</p> 
+<h5><a id="_50"></a>产生场景</h5> 
+<ul><li>主键索引精确查询且能查找到数据;</li></ul> 
+<h4><a id="223_54"></a>2.2.3、间隙锁;</h4> 
+<p>  即只锁定一个区间（间隙）的数据，这个产生场景最多，所以放在最后特别说明。</p> 
+<h5><a id="_57"></a>产生场景</h5> 
+<ul><li>主键索引范围查询</li><li>主键索引精确查询但这条数据不存在</li><li>普通索引进行精确查询或者范围查询都会产生间隙锁</li></ul> 
+<h4><a id="224_63"></a>2.2.4、锁定的范围</h4> 
+<p>  既然间隙锁锁定的是一个区间，那么这个区间是如何划分的呢？</p> 
+<p>  根据检索条件向左寻找最靠近检索条件的记录值A，作为左区间，如果找不到记录值A，则左区间为无限小；</p> 
+<p>  向右寻找最靠近检索条件的记录值B，作为右区间，如果找不到记录值B，则右区间为无限大</p> 
+<p>  详细说明可以参考这里：<a href="https://blog.csdn.net/sfh2018/article/details/121016466">https://blog.csdn.net/sfh2018/article/details/121016466</a>，后续测试模拟的表格结构也参考自这里</p> 
+<h2><a id="3_73"></a>3、测试模拟</h2> 
+<p>  平常学习中可以自行建表模拟事务的执行，虽然不难，但还是在这里说明下，以Navicat为例：</p> 
+<h3><a id="31_77"></a>3.1、开启事务</h3> 
+<p>  新开一个sql执行界面运行命令，即可开启一个事务</p> 
+<pre><code>start transaction ; #开启事务 
+insert into test_gap_table value(16,5);#事务里面可以执行多条SQL语句 
+
+
+COMMIT#如果没有这条指令，则事务将会一直不提交，锁将一直持有，由此便可模拟多个事务进行锁的抢占
+</code></pre> 
+<p><img src="https://images2.imgbox.com/d8/92/3uTOreg3_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="32_91"></a>3.2、测试表结构如下</h3> 
+<pre><code>CREATE TABLE `test_gap_table` ( 
+	`id` bigint unsigned NOT NULL AUTO_INCREMENT, 
+	`number` bigint DEFAULT NULL, 
+	PRIMARY KEY (`id`), 
+	KEY `idx_number` (`number`) USING BTREE 
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci; 
+
+INSERT INTO test_gap_table ( id, number ) VALUE ( 1, 2 );
+INSERT INTO test_gap_table ( id, number ) VALUE ( 3, 4 ); 
+INSERT INTO test_gap_table ( id, number ) VALUE ( 6, 5 );
+INSERT INTO test_gap_table ( id, number ) VALUE ( 8, 5 ); 
+INSERT INTO test_gap_table ( id, number ) VALUE ( 10, 5 ); 
+INSERT INTO test_gap_table ( id, number ) VALUE ( 13, 11 );
+</code></pre> 
+<h2><a id="4_109"></a>4、死锁问题排查</h2> 
+<h3><a id="41_111"></a>4.1、简单方式处理</h3> 
+<p>  查询现在的死锁线程，然后强制杀死线程。线程id为第一步中查询到的trx_mysql_thread_id的值</p> 
+<pre><code>SELECT * FROM INFORMATION_SCHEMA.INNODB_TRX;
+kill 11135
+</code></pre> 
+<p>  以上的方法只是解决掉了当前存在的死锁情况，并未从根本上解决死锁的产生。因此还需要进行死锁日志的查询，判断出导致死锁是哪些业务产生的，然后针对性的进行修改。</p> 
+<h3><a id="42_120"></a>4.2、死锁日志分析</h3> 
+<h4><a id="421_122"></a>4.2.1、执行命令</h4> 
+<pre><code>show engine innodb status
+</code></pre> 
+<h4><a id="422_126"></a>4.2.2、得到日志文本</h4> 
+<p>  navicate显示结果如下，没法直接浏览，直接选中返回结果，复制内容到文本编辑器即可<br> <img src="https://images2.imgbox.com/45/a3/zbk9Ti1T_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="423_134"></a>4.2.3、日志读取方法</h4> 
+<p>  大家看到日志时估计是非常的头大，可能有1000多行的奇奇怪怪的内容，直接就放弃了。其实我们只需要注意关键字即可。</p> 
+<h5><a id="4231_138"></a>4.2.3.1、精简之后的日志</h5> 
+<p><img src="https://images2.imgbox.com/6b/86/WkLXruaw_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="4232_144"></a>4.2.3.2关键字说明</h5> 
+<ul><li>LATEST DETECTED DEADLOCK：最近的死锁日志记录</li><li>*** (1) <strong>TRANSACTION</strong>:产生死锁的事务</li><li>*** (1) <strong>HOLDS THE LOCK</strong>(S):事务持有的锁</li><li>*** (1) <strong>WAITING FOR THIS LOCK TO BE GRANTED</strong>:事务等待的锁</li><li>*** <strong>WE ROLL BACK TRANSACTION</strong> ：系统最后决定回滚了哪个事务</li></ul> 
+<p>  明白了以上的关键字之后，就能够很明白的知道哪些表之间产生了死锁，此时就可以根据实际的业务修改代码或者sql逻辑解决死锁问题了。例如上面的图示，就是两个事务互相持有了对方所需要的锁，互相等待对方释放锁，因此产生了死锁问题。</p> 
+<h2><a id="5_154"></a>5、死锁问题解决</h2> 
+<p>  首先是老生常谈的产生死锁的四个条件：互斥条件、请求和保持条件、不可剥夺条件、循环等待条件。那么就有以下的消除死锁的方法：</p> 
+<h3><a id="51_158"></a>5.1、减小事务粒度</h3> 
+<p>  我们经常在代码中一个方法就是一个事务，而一个方法中可能会有多条的sql操作，此时就应该分析，这些sql是否可以拆分到不同的方法中，用不同的事务去承载，由此就可以减少死锁出现的概率。</p> 
+<h3><a id="52_162"></a>5.2、添加索引</h3> 
+<p>  这个应该是最简单高效的方法，这种方式可以让进行sql操作时尽量产生的是行锁或间隙锁，避免产生表锁进而形成死锁。</p> 
+<h3><a id="53sql_166"></a>5.3、修改sql操作顺序</h3> 
+<p>  有时因sql操作顺序不合理，会导致事务互相持有对方需要的锁，此时就需要调整sql执行的顺序，合理规划sql锁资源请求步骤。</p> 
+<h2><a id="54_170"></a>5.4、总结</h2> 
+<p>  本文从锁的概念出发，基于实际工作情况对一些概念性问题进行了精简。所以如果有遗漏或错误欢迎大家指正。本文参考的博客如下：</p> 
+<ul><li>innodb产生行锁及表锁的时机：<a href="http://t.zoukankan.com/frankltf-p-9127440.html" rel="nofollow">http://t.zoukankan.com/frankltf-p-9127440.html</a></li><li>innodb死锁案例分析：<a href="https://www.jianshu.com/p/bc8dad91b5ca" rel="nofollow">https://www.jianshu.com/p/bc8dad91b5ca</a></li><li>七种锁即产生测试案例：<a href="https://andyoung.blog.csdn.net/article/details/124841771" rel="nofollow">https://andyoung.blog.csdn.net/article/details/124841771</a></li><li>间隙锁介绍：<a href="https://www.jianshu.com/p/55299e1329e7" rel="nofollow">https://www.jianshu.com/p/55299e1329e7</a></li><li>间隙锁的产生及区间范围明晰：<a href="https://blog.csdn.net/sfh2018/article/details/121016466">https://blog.csdn.net/sfh2018/article/details/121016466</a></li><li>​插入意向锁的产生及区间范围明晰：<a href="https://blog.csdn.net/weixin_39789042/article/details/114343141">https://blog.csdn.net/weixin_39789042/article/details/114343141</a></li></ul>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4fff516b508f6fe0b491222852bda9e4/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">永磁同步电机的弱磁提速控制Simulink仿真</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/443b66fd7b00f175e36d294dfd3fcab0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">结合Jackson Streaming API和ObjectMapper来处理JSON</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

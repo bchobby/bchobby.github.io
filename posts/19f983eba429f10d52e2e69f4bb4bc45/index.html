@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>SpringCloud OpenFeign源码详细解析 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="SpringCloud OpenFeign源码详细解析" />
+<meta property="og:description" content="简介 OpenFeign 是Spring Cloud中的一个组件，经常用来在项目中进行Http调用其他服务的接口，在于对服务端接口的绑定。
+使用方式是比较简单的，让我们来探究一下使用原理吧！
+阅读条件：
+要有Spring源码的基础使用过原生的FeignSpringBoot源码基础 源码解析入口：@EnableFeignClients
+@Retention(RetentionPolicy.RUNTIME) @Target(ElementType.TYPE) @Documented @Import(FeignClientsRegistrar.class) public @interface EnableFeignClients { String[] basePackages() default {}; Class&lt;?&gt;[] basePackageClasses() default {}; Class&lt;?&gt;[] defaultConfiguration() default {}; Class&lt;?&gt;[] clients() default {}; } 注解里面的参数配置，都可以在官网找到说明，这里就不介绍了。
+点进去我们可以在注解上看到这样 一段代码：
+@Import(FeignClientsRegistrar.class)
+这个是往Spring容器里面注入一个类。
+核心在于 FeignClientsRegistrar 实现了 ImportBeanDefinitionRegistrar。
+ImportBeanDefinitionRegistrar是Spring中的一个扩展点，实现该接口的方法，我们可以动态的往容器里面注入其他类的信息，然后走Spring的生命周期，创建出Bean。
+要说明的一点实现了ImportBeanDefinitionRegistrar的类，该实现类的执行时机在于Spring对配置类的解析阶段执行的，熟悉Spring源码的同学都知道，Spring是先扫描合格的配置类，从配置类中获取要创建Bean的类信息，注册成BeanDefinition简称bd，最后在统一进行实例化。
+Spring在解析配置类的时候，会判断该类是否实现了ImportBeanDefinitionRegistrar，是的话就创建对象，执行接口方法，这样也就会执行我们写的自定义逻辑，往容器里面注入bd。
+我们直接找到 FeignClientsRegistrar 实现的注入bd方法:
+@Override public void registerBeanDefinitions(AnnotationMetadata metadata, BeanDefinitionRegistry registry) { // 对 @EnableFeignClients 解析 registerDefaultConfiguration(metadata, registry); // 对 @FeignClient 解析 registerFeignClients(metadata, registry); } 我们直接看对 @FeignClient 的解析。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/19f983eba429f10d52e2e69f4bb4bc45/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-06-12T23:24:27+08:00" />
+<meta property="article:modified_time" content="2022-06-12T23:24:27+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">SpringCloud OpenFeign源码详细解析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h4><a id="_0"></a>简介</h4> 
+<p>OpenFeign 是Spring Cloud中的一个组件，经常用来在项目中进行Http调用其他服务的接口，在于对服务端接口的绑定。<br> 使用方式是比较简单的，让我们来探究一下使用原理吧！<br> 阅读条件：</p> 
+<ul><li>要有Spring源码的基础</li><li>使用过原生的Feign</li><li>SpringBoot源码基础</li></ul> 
+<p><strong>源码解析入口</strong>：@EnableFeignClients</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Retention</span><span class="token punctuation">(</span><span class="token class-name">RetentionPolicy</span><span class="token punctuation">.</span>RUNTIME<span class="token punctuation">)</span>
+<span class="token annotation punctuation">@Target</span><span class="token punctuation">(</span><span class="token class-name">ElementType</span><span class="token punctuation">.</span>TYPE<span class="token punctuation">)</span>
+<span class="token annotation punctuation">@Documented</span>
+<span class="token annotation punctuation">@Import</span><span class="token punctuation">(</span><span class="token class-name">FeignClientsRegistrar</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span>
+<span class="token keyword">public</span> <span class="token annotation punctuation">@interface</span> <span class="token class-name">EnableFeignClients</span> <span class="token punctuation">{<!-- --></span>
+
+	<span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token function">basePackages</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">default</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+	<span class="token class-name">Class</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token function">basePackageClasses</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">default</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+	<span class="token class-name">Class</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token function">defaultConfiguration</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">default</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+	<span class="token class-name">Class</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token function">clients</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">default</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>注解里面的参数配置，都可以在官网找到说明，这里就不介绍了。<br> 点进去我们可以在注解上看到这样 一段代码：<br> @Import(FeignClientsRegistrar.class)<br> 这个是往Spring容器里面注入一个类。<br> <img src="https://images2.imgbox.com/b1/14/JqJDxszx_o.png" alt="在这里插入图片描述">核心在于 FeignClientsRegistrar 实现了 <strong>ImportBeanDefinitionRegistrar</strong>。<br> ImportBeanDefinitionRegistrar是Spring中的一个扩展点，实现该接口的方法，我们可以动态的往容器里面注入其他类的信息，然后走Spring的生命周期，创建出Bean。<br> <strong>要说明的一点实现了ImportBeanDefinitionRegistrar的类</strong>，该实现类的执行时机在于Spring对配置类的解析阶段执行的，熟悉Spring源码的同学都知道，Spring是先扫描合格的配置类，从配置类中获取要创建Bean的类信息，注册成BeanDefinition简称bd，最后在统一进行实例化。<br> Spring在解析配置类的时候，会判断该类是否实现了ImportBeanDefinitionRegistrar，是的话就创建对象，执行接口方法，这样也就会执行我们写的自定义逻辑，往容器里面注入bd。<br> 我们直接找到 FeignClientsRegistrar 实现的注入bd方法:</p> 
+<pre><code class="prism language-java">	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">registerBeanDefinitions</span><span class="token punctuation">(</span><span class="token class-name">AnnotationMetadata</span> metadata<span class="token punctuation">,</span>
+			<span class="token class-name">BeanDefinitionRegistry</span> registry<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">// 对 @EnableFeignClients 解析</span>
+		<span class="token function">registerDefaultConfiguration</span><span class="token punctuation">(</span>metadata<span class="token punctuation">,</span> registry<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// 对 @FeignClient 解析</span>
+		<span class="token function">registerFeignClients</span><span class="token punctuation">(</span>metadata<span class="token punctuation">,</span> registry<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+</code></pre> 
+<p>我们直接看对 @FeignClient 的解析。</p> 
+<h4><a id="1FeignClient_47"></a>1.@FeignClient</h4> 
+<p>只看核心部分：</p> 
+<pre><code class="prism language-java">	<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">registerFeignClients</span><span class="token punctuation">(</span><span class="token class-name">AnnotationMetadata</span> metadata<span class="token punctuation">,</span>
+			<span class="token class-name">BeanDefinitionRegistry</span> registry<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">// 创建一个扫描器</span>
+		<span class="token class-name">ClassPathScanningCandidateComponentProvider</span> scanner <span class="token operator">=</span> <span class="token function">getScanner</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		scanner<span class="token punctuation">.</span><span class="token function">setResourceLoader</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>resourceLoader<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		basePackages <span class="token operator">=</span> <span class="token function">getBasePackages</span><span class="token punctuation">(</span>metadata<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">String</span> basePackage <span class="token operator">:</span> basePackages<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		  <span class="token comment">// 扫描指定的包下面的 @FeignClient</span>
+			<span class="token class-name">Set</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">BeanDefinition</span><span class="token punctuation">&gt;</span></span> candidateComponents <span class="token operator">=</span> scanner
+					<span class="token punctuation">.</span><span class="token function">findCandidateComponents</span><span class="token punctuation">(</span>basePackage<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">BeanDefinition</span> candidateComponent <span class="token operator">:</span> candidateComponents<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			     <span class="token comment">// 核心方法：向容器中注入 FeignClientSpecification</span>
+			     <span class="token function">registerClientConfiguration</span><span class="token punctuation">(</span>registry<span class="token punctuation">,</span> name<span class="token punctuation">,</span>
+							attributes<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token string">"configuration"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			     <span class="token comment">// 核心方法：注册接口，注册到容器</span>
+					<span class="token function">registerFeignClient</span><span class="token punctuation">(</span>registry<span class="token punctuation">,</span> annotationMetadata<span class="token punctuation">,</span> attributes<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+	
+	<span class="token comment">/**
+	* 这个地方每一个 @FeignClient 都会向容器中注入一个 FeignClientSpecification 的用意是什么呢？
+	* 在 FeignAutoConfiguration 自动配置里面我们会进行分析，就是为了实现 容器配置隔离。
+	* 每一个 @FeignClient 如果指定了 configuration 属性的值，都会对应一个Spring容器，达到隔离的效果。
+	* 官网中为啥会说 如果@FeignClient中 指定了 configuration 对应的Class不需要加@Configuration注解呢？在下面我们会进行分析的
+	**/</span>
+	<span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">registerClientConfiguration</span><span class="token punctuation">(</span><span class="token class-name">BeanDefinitionRegistry</span> registry<span class="token punctuation">,</span> <span class="token class-name">Object</span> name<span class="token punctuation">,</span>
+			<span class="token class-name">Object</span> configuration<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">// configuration 是 @FeignClient 中的 class&lt;?&gt;[] configuration() default {} 值;</span>
+		<span class="token comment">// 向容器中注入 FeignClientSpecification	</span>
+		<span class="token class-name">BeanDefinitionBuilder</span> builder <span class="token operator">=</span> <span class="token class-name">BeanDefinitionBuilder</span>
+				<span class="token punctuation">.</span><span class="token function">genericBeanDefinition</span><span class="token punctuation">(</span><span class="token class-name">FeignClientSpecification</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		builder<span class="token punctuation">.</span><span class="token function">addConstructorArgValue</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		builder<span class="token punctuation">.</span><span class="token function">addConstructorArgValue</span><span class="token punctuation">(</span>configuration<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		registry<span class="token punctuation">.</span><span class="token function">registerBeanDefinition</span><span class="token punctuation">(</span>
+				name <span class="token operator">+</span> <span class="token string">"."</span> <span class="token operator">+</span> <span class="token class-name">FeignClientSpecification</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">.</span><span class="token function">getSimpleName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+				builder<span class="token punctuation">.</span><span class="token function">getBeanDefinition</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">registerFeignClient</span><span class="token punctuation">(</span><span class="token class-name">BeanDefinitionRegistry</span> registry<span class="token punctuation">,</span>
+			<span class="token class-name">AnnotationMetadata</span> annotationMetadata<span class="token punctuation">,</span> <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Object</span><span class="token punctuation">&gt;</span></span> attributes<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token class-name">String</span> className <span class="token operator">=</span> annotationMetadata<span class="token punctuation">.</span><span class="token function">getClassName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// 注入接口的实际bd类型是 FeignClientFactoryBean</span>
+		<span class="token class-name">BeanDefinitionBuilder</span> definition <span class="token operator">=</span> <span class="token class-name">BeanDefinitionBuilder</span>
+				<span class="token punctuation">.</span><span class="token function">genericBeanDefinition</span><span class="token punctuation">(</span><span class="token class-name">FeignClientFactoryBean</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		definition<span class="token punctuation">.</span><span class="token function">addPropertyValue</span><span class="token punctuation">(</span><span class="token string">"url"</span><span class="token punctuation">,</span> <span class="token function">getUrl</span><span class="token punctuation">(</span>attributes<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		definition<span class="token punctuation">.</span><span class="token function">addPropertyValue</span><span class="token punctuation">(</span><span class="token string">"path"</span><span class="token punctuation">,</span> <span class="token function">getPath</span><span class="token punctuation">(</span>attributes<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token class-name">String</span> name <span class="token operator">=</span> <span class="token function">getName</span><span class="token punctuation">(</span>attributes<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		definition<span class="token punctuation">.</span><span class="token function">addPropertyValue</span><span class="token punctuation">(</span><span class="token string">"name"</span><span class="token punctuation">,</span> name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token class-name">String</span> contextId <span class="token operator">=</span> <span class="token function">getContextId</span><span class="token punctuation">(</span>attributes<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		definition<span class="token punctuation">.</span><span class="token function">addPropertyValue</span><span class="token punctuation">(</span><span class="token string">"contextId"</span><span class="token punctuation">,</span> contextId<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		definition<span class="token punctuation">.</span><span class="token function">addPropertyValue</span><span class="token punctuation">(</span><span class="token string">"type"</span><span class="token punctuation">,</span> className<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		definition<span class="token punctuation">.</span><span class="token function">addPropertyValue</span><span class="token punctuation">(</span><span class="token string">"decode404"</span><span class="token punctuation">,</span> attributes<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token string">"decode404"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		definition<span class="token punctuation">.</span><span class="token function">addPropertyValue</span><span class="token punctuation">(</span><span class="token string">"fallback"</span><span class="token punctuation">,</span> attributes<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token string">"fallback"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		definition<span class="token punctuation">.</span><span class="token function">addPropertyValue</span><span class="token punctuation">(</span><span class="token string">"fallbackFactory"</span><span class="token punctuation">,</span> attributes<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token string">"fallbackFactory"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// AUTOWIRE_BY_TYPE，方法注入</span>
+		definition<span class="token punctuation">.</span><span class="token function">setAutowireMode</span><span class="token punctuation">(</span><span class="token class-name">AbstractBeanDefinition</span><span class="token punctuation">.</span>AUTOWIRE_BY_TYPE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token class-name">String</span> alias <span class="token operator">=</span> contextId <span class="token operator">+</span> <span class="token string">"FeignClient"</span><span class="token punctuation">;</span>
+		<span class="token class-name">AbstractBeanDefinition</span> beanDefinition <span class="token operator">=</span> definition<span class="token punctuation">.</span><span class="token function">getBeanDefinition</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// 构造了bd</span>
+		<span class="token class-name">BeanDefinitionHolder</span> holder <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">BeanDefinitionHolder</span><span class="token punctuation">(</span>beanDefinition<span class="token punctuation">,</span> className<span class="token punctuation">,</span>
+				<span class="token keyword">new</span> <span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token punctuation">{<!-- --></span> alias <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token class-name">BeanDefinitionReaderUtils</span><span class="token punctuation">.</span><span class="token function">registerBeanDefinition</span><span class="token punctuation">(</span>holder<span class="token punctuation">,</span> registry<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+</code></pre> 
+<p>上面就是扫描包，得到加了注解的类接口信息，然后根据每一个FeignClient，修改bd后向容器注入。<br> 这一步比较重要的就是，统一修改了bd的类信息为<strong>FeignClientFactoryBean</strong>，并设置了各种参数。</p> 
+<h4><a id="2FeignClientFactoryBean_120"></a>2.FeignClientFactoryBean</h4> 
+<p><img src="https://images2.imgbox.com/1c/c2/Y2r7KDud_o.png" alt="在这里插入图片描述"><br> 重要的就是这个类的实例化，继承体系上我们可以看到<strong>FeignClientFactoryBean是一个FactoryBean</strong>，也就是说Spring在创建该类实例的时候，会去调FactoryBean的getObject()方法，下面只要<strong>重点分析getObject()方法</strong>即可。</p> 
+<pre><code class="prism language-java">	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> <span class="token class-name">Object</span> <span class="token function">getObject</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token function">getTarget</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	
+  <span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> <span class="token class-name">T</span> <span class="token function">getTarget</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// FeignContext 是从 FeignAutoConfiguration 注入进来的(重要)</span>
+		<span class="token class-name">FeignContext</span> context <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>applicationContext<span class="token punctuation">.</span><span class="token function">getBean</span><span class="token punctuation">(</span><span class="token class-name">FeignContext</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// feign(context);原生api构建Feign Client</span>
+		<span class="token class-name">Feign<span class="token punctuation">.</span>Builder</span> builder <span class="token operator">=</span> <span class="token function">feign</span><span class="token punctuation">(</span>context<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token class-name">StringUtils</span><span class="token punctuation">.</span><span class="token function">hasText</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>url<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token keyword">this</span><span class="token punctuation">.</span>name<span class="token punctuation">.</span><span class="token function">startsWith</span><span class="token punctuation">(</span><span class="token string">"http"</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">this</span><span class="token punctuation">.</span>url <span class="token operator">=</span> <span class="token string">"http://"</span> <span class="token operator">+</span> <span class="token keyword">this</span><span class="token punctuation">.</span>name<span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+			<span class="token keyword">this</span><span class="token punctuation">.</span>url <span class="token operator">+=</span> <span class="token function">cleanPath</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token comment">// 服务名的调用方式,,负载均衡调用</span>
+			<span class="token keyword">return</span> <span class="token punctuation">(</span><span class="token class-name">T</span><span class="token punctuation">)</span> <span class="token function">loadBalance</span><span class="token punctuation">(</span>builder<span class="token punctuation">,</span> context<span class="token punctuation">,</span>
+					<span class="token keyword">new</span> <span class="token class-name">HardCodedTarget</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>type<span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">.</span>name<span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">.</span>url<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token comment">// 指定了 url 方式</span>
+		<span class="token class-name">String</span> url <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>url <span class="token operator">+</span> <span class="token function">cleanPath</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token class-name">Client</span> client <span class="token operator">=</span> <span class="token function">getOptional</span><span class="token punctuation">(</span>context<span class="token punctuation">,</span> <span class="token class-name">Client</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token class-name">Targeter</span> targeter <span class="token operator">=</span> <span class="token function">get</span><span class="token punctuation">(</span>context<span class="token punctuation">,</span> <span class="token class-name">Targeter</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// 在往下面就是生成动态代理对象等</span>
+		<span class="token keyword">return</span> <span class="token punctuation">(</span><span class="token class-name">T</span><span class="token punctuation">)</span> targeter<span class="token punctuation">.</span><span class="token function">target</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">,</span> builder<span class="token punctuation">,</span> context<span class="token punctuation">,</span>
+				<span class="token keyword">new</span> <span class="token class-name">HardCodedTarget</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>type<span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">.</span>name<span class="token punctuation">,</span> url<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">/**
+	*get(context, xxx.class) 是从容器中获取的对应的实现类，但并不是直接从当前容器中获取，
+	*前面说过 配置隔离，每一个@FeignClient 如果指定了 configuration 属性的值 都会生成
+	*一个Spring容器，会根据指定的名称，获取指定的Spring容器，然后从Spring容器里面获取这个xxx.class的实现
+	**/</span>
+	<span class="token keyword">protected</span> <span class="token class-name">Feign<span class="token punctuation">.</span>Builder</span> <span class="token function">feign</span><span class="token punctuation">(</span><span class="token class-name">FeignContext</span> context<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">// get(context, FeignLoggerFactory.class); 是从Spring容器中获取的</span>
+			<span class="token class-name">FeignLoggerFactory</span> loggerFactory <span class="token operator">=</span> <span class="token function">get</span><span class="token punctuation">(</span>context<span class="token punctuation">,</span> <span class="token class-name">FeignLoggerFactory</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token class-name">Logger</span> logger <span class="token operator">=</span> loggerFactory<span class="token punctuation">.</span><span class="token function">create</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>type<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token comment">// 原生Feign的构建</span>
+			<span class="token class-name">Feign<span class="token punctuation">.</span>Builder</span> builder <span class="token operator">=</span> <span class="token function">get</span><span class="token punctuation">(</span>context<span class="token punctuation">,</span> <span class="token class-name">Feign<span class="token punctuation">.</span>Builder</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span>
+					<span class="token punctuation">.</span><span class="token function">logger</span><span class="token punctuation">(</span>logger<span class="token punctuation">)</span>
+					<span class="token punctuation">.</span><span class="token function">encoder</span><span class="token punctuation">(</span><span class="token function">get</span><span class="token punctuation">(</span>context<span class="token punctuation">,</span> <span class="token class-name">Encoder</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+					<span class="token punctuation">.</span><span class="token function">decoder</span><span class="token punctuation">(</span><span class="token function">get</span><span class="token punctuation">(</span>context<span class="token punctuation">,</span> <span class="token class-name">Decoder</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+					<span class="token punctuation">.</span><span class="token function">contract</span><span class="token punctuation">(</span><span class="token function">get</span><span class="token punctuation">(</span>context<span class="token punctuation">,</span> <span class="token class-name">Contract</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token comment">// @formatter:on</span>
+			<span class="token function">configureFeign</span><span class="token punctuation">(</span>context<span class="token punctuation">,</span> builder<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">return</span> builder<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+
+	<span class="token keyword">protected</span> <span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> <span class="token class-name">T</span> <span class="token function">loadBalance</span><span class="token punctuation">(</span><span class="token class-name">Feign<span class="token punctuation">.</span>Builder</span> builder<span class="token punctuation">,</span> <span class="token class-name">FeignContext</span> context<span class="token punctuation">,</span>
+			<span class="token class-name">HardCodedTarget</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> target<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">// 从容器中获取 Client.class,真正发起http请求的实现，这个地方可以进行负载均衡请求</span>
+		<span class="token comment">// FeignRibbonClientAutoConfiguration: feign调用ribbon 负载均衡的自动配置</span>
+		<span class="token class-name">Client</span> client <span class="token operator">=</span> <span class="token function">getOptional</span><span class="token punctuation">(</span>context<span class="token punctuation">,</span> <span class="token class-name">Client</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>client <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			builder<span class="token punctuation">.</span><span class="token function">client</span><span class="token punctuation">(</span>client<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token class-name">Targeter</span> targeter <span class="token operator">=</span> <span class="token function">get</span><span class="token punctuation">(</span>context<span class="token punctuation">,</span> <span class="token class-name">Targeter</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">return</span> targeter<span class="token punctuation">.</span><span class="token function">target</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">,</span> builder<span class="token punctuation">,</span> context<span class="token punctuation">,</span> target<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+</code></pre> 
+<p>Client的实现：<br> FeignBlockingLoadBalancerClient<br> LoadBalancerFeignClient</p> 
+<h4><a id="3FeignAutoConfiguration_188"></a>3.FeignAutoConfiguration</h4> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">FeignAutoConfiguration</span> <span class="token punctuation">{<!-- --></span>
+
+	<span class="token comment">/**
+	* 这个地方注入进来了前面扫描到的每一个@FeignClient 修改bd过后的 FeignClientSpecification
+	**/</span>
+	<span class="token annotation punctuation">@Autowired</span><span class="token punctuation">(</span>required <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">)</span>
+	<span class="token keyword">private</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">FeignClientSpecification</span><span class="token punctuation">&gt;</span></span> configurations <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ArrayList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token annotation punctuation">@Bean</span>
+	<span class="token keyword">public</span> <span class="token class-name">FeignContext</span> <span class="token function">feignContext</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	  <span class="token comment">// 比较重要的一个类</span>
+		<span class="token class-name">FeignContext</span> context <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">FeignContext</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		context<span class="token punctuation">.</span><span class="token function">setConfigurations</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>configurations<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> context<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>	
+</code></pre> 
+<p>FeignContext 继承 NamedContextFactory<br> <img src="https://images2.imgbox.com/17/65/pnjIuGif_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">FeignContext</span> <span class="token keyword">extends</span> <span class="token class-name">NamedContextFactory</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">FeignClientSpecification</span><span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">public</span> <span class="token class-name">FeignContext</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	  <span class="token comment">// 这个 FeignClientsConfiguration 是Spring默认为Feign提供的上下文信息</span>
+	  <span class="token comment">// 上下文信息里面有 feign.Decoder，feign.Encoder，feign.Contract 等等</span>
+	  <span class="token comment">// 我们没有指定的话，就会用这个类提供的</span>
+		<span class="token keyword">super</span><span class="token punctuation">(</span><span class="token class-name">FeignClientsConfiguration</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">,</span> <span class="token string">"feign"</span><span class="token punctuation">,</span> <span class="token string">"feign.client.name"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>NamedContextFactory：命名空间类</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">abstract</span> <span class="token keyword">class</span> <span class="token class-name">NamedContextFactory</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">C</span> <span class="token keyword">extends</span> <span class="token class-name">NamedContextFactory<span class="token punctuation">.</span>Specification</span><span class="token punctuation">&gt;</span></span>
+		<span class="token keyword">implements</span> <span class="token class-name">DisposableBean</span><span class="token punctuation">,</span> <span class="token class-name">ApplicationContextAware</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">String</span> propertySourceName<span class="token punctuation">;</span>
+	<span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">String</span> propertyName<span class="token punctuation">;</span>
+	<span class="token comment">// 拼接的名字，Spring上下文</span>
+	<span class="token keyword">private</span> <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">AnnotationConfigApplicationContext</span><span class="token punctuation">&gt;</span></span> contexts <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ConcurrentHashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">// 拼接的名字，FeignClientSpecification</span>
+	<span class="token keyword">private</span> <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">C</span><span class="token punctuation">&gt;</span></span> configurations <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ConcurrentHashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">// 父Spring上下文</span>
+	<span class="token keyword">private</span> <span class="token class-name">ApplicationContext</span> parent<span class="token punctuation">;</span>
+	<span class="token comment">// FeignClientsConfiguration</span>
+	<span class="token keyword">private</span> <span class="token class-name">Class</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span></span> defaultConfigType<span class="token punctuation">;</span>
+
+	<span class="token keyword">public</span> <span class="token class-name">NamedContextFactory</span><span class="token punctuation">(</span><span class="token class-name">Class</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span></span> defaultConfigType<span class="token punctuation">,</span> <span class="token class-name">String</span> propertySourceName<span class="token punctuation">,</span>
+			<span class="token class-name">String</span> propertyName<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>defaultConfigType <span class="token operator">=</span> defaultConfigType<span class="token punctuation">;</span>
+		<span class="token keyword">this</span><span class="token punctuation">.</span>propertySourceName <span class="token operator">=</span> propertySourceName<span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  <span class="token comment">// 上面的get(context, FeignLoggerFactory.class); 最终会掉这个方法先获取容器</span>
+	<span class="token keyword">protected</span> <span class="token class-name">AnnotationConfigApplicationContext</span> <span class="token function">getContext</span><span class="token punctuation">(</span><span class="token class-name">String</span> name<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token keyword">this</span><span class="token punctuation">.</span>contexts<span class="token punctuation">.</span><span class="token function">containsKey</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">synchronized</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>contexts<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token keyword">this</span><span class="token punctuation">.</span>contexts<span class="token punctuation">.</span><span class="token function">containsKey</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				  <span class="token comment">// map 中不存在，就会重新创建</span>
+					<span class="token keyword">this</span><span class="token punctuation">.</span>contexts<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span>name<span class="token punctuation">,</span> <span class="token function">createContext</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token punctuation">}</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">.</span>contexts<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">protected</span> <span class="token class-name">AnnotationConfigApplicationContext</span> <span class="token function">createContext</span><span class="token punctuation">(</span><span class="token class-name">String</span> name<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	  <span class="token comment">// 手动创建 AnnotationConfigApplicationContext </span>
+		<span class="token class-name">AnnotationConfigApplicationContext</span> context <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">AnnotationConfigApplicationContext</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>configurations<span class="token punctuation">.</span><span class="token function">containsKey</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">Class</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span></span> configuration <span class="token operator">:</span> <span class="token keyword">this</span><span class="token punctuation">.</span>configurations<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span>
+					<span class="token punctuation">.</span><span class="token function">getConfiguration</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token comment">// 注入configuration也就是@FeignClient指定的configuration属性的值</span>
+				context<span class="token punctuation">.</span><span class="token function">register</span><span class="token punctuation">(</span>configuration<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		<span class="token comment">// 默认的 FeignClientsConfiguration，也注入到容器</span>
+		context<span class="token punctuation">.</span><span class="token function">register</span><span class="token punctuation">(</span><span class="token class-name">PropertyPlaceholderAutoConfiguration</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">,</span>
+				<span class="token keyword">this</span><span class="token punctuation">.</span>defaultConfigType<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>parent <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		  <span class="token comment">// 设置父上下文，也就是当前项目启动的Spring容器</span>
+			context<span class="token punctuation">.</span><span class="token function">setParent</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>parent<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			context<span class="token punctuation">.</span><span class="token function">setClassLoader</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>parent<span class="token punctuation">.</span><span class="token function">getClassLoader</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token comment">// 刷新容器</span>
+		context<span class="token punctuation">.</span><span class="token function">refresh</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> context<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>  		
+</code></pre> 
+<p>createContext(String name)里解释了官网的这一段说明：<br> <img src="https://images2.imgbox.com/6f/dc/23GgCejJ_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="4_FeignRibbonClientAutoConfiguration_277"></a>4. FeignRibbonClientAutoConfiguration</h4> 
+<p>前面说了，真正发起 http 请求的类是 Client client = getOptional(context, Client.class);</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">interface</span> <span class="token class-name">Client</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">/**
+   * Executes a request against its {@link Request#url() url} and returns a response.
+   */</span>
+  <span class="token class-name">Response</span> <span class="token function">execute</span><span class="token punctuation">(</span><span class="token class-name">Request</span> request<span class="token punctuation">,</span> <span class="token class-name">Options</span> options<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">IOException</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>  
+</code></pre> 
+<p>我们来看一下FeignRibbonClientAutoConfiguration：</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Import</span><span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span> <span class="token class-name">HttpClientFeignLoadBalancedConfiguration</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">,</span>
+		<span class="token class-name">OkHttpFeignLoadBalancedConfiguration</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">,</span>
+		<span class="token class-name">DefaultFeignLoadBalancedConfiguration</span><span class="token punctuation">.</span><span class="token keyword">class</span> <span class="token punctuation">}</span><span class="token punctuation">)</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">FeignRibbonClientAutoConfiguration</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token annotation punctuation">@Bean</span>
+	<span class="token annotation punctuation">@Primary</span>
+	<span class="token annotation punctuation">@ConditionalOnMissingBean</span>
+	<span class="token annotation punctuation">@ConditionalOnMissingClass</span><span class="token punctuation">(</span><span class="token string">"org.springframework.retry.support.RetryTemplate"</span><span class="token punctuation">)</span>
+	<span class="token keyword">public</span> <span class="token class-name">CachingSpringLoadBalancerFactory</span> <span class="token function">cachingLBClientFactory</span><span class="token punctuation">(</span>
+			<span class="token class-name">SpringClientFactory</span> factory<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">CachingSpringLoadBalancerFactory</span><span class="token punctuation">(</span>factory<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token annotation punctuation">@Bean</span>
+	<span class="token annotation punctuation">@Primary</span>
+	<span class="token annotation punctuation">@ConditionalOnMissingBean</span>
+	<span class="token annotation punctuation">@ConditionalOnClass</span><span class="token punctuation">(</span>name <span class="token operator">=</span> <span class="token string">"org.springframework.retry.support.RetryTemplate"</span><span class="token punctuation">)</span>
+	<span class="token keyword">public</span> <span class="token class-name">CachingSpringLoadBalancerFactory</span> <span class="token function">retryabeCachingLBClientFactory</span><span class="token punctuation">(</span>
+			<span class="token class-name">SpringClientFactory</span> factory<span class="token punctuation">,</span> <span class="token class-name">LoadBalancedRetryFactory</span> retryFactory<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">CachingSpringLoadBalancerFactory</span><span class="token punctuation">(</span>factory<span class="token punctuation">,</span> retryFactory<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>导入了一个 <strong>DefaultFeignLoadBalancedConfiguration</strong>：</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Configuration</span><span class="token punctuation">(</span>proxyBeanMethods <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">)</span>
+<span class="token keyword">class</span> <span class="token class-name">DefaultFeignLoadBalancedConfiguration</span> <span class="token punctuation">{<!-- --></span>
+	
+	<span class="token comment">/**
+	* 注入了一个具备负载均衡的Client：LoadBalancerFeignClient
+	**/</span>
+	<span class="token annotation punctuation">@Bean</span>
+	<span class="token annotation punctuation">@ConditionalOnMissingBean</span>
+	<span class="token keyword">public</span> <span class="token class-name">Client</span> <span class="token function">feignClient</span><span class="token punctuation">(</span><span class="token class-name">CachingSpringLoadBalancerFactory</span> cachingFactory<span class="token punctuation">,</span>
+			<span class="token class-name">SpringClientFactory</span> clientFactory<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">LoadBalancerFeignClient</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Client<span class="token punctuation">.</span>Default</span><span class="token punctuation">(</span><span class="token keyword">null</span><span class="token punctuation">,</span> <span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">,</span> cachingFactory<span class="token punctuation">,</span>
+				clientFactory<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>FeignRibbonClientAutoConfiguration，FeignAutoConfiguration的加载时机：<br> <img src="https://images2.imgbox.com/40/c0/lvRmFzQ7_o.png" alt="在这里插入图片描述">基于SpringBoot的自动装配原理。</p> 
+<h4><a id="_332"></a>总结图</h4> 
+<p><img src="https://images2.imgbox.com/a6/8a/LIReqkip_o.png" alt="在这里插入图片描述"><br> 自此源码分析结束！</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b5b81486e0fce0d0b017b7f46a78cb58/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">k8s面试题</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/1332521bb1a1b848d886be2d390016b2/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Ubuntu18.04 安装配置Nginx、Https、PHP</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

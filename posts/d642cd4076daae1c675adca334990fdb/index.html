@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>通过JMeter压测结果来分析Eureka多种服务下线机制后的服务感知情况 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="通过JMeter压测结果来分析Eureka多种服务下线机制后的服务感知情况" />
+<meta property="og:description" content="文章目录 前言1. Eureka-Server的设计2. Eureka&#43;Ribbon感知下线服务机制3.服务调用接口压测模型4.Eureka几种服务下线的方式4.1强制下线压测 4.2 发送delete（）请求压测 4.3 调用DiscoveryManager压测 4.4 三方工具Actuator压测 总结 前言 上文末尾讲到了Eureka对于下线服务的感知不是很敏锐，会把已经下线的服务加载到可用的服务列表里。当轮询到该服务实例来处理请求就会出现“调用请求已经发送出去，但是接口却TimeOut、404、500…错误”，本文会使用多种服务下线方式并结合JMeter压测来具体分析
+1. Eureka-Server的设计 Eureka中设计了三级缓存：一级缓存（registry注册表）——二级缓存（readWriteCacheMap读写缓存）——三级缓存（readOnlyCacheMap只读缓存）。作为经典的AP模型，读写分离，牺牲了一致性保证了高可用。（以后会分析源码）
+2. Eureka&#43;Ribbon感知下线服务机制 当客户端的服务实例正常下线，会发送心跳向Eureka服务端中的一级缓存更新信息（30S）——一级缓存会向二级缓存同步信息（立刻）——二级缓存向三级缓存同步信息（30S）——客户端从三级缓存中同步信息（30S）——Ribbon会向客户端同步缓存，更新服务列表upList（30S）,可见如果是在极端情况下，感知到一个服务下线是需要120S的。（注意这并不是串行化执行，30S均为默认时间）
+下面基于这个流程，采用多种下线的方式结合JMeter压测报告来研究Eureka服务下线感知情况
+3.服务调用接口压测模型 采用Jmeter（100个线程—3S内请求）对服务下线后的服务调用接口进行压测，来观察接口执行情况，以及结合日志来体现Ribbon的负载均衡情况：
+通过观察线程组执行完后响应的异常率，来判断已经下线的服务是否没有被Eureka、Ribbon及时更新（也就是服务的感知情况），从而使调用方调用到了不可用的服务。
+服务被调用方现有8081、8083、8084三个端口的实例，本次实验统一下线其中两个服务实例，并且Ribbon负载均衡的策略都为默认
+4.Eureka几种服务下线的方式 4.1强制下线 直接关闭进程，类似于在服务器上通过kill-9的方式。通过下面的案例可以看到，当我强制下线了服务下的两个服务实例之后，此时立即进行服务间的远程调用（由于Eureka的缓存机制，已经下线的服务还会在缓存的服务列表中没来得及更新，但是列表里已经被下线的实例已经无法再处理请求），调用方会报出connect refused的错误，就像这样：
+在控制台中，调用方直接无法建立连接，请求已经到达目标服务，但目标服务主动拒绝了连接。
+在postman中发起调用的接口则是直接报出了500错误，显示服务端存在内部问题：
+PS：这样下线会存在很多风险，比如进程中还有请求在处理，不建议使用
+压测 15S，使用Jmeter压测模型进行压测，发现异常率高达51%
+30S，使用Jmeter压测模型进行压测，发现异常率为0%
+4.2 发送delete（）请求 向Eureka服务端发送http请求，来删除注册表的服务信息，也就是一级缓存中的数据
+@GetMapping(&#34;/service-down&#34;) public String shutDown(@RequestParam List&lt;Integer&gt; portParams,@RequestParam String vipAddress) { List&lt;Integer&gt; successList = new ArrayList&lt;&gt;(); //获取到服务名下的所有服务实例 List&lt;InstanceInfo&gt; instances = eurekaClient.getInstancesByVipAddress(vipAddress, false); //map&lt;端口-实例id&gt; instances.forEach(temp -&gt; { String instanceId = temp.getInstanceId(); String appName = temp.getAppName(); int port = temp." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/d642cd4076daae1c675adca334990fdb/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-11-29T09:23:02+08:00" />
+<meta property="article:modified_time" content="2023-11-29T09:23:02+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">通过JMeter压测结果来分析Eureka多种服务下线机制后的服务感知情况</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#_1" rel="nofollow">前言</a></li><li><a href="#1_EurekaServer_5" rel="nofollow">1. Eureka-Server的设计</a></li><li><a href="#2_EurekaRibbon_7" rel="nofollow">2. Eureka+Ribbon感知下线服务机制</a></li><li><a href="#3_11" rel="nofollow">3.服务调用接口压测模型</a></li><li><a href="#4Eureka_17" rel="nofollow">4.Eureka几种服务下线的方式</a></li><li><ul><li><a href="#41_18" rel="nofollow">4.1强制下线</a></li><li><ul><li><a href="#_25" rel="nofollow">压测</a></li></ul> 
+    </li><li><a href="#42_delete_31" rel="nofollow">4.2 发送delete（）请求</a></li><li><ul><li><a href="#_86" rel="nofollow">压测</a></li></ul> 
+    </li><li><a href="#43_DiscoveryManager_93" rel="nofollow">4.3 调用DiscoveryManager</a></li><li><ul><li><a href="#_142" rel="nofollow">压测</a></li></ul> 
+    </li><li><a href="#44_Actuator_150" rel="nofollow">4.4 三方工具Actuator</a></li><li><ul><li><a href="#_189" rel="nofollow">压测</a></li></ul> 
+   </li></ul> 
+   </li><li><a href="#_195" rel="nofollow">总结</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="_1"></a>前言</h3> 
+<p>上文末尾讲到了Eureka对于下线服务的感知不是很敏锐，<strong>会把已经下线的服务加载到可用的服务列表里</strong>。当轮询到该服务实例来处理请求就会出现“调用请求已经发送出去，但是接口却TimeOut、404、500…错误”，本文会使用多种服务下线方式并结合JMeter压测来具体分析<br> <img src="https://images2.imgbox.com/2c/32/RJvpPfxI_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="1_EurekaServer_5"></a>1. Eureka-Server的设计</h3> 
+<p>Eureka中设计了三级缓存：一级缓存（registry注册表）——二级缓存（readWriteCacheMap读写缓存）——三级缓存（readOnlyCacheMap只读缓存）。<strong>作为经典的AP模型，读写分离，牺牲了一致性保证了高可用。</strong>（以后会分析源码）</p> 
+<h3><a id="2_EurekaRibbon_7"></a>2. Eureka+Ribbon感知下线服务机制</h3> 
+<p>当客户端的服务实例正常下线，会发送心跳向Eureka服务端中的<strong>一级缓存更新信息（30S）——一级缓存会向二级缓存同步信息（立刻）——二级缓存向三级缓存同步信息（30S）——客户端从三级缓存中同步信息（30S）——Ribbon会向客户端同步缓存，更新服务列表upList（30S）</strong>,可见如果是在极端情况下，感知到一个服务下线是需要120S的。（注意这并不是串行化执行，30S均为默认时间）<br> <img src="https://images2.imgbox.com/2f/d0/bCNk6sTu_o.png" alt="在这里插入图片描述"><br> 下面基于这个流程，采用多种下线的方式结合JMeter压测报告来研究Eureka服务下线感知情况</p> 
+<h3><a id="3_11"></a>3.服务调用接口压测模型</h3> 
+<p>采用Jmeter（100个线程—3S内请求）对服务下线后的服务调用接口进行压测，来观察接口执行情况，以及结合日志来体现Ribbon的负载均衡情况：<br> <img src="https://images2.imgbox.com/11/a5/b6edPHcr_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/67/ac/0cNvcKiN_o.png" alt="在这里插入图片描述"><br> 通过观察线程组执行完后响应的异常率，来判断已经下线的服务是否没有被Eureka、Ribbon及时更新（也就是服务的感知情况），从而使调用方调用到了不可用的服务。<br> 服务被调用方现有8081、8083、8084三个端口的实例，本次实验统一下线其中两个服务实例，并且Ribbon负载均衡的策略都为默认</p> 
+<h3><a id="4Eureka_17"></a>4.Eureka几种服务下线的方式</h3> 
+<h4><a id="41_18"></a>4.1强制下线</h4> 
+<p>直接关闭进程，类似于在服务器上通过kill-9的方式。通过下面的案例可以看到，当我强制下线了服务下的两个服务实例之后，此时立即进行服务间的远程调用（由于Eureka的缓存机制，已经下线的服务还会在缓存的服务列表中没来得及更新，但是列表里已经被下线的实例已经无法再处理请求），调用方会报出connect refused的错误，就像这样：<br> 在控制台中，调用方直接无法建立连接，请求已经到达目标服务，但目标服务主动拒绝了连接。<br> <img src="https://images2.imgbox.com/ac/aa/XyE3zcIL_o.png" alt="在这里插入图片描述"><br> 在postman中发起调用的接口则是直接报出了500错误，显示服务端存在内部问题：<br> <img src="https://images2.imgbox.com/a3/73/CoMcUdId_o.png" alt="在这里插入图片描述"><br> PS：<strong>这样下线会存在很多风险，比如进程中还有请求在处理，不建议使用</strong></p> 
+<h5><a id="_25"></a>压测</h5> 
+<p>15S，使用Jmeter压测模型进行压测，发现异常率高达51%<br> <img src="https://images2.imgbox.com/44/70/YTYt8yW2_o.png" alt="在这里插入图片描述"><br> 30S，使用Jmeter压测模型进行压测，发现异常率为0%<br> <img src="https://images2.imgbox.com/1a/99/9muCvZZL_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="42_delete_31"></a>4.2 发送delete（）请求</h4> 
+<p>向Eureka服务端发送http请求，来删除注册表的服务信息，也就是一级缓存中的数据</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span><span class="token string">"/service-down"</span><span class="token punctuation">)</span>
+<span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">shutDown</span><span class="token punctuation">(</span><span class="token annotation punctuation">@RequestParam</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> portParams<span class="token punctuation">,</span><span class="token annotation punctuation">@RequestParam</span> <span class="token class-name">String</span> vipAddress<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> successList <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ArrayList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//获取到服务名下的所有服务实例</span>
+    <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">InstanceInfo</span><span class="token punctuation">&gt;</span></span> instances <span class="token operator">=</span> eurekaClient<span class="token punctuation">.</span><span class="token function">getInstancesByVipAddress</span><span class="token punctuation">(</span>vipAddress<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//map&lt;端口-实例id&gt;</span>
+    instances<span class="token punctuation">.</span><span class="token function">forEach</span><span class="token punctuation">(</span>temp <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">String</span> instanceId <span class="token operator">=</span> temp<span class="token punctuation">.</span><span class="token function">getInstanceId</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">String</span> appName <span class="token operator">=</span> temp<span class="token punctuation">.</span><span class="token function">getAppName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">int</span> port <span class="token operator">=</span> temp<span class="token punctuation">.</span><span class="token function">getPort</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//"http://eureka-server-url/eureka/apps/" + appName + "/" + instanceId;</span>
+        sourceMap<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span>port<span class="token punctuation">,</span> appName <span class="token operator">+</span><span class="token string">"/"</span><span class="token operator">+</span>instanceId<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//创建请求体</span>
+    <span class="token class-name">OkHttpClient</span> client <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">OkHttpClient</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">ObjectUtils</span><span class="token punctuation">.</span><span class="token function">isEmpty</span><span class="token punctuation">(</span>portParams<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">return</span> <span class="token string">"端口为空"</span><span class="token punctuation">;</span> <span class="token comment">//todo 完善自定义异常</span>
+    <span class="token punctuation">}</span>
+    portParams<span class="token punctuation">.</span><span class="token function">forEach</span><span class="token punctuation">(</span>temp<span class="token operator">-&gt;</span><span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//处理服务信息</span>
+        <span class="token class-name">String</span> serviceInfo <span class="token operator">=</span> sourceMap<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>temp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//创建请求去删除服务</span>
+        <span class="token class-name">Request</span> request <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Request<span class="token punctuation">.</span>Builder</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">url</span><span class="token punctuation">(</span><span class="token string">"http://"</span><span class="token operator">+</span>eurekaServer<span class="token operator">+</span><span class="token string">"/eureka/apps/"</span> <span class="token operator">+</span> serviceInfo<span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">delete</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        log<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span>request<span class="token punctuation">.</span><span class="token function">url</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">Response</span> response <span class="token operator">=</span> client<span class="token punctuation">.</span><span class="token function">newCall</span><span class="token punctuation">(</span>request<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>response<span class="token punctuation">.</span><span class="token function">code</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">200</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                log<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span>serviceInfo<span class="token operator">+</span><span class="token string">"服务下线成功"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                successList<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>temp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                log<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span>serviceInfo<span class="token operator">+</span><span class="token string">"服务下线失败"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">IOException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span>e<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token string">"goodbye service"</span><span class="token operator">+</span>successList<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>使用这种方法，就是越过了client向一级缓存发送心跳的步骤，直接清除了一级缓存相当节省了极端情况的30S。其实这也是不可取的，因为此时我只是相当于告诉了eureka-Serve，该服务下线了，但是服务进程在没有被关闭的条件下还是会发送心跳向eureka-server的一级缓存同步信息的。<br> 就会导致这样一种情况发生：<br> <img src="https://images2.imgbox.com/bd/9f/pNbvBuwZ_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/54/6c/N1JfV5ua_o.png" alt="在这里插入图片描述"><br> 时间过了大约十几秒之后，下线的服务又被注册了回来：<img src="https://images2.imgbox.com/3e/6b/sbdQLjIJ_o.png" alt="在这里插入图片描述"><br> 在刚执行完下线服务的接口之后，<strong>立即</strong>进行远程调用，就出现了异常情况，接口响应时长太长太长：<br> <img src="https://images2.imgbox.com/ae/9d/QeRSQhqk_o.png" alt="在这里插入图片描述"><br> 我的理解：由于调用了下线服务的接口，Eureka-Server中的一级缓存信息被清除了，但是三级缓存以及Ribbon中的缓存并没有被清除（也就是更新）。恰巧负载均衡轮询到了已下线但未更新的服务实例，负载均衡使得调用方成功发送了请求，也就是给了调用方一个假象。值得注意的是，直到此时客户端的服务在物理层面上是没有下线的，他还在向Eureka-server的一级缓存发送心跳并同步到三级缓存来保证服务可用。而这段时间（续约服务）就是接口响应时间过长的原因所在。</p> 
+<h5><a id="_86"></a>压测</h5> 
+<p>15S，使用Jmeter压测模型进行压测，发现接口异常率为0%<br> <img src="https://images2.imgbox.com/08/ae/2f0gjnBT_o.png" alt="在这里插入图片描述"><br> 30S，使用Jmeter压测模型进行压测，发现接口异常率为0%<br> <img src="https://images2.imgbox.com/3d/7c/TO7WhfK6_o.png" alt="在这里插入图片描述"><br> 为什么这样的方式在上述的两个时间节点都不会出现问题，这是因为15S，30S后下线的服务已经续约上了，跨服务调用的接口请求还是被负载均衡到了三个服务实例上。<br> 可以想象：<strong>当Eureka-Server中的二级缓存去同步一级缓存时，下线的服务已经通过心跳续约到了一级缓存（注册表）中，下线的服务已经重新注册，三级缓存同步二级缓存时，服务都是在线的状态，不存在什么调用到下线的服务。</strong></p> 
+<h4><a id="43_DiscoveryManager_93"></a>4.3 调用DiscoveryManager</h4> 
+<p>客户端主动下线，调用DiscoveryManager的API来下线服务（不会关闭进程）。可以通过接口来发送http请求的方式：</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"/service-down"</span><span class="token punctuation">)</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">offLine</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">DiscoveryManager</span><span class="token punctuation">.</span><span class="token function">getInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">shutdownComponent</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>为了方便下线指定端口，我是这样写的（发请求通过接口调接口）：</p> 
+<pre><code class="prism language-java"> <span class="token comment">/**
+     * DiscoveryManager下线服务
+     * @param portParams 下线端口列表
+     */</span>
+    <span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"/service-down-list"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">offLine</span><span class="token punctuation">(</span><span class="token annotation punctuation">@RequestParam</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> portParams<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> successList <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ArrayList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//得到服务信息</span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">InstanceInfo</span><span class="token punctuation">&gt;</span></span> instances <span class="token operator">=</span> eurekaClient<span class="token punctuation">.</span><span class="token function">getInstancesByVipAddress</span><span class="token punctuation">(</span>appName<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> servicePorts <span class="token operator">=</span> instances<span class="token punctuation">.</span><span class="token function">stream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span><span class="token class-name">InstanceInfo</span><span class="token operator">::</span><span class="token function">getPort</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span><span class="token class-name">Collectors</span><span class="token punctuation">.</span><span class="token function">toList</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">//去服务列表里挨个下线</span>
+        <span class="token class-name">OkHttpClient</span> client <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">OkHttpClient</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        portParams<span class="token punctuation">.</span><span class="token function">forEach</span><span class="token punctuation">(</span>temp <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>servicePorts<span class="token punctuation">.</span><span class="token function">contains</span><span class="token punctuation">(</span>temp<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token class-name">Request</span> request <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Request<span class="token punctuation">.</span>Builder</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                        <span class="token punctuation">.</span><span class="token function">url</span><span class="token punctuation">(</span><span class="token string">"http://"</span> <span class="token operator">+</span> ipAddress <span class="token operator">+</span> <span class="token string">":"</span> <span class="token operator">+</span> temp <span class="token operator">+</span> <span class="token string">"/control/service-down"</span><span class="token punctuation">)</span>
+                        <span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token class-name">Response</span> response <span class="token operator">=</span> client<span class="token punctuation">.</span><span class="token function">newCall</span><span class="token punctuation">(</span>request<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>response<span class="token punctuation">.</span><span class="token function">code</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">200</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        log<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span>temp <span class="token operator">+</span> <span class="token string">"服务下线成功"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        successList<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>temp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                        log<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span>temp <span class="token operator">+</span> <span class="token string">"服务下线失败"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">IOException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span>e<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> successList <span class="token operator">+</span> <span class="token string">"优雅下线成功"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>这样下线之后，客户端服务不会向eureka-server发送心跳，并且在一级缓存中的服务信息也会被立即清除。<br> 理想状态：如果我们通过这样的方式，来下线服务，并且更新Ribbon同步缓存的时间，二级缓存同步三级缓存的时间，客户端同步三级缓存的时间，这样轮询到下线服务的概率是不是会大大减小？<strong>（当然更新这个时间应该只是针对原生的Eureka，对于SpringCloudEureka是不适用的）</strong></p> 
+<h5><a id="_142"></a>压测</h5> 
+<p><strong>15S，异常率为0%，但是一级缓存中不存在的服务信息还是会被调用</strong><br> <img src="https://images2.imgbox.com/27/5d/jjyCLTA7_o.png" alt="在这里插入图片描述"><br> <strong>30S，一级缓存中不存在的服务信息还是会被调用。</strong><br> <img src="https://images2.imgbox.com/e5/5c/HNYaq4vL_o.png" alt="在这里插入图片描述"><br> 虽然上述两个时间节点的异常率都为0%，但是会负载均衡到刚刚通过api调用后已经下线的服务实例上：<br> <img src="https://images2.imgbox.com/29/5e/IdYJhX6J_o.png" alt="在这里插入图片描述"><br> <strong>只有在40-50S的时间段才会不调用下线的服务，这段时间主要是在进行Eureka本地缓存的同步（二级同步三级，客户端同步三级，Ribbon同步客户端）</strong></p> 
+<h4><a id="44_Actuator_150"></a>4.4 三方工具Actuator</h4> 
+<p>使用第三方工具，actuator来关闭服务，网上发现听说这种方式会让服务把当前请求处理完在关闭，并且会立即停止接受请求（关闭进程），实现起来比较简单只需要引入actuator依赖并且发送指定端口的post请求即可，就像这样：<br> <img src="https://images2.imgbox.com/1c/7c/YJfzKVNS_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+     * actuator下线服务列表
+     * @param portParams 端口集合
+     * @return 优雅
+     */</span>
+    <span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"/service-down-ports"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">downServiceByPorts</span><span class="token punctuation">(</span><span class="token annotation punctuation">@RequestParam</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> portParams<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">ObjectUtils</span><span class="token punctuation">.</span><span class="token function">isEmpty</span><span class="token punctuation">(</span>portParams<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token string">"端口为空"</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">//成功下线列表</span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> successList <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ArrayList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">OkHttpClient</span> client <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">OkHttpClient</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        portParams<span class="token punctuation">.</span><span class="token function">forEach</span><span class="token punctuation">(</span>temp <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">Request</span> request <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Request<span class="token punctuation">.</span>Builder</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                    <span class="token punctuation">.</span><span class="token function">url</span><span class="token punctuation">(</span><span class="token string">"http://"</span> <span class="token operator">+</span> ipAddress <span class="token operator">+</span> <span class="token string">":"</span> <span class="token operator">+</span> temp <span class="token operator">+</span> <span class="token string">"/actuator/shutdown"</span><span class="token punctuation">)</span>
+                    <span class="token punctuation">.</span><span class="token function">post</span><span class="token punctuation">(</span><span class="token class-name">RequestBody</span><span class="token punctuation">.</span><span class="token function">create</span><span class="token punctuation">(</span><span class="token keyword">null</span><span class="token punctuation">,</span> <span class="token keyword">new</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                    <span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token class-name">Response</span> response <span class="token operator">=</span> client<span class="token punctuation">.</span><span class="token function">newCall</span><span class="token punctuation">(</span>request<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>response<span class="token punctuation">.</span><span class="token function">code</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">200</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    log<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span>temp <span class="token operator">+</span> <span class="token string">"服务下线成功"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    successList<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>temp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                    log<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span>temp <span class="token operator">+</span> <span class="token string">"服务下线失败"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">IOException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span>e<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> successList <span class="token operator">+</span> <span class="token string">"优雅下线成功"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>服务会被下线，并且Eureka里一级缓存的数据立即会被清除，搭配起更改缓存同步的时间应该也是一个不错的选择（这也是针对原生的Eureka）</p> 
+<h5><a id="_189"></a>压测</h5> 
+<p><strong>15S，异常率高达50%</strong><br> <img src="https://images2.imgbox.com/49/a0/7BrhaH1b_o.png" alt="在这里插入图片描述"><br> <strong>30S，异常率为0%</strong><br> <img src="https://images2.imgbox.com/1d/be/BWbJ3Jc3_o.png" alt="在这里插入图片描述"><br> 看下来，后两种方案可以直接清理一级缓存，并且服务不会续约。但是由于三级缓存不是实时更新的，所以还是会有调用下线服务导致接口报错的风险。</p> 
+<h3><a id="_195"></a>总结</h3> 
+<p>接口报错的前提是发生了服务调用，发生服务调用的前提是负载均衡，负载均衡的前提是拉取同步信息到Ribbon缓存，而问题就出在这里，即Ribbon加载到了已经下线的服务。想到去清理Ribbon缓存（强制更新）这样做可以减少刷新服务的时间但不能根本解决问题，因为他是从客户端同步的缓存，而客户端又是从三级缓存同步的缓存，所以归根结底在于三级缓存同步二级缓存也就相当于是一级缓存（这个过程时间非常短）。但是springcloudeureka是不能强制更新三级缓存的<br> 好像只能通过缩短感应时间来降低错误发生的概率，不能完全避免错误<br> 对于SpringCloudEureka而言，上面的方式还有很多优化的手段来缩短感知时间，我们下次再来talk about~</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/58d616ef9628f338aa1110a6691ae5ed/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">阿里云MQTT: 子设备上线流程</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/aa133850b7185f266616d0da151135b5/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">mysql 左连接去重子表数据并汇总</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

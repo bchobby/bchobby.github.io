@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>什么是零拷贝 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="什么是零拷贝" />
+<meta property="og:description" content="零拷贝是老生常谈的问题，无论是Kafka还是Netty等都用到了零拷贝的知识，那究竟什么是零拷贝呢
+什么是零拷贝 “零”：表示次数是0，它表示拷贝数据的次数是0
+“拷贝”：指数据从一个存储区域转移到另一个存储区域
+合起来，那零拷贝就是不需要将数据从一个存储区域复制到另一个存储区域。
+零拷贝是指计算机执行IO操作时，CPU不需要将数据从一个存储区域复制到另一个存储区域，进而减少上下文切换以及CPU的拷贝时间。它是一种IO操作优化技术。
+传统IO的执行流程 比如想实现一个下载功能，服务端的任务就是：将服务器主机磁盘中的文件从已连接的socket中发出去，关键代码如下
+while((n = read(diskfd, buf, BUF_SIZE)) &gt; 0) write(sockfd, buf, n); 传统的IO流程包括read以及write的过程
+read:将数据从磁盘读取到内核缓存区中，在拷贝到用户缓冲区
+write:先将数据写入到socket缓冲区中，最后写入网卡设备
+流程图如下
+1.应用程序调用read函数，向操作系统发起IO调用，上下文从用户态切换至内核态
+2.DMA控制器把数据从磁盘中读取到内核缓冲区
+3.CPU把内核缓冲区数据拷贝到用户应用缓冲区，上下文从内核态切换至用户态，此时read函数返回
+4.用户应用进程通过write函数，发起IO调用，上下文从用户态切换至内核态
+5.CPU将缓冲区的数据拷贝到socket缓冲区
+6.DMA控制器将数据从socket缓冲区拷贝到网卡设备，上下文从内核态切换至用户态，此时write函数返回
+从流程图中可以看出传统的IO流程包括***4次上下文的切换***，4次拷贝数据(两次CPU拷贝以及两次DMA拷贝)
+前置知识 内核空间和用户空间 我们电脑上跑着的应用程序，其实是需要经过操作系统，才能做一些特殊操作，如磁盘文件读写、内存的读写等等。因为这些都是比较危险的操作，不可以由应用程序乱来，只能交给底层操作系统来。
+因此，操作系统为每个进程都分配了内存空间，一部分是用户空间，一部分是内核空间。内核空间是操作系统内核访问的区域，是受保护的内存空间，而用户空间是用户应用程序访问的内存区域。 以32位操作系统为例，它会为每一个进程都分配了4G(2的32次方)的内存空间。
+内核空间：主要提供进程调度、内存分配、连接硬件资源等功能
+用户空间：提供给各个程序进程的空间，它不具有访问内核空间资源的权限，如果应用程序需要使用到内核空间的资源，则需要通过系统调用来完成。进程从用户空间切换到内核空间，完成相关操作后，再从内核空间切换回用户空间。
+用户态和内核态 如果进程运行于内核空间，被称为进程的内核态。
+如果进程运行于用户空间，被称为进程的用户态。
+什么是上下文切换 什么是上下文
+CPU 寄存器，是CPU内置的容量小、但速度极快的内存。而程序计数器，则是用来存储 CPU 正在执行的指令位置、或者即将执行的下一条指令位置。它们都是 CPU 在运行任何任务前，必须的依赖环境，因此叫做CPU上下文。
+什么是上下文切换
+它是指，先把前一个任务的CPU上下文（也就是CPU寄存器和程序计数器）保存起来，然后加载新任务的上下文到这些寄存器和程序计数器，最后再跳转到程序计数器所指的新位置，运行新任务。
+一般我们说的上下文切换，就是指内核（操作系统的核心）在CPU上对进程或者线程进行切换。进程从用户态到内核态的转变，需要通过系统调用来完成。系统调用的过程，会发生CPU上下文的切换。
+虚拟内存 现代操作系统使用虚拟内存，即虚拟地址取代物理地址，使用虚拟内存可以有2个好处：
+1.虚拟内存空间可以远远大于物理内存空间
+2.多个虚拟内存可以指向同一个物理地址
+正是多个虚拟内存可以指向同一个物理地址，可以把内核空间和用户空间的虚拟地址映射到同一个物理地址，这样的话，就可以减少IO的数据拷贝次数，示意图如下
+DMA技术 DMA，英文全称是Direct Memory Access，即直接内存访问。DMA本质上是一块主板上独立的芯片，允许外设设备和内存存储器之间直接进行IO数据传输，其过程不需要CPU的参与。
+简单的说它就是帮住CPU转发一下IO请求以及拷贝数据，那为什么需要它呢？其实主要是效率问题。它帮忙CPU做事情，这时候，CPU就可以闲下来去做别的事情，提高了CPU的利用效率。大白话解释就是，CPU老哥太忙太累啦，所以他找了个小弟（名叫DMA） ，替他完成一部分的拷贝工作，这样CPU老哥就能着手去做其他事情。
+下面看下DMA具体是做了哪些工作
+1.用户应用程序调read函数，向操作系统发起IO调用，进入阻塞状态等待数据返回
+2.CPU接到指令后，对DMA控制器发起指令调度
+3.DMA收到请求后，将请求发送给磁盘
+4.磁盘将数据放入磁盘控制缓冲区并通知DMA
+5.DMA将数据从磁盘控制器缓冲区拷贝到内核缓冲区
+6.DMA向CPU发送数据读完的信号，CPU负责将数据从内核缓冲区拷贝到用户缓冲区
+7.用户应用进程由内核态切回用户态，解除阻塞状态" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/feb43a01f069dc824a6bec2cd9b08ddf/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-11-21T11:54:01+08:00" />
+<meta property="article:modified_time" content="2022-11-21T11:54:01+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">什么是零拷贝</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <div id="article_content" class="article_content clearfix"> 
+ <p><a href="https://so.csdn.net/so/search?q=%E9%9B%B6%E6%8B%B7%E8%B4%9D&amp;spm=1001.2101.3001.7020" target="_blank" class="hl hl-1" rel="noopener noreferrer">零拷贝</a>是老生常谈的问题，无论是Kafka还是Netty等都用到了零拷贝的知识，那究竟什么是零拷贝呢</p> 
+ <h2><a id="_2"></a>什么是零拷贝</h2> 
+ <p>“零”：表示次数是0，它表示拷贝数据的次数是0<br> “拷贝”：指数据从一个存储区域转移到另一个存储区域<br> 合起来，那零拷贝就是不需要将数据从一个存储区域复制到另一个存储区域。</p> 
+ <blockquote> 
+  <p>零拷贝是指计算机执行IO操作时，CPU不需要将数据从一个存储区域复制到另一个存储区域，进而减少上下文切换以及CPU的拷贝时间。它是一种IO操作优化技术。</p> 
+ </blockquote> 
+ <h2><a id="IO_9"></a>传统IO的执行流程</h2> 
+ <p>比如想实现一个下载功能，服务端的任务就是：将服务器主机磁盘中的文件从已连接的socket中发出去，关键代码如下</p> 
+</div> 
+<pre><code class="prism language-c"><span class="token keyword">while</span><span class="token punctuation">(</span><span class="token punctuation">(</span>n <span class="token operator">=</span> <span class="token function">read</span><span class="token punctuation">(</span>diskfd<span class="token punctuation">,</span> buf<span class="token punctuation">,</span> BUF_SIZE<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+	<span class="token function">write</span><span class="token punctuation">(</span>sockfd<span class="token punctuation">,</span> buf<span class="token punctuation">,</span> n<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>传统的IO流程包括read以及write的过程<br> <strong>read</strong>:将数据从磁盘读取到内核缓存区中，在拷贝到用户缓冲区<br> <strong>write</strong>:先将数据写入到socket缓冲区中，最后写入网卡设备</p> 
+<p>流程图如下<br> <img src="https://images2.imgbox.com/1d/bf/eZy6szjT_o.png" alt="在这里插入图片描述"><br> 1.应用程序调用read函数，向操作系统发起IO调用，<em><strong>上下文从用户态切换至内核态</strong></em><br> 2.DMA控制器把数据从磁盘中读取到内核缓冲区<br> 3.CPU把内核缓冲区数据拷贝到用户应用缓冲区，<em><strong>上下文从内核态切换至用户态</strong></em>，此时read函数返回<br> 4.用户应用进程通过write函数，发起IO调用，<em><strong>上下文从用户态切换至内核态</strong></em><br> 5.CPU将缓冲区的数据拷贝到socket缓冲区<br> 6.DMA控制器将数据从socket缓冲区拷贝到网卡设备，<em><strong>上下文从内核态切换至用户态</strong></em>，此时write函数返回</p> 
+<p>从流程图中可以看出传统的IO流程包括***4次上下文的切换***，<em><strong>4次拷贝数据</strong></em>(两次CPU拷贝以及两次DMA拷贝)</p> 
+<h2><a id="_31"></a>前置知识</h2> 
+<h3><a id="_32"></a>内核空间和用户空间</h3> 
+<p>我们电脑上跑着的应用程序，其实是需要经过操作系统，才能做一些特殊操作，如磁盘文件读写、内存的读写等等。因为这些都是比较危险的操作，不可以由应用程序乱来，只能交给底层操作系统来。</p> 
+<p>因此，操作系统为每个进程都分配了内存空间，一部分是用户空间，一部分是内核空间。内核空间是操作系统内核访问的区域，是受保护的内存空间，而用户空间是用户应用程序访问的内存区域。 以32位操作系统为例，它会为每一个进程都分配了4G(2的32次方)的内存空间。</p> 
+<p><strong>内核空间</strong>：主要提供进程调度、内存分配、连接硬件资源等功能<br> <strong>用户空间</strong>：提供给各个程序进程的空间，它不具有访问内核空间资源的权限，如果应用程序需要使用到内核空间的资源，则需要通过系统调用来完成。进程从用户空间切换到内核空间，完成相关操作后，再从内核空间切换回用户空间。</p> 
+<h3><a id="_40"></a>用户态和内核态</h3> 
+<p>如果进程运行于内核空间，被称为进程的内核态。<br> 如果进程运行于用户空间，被称为进程的用户态。</p> 
+<h3><a id="_44"></a>什么是上下文切换</h3> 
+<p>什么是上下文</p> 
+<blockquote> 
+ <p>CPU 寄存器，是CPU内置的容量小、但速度极快的内存。而程序计数器，则是用来存储 CPU 正在执行的指令位置、或者即将执行的下一条指令位置。它们都是 CPU 在运行任何任务前，必须的依赖环境，因此叫做CPU上下文。</p> 
+</blockquote> 
+<p>什么是上下文切换</p> 
+<blockquote> 
+ <p>它是指，先把前一个任务的CPU上下文（也就是CPU寄存器和程序计数器）保存起来，然后加载新任务的上下文到这些寄存器和程序计数器，最后再跳转到程序计数器所指的新位置，运行新任务。</p> 
+</blockquote> 
+<p>一般我们说的上下文切换，就是指内核（操作系统的核心）在CPU上对进程或者线程进行切换。进程从用户态到内核态的转变，需要通过系统调用来完成。系统调用的过程，会发生CPU上下文的切换。<br> <img src="https://images2.imgbox.com/e3/12/6h9bl2aX_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_55"></a>虚拟内存</h3> 
+<p>现代操作系统使用虚拟内存，即虚拟地址取代物理地址，使用虚拟内存可以有2个好处：</p> 
+<p><strong>1.虚拟内存空间可以远远大于物理内存空间<br> 2.多个虚拟内存可以指向同一个物理地址</strong><br> 正是多个虚拟内存可以指向同一个物理地址，可以把内核空间和用户空间的虚拟地址映射到同一个物理地址，这样的话，就可以减少IO的数据拷贝次数，示意图如下<br> <img src="https://images2.imgbox.com/f2/a4/9FZQL2Q4_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="DMA_62"></a>DMA技术</h3> 
+<p>DMA，英文全称是Direct Memory Access，即直接内存访问。DMA本质上是一块主板上独立的芯片，允许外设设备和内存存储器之间直接进行IO数据传输，<strong>其过程不需要CPU的参与</strong>。</p> 
+<p>简单的说它就是帮住CPU转发一下IO请求以及拷贝数据，那为什么需要它呢？其实主要是效率问题。它帮忙CPU做事情，这时候，CPU就可以闲下来去做别的事情，提高了CPU的利用效率。大白话解释就是，CPU老哥太忙太累啦，所以他找了个小弟（名叫DMA） ，替他完成一部分的拷贝工作，这样CPU老哥就能着手去做其他事情。</p> 
+<p>下面看下DMA具体是做了哪些工作<br> <img src="https://images2.imgbox.com/be/5d/b3vqvo79_o.png" alt="在这里插入图片描述"><br> 1.用户应用程序调read函数，向操作系统发起IO调用，进入阻塞状态等待数据返回<br> 2.CPU接到指令后，对DMA控制器发起指令调度<br> 3.DMA收到请求后，将请求发送给磁盘<br> 4.磁盘将数据放入磁盘控制缓冲区并通知DMA<br> 5.DMA将数据从磁盘控制器缓冲区拷贝到内核缓冲区<br> 6.DMA向CPU发送数据读完的信号，CPU负责将数据从内核缓冲区拷贝到用户缓冲区<br> 7.用户应用进程由内核态切回用户态，解除阻塞状态</p> 
+<h2><a id="_77"></a>如何实现零拷贝</h2> 
+<p>零拷贝并不是没有拷贝数据，而是减少用户态、内核态的切换次数以及CPU拷贝次数；实现零拷贝主要有三种方式分别是<br> 1.mmap + write<br> 2.sendfile<br> 3.带有DMA收集拷贝功能的sendfile</p> 
+<h3><a id="mmap_83"></a>mmap</h3> 
+<p>mmap的函数原型如下</p> 
+<pre><code class="prism language-c"><span class="token keyword">void</span> <span class="token operator">*</span><span class="token function">mmap</span><span class="token punctuation">(</span><span class="token keyword">void</span> <span class="token operator">*</span>addr<span class="token punctuation">,</span> <span class="token class-name">size_t</span> length<span class="token punctuation">,</span> <span class="token keyword">int</span> prot<span class="token punctuation">,</span> <span class="token keyword">int</span> flags<span class="token punctuation">,</span> <span class="token keyword">int</span> fd<span class="token punctuation">,</span> <span class="token class-name">off_t</span> offset
+</code></pre> 
+<p>addr:指定映射的虚拟内存地址<br> length:映射的长度<br> prot:映射内存的保护模式<br> flags:指定映射的类型<br> fd:进行映射的文件句柄<br> offset:文件偏移量</p> 
+<p>前面一小节，我们介绍了虚拟内存，可以把内核空间和用户空间的虚拟地址映射到同一个物理地址，从而减少数据拷贝次数！mmap就是用了虚拟内存这个特点，它将内核中的读缓冲区与用户空间的缓冲区进行映射，所有的IO都在内核中完成。mmap+write实现的零拷贝流程如下：<br> <img src="https://images2.imgbox.com/13/4e/LHe60dGQ_o.png" alt="在这里插入图片描述"><br> 1.用户进程通过调用mmap方法向操作系统内核发起IO调用，<em><strong>上下文从用户态切换至内核态</strong></em><br> 2.CPU利用DMA控制器，将数据从硬盘拷贝到内核缓冲区<br> 3.<em><strong>上下文从内核态切换回用户态</strong></em>，mmap方法返回<br> 4.用户进程通过调用write方法向操作系统内核再次发起IO调用，<em><strong>上下文从用户态切换至内核态</strong></em><br> 5.CPU将内核缓冲区的数据拷贝到socket缓冲区<br> 6.CPU利用DMA控制器，将数据从socket缓冲器拷贝到网卡，<em><strong>上下文从内核态切换至用户态</strong></em>，write方法返回</p> 
+<p>可以发现，mmap+write实现的零拷贝其中发生了4次上线文切换以及3次拷贝(2次DMA拷贝+1次cpu拷贝)</p> 
+<h3><a id="sendfile_107"></a>sendfile</h3> 
+<p>sendfile是Linux2.1版本后内核引入 的一个系统调用函数，原型如下</p> 
+<pre><code class="prism language-c"><span class="token class-name">ssize_t</span> <span class="token function">sendfile</span><span class="token punctuation">(</span><span class="token keyword">int</span> out_fd<span class="token punctuation">,</span> <span class="token keyword">int</span> in_fd<span class="token punctuation">,</span> <span class="token class-name">off_t</span> <span class="token operator">*</span>offset<span class="token punctuation">,</span> <span class="token class-name">size_t</span> count<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>out_fd:为待写入内容的文件描述符<br> in_fd:为待读出内容的文件描述符<br> offset:文件偏移量<br> count:指定在fdout和fdin之间传输的字节数</p> 
+<p>sendfile表示在两个文件描述符之间传输数据，它是在操作系统内核中操作的，避免了数据从内核缓冲区和用户缓冲区之间的拷贝操作，因此可以使用它来实现零拷贝。sendfile实现的零拷贝流程如下：<br> <img src="https://images2.imgbox.com/db/67/nKrktzzQ_o.png" alt="在这里插入图片描述"><br> 1.用户进程发起sendfile系统调用，<em><strong>上下文从用户态切换至内核态</strong></em><br> 2.DMA控制器将数据从硬盘拷贝到内核缓冲区<br> 3.CPU将读缓冲区中的数据拷贝到socket缓冲区<br> 4.DMA控制器异步把数据从socket缓冲器拷贝到网卡<br> 5.<em><strong>上下文从内核态切换至用户态</strong></em>，sendfile函数返回</p> 
+<p>可以发现，sendfile实现的零拷贝仅仅发生了2次上下文切换以及3次拷贝(2次DMA拷贝+1次CPU拷贝)</p> 
+<p><em><strong>sendfile +DMA scatter/gather实现的零拷贝</strong></em><br> linux2.4版本后，对sendfile做了优化升级，引入SG-DMA技术，其实就是对DMA拷贝加入了scatter/gather操作，它可以直接从内核空间缓冲区中将数据读取到网卡，这样的话还可以省去CPU拷贝。<br> <img src="https://images2.imgbox.com/84/56/8tNyewdP_o.png" alt="在这里插入图片描述"><br> 1.用户进程发起sendfile系统调用，<em><strong>上下文从用户态切换至内核态</strong></em><br> 2.DMA控制器将数据从磁盘拷贝到内核缓冲器<br> 3.CPU把内核缓冲区中的<strong>文件描述符信息</strong>（包括内核缓冲区的内存地址和偏移量）直接发送到socket缓冲区<br> 4.DMA控制器根据文件描述符信息直接把数据从内核缓冲区拷贝到网卡<br> 5.<em><strong>上下文切换至用户态</strong></em>，sendfile返回</p> 
+<p><strong>可以发现sendfile + DMA scatter/gather实现的零拷贝发生了2次上下文切换以及2次数据拷贝，这就是真正的零拷贝技术，全程没有通过CPU来搬运数据，所有的数据都是通过DMA进行传输的。</strong></p> 
+<h2><a id="java_140"></a>java提供的零拷贝方式</h2> 
+<h3><a id="mmap_141"></a>mmap</h3> 
+<p>Java NIO有一个MappedByteBuffer的类可以用来实现内存映射。它的底层是调用的linux内核的mmap的API</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">MmapTest</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">FileChannel</span> readChannel <span class="token operator">=</span> <span class="token class-name">FileChannel</span><span class="token punctuation">.</span><span class="token keyword">open</span><span class="token punctuation">(</span><span class="token class-name">Paths</span><span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token string">"./jay.txt"</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token class-name">StandardOpenOption</span><span class="token punctuation">.</span><span class="token constant">READ</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token class-name">MappedByteBuffer</span> data <span class="token operator">=</span> readChannel<span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span><span class="token class-name">FileChannel<span class="token punctuation">.</span>MapMode</span><span class="token punctuation">.</span><span class="token constant">READ_ONLY</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">1024</span> <span class="token operator">*</span> <span class="token number">1024</span> <span class="token operator">*</span> <span class="token number">40</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token class-name">FileChannel</span> writeChannel <span class="token operator">=</span> <span class="token class-name">FileChannel</span><span class="token punctuation">.</span><span class="token keyword">open</span><span class="token punctuation">(</span><span class="token class-name">Paths</span><span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token string">"./siting.txt"</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token class-name">StandardOpenOption</span><span class="token punctuation">.</span><span class="token constant">WRITE</span><span class="token punctuation">,</span> <span class="token class-name">StandardOpenOption</span><span class="token punctuation">.</span><span class="token constant">CREATE</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//数据传输</span>
+            writeChannel<span class="token punctuation">.</span><span class="token function">write</span><span class="token punctuation">(</span>data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            readChannel<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            writeChannel<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span><span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>e<span class="token punctuation">.</span><span class="token function">getMessage</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="sendfile_163"></a>sendfile</h3> 
+<p>FileChannel的transferTo()/transferFrom()，底层就是sendfile() 系统调用函数。<a href="https://so.csdn.net/so/search?q=Kafka&amp;spm=1001.2101.3001.7020" target="_blank" class="hl hl-1" rel="noopener noreferrer">Kafka</a> 这个开源项目就用到它，平时面试的时候，回答面试官为什么这么快，就可以提到零拷贝sendfile这个点</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">SendFileTest</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">FileChannel</span> readChannel <span class="token operator">=</span> <span class="token class-name">FileChannel</span><span class="token punctuation">.</span><span class="token keyword">open</span><span class="token punctuation">(</span><span class="token class-name">Paths</span><span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token string">"./jay.txt"</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token class-name">StandardOpenOption</span><span class="token punctuation">.</span><span class="token constant">READ</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">long</span> len <span class="token operator">=</span> readChannel<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">long</span> position <span class="token operator">=</span> readChannel<span class="token punctuation">.</span><span class="token function">position</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            
+            <span class="token class-name">FileChannel</span> writeChannel <span class="token operator">=</span> <span class="token class-name">FileChannel</span><span class="token punctuation">.</span><span class="token keyword">open</span><span class="token punctuation">(</span><span class="token class-name">Paths</span><span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token string">"./siting.txt"</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token class-name">StandardOpenOption</span><span class="token punctuation">.</span><span class="token constant">WRITE</span><span class="token punctuation">,</span> <span class="token class-name">StandardOpenOption</span><span class="token punctuation">.</span><span class="token constant">CREATE</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//数据传输</span>
+            readChannel<span class="token punctuation">.</span><span class="token function">transferTo</span><span class="token punctuation">(</span>position<span class="token punctuation">,</span> len<span class="token punctuation">,</span> writeChannel<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            readChannel<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            writeChannel<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>e<span class="token punctuation">.</span><span class="token function">getMessage</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0924ede426ba0ab970c995afc959d9d4/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Ubuntu20.04安装orb-slam3</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/dac7ee6fbb8398237ce2f41f6a919324/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">网上蛋糕商城JSP页面</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

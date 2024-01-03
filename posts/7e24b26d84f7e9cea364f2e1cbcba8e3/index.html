@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>浅谈分布式事务的解决方案 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="浅谈分布式事务的解决方案" />
+<meta property="og:description" content="一、分布式事务 分布式事务就是指事务的参与者、支持事务的服务器、资源服务器以及事务管理器分别位于不同的分布式系统的不同节点之上。以上是百度百科的解释，简单的说，就是一次大的操作由不同的小操作组成，这些小的操作分布在不同的服务器上，且属于不同的应用，分布式事务需要保证这些小操作要么全部成功，要么全部失败。本质上来说，分布式事务就是为了保证不同数据库的数据一致性。
+画外音：提起分布式系统，我们不得不想起CAP理论。这里不展开讨论，可以参考前篇文章分布式系统理解之CAP理论的发展
+以商品流水账单为例，我们拆分为商品购买系统，订单系统，支付系统。
+用户看中一件商品，点击购买。商品购买系统响应用户的点击，向订单系统插入一条订单信息。跳转到支付系统完成支付。 在用户整个购买商品的过程中，我们需要保证事件1，2，3在没有异常的情况下全部执行成功，一旦某个系统抛出异常，都需要回滚。
+那么，如何保证各个子系统的操作具有一致性呢？这就是我们下面提到的分布式事务的解决方案。
+在这里，文章中没有提到分布式一致性协议，下面简单列举一下，有兴趣的读者可以参考其他详细资料：
+两阶段提交协议三阶段提交协议Paxos协议Raft协议 二、分布式事务的解决方案 1.两阶段提交方案/XA方案 该方案基于两阶段提交协议，因此也叫做两阶段提交方案。在该分布式系统中，其中 需要一个系统担任协调器的角色，其他系统担任参与者的角色。主要分为Commit-request阶段和Commit阶段
+请求阶段：首先协调器会向所有的参与者发送准备提交或者取消提交的请求，然后会收集参与者的决策。提交阶段：协调者会收集所有参与者的决策信息，当且仅当所有的参与者向协调器发送确认消息时协调器才会提交请求，否则执行回滚或者取消请求。 （上图摘自网上）
+该方案的缺陷：
+同步阻塞：所有的参与者都是事务同步阻塞型的。当参与者占有公共资源时，其他第三方节点访问公共资源不得不处于阻塞状态。单点故障：一旦协调器发生故障，系统不可用。数据不一致：当协调器发送commit之后，有的参与者收到commit消息，事务执行成功，有的没有收到，处于阻塞状态，这段时间会产生数据不一致性。不确定性：当协调器发送commit之后，并且此时只有一个参与者收到了commit，那么当该参与者与协调器同时宕机之后，重新选举的协调器无法确定该条消息是否提交成功。 XA方案的实现方式可以使用Spring&#43;JTA来实现，可以参考文章：Springboot&#43;atomikos&#43;jta实现分布式事务统一管理
+2.TCC方案 TCC方案分为Try Confirm Cancel三个阶段，属于补偿性分布式事务。
+Try：尝试待执行的业务
+这个过程并未执行业务，只是完成所有业务的一致性检查，并预留好执行所需的全部资源Confirm：执行业务
+这个过程真正开始执行业务，由于Try阶段已经完成了一致性检查，因此本过程直接执行，而不做任何检查。并且在执行的过程中，会使用到Try阶段预留的业务资源。Cancel：取消执行的业务
+若业务执行失败，则进入Cancel阶段，它会释放所有占用的业务资源，并回滚Confirm阶段执行的操作。 以一个电商系统用户购买商品的流水线为例。
+Try阶段：
+在Try阶段成功之后进入Confirm阶段，如有任何异常，进入Cancel阶段。
+Confirm阶段
+Cancel阶段
+假设库存扣减失败，此时需要回滚取消事务。
+TCC方案适用于一致性要求极高的系统中，比如金钱交易相关的系统中，不过可以看出，其基于补偿的原理，因此，需要编写大量的补偿事务的代码，比较冗余。不过现有开源的TCC框架，比如TCC-transaction。
+3. 本地消息表 本地消息表分布式事务解决方案是国外的eBay提出的一套方案。
+需要注意的是，该方案中，在A系统中，我们首先写入业务表，然后写入消息表，然后将消息发送到MQ中，在B系统中需要先写入消息表，这是为了保证消息重复消费，为了保证消息消费的幂等性，我们可以使用数据的唯一键来约束。
+当B系统执行成功之后，需要通知A系统执行成功，此时可以使用一个监听器，如Zookeeper，ZK监听到执行成功更新A系统成功。然后开始发送下一条消息。
+A系统中需要有一个后台线程，不断的去判断A系统的状态为待确认的消息，设置超时机制，如果超时，重新发送到MQ中。直到执行成功。
+可以看出，本地消息表方案需要写入消息表中，如果在高并发的场景下会进行大量的磁盘IO，因此该方案不适用于高并发场景。
+4.可靠消息最终一致性方案 该方案基于本地消息表进行优化，不使用本地消息表，而是基于MQ，比如阿里的RocketMQ就支持消息事务。
+在该方案中，首先A系统需要向MQ中发送prepare消息，然后执行A系统的业务，写入数据库成功之后向MQ发送confirm消息，当消息为confirm状态时，B系统就可以消费到消息，消费成功之后返回ACK确认消息给MQ。
+需要注意的是。需要保证B系统消费消息的幂等性，可以借助第三方系统。比如在redis中设置标识，标明已经消费过该消息，或者借助ZK基于分布式锁的原理，创建节点，重复消费消息，创建失败。
+5.最大努力通知方案 最大努力通知型( Best-effort delivery)是最简单的一种柔性事务，适用于一些最终一致性时间敏感度低的业务，且被动方处理结果 不影响主动方的处理结果。典型的使用场景：如银行通知、商户通知等。
+在该系统中，A系统执行完本地事务，向MQ发送消息，最大努力通知服务消费消息，比如消息服务，然后调用B系统的接口，执行B系统的本地事务，如果B系统执行成功则OK，否则不断重试，重复多次之后还是失败的话就放弃执行。
+参考文章：
+http://www.tianshouzhi.com/api/tutorials/distributed_transaction/387
+https://blog.csdn.net/u010425776/article/details/79516298" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/7e24b26d84f7e9cea364f2e1cbcba8e3/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-04-21T00:21:52+08:00" />
+<meta property="article:modified_time" content="2019-04-21T00:21:52+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">浅谈分布式事务的解决方案</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h5><a id="_0"></a>一、分布式事务</h5> 
+<p>分布式事务就是指事务的参与者、支持事务的服务器、资源服务器以及事务管理器分别位于不同的分布式系统的不同节点之上。以上是百度百科的解释，简单的说，就是一次大的操作由不同的小操作组成，这些小的操作分布在不同的服务器上，且属于不同的应用，分布式事务需要保证这些小操作要么全部成功，要么全部失败。本质上来说，分布式事务就是为了保证不同数据库的数据一致性。</p> 
+<p><font color="red">画外音：提起分布式系统，我们不得不想起CAP理论。这里不展开讨论，可以参考前篇文章<a href="https://blog.csdn.net/qq_37142346/article/details/84327134">分布式系统理解之CAP理论的发展</a></font></p> 
+<blockquote> 
+ <p>以商品流水账单为例，我们拆分为商品购买系统，订单系统，支付系统。</p> 
+</blockquote> 
+<ol><li>用户看中一件商品，点击购买。</li><li>商品购买系统响应用户的点击，向订单系统插入一条订单信息。</li><li>跳转到支付系统完成支付。</li></ol> 
+<p>在用户整个购买商品的过程中，我们需要保证事件1，2，3在没有异常的情况下全部执行成功，一旦某个系统抛出异常，都需要回滚。</p> 
+<p>那么，如何保证各个子系统的操作具有一致性呢？这就是我们下面提到的分布式事务的解决方案。</p> 
+<blockquote> 
+ <p>在这里，文章中没有提到分布式一致性协议，下面简单列举一下，有兴趣的读者可以参考其他详细资料：</p> 
+ <ol><li>两阶段提交协议</li><li>三阶段提交协议</li><li>Paxos协议</li><li>Raft协议</li></ol> 
+</blockquote> 
+<h5><a id="_21"></a>二、分布式事务的解决方案</h5> 
+<h5><a id="1XA_22"></a>1.两阶段提交方案/XA方案</h5> 
+<p>该方案基于两阶段提交协议，因此也叫做两阶段提交方案。在该分布式系统中，其中 需要一个系统担任协调器的角色，其他系统担任参与者的角色。主要分为<code>Commit-request</code>阶段和<code>Commit</code>阶段</p> 
+<ul><li>请求阶段：首先协调器会向所有的参与者发送准备提交或者取消提交的请求，然后会收集参与者的决策。</li><li>提交阶段：协调者会收集所有参与者的决策信息，当且仅当所有的参与者向协调器发送确认消息时协调器才会提交请求，否则执行回滚或者取消请求。</li></ul> 
+<p><img src="https://images2.imgbox.com/ac/4d/Z0qJ0Lde_o.png" alt="在这里插入图片描述"><br> （上图摘自网上）</p> 
+<p>该方案的缺陷：</p> 
+<ol><li>同步阻塞：所有的参与者都是事务同步阻塞型的。当参与者占有公共资源时，其他第三方节点访问公共资源不得不处于阻塞状态。</li><li>单点故障：一旦协调器发生故障，系统不可用。</li><li>数据不一致：当协调器发送commit之后，有的参与者收到commit消息，事务执行成功，有的没有收到，处于阻塞状态，这段时间会产生数据不一致性。</li><li>不确定性：当协调器发送commit之后，并且此时只有一个参与者收到了commit，那么当该参与者与协调器同时宕机之后，重新选举的协调器无法确定该条消息是否提交成功。</li></ol> 
+<p>XA方案的实现方式可以使用Spring+JTA来实现，可以参考文章：<a href="https://blog.csdn.net/qq_37142346/article/details/78494992">Springboot+atomikos+jta实现分布式事务统一管理</a></p> 
+<h5><a id="2TCC_38"></a>2.TCC方案</h5> 
+<p>TCC方案分为Try Confirm Cancel三个阶段，属于补偿性分布式事务。</p> 
+<ul><li>Try：尝试待执行的业务<br> 这个过程并未执行业务，只是完成所有业务的一致性检查，并预留好执行所需的全部资源</li><li>Confirm：执行业务<br> 这个过程真正开始执行业务，由于Try阶段已经完成了一致性检查，因此本过程直接执行，而不做任何检查。并且在执行的过程中，会使用到Try阶段预留的业务资源。</li><li>Cancel：取消执行的业务<br> 若业务执行失败，则进入Cancel阶段，它会释放所有占用的业务资源，并回滚Confirm阶段执行的操作。</li></ul> 
+<blockquote> 
+ <p>以一个电商系统用户购买商品的流水线为例。</p> 
+</blockquote> 
+<ul><li> <p>Try阶段：<br> <img src="https://images2.imgbox.com/85/38/0ihudul0_o.png" alt="在这里插入图片描述"><br> 在Try阶段成功之后进入Confirm阶段，如有任何异常，进入Cancel阶段。</p> </li><li> <p>Confirm阶段<br> <img src="https://images2.imgbox.com/c4/f0/otI7MwgG_o.png" alt="在这里插入图片描述"></p> </li><li> <p>Cancel阶段<br> 假设库存扣减失败，此时需要回滚取消事务。<br> <img src="https://images2.imgbox.com/7a/d6/78XmmtpX_o.png" alt="在这里插入图片描述"></p> </li></ul> 
+<blockquote> 
+ <p>TCC方案适用于一致性要求极高的系统中，比如金钱交易相关的系统中，不过可以看出，其基于补偿的原理，因此，需要编写大量的补偿事务的代码，比较冗余。不过现有开源的TCC框架，比如TCC-transaction。</p> 
+</blockquote> 
+<h5><a id="3__59"></a>3. 本地消息表</h5> 
+<p>本地消息表分布式事务解决方案是国外的eBay提出的一套方案。<br> <img src="https://images2.imgbox.com/94/69/6Dtilg1V_o.png" alt="在这里插入图片描述"><br> 需要注意的是，该方案中，在A系统中，我们首先写入业务表，然后写入消息表，然后将消息发送到MQ中，在B系统中需要先写入消息表，这是为了保证消息重复消费，为了保证消息消费的幂等性，我们可以使用数据的唯一键来约束。</p> 
+<p>当B系统执行成功之后，需要通知A系统执行成功，此时可以使用一个监听器，如Zookeeper，ZK监听到执行成功更新A系统成功。然后开始发送下一条消息。</p> 
+<p>A系统中需要有一个后台线程，不断的去判断A系统的状态为待确认的消息，设置超时机制，如果超时，重新发送到MQ中。直到执行成功。</p> 
+<blockquote> 
+ <p>可以看出，本地消息表方案需要写入消息表中，如果在高并发的场景下会进行大量的磁盘IO，因此该方案不适用于高并发场景。</p> 
+</blockquote> 
+<h5><a id="4_70"></a>4.可靠消息最终一致性方案</h5> 
+<p>该方案基于本地消息表进行优化，不使用本地消息表，而是基于MQ，比如阿里的RocketMQ就支持消息事务。</p> 
+<p><img src="https://images2.imgbox.com/d3/e9/ddd5HQ9T_o.png" alt="在这里插入图片描述"><br> 在该方案中，首先A系统需要向MQ中发送prepare消息，然后执行A系统的业务，写入数据库成功之后向MQ发送confirm消息，当消息为confirm状态时，B系统就可以消费到消息，消费成功之后返回ACK确认消息给MQ。</p> 
+<p>需要注意的是。需要保证B系统消费消息的幂等性，可以借助第三方系统。比如在redis中设置标识，标明已经消费过该消息，或者借助ZK基于分布式锁的原理，创建节点，重复消费消息，创建失败。</p> 
+<h5><a id="5_78"></a>5.最大努力通知方案</h5> 
+<p>最大努力通知型( Best-effort delivery)是最简单的一种柔性事务，适用于一些最终一致性时间敏感度低的业务，且被动方处理结果 不影响主动方的处理结果。典型的使用场景：如银行通知、商户通知等。<br> <img src="https://images2.imgbox.com/b2/18/61uoaVp0_o.png" alt="在这里插入图片描述"><br> 在该系统中，A系统执行完本地事务，向MQ发送消息，最大努力通知服务消费消息，比如消息服务，然后调用B系统的接口，执行B系统的本地事务，如果B系统执行成功则OK，否则不断重试，重复多次之后还是失败的话就放弃执行。</p> 
+<blockquote> 
+ <p>参考文章：<br> <a href="http://www.tianshouzhi.com/api/tutorials/distributed_transaction/387" rel="nofollow">http://www.tianshouzhi.com/api/tutorials/distributed_transaction/387</a><br> <a href="https://blog.csdn.net/u010425776/article/details/79516298">https://blog.csdn.net/u010425776/article/details/79516298</a></p> 
+</blockquote>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/d49b2a12e684a042a465d21fd0ce2fc5/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【Qt编程笔记】采用遍历方式删除QList中全部元素的方法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/1d7e927d1fed013763ad2d1fe5496b21/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">redhat7 rhel7怎么修改镜像源 阿里源 源</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

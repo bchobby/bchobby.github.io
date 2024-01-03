@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Occupancy占据网络论文讲解与分析 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Occupancy占据网络论文讲解与分析" />
+<meta property="og:description" content="一、MonoScene 1.概要 a.使用单目相机，不用深度估计和点云来实现占据网络。
+b.提出了一种2D-3D的一种转换方法。
+c.在3D-unet底部加入3DCRP来捕获长距离的一个信息。
+2.模型结构 图像先经过一个2D的unet结构，这里论文里用的预训练的EfficientNet，然后经过一个论文里提出的FLOSP模块，从2D到3D，不过是一个多尺度的投影，再上采样concate。这里的转换模块个人感觉和FastBEV一样。后续3Dunet是一个简单的编解码网络，加入了空洞卷积和作者提出的一个3DCRP的结构。最后加入一个head完成多类别的一个语义分割 。
+3.2D到3D转换(FLoSP) 说实话我感觉这个和FastBEV一样，这个多尺度的图片投影到不同的尺度的3D体素中，然后再聚合不同尺度的3D特征。 4.3D CRP 因为语义分割场景高度依赖于上下文的一个关系，所以论文里在3Dunet底部加入了一个CRP的结构，从而为网络提供了一个全局的感受野。这里因为全局语义分割存在极度的不均衡，所以单纯的二分类其实是次要的，论文里提出了体素与体素之间的一个关系，从而增强模型的上下文之间的关联。这里怎么划分体素之间的关系我有点看不懂原文的描述，原文这里很乱。
+二、 VoxFormer 1.摘要 a.提出一种两阶段的框架，使用图像生成完整的3D体素化语义场景。
+b.预测图像深度，再生成稀疏的体素，使用transformer进一步得到完整的体素语义场景 。
+2.模型结构 先对图像的特征进行提取，同时对其深度也进行估计，根据相机内外参投影到体素里，得到一个稀疏的Q,这个Q与图像特征进行交叉注意力机制，加上mask token后再做一个自注意力的操作，相当于对语义场景进行补全，最后上采样做多类别语义分割。
+3. 第一阶段的query 初始化定义的query是忽略类别的，h*w*z*d，这个尺度相较于最终的语义分割尺度进行了2倍降采样，主要是为了提高模型的一个鲁棒性，防止因为深度预测误差过大，像素点没有落到该有的体素内。
+根据深度估计和相机内外参，我们可以得到许多3D空间的点云，但此时这个点云是非常不可靠的，特别是在远处，几个点云决定了一大片区域的深度。为了降低深度容错和提高模型的鲁棒性，使用了一个简化版的unet网络对Min(H*W*D)进行卷积占据预测，输出Mout(h*w*d)表示是否占据。
+根据是否占据，我们在q里面选择占据的query出来，组成Qp。这里有个疑问Qp的个数会变化呀？不是固定数量的query也可以吗？这里的好处是跳过空白的区域，只对图像上看到的地方进行query。
+4.第二阶段补全query后的语义分割 使用deformable交叉注意力机制，Qp有一个3D坐标，投到图像上有一个参考点，根据偏移和权重，在多个时序图上进行特征的提取。经过几层可变形交叉注意力之后，我们把Qp与mask token结合得到完整的体素特征。然后使用可变形自注意力机制，对完整的体素特征进行细化。然后再上采样到原始的分辨率，对其进行多类别语义分割。
+这里的mask token是一个d维的可学习向量，主要用于填充第一阶段没有对应图像的一些体素，同时这些mask token也加入了位置编码，来让其对自己的位置有一定的了解。
+三、TPVFormer 1.摘要 a.提出了一种新颖的三维空间表示方法，相较于体素，计算量大大下降，相较于BEV，其对空间的细粒度三维结构表示更加丰富。
+b.使用可变形注意力机制生成空间三视图，可以完成任意分辨率的空间占据表示。
+2.模型结构 图像先通过backbone和Neck提取相应的特征，然后TPV query向图像进行可变形注意力机制查询，再加上三个平面之间的特征交互，最终生成TPV的特征，我们根据这个图，可以插值得到最终3D空间的占据预测。这里的TPV query是最终三个视图里面的每个像素点，t∈T。
+3.Image cross attention 在进入这个模块时，先对TPV query添加位置编码。 考虑到TPV query的个数以及图像像素的个数，所以我们不进行全局注意力机制，而使用可变形注意力机制。比如一个俯视图的TPV query，他有一个xy，那么我们对z进行间隔采样，会得到许多3D点，然后我们对这些3D点向一张图像做投影，可以得到一些有效投影点，对这些有效投影点做可变形注意力机制，最后对六张图像的可变形注意力机制结果求平均。
+4.Cross-View Hybrid-Attention 因为上面每个视图单独查询图像特征，他们之间并没有充分的交互，所以提出交叉视图混合注意力机制，有利于上下文特征的提取。比如俯视图上一个点，我们直接在其周围生成一些参考点，然后沿着z生成几个3D点，投影到前视图和左视图，又能得到几个参考点，对这些参考点做可变形注意力机制，得到最终的特征。 四、SurroundOcc 1.摘要 a.使用由粗到细的思想策略，先生成小分辨率的体素特征，再逐步上采样，生成密集的体素特征。
+b.针对占据网络稀疏的GT监督，论文提出了一种生成密集占据标签的方法。
+2.模型结构 首先提取图像的多尺度特征信息，然后使用类似于bevformer的思想，使用可变形交叉注意力机制，完成2D到3D的特征转换，后续再加一些3D卷积。把低分辨率的3D体素特征逐层上采样合并，最后加head完成预测。我们对不同尺度的3D体素都施加监督，不过监督权重呈衰减形式，从上到下由大到小。
+3.密集占据真值生成 多帧点云拼接，将点云分为动静态，静态根据车身位姿变化堆叠在一起，然后动态的根据track id合并填充进去。这样聚合完还是会存在一些空洞的区域，根据其邻域中的空间分布计算法向量，使用poisson曲面重建算法来进行补全。最后使用最近邻算法来对空白网格的语义进行填充。
+五、OpenOcc 1.摘要 a.使用AAP(Augmenting And Purifying)方法对nuScenes数据生成密集的占用语义标签。
+b.提出lidar和camera结合的占用网络，同时采用由粗到细的cascade策略提升性能。
+2.模型结构 LiDAR分支先对点云进行体素化操作，然后使用3D稀疏卷积得到(D/S, H/S,W/S)特征 ，后续解码器将其降采样再上采样合并，最终softmax进行3D语义预测。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/5df0d5647be5ff66486943b76eb5a66d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-10-24T15:00:17+08:00" />
+<meta property="article:modified_time" content="2023-10-24T15:00:17+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Occupancy占据网络论文讲解与分析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>一、MonoScene</h2> 
+<h3>1.概要</h3> 
+<p>a.使用单目相机，不用深度估计和点云来实现占据网络。</p> 
+<p>b.提出了一种2D-3D的一种转换方法。</p> 
+<p>c.在3D-unet底部加入3DCRP来捕获长距离的一个信息。</p> 
+<h3>2.模型结构 </h3> 
+<p><img alt="" height="345" src="https://images2.imgbox.com/5c/f9/99p2JLjF_o.png" width="1200"></p> 
+<p><img alt="" height="502" src="https://images2.imgbox.com/d9/04/DXv17Bfo_o.png" width="1041"></p> 
+<p>图像先经过一个2D的unet结构，这里论文里用的预训练的EfficientNet，然后经过一个论文里提出的FLOSP模块，从2D到3D，不过是一个多尺度的投影，再上采样concate。这里的转换模块个人感觉和FastBEV一样。后续3Dunet是一个简单的编解码网络，加入了空洞卷积和作者提出的一个3DCRP的结构。最后加入一个head完成多类别的一个语义分割 。</p> 
+<h3>3.2D到3D转换(FLoSP)<img alt="" height="613" src="https://images2.imgbox.com/72/00/s8lpB6OW_o.png" width="798"></h3> 
+<p>说实话我感觉这个和FastBEV一样，这个多尺度的图片投影到不同的尺度的3D体素中，然后再聚合不同尺度的3D特征。 </p> 
+<h3>4.3D CRP</h3> 
+<p>因为语义分割场景高度依赖于上下文的一个关系，所以论文里在3Dunet底部加入了一个CRP的结构，从而为网络提供了一个全局的感受野。这里因为全局语义分割存在极度的不均衡，所以单纯的二分类其实是次要的，论文里提出了体素与体素之间的一个关系，从而增强模型的上下文之间的关联。这里怎么划分体素之间的关系我有点看不懂原文的描述，原文这里很乱。<img alt="" height="723" src="https://images2.imgbox.com/a6/99/exC7eY7I_o.png" width="1063"></p> 
+<h2></h2> 
+<h2>二、 VoxFormer</h2> 
+<h3>1.摘要</h3> 
+<p>a.提出一种两阶段的框架，使用图像生成完整的3D体素化语义场景。</p> 
+<p>b.预测图像深度，再生成稀疏的体素，使用transformer进一步得到完整的体素语义场景 。</p> 
+<h3>2.模型结构</h3> 
+<p><img alt="" height="456" src="https://images2.imgbox.com/ef/ad/QcmP504X_o.png" width="1200"></p> 
+<p><img alt="" height="546" src="https://images2.imgbox.com/8c/98/EMWSFOG8_o.png" width="1200"></p> 
+<p> 先对图像的特征进行提取，同时对其深度也进行估计，根据相机内外参投影到体素里，得到一个稀疏的Q,这个Q与图像特征进行交叉注意力机制，加上mask token后再做一个自注意力的操作，相当于对语义场景进行补全，最后上采样做多类别语义分割。</p> 
+<h3>3. 第一阶段的query</h3> 
+<p>初始化定义的query是忽略类别的，h*w*z*d，这个尺度相较于最终的语义分割尺度进行了2倍降采样，主要是为了提高模型的一个鲁棒性，防止因为深度预测误差过大，像素点没有落到该有的体素内。</p> 
+<p>根据深度估计和相机内外参，我们可以得到许多3D空间的点云，但此时这个点云是非常不可靠的，特别是在远处，几个点云决定了一大片区域的深度。为了降低深度容错和提高模型的鲁棒性，使用了一个简化版的unet网络对Min(H*W*D)进行卷积占据预测，输出Mout(h*w*d)表示是否占据。</p> 
+<p>根据是否占据，我们在q里面选择占据的query出来，组成Qp。这里有个疑问Qp的个数会变化呀？不是固定数量的query也可以吗？这里的好处是跳过空白的区域，只对图像上看到的地方进行query。</p> 
+<h3>4.第二阶段补全query后的语义分割</h3> 
+<p>使用deformable交叉注意力机制，Qp有一个3D坐标，投到图像上有一个参考点，根据偏移和权重，在多个时序图上进行特征的提取。经过几层可变形交叉注意力之后，我们把Qp与mask token结合得到完整的体素特征。然后使用可变形自注意力机制，对完整的体素特征进行细化。然后再上采样到原始的分辨率，对其进行多类别语义分割。</p> 
+<p>这里的mask token是一个d维的可学习向量，主要用于填充第一阶段没有对应图像的一些体素，同时这些mask token也加入了位置编码，来让其对自己的位置有一定的了解。</p> 
+<h2></h2> 
+<h2>三、TPVFormer</h2> 
+<h3>1.摘要</h3> 
+<p>a.提出了一种新颖的三维空间表示方法，相较于体素，计算量大大下降，相较于BEV，其对空间的细粒度三维结构表示更加丰富。</p> 
+<p>b.使用可变形注意力机制生成空间三视图，可以完成任意分辨率的空间占据表示。</p> 
+<h3>2.模型结构<img alt="" height="342" src="https://images2.imgbox.com/60/53/QmptAG55_o.png" width="1200"></h3> 
+<p>图像先通过backbone和Neck提取相应的特征，然后TPV query向图像进行可变形注意力机制查询，再加上三个平面之间的特征交互，最终生成TPV的特征，我们根据这个图，可以插值得到最终3D空间的占据预测。这里的TPV query是最终三个视图里面的每个像素点，t∈T。<img alt="" height="150" src="https://images2.imgbox.com/48/70/Xt2kYXwk_o.png" width="700"></p> 
+<h3>3.Image cross attention</h3> 
+<p>在进入这个模块时，先对TPV query添加位置编码。 考虑到TPV query的个数以及图像像素的个数，所以我们不进行全局注意力机制，而使用可变形注意力机制。比如一个俯视图的TPV query，他有一个xy，那么我们对z进行间隔采样，会得到许多3D点，然后我们对这些3D点向一张图像做投影，可以得到一些有效投影点，对这些有效投影点做可变形注意力机制，最后对六张图像的可变形注意力机制结果求平均。</p> 
+<p><img alt="" height="321" src="https://images2.imgbox.com/b6/39/h8TToPsC_o.png" width="510"></p> 
+<h3>4.<span style="color:#000000;"><strong>Cross-View Hybrid-Attention</strong></span> </h3> 
+<p>因为上面每个视图单独查询图像特征，他们之间并没有充分的交互，所以提出交叉视图混合注意力机制，有利于上下文特征的提取。比如俯视图上一个点，我们直接在其周围生成一些参考点，然后沿着z生成几个3D点，投影到前视图和左视图，又能得到几个参考点，对这些参考点做可变形注意力机制，得到最终的特征。 <img alt="" height="538" src="https://images2.imgbox.com/36/a8/sTUCMdUi_o.png" width="529"></p> 
+<h2></h2> 
+<h2>四、SurroundOcc </h2> 
+<h3>1.摘要</h3> 
+<p>a.使用由粗到细的思想策略，先生成小分辨率的体素特征，再逐步上采样，生成密集的体素特征。</p> 
+<p>b.针对占据网络稀疏的GT监督，论文提出了一种生成密集占据标签的方法。</p> 
+<h3>2.模型结构<img alt="" height="781" src="https://images2.imgbox.com/ee/21/JW9XsR0A_o.png" width="1200"></h3> 
+<p>首先提取图像的多尺度特征信息，然后使用类似于bevformer的思想，使用可变形交叉注意力机制，完成2D到3D的特征转换，后续再加一些3D卷积。把低分辨率的3D体素特征逐层上采样合并，最后加head完成预测。我们对不同尺度的3D体素都施加监督，不过监督权重呈衰减形式，从上到下由大到小。</p> 
+<h3>3.密集占据真值生成 </h3> 
+<p>多帧点云拼接，将点云分为动静态，静态根据车身位姿变化堆叠在一起，然后动态的根据track id合并填充进去。这样聚合完还是会存在一些空洞的区域，根据其邻域中的空间分布计算法向量，使用poisson曲面重建算法来进行补全。最后使用最近邻算法来对空白网格的语义进行填充。<img alt="" height="756" src="https://images2.imgbox.com/f7/2a/bWCeI8iz_o.png" width="1200"></p> 
+<p> </p> 
+<h2>五、OpenOcc</h2> 
+<h3>1.摘要</h3> 
+<p>a.使用AAP(Augmenting And Purifying)方法对nuScenes数据生成密集的占用语义标签。</p> 
+<p>b.提出lidar和camera结合的占用网络，同时采用由粗到细的cascade策略提升性能。</p> 
+<h3>2.模型结构<img alt="" height="572" src="https://images2.imgbox.com/34/8f/1XyLSp9n_o.png" width="1200"></h3> 
+<p>LiDAR分支先对点云进行体素化操作，然后使用3D稀疏卷积得到(D/S, H/S,W/S)特征 ，后续解码器将其降采样再上采样合并，最终softmax进行3D语义预测。<br> Camera分支先提取图像的特征，然后将其转换到3D下，进行和lidar一样的操作。</p> 
+<p>对于lidar和camera的融合，我们采用自适应的融合模块，动态的整合图像和lidar的特征。先把lidar和camera特征在channel维度合并，然后再卷积sigmoid生成权重。<img alt="" height="138" src="https://images2.imgbox.com/d6/5e/o406oZmo_o.png" width="586"></p> 
+<h3>3. Cascade Occupancy Network</h3> 
+<p><img alt="" height="607" src="https://images2.imgbox.com/9c/a9/U9SVw7xQ_o.png" width="1200"></p> 
+<p> 多模态模型生成的粗略体素特征大小为(D/S, H/S,W/S),这里论文里选取的S是4，然后我们对体素里面预测为占据的地方进行切割划分，比如一个大体素，切成8个小的，他们向图像投影得到语义特征，向体素特征查询得到几何特征(这里不太懂，是指大体素的18维特征直接拿来当他的8个小体素的几何特征吗？)在特征维度合并后，加上FC层进行精细化的占据预测。</p> 
+<h3>4.nuScenes-Occupancy数据集生成</h3> 
+<p>前面的操作和surroundocc里一样多帧对齐，然后我们用这个含有一定空白的数据训练一版模型。使用模型对本帧数据进行预测，得到一个预测的占据结果，加上原始的密集占据标签，原始里面空白的地方用预测的结果填充，得到全面的一个占据结果。但是这个GT存在一定的误标注，因为模型推理不一定正确，所以后续人工又进行了错误标注删除的操作。从而得到最终的密集标注结果。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ffce48e256adf8efc90b17cbe8c366ed/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">windows中Oracle： ORA-01031 insufficient privileges主机验证失败 主机sqlplus / as sysdba需要用户名密码</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d98a23727b7e359f9f0bd3d86cb34b23/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Python10.24</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

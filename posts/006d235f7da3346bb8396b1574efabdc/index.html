@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>EfficientNet-B0详解 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="EfficientNet-B0详解" />
+<meta property="og:description" content="文章转载来自：Dormineered
+内容有些词汇翻译不准确，请见谅！！！个人整理不易，包含参数计算内容，更多训练阶段细节会在后期更新。转载请注明
+EfficientNets是谷歌大脑的工程师谭明星和首席科学家Quoc V. Le在论文《EfficientNet: Rethinking Model Scaling for Convolutional Neural Networks》中提出。该模型的基础网络架构是通过使用神经网络架构搜索（neural architecture search）设计得到。卷积神经网络模型通常是在已知硬件资源的条件下，进行训练的。当你拥有更好的硬件资源时，可以通过放大网络模型以获得更好的训练结果。为系统的研究模型缩放，谷歌大脑的研究人员针对EfficientNets的基础网络模型提出了一种全新的模型缩放方法，该方法使用简单而高效的复合系数来权衡网络深度、宽度和输入图片分辨率。
+通过放大EfficientNets基础模型，获得了一系列EfficientNets模型。该系列模型在效率和准确性上战胜了之前所有的卷积神经网络模型。尤其是EfficientNet-B7在ImageNet数据集上得到了top-1准确率84.4%和top-5准确率97.1%的结果。且它和当时准确率最高的其它模型对比，大小缩小了8.4倍，效率提高了6.1倍。且通过迁移学习，EfficientNets在多个知名数据集上均达到了当时最先进的水平。
+EfficientNets网络模型结构
+本案例中我们选用EfficientNets系列中的基础网络模型EfficientNet-B0。 当该模型在ImageNet数据集上训练时，其一共包含5330564个参数，其中需要梯度下降来训练的参数有5288548个。不需要训练的参数是Batch Normalization层中的均值和方差共42016个。该网络的核心结构为移动翻转瓶颈卷积（mobile inverted bottleneck convolution，MBConv）模块，该模块还引入了压缩与激发网络（Squeeze-and-Excitation Network，SENet）的注意力思想，SENet在提出时也在ImageNet数据集上达到了当时最高的准确率。
+移动翻转瓶颈卷积也是通过神经网络架构搜索得到的，该模块结构与深度分离卷积（depthwise separable convolution）相似，该移动翻转瓶颈卷积首先对输入进行1x1的逐点卷积并根据扩展比例(expand ratio)改变输出通道维度（如扩展比例为3时，会将通道维度提升3倍。但如果扩展比例为1，则直接省略该1x1的逐点卷积和其之后批归一化和激活函数）。接着进行kxk的深度卷积（depthwise convolution）。如果要引入压缩与激发操作，该操作会在深度卷积后进行。再以1x1的逐点卷积结尾恢复原通道维度。最后进行连接失活（drop connect）和输入的跳越连接（skip connection），这一做法源于论文《Deep networks with stochastic depth》，它让模型具有了随机的深度，剪短了模型训练所需的时间，提升了模型性能（注意，在EfficientNets中，只有当相同的移动翻转瓶颈卷积重复出现时，才会进行连接失活和输入的跳越连接，且还会将其中的深度卷积步长变为1），连接失活是一种类似于随机失活（dropout）的操作，并且在模块的开始和结束加入了恒等跳越。注意该模块中的每一个卷积操作后都会进行批归一化，激活函数使用的是Swish激活函数。
+移动翻转瓶颈卷积模块中的压缩与激发操作，以下简称SE模块，是一种基于注意力的特征图操作操作，SE模块首先对特征图进行压缩操作，在通道维度方向上进行全局平均池化操作（global average pooling），得到特征图通道维度方向的全局特征。然后对全局特征进行激发操作，使用激活比例（R，该比例为浮点数）乘全局特征维数（C）个1x1的卷积对其进行卷积（原方法使用全连接层），学习各个通道间的关系，再通过sigmoid激活函数得到不同通道的权重，最后乘以原来的特征图得到最终特征。本质上，SE模块是在通道维度上做（注意力）attention或者（门控制）gating操作，这种注意力机制让模型可以更加关注信息量最大的通道特征，而抑制那些不重要的通道特征。另外一点是SE模块是通用的，这意味着其可以嵌入到现有的其它网络架构中。其结构如图1所示，注意在移动翻转瓶颈卷积模块中，与激活比例相乘的是移动翻转瓶颈卷积模块的输入通道维度，而不是模块中深度卷积后的输出通道维度。
+图1 压缩与激发模块结构示意图 你已经了解了EfficientNet的核心模块，接下来，我们将进一步了解EfficientNet-B0的结构，它由16个移动翻转瓶颈卷积模块，2个卷积层，1个全局平均池化层和1个分类层构成。其结构如图2所示，图中不同的颜色代表了不同的阶段。
+图2 EfficientNet-B0结构图 第一阶段，对输入的224x224x3的图像按顺序进行以下操作得到第一阶段的结果：
+卷积（卷积核为32核3×3×3，步长为2×2，填充为“same”即输出的宽和高缩小一半），该卷积运算的输出是一个维度为（112×112×32）的特征图。因该层不含偏置项，故该层需要训练学习的参数共计864（32x3x3x3）个。
+批归一化层（Batch Normalization，BN），该层输入为（112×112×32）的特征图，故该层含参数总数为128个（32x4），其中需要训练学习的参数为64个。
+Swish激活函数
+第一阶段，总计参数128&#43;864=992个，需要训练学习的参数928个。
+第二阶段，对前一阶段输出的112x112x32的特征图进行移动翻转瓶颈卷积（扩张比例为1，深度卷积核大小为3x3，核步长为1x1，包含压缩与激发操作，无连接失活和连接跳越），并输出第二阶段的结果：
+由于扩张比例为1，故跳过一开始的逐点卷积，直接进行深度卷积（卷积核为32核3×3×3，步长为1×1，填充为“same”即输出的宽和高不变）。深度卷积输出是一个维度为（112×112×32）的特征图。因该层不含偏置项，故该层需要训练学习的参数共计288（32x3x3x1）个。
+批归一化层（Batch Normalization，BN），该层输入为（112×112×32）的特征图，故该层含参数总数为128个（32x4），其中需要训练学习的参数为64个。
+Swish激活函数。
+全局平均池化层（global average pooling），该层在通道维度方向上进行全局平均池化，输出为（1x1x32）的特征图。
+卷积（压缩与激发模块中的第一个卷积，卷积核为8核1x1x32，步长为1×1，填充为“same”即输出的宽和高不变），该卷积运算的输出是一个维度为（1×1×8）的特征图。因该层包含偏置项，故该层需要训练学习的参数共计264（8x1x1x32&#43;8）个。
+Swish激活函数。
+卷积（压缩与激发模块中的第二个卷积，卷积核为32核1x1x8，步长为1×1，填充为“same”即输出的宽和高不变），该卷积运算的的输出是一个维度为（1×1×32）的特征图。因该层包含偏置项，故该层需要训练学习的参数共计288（32x1x1x8&#43;32）个。
+Sigmoid激活函数
+与步骤3）的结果相乘，得到112x112x32的特征图。
+逐点卷积（卷积核为16核1×1×32，步长为1×1，填充为“same”即输出的宽和高不变）该卷积运算的输出是一个维度为（112×112×16）的特征图。因该层不含偏置项，故该层需要训练学习的参数共计512（16x1x1x32）个。
+批归一化层（Batch Normalization，BN），该层输入为（112×112×16）的特征图，故该层含参数总数为64个（16x4），其中需要训练学习的参数为32个。
+第二阶段，总计参数288&#43;128&#43;264&#43;288&#43;512&#43;64=1544个，需要训练学习的参数1448个。
+第三阶段，对前一阶段输出的112x112x16的特征图进行两次移动翻转瓶颈卷积，第一个（扩张比例为6，深度卷积核大小为3x3，核步长为2x2，包含压缩与激发操作，无连接失活核连接跳越），第二个（扩张比例为6，深度卷积核大小为3x3，核步长为1x1，包含压缩与激发操作，有连接失活和连接跳越），并输出第二阶段的结果：
+扩张比例为6的逐点卷积（卷积核为96核1×1×16，步长为1×1，填充为“same”即输出的宽和高不变）该卷积运算的输出是一个维度为（112×112×96）的特征图。因该层不含偏置项，故该层需要训练学习的参数共计1536（96x1x1x16）个。
+批归一化层（Batch Normalization，BN），该层输入为（112×112×96）的特征图，故该层含参数总数为384个（96x4），其中需要训练学习的参数为192个。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/006d235f7da3346bb8396b1574efabdc/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-10-14T21:31:11+08:00" />
+<meta property="article:modified_time" content="2020-10-14T21:31:11+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">EfficientNet-B0详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p><strong>文章转载来自：<a href="https://zhuanlan.zhihu.com/p/111115509" rel="nofollow">Dormineered</a></strong></p> 
+<p>内容有些词汇翻译不准确，请见谅！！！个人整理不易，包含参数计算内容，更多训练阶段细节会在后期更新。转载请注明</p> 
+<p>EfficientNets是谷歌大脑的工程师谭明星和首席科学家Quoc V. Le在论文《EfficientNet: Rethinking Model Scaling for Convolutional Neural Networks》中提出。该模型的基础网络架构是通过使用神经网络架构搜索（neural architecture search）设计得到。卷积神经网络模型通常是在已知硬件资源的条件下，进行训练的。当你拥有更好的硬件资源时，可以通过放大网络模型以获得更好的训练结果。为系统的研究模型缩放，谷歌大脑的研究人员针对EfficientNets的基础网络模型提出了一种全新的模型缩放方法，该方法使用简单而高效的复合系数来权衡网络深度、宽度和输入图片分辨率。</p> 
+<p>通过放大EfficientNets基础模型，获得了一系列EfficientNets模型。该系列模型在效率和准确性上战胜了之前所有的卷积神经网络模型。尤其是EfficientNet-B7在ImageNet数据集上得到了top-1准确率84.4%和top-5准确率97.1%的结果。且它和当时准确率最高的其它模型对比，大小缩小了8.4倍，效率提高了6.1倍。且通过迁移学习，EfficientNets在多个知名数据集上均达到了当时最先进的水平。</p> 
+<p>EfficientNets网络模型结构</p> 
+<p>本案例中我们选用EfficientNets系列中的基础网络模型EfficientNet-B0。 当该模型在ImageNet数据集上训练时，其一共包含5330564个参数，其中需要梯度下降来训练的参数有5288548个。不需要训练的参数是Batch Normalization层中的均值和方差共42016个。该网络的核心结构为移动翻转瓶颈卷积（mobile inverted bottleneck convolution，MBConv）模块，该模块还引入了压缩与激发网络（Squeeze-and-Excitation Network，SENet）的注意力思想，SENet在提出时也在ImageNet数据集上达到了当时最高的准确率。</p> 
+<p>移动翻转瓶颈卷积也是通过神经网络架构搜索得到的，该模块结构与深度分离卷积（depthwise separable convolution）相似，该移动翻转瓶颈卷积首先对输入进行1x1的逐点卷积并根据扩展比例(expand ratio)改变输出通道维度（如扩展比例为3时，会将通道维度提升3倍。但如果扩展比例为1，则直接省略该1x1的逐点卷积和其之后批归一化和激活函数）。接着进行kxk的深度卷积（depthwise convolution）。如果要引入压缩与激发操作，该操作会在深度卷积后进行。再以1x1的逐点卷积结尾恢复原通道维度。最后进行连接失活（drop connect）和输入的跳越连接（skip connection），这一做法源于论文《Deep networks with stochastic depth》，它让模型具有了随机的深度，剪短了模型训练所需的时间，提升了模型性能（注意，在EfficientNets中，只有当相同的移动翻转瓶颈卷积重复出现时，才会进行连接失活和输入的跳越连接，且还会将其中的深度卷积步长变为1），连接失活是一种类似于随机失活（dropout）的操作，并且在模块的开始和结束加入了恒等跳越。注意该模块中的每一个卷积操作后都会进行批归一化，激活函数使用的是Swish激活函数。</p> 
+<p>移动翻转瓶颈卷积模块中的压缩与激发操作，以下简称SE模块，是一种基于注意力的特征图操作操作，SE模块首先对特征图进行压缩操作，在通道维度方向上进行全局平均池化操作（global average pooling），得到特征图通道维度方向的全局特征。然后对全局特征进行激发操作，使用激活比例（R，该比例为浮点数）乘全局特征维数（C）个1x1的卷积对其进行卷积（原方法使用全连接层），学习各个通道间的关系，再通过sigmoid激活函数得到不同通道的权重，最后乘以原来的特征图得到最终特征。本质上，SE模块是在通道维度上做（注意力）attention或者（门控制）gating操作，这种注意力机制让模型可以更加关注信息量最大的通道特征，而抑制那些不重要的通道特征。另外一点是SE模块是通用的，这意味着其可以嵌入到现有的其它网络架构中。其结构如图1所示，注意在移动翻转瓶颈卷积模块中，与激活比例相乘的是移动翻转瓶颈卷积模块的输入通道维度，而不是模块中深度卷积后的输出通道维度。</p> 
+<p><img src="https://images2.imgbox.com/4e/53/zR29ajCA_o.jpg" alt="在这里插入图片描述"></p> 
+<center>
+  图1 压缩与激发模块结构示意图 
+</center> 
+<p>你已经了解了EfficientNet的核心模块，接下来，我们将进一步了解EfficientNet-B0的结构，它由16个移动翻转瓶颈卷积模块，2个卷积层，1个全局平均池化层和1个分类层构成。其结构如图2所示，图中不同的颜色代表了不同的阶段。<br> <img src="https://images2.imgbox.com/cd/45/lscaDmIs_o.jpg" alt="在这里插入图片描述"></p> 
+<center>
+  图2 EfficientNet-B0结构图 
+</center> 
+<p>第一阶段，对输入的224x224x3的图像按顺序进行以下操作得到第一阶段的结果：</p> 
+<ol><li> <p>卷积（卷积核为32核3×3×3，步长为2×2，填充为“same”即输出的宽和高缩小一半），该卷积运算的输出是一个维度为（112×112×32）的特征图。因该层不含偏置项，故该层需要训练学习的参数共计864（32x3x3x3）个。</p> </li><li> <p>批归一化层（Batch Normalization，BN），该层输入为（112×112×32）的特征图，故该层含参数总数为128个（32x4），其中需要训练学习的参数为64个。</p> </li><li> <p>Swish激活函数</p> </li></ol> 
+<p>第一阶段，总计参数128+864=992个，需要训练学习的参数928个。</p> 
+<p>第二阶段，对前一阶段输出的112x112x32的特征图进行移动翻转瓶颈卷积（扩张比例为1，深度卷积核大小为3x3，核步长为1x1，包含压缩与激发操作，无连接失活和连接跳越），并输出第二阶段的结果：</p> 
+<ol><li> <p>由于扩张比例为1，故跳过一开始的逐点卷积，直接进行深度卷积（卷积核为32核3×3×3，步长为1×1，填充为“same”即输出的宽和高不变）。深度卷积输出是一个维度为（112×112×32）的特征图。因该层不含偏置项，故该层需要训练学习的参数共计288（32x3x3x1）个。</p> </li><li> <p>批归一化层（Batch Normalization，BN），该层输入为（112×112×32）的特征图，故该层含参数总数为128个（32x4），其中需要训练学习的参数为64个。</p> </li><li> <p>Swish激活函数。</p> </li><li> <p>全局平均池化层（global average pooling），该层在通道维度方向上进行全局平均池化，输出为（1x1x32）的特征图。</p> </li><li> <p>卷积（压缩与激发模块中的第一个卷积，卷积核为8核1x1x32，步长为1×1，填充为“same”即输出的宽和高不变），该卷积运算的输出是一个维度为（1×1×8）的特征图。因该层包含偏置项，故该层需要训练学习的参数共计264（8x1x1x32+8）个。</p> </li><li> <p>Swish激活函数。</p> </li><li> <p>卷积（压缩与激发模块中的第二个卷积，卷积核为32核1x1x8，步长为1×1，填充为“same”即输出的宽和高不变），该卷积运算的的输出是一个维度为（1×1×32）的特征图。因该层包含偏置项，故该层需要训练学习的参数共计288（32x1x1x8+32）个。</p> </li><li> <p>Sigmoid激活函数</p> </li><li> <p>与步骤3）的结果相乘，得到112x112x32的特征图。</p> </li><li> <p>逐点卷积（卷积核为16核1×1×32，步长为1×1，填充为“same”即输出的宽和高不变）该卷积运算的输出是一个维度为（112×112×16）的特征图。因该层不含偏置项，故该层需要训练学习的参数共计512（16x1x1x32）个。</p> </li><li> <p>批归一化层（Batch Normalization，BN），该层输入为（112×112×16）的特征图，故该层含参数总数为64个（16x4），其中需要训练学习的参数为32个。</p> </li></ol> 
+<p>第二阶段，总计参数288+128+264+288+512+64=1544个，需要训练学习的参数1448个。</p> 
+<p>第三阶段，对前一阶段输出的112x112x16的特征图进行两次移动翻转瓶颈卷积，第一个（扩张比例为6，深度卷积核大小为3x3，核步长为2x2，包含压缩与激发操作，无连接失活核连接跳越），第二个（扩张比例为6，深度卷积核大小为3x3，核步长为1x1，包含压缩与激发操作，有连接失活和连接跳越），并输出第二阶段的结果：</p> 
+<ol><li> <p>扩张比例为6的逐点卷积（卷积核为96核1×1×16，步长为1×1，填充为“same”即输出的宽和高不变）该卷积运算的输出是一个维度为（112×112×96）的特征图。因该层不含偏置项，故该层需要训练学习的参数共计1536（96x1x1x16）个。</p> </li><li> <p>批归一化层（Batch Normalization，BN），该层输入为（112×112×96）的特征图，故该层含参数总数为384个（96x4），其中需要训练学习的参数为192个。</p> </li><li> <p>Swish激活函数</p> </li><li> <p>深度卷积（卷积核为6核3×3×16，步长为2×2，填充为“same”即输出的宽和高缩小一半）。深度卷积输出是一个维度为（56×56×96）的特征图。因该层不含偏置项，故该层需要训练学习的参数共计864（96x3x3x1）个。</p> </li><li> <p>批归一化层（Batch Normalization，BN），该层输入为（56×56×96）的特征图，故该层含参数总数为384个（96x4），其中需要训练学习的参数为192个。</p> </li><li> <p>Swish激活函数。</p> </li><li> <p>全局平均池化层（global average pooling），该层在通道维度方向上进行全局平均池化，输出为（1x1x96）的特征图。</p> </li><li> <p>卷积（压缩与激发模块中的第一个卷积，卷积核为4核1x1x96，步长为1×1，填充为“same”即输出的宽和高不变），该卷积运算的输出是一个维度为（1×1×4）的特征图。因该层包含偏置项，故该层需要训练学习的参数共计388（4x1x1x96+4）个。</p> </li><li> <p>Swish激活函数。</p> </li><li> <p>卷积（压缩与激发模块中的第二个卷积，卷积核为96核1x1x4，步长为1×1，填充为“same”即输出的宽和高不变），该卷积运算的的输出是一个维度为（1×1×96）的特征图。因该层包含偏置项，故该层需要训练学习的参数共计480（96x1x1x4+96）个。</p> </li><li> <p>Sigmoid激活函数</p> </li><li> <p>与步骤6）的结果相乘，得到56x56x96的特征图。</p> </li><li> <p>逐点卷积（卷积核为24核1×1×96，步长为1×1，填充为“same”即输出的宽和高不变）该卷积运算的输出是一个维度为（56×56×24）的特征图。因该层不含偏置项，故该层需要训练学习的参数共计2304（24x1x1x96）个。</p> </li><li> <p>批归一化层（Batch Normalization，BN），该层输入为（56×56×24）的特征图，故该层含参数总数为96个（24x4），其中需要训练学习的参数为48个。</p> </li><li> <p>该阶段的第二个移动翻转瓶颈卷积（扩张比例为6，深度卷积核大小为3x3，核步长为1x1，包含压缩与激发操作，有连接失活和连接跳越），其中结尾的连接失活和连接跳越不含参数。除了深度卷积的步长发生了变化外，其余操作与第一个移动翻转瓶颈卷积相同，输出为（56x56x24）故第二个移动翻转瓶颈卷积的参数总和为3456+576+1296+576+870+1008+3456+96=11334，其中需要训练的参数为10701个。</p> </li></ol> 
+<p>第三阶段，总计参数17770个，需要训练学习的参数16705个。</p> 
+<p>第四阶段，对前一阶段输出的56x56x24的特征图进行两次移动翻转瓶颈卷积，第一个（扩张比例为6，深度卷积核大小为5x5，核步长为2x2，包含压缩与激发操作，无连接失活核连接跳越），第二个（扩张比例为6，深度卷积核大小为5x5，核步长为1x1，包含压缩与激发操作，有连接失活和连接跳越），输出是一个28x28x40的特征图。总计参数48336个，需要训练学习的参数46640个。</p> 
+<p>第五阶段，对前一阶段输出的28x28x40的特征图进行三次移动翻转瓶颈卷积，第一个（扩张比例为6，深度卷积核大小为3x3，核步长为2x2，包含压缩与激发操作，无连接失活核连接跳越），第二个（扩张比例为6，深度卷积核大小为3x3，核步长为1x1，包含压缩与激发操作，有连接失活核连接跳越），第三个（扩张比例为6，深度卷积核大小为3x3，核步长为1x1，包含压缩与激发操作，有连接失活核连接跳越），输出是一个14x14x80的特征图。总计参数248210个，需要训练学习的参数242930个。</p> 
+<p>第六阶段，对前一阶段输出的14x14x80的特征图进行三次移动翻转瓶颈卷积，第一个（扩张比例为6，深度卷积核大小为5x5，核步长为1x1，包含压缩与激发操作，无连接失活核连接跳越），第二个（扩张比例为6，深度卷积核大小为5x5，核步长为1x1，包含压缩与激发操作，有连接失活核连接跳越），第三个（扩张比例为6，深度卷积核大小为5x5，核步长为1x1，包含压缩与激发操作，有连接失活核连接跳越），输出是一个14x14x112的特征图。总计参数551116个，需要训练学习的参数543148个。</p> 
+<p>第七阶段，对前一阶段输出的14x14x112的特征图进行四次移动翻转瓶颈卷积，第一个（扩张比例为6，深度卷积核大小为5x5，核步长为2x2，包含压缩与激发操作，无连接失活核连接跳越），第二个（扩张比例为6，深度卷积核大小为5x5，核步长为1x1，包含压缩与激发操作，有连接失活核连接跳越），第三个（扩张比例为6，深度卷积核大小为5x5，核步长为1x1，包含压缩与激发操作，有连接失活核连接跳越），第四个（扩张比例为6，深度卷积核大小为5x5，核步长为1x1，包含压缩与激发操作，有连接失活核连接跳越），输出是一个7x7x192的特征图。总计参数2044396个，需要训练学习的参数2026348个。</p> 
+<p>第八阶段，对前一阶段输出的7x7x192的特征图进行一次移动翻转瓶颈卷积（扩张比例为6，深度卷积核大小为3x3，核步长为1x1，包含压缩与激发操作，无连接失活核连接跳越）输出是一个7x7x320的特征图。总计参数722480个，需要训练学习的参数717232个。</p> 
+<p>第九阶段，对输入的7x7x320的图像按顺序进行以下操作得到模型最终的记过：</p> 
+<ol><li> <p>卷积（卷积核为1280核1×1×320，步长为1×1，填充为“same”即输出的宽和高不变），该卷积运算的输出是一个维度为（7×7×1280）的特征图。因该层不含偏置项，故该层需要训练学习的参数共计409600（1280x1x1x320）个。</p> </li><li> <p>批归一化层（Batch Normalization，BN），该层输入为（7×7×1280）的特征图，故该层含参数总数为5120个（1280x4），其中需要训练学习的参数为2560个。</p> </li><li> <p>Swish激活函数</p> </li><li> <p>全局平均池化层（global average pooling），该层在通道维度方向上进行全局平均池化，输出为（1x1x1280）的特征图。</p> </li><li> <p>随机失活dropout</p> </li><li> <p>全连接层，该层有1000个神经元。因该层包含偏置项，总参数个数为1281000（1000x1280+1000）</p> </li><li> <p>Softmax激活函数，输出分类结果。</p> </li></ol> 
+<p>第九阶段，总计参数1695720个，需要训练学习的参数1693160个。</p> 
+<p>除了EfficientNet-B0外，EfficientNet系列还有其它7个网络（EfficientNet-B1，EfficientNet-B2，EfficientNet-B3，EfficientNet-B4，EfficientNet-B5，EfficientNet-B6，EfficientNet-B7），这些网络均是谷歌大脑团队通过神经网络架构搜索在不同的运算次数和运行内存限制下，在EfficientNet-B0的参数基础上对模型进行缩放得到的。主要涉及三个参数深度参数、广度参数和输入分辨率参数，通过这三个参数来控制模型的缩放。其中深度参数通过与EfficientNet-B0中各阶段的模块重复次数相乘，得到更深层的网络架构；广度系数通过与EfficientNet-B0中各卷积操作输入的核个数相乘，得到表现能力更强的网络模型；输入分辨率参数控制的则是网络的输入图片的长宽大小。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/9eb315cc8886eb8d2f1051b2fe19aead/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">vscode could not establish connection to linux The VS Code Server failed to start</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/3236ff7f9f2dad1ee8c5cfbdcca9bccb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">机器学习实战——k-近邻算法</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>ViewModel 源码设计思路分析 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="ViewModel 源码设计思路分析" />
+<meta property="og:description" content="前言 转眼一年又过去大半了，在2022年，初定了大多计划，搬家，换公司，很多事情都一托再拖。
+这里分享一篇我在公司内部做的分享文章吧，删除了部分对公司内部代码的探讨。
+公司中的项目运用到了大量的组件封装。有的是对第三方组件进行二次封装，有的是从零开始设计，如何设计一个可扩展性高，容易使用的组件呢？可以参考参考google开发者是如何设计组件的。
+我们以ViewModel组件为例，试图从源码中，窥探作者是如何设计ViewModel组件的。如果是我们，我们会怎么设计ViewModel组件呢？
+需求分析 首先，需要明确我们的组件需要什么功能：
+1、这个组件专门处理业务的数据逻辑
+2、给Activity或者Fragment用的，希望同一个Activity下的fragment可以利用这个VeiwModel交互传递数据。
+3、配置发生变化，导致View销毁重建的时候，保存这个ViewModel。数据不丢失。
+4、ViewModel虽然不能持有Acitvity、fragment这种上下文，但是允许给一个Application。
+5、进程意外杀死重建的时候，需要保存数据
+头脑风暴（核心） 整理了需求之后，作者开始了头脑风暴，一起看看作者是如何思考的。
+1、用于逻辑处理的类ViewModel。先搞个抽象父类，模板模式封装公共代码，逻辑交给子类。到时候用户继承我们的抽象类就好了。
+2、保存这个功能要如何处理？我们希望在Activity或者Fragment中使用。并且到时候，一个Activity,可能有多个ViewModel。作者创建了一个新的类：ViewModelStore。专门用来保存一个界面的多个ViewModel。而VeiwModel负责处理业务逻辑，ViewModel的存储交给ViewModelStore.符合单一职责原则。
+3、有了ViewModelStore保存我们的ViewModel了，那配置发生变化的时候，只需要存VeiwModelStore就好了。不是配置发生变化导致的界面销毁，就需要清空ViewModelStore中的ViewModel了。什么时候该保存，什么时候该清空，那就不是ViewModelStore这个类需要关心的事情了。因为ViewModelStore的责任只是用来保存ViewModel的。谁该关心呢？作者认为，谁持有，谁关心~作者创建了一个接口类ViewModelStoreOwner用来声明职责，给个方法，返回一个ViewModelStore，实现了这个接口，就会持有ViewModelStore了。那就由他去操心保存和清空ViewModelStore的功能吧。
+可见，职责声明的场景，用接口来表示。
+3.1、作者让ComponentActivity实现了接口，并在构造函数中监听生命周期回调。当生命周期走向onDestroy的时候，判断当前是不是因为配置变化导致的销毁Activity，不是的话，就清空ViewModelStore中的数据。
+3.2、那具体怎么保存数据呢？当因为配置发生变化的时候，Acitvity的生命周期被安排走向尽头。在ActivityThread中，调用activity的retainNonConfigurationInstances。该方法返回一个NonConfigurationInstances对象（可以认为包装类），把对象用变量lastNonConfigutationInstances保存在ActivityCliendRecord中。在该方法中
+NonConfigurationInstances retainNonConfigurationInstances() { //该方法是空实现，用于保存子类的对象 Object activity = onRetainNonConfigurationInstance(); //...忽略代码 NonConfigurationInstances nci = new NonConfigurationInstances(); nci.activity = activity; //...忽略代码 return nci; } 所以ComponentActivity实现onRetainNonConfigurationInstance并返回ViewModelStore对象即可。
+不过，作者明白，只有一些刁民，喜欢瞎搞事情。
+为了防止这些刁民，作者在ComponentAcitvity中把这个onRetainNonConfigurationInstance方法写了final，防止他们重写了方法，覆盖了我们的代码。这个方法就用来给我们保存数据的.
+但是做人做事都不能赶尽杀绝啊，毕竟大部分的用户都是遵纪守法的好公民，这个方法只保存我们的ViewModelStore，也太局限了。于是，作者就创建了一个空函数，用户实现这个方法，返回他们想要正常保存的数据，到时候，连带帮用户的数据一起存起来不就好了。所以到时候补一个用户实现这个方法，配置发生变化的时候，顺带帮他们一起保存了。既然要存的有2种数据，一种是用户的，另一种是ViewModelStore。那就需要创建一个包装类了，把这俩包装起来。于是ComponentActivity中，就需要创建一个静态内部类了。
+这种实现父类给的方法，但是不赶紧杀绝的做法很赞，在我们的项目中，也发现了类似的写法。此处省略一万字。。。。。
+当Activity重新创建的时候，再来个方法返回我们之前保存的数据就好了~
+在Activtiy的attach函数中，会把之前的配置传回来。
+这样子类在就可以通过这个对象获取之前我们存储的ViewModelStore了。
+如此一来，保存数据和获取数据的方案都有了~
+到目前为止，我们已经有一个专门处理逻辑的类ViewModel,一个专门保存ViewModel的类ViewModelStore，以及利用接口ViewModelStoreOwner去声明相关职责了。保存清空的思路也都有了。
+4、下面就需要考虑如何去创建了
+用户是可以自由定义ViewModel的具体的类的，只需要继承我们的ViewModel就好了，并且ViewModel的构造函数中，可能有用户自己的参数。也可能没有参数或者是有一个Application的参数。这种情况下，作者想到了利用工厂模式，为每一个ViewModel提供一个工厂类，如果有构造函数有自定义的参数，那就自己搞个工厂类去创建，没有参数或这有一个Application参数的时候，由我们提供的工厂创建就好了。
+工厂类接口很简单：
+作者为没有参数的构造函数和参数只有一个Applicaiton的构造函数，创建一个默认的工厂类NewInstanceFactory和AndridViewModelFactory
+使用反射直接获取具体的类对象。带有Application参数的工厂类也是一样的，只是多了一个参数而已。问题不大：AndroidViewModelFactory
+5、创建的方法已经有了。下面就是思考如何获取拿到ViewModel实例对象了。为什么要这么考虑呢？利用工厂模式不是已经可以获取到实例对象了？
+因为我们有存储机制，当配置变化的时候，不再是通过factory获取了，而是从ViewModelStore中获取。
+先整理一下获取ViewModel需要的相关逻辑：
+（1）获取到对应的工厂实例对象
+（2）从viewModelStore中获取ViewModel，或者利用工厂去创建一个ViewModel。
+（3）创建之后，同时需要保存ViewModel。
+这三部就是创建的流程需要涉及的相关逻辑
+对于用户而言，他不应该关心如何保存我们的ViewMdel，什么时候从ViewModelStore中获取，什么时候创建，这些都应该是用户无感知的。这遵循迪米特原则：最少知道原则，用户在调用ViewModel组件的时候，不应该知道这个类的内部细节，以及内部调用逻辑。比如说外观者模式，或者中介者模式就符合迪米特原则。外观者，封装了组件内部实现细节，并提供统一的接口或者函数给外部。也降低了使用成本。这种最常见的就是Glide。简单的一行内码，就可以整合了内部千军万马的组件调用逻辑。
+作者创建了一个新的类：ViewModelProvider。对外提供一个get函数，利用传入的具体的class，使用对应的工厂创建ViewModel。内部逻辑怎么调用，与用户无关。
+这个ViewModelProvider做了什么事情呢？
+1、根据不同的情况，拿到对应的工厂类。
+2、从缓存中获取ViewModel，拿不到的时候，利用工厂类创建ViewModel。
+3、把ViewModel保存到ViewModelStore中。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/05dd3468556d44ccaaa98d735d6ebdbd/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-11-08T14:17:12+08:00" />
+<meta property="article:modified_time" content="2022-11-08T14:17:12+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">ViewModel 源码设计思路分析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><img alt="" height="1080" src="https://images2.imgbox.com/97/97/HfxSKZzv_o.jpg" width="1200"></p> 
+<p> </p> 
+<h2>前言</h2> 
+<p>转眼一年又过去大半了，在2022年，初定了大多计划，搬家，换公司，很多事情都一托再拖。</p> 
+<p>这里分享一篇我在公司内部做的分享文章吧，删除了部分对公司内部代码的探讨。</p> 
+<p></p> 
+<p>公司中的项目运用到了大量的组件封装。有的是对第三方组件进行二次封装，有的是从零开始设计，如何设计一个可扩展性高，容易使用的组件呢？可以参考参考google开发者是如何设计组件的。</p> 
+<p>我们以ViewModel组件为例，试图从源码中，窥探作者是如何设计ViewModel组件的。如果是我们，我们会怎么设计ViewModel组件呢？</p> 
+<h2></h2> 
+<h2><strong>需求分析</strong></h2> 
+<p>首先，需要明确我们的组件需要什么功能：</p> 
+<p>1、这个组件专门处理业务的数据逻辑</p> 
+<p>2、给Activity或者Fragment用的，希望同一个Activity下的fragment可以利用这个VeiwModel交互传递数据。</p> 
+<p>3、配置发生变化，导致View销毁重建的时候，保存这个ViewModel。数据不丢失。</p> 
+<p>4、ViewModel虽然不能持有Acitvity、fragment这种上下文，但是允许给一个Application。</p> 
+<p>5、进程意外杀死重建的时候，需要保存数据</p> 
+<h2></h2> 
+<h2><strong>头脑风暴（核心）</strong></h2> 
+<p>整理了需求之后，作者开始了头脑风暴，一起看看作者是如何思考的。</p> 
+<p>1、用于逻辑处理的类ViewModel。先搞个抽象父类，模板模式封装公共代码，逻辑交给子类。到时候用户继承我们的抽象类就好了。</p> 
+<p>2、保存这个功能要如何处理？我们希望在Activity或者Fragment中使用。并且到时候，一个Activity,可能有多个ViewModel。作者创建了一个新的类：ViewModelStore。专门用来保存一个界面的多个ViewModel。而VeiwModel负责处理业务逻辑，ViewModel的存储交给ViewModelStore.符合单一职责原则。</p> 
+<p>3、有了ViewModelStore保存我们的ViewModel了，那配置发生变化的时候，只需要存VeiwModelStore就好了。不是配置发生变化导致的界面销毁，就需要清空ViewModelStore中的ViewModel了。什么时候该保存，什么时候该清空，那就不是ViewModelStore这个类需要关心的事情了。因为ViewModelStore的责任只是用来保存ViewModel的。谁该关心呢？作者认为，谁持有，谁关心~作者创建了一个接口类ViewModelStoreOwner用来声明职责，给个方法，返回一个ViewModelStore，实现了这个接口，就会持有ViewModelStore了。那就由他去操心保存和清空ViewModelStore的功能吧。</p> 
+<p>可见，职责声明的场景，用接口来表示。</p> 
+<p><img alt="" height="880" src="https://images2.imgbox.com/f0/89/18Mc5tLG_o.png" width="1200"></p> 
+<p></p> 
+<p>3.1、作者让ComponentActivity实现了接口，并在构造函数中监听生命周期回调。当生命周期走向onDestroy的时候，判断当前是不是因为配置变化导致的销毁Activity，不是的话，就清空ViewModelStore中的数据。</p> 
+<p><img alt="" height="738" src="https://images2.imgbox.com/43/52/vvxkeXYA_o.png" width="1200">3.2、那具体怎么保存数据呢？当因为配置发生变化的时候，Acitvity的生命周期被安排走向尽头。在ActivityThread中，调用activity的retainNonConfigurationInstances。该方法返回一个NonConfigurationInstances对象（可以认为包装类），把对象用变量lastNonConfigutationInstances保存在ActivityCliendRecord中。<img alt="" height="772" src="https://images2.imgbox.com/1a/89/ByFHijnQ_o.png" width="1200">在该方法中</p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<pre><code class="hljs">NonConfigurationInstances retainNonConfigurationInstances() {
+ //该方法是空实现，用于保存子类的对象
+ Object activity = onRetainNonConfigurationInstance();
+
+ //...忽略代码 
+
+ NonConfigurationInstances nci = new NonConfigurationInstances();
+ nci.activity = activity;
+
+ //...忽略代码
+ return nci;
+ }</code></pre> 
+<p></p> 
+<p><img alt="" height="238" src="https://images2.imgbox.com/4d/e2/jhWmoOlQ_o.png" width="1200"></p> 
+<p> </p> 
+<p>所以ComponentActivity实现onRetainNonConfigurationInstance并返回ViewModelStore对象即可。</p> 
+<p>不过，作者明白，只有一些刁民，喜欢瞎搞事情。</p> 
+<p><img alt="" height="960" src="https://images2.imgbox.com/97/81/4A33tUht_o.png" width="950"></p> 
+<p> 为了防止这些刁民，作者在ComponentAcitvity中把这个onRetainNonConfigurationInstance方法写了final，防止他们重写了方法，覆盖了我们的代码。这个方法就用来给我们保存数据的.</p> 
+<p></p> 
+<p><img alt="" height="472" src="https://images2.imgbox.com/42/2b/kwOOUgtU_o.png" width="1200"> 但是做人做事都不能赶尽杀绝啊，毕竟大部分的用户都是遵纪守法的好公民，这个方法只保存我们的ViewModelStore，也太局限了。于是，作者就创建了一个空函数，用户实现这个方法，返回他们想要正常保存的数据，到时候，连带帮用户的数据一起存起来不就好了。所以到时候补一个<img alt="" height="204" src="https://images2.imgbox.com/c7/18/1RULLqui_o.png" width="1200">用户实现这个方法，配置发生变化的时候，顺带帮他们一起保存了。既然要存的有2种数据，一种是用户的，另一种是ViewModelStore。那就需要创建一个包装类了，把这俩包装起来。于是ComponentActivity中，就需要创建一个静态内部类了。</p> 
+<p><img alt="" height="274" src="https://images2.imgbox.com/c3/a3/YGkZeVrb_o.png" width="1200"></p> 
+<p>这种实现父类给的方法，但是不赶紧杀绝的做法很赞，在我们的项目中，也发现了类似的写法。此处省略一万字。。。。。</p> 
+<p>当Activity重新创建的时候，再来个方法返回我们之前保存的数据就好了~</p> 
+<p>在Activtiy的attach函数中，会把之前的配置传回来。</p> 
+<p><img alt="" height="422" src="https://images2.imgbox.com/11/83/y7DBZRuT_o.png" width="1200"></p> 
+<p>这样子类在就可以通过这个对象获取之前我们存储的ViewModelStore了。</p> 
+<p><img alt="" height="290" src="https://images2.imgbox.com/77/38/YjgZUMie_o.png" width="1200"></p> 
+<p>如此一来，保存数据和获取数据的方案都有了~</p> 
+<p>到目前为止，我们已经有一个专门处理逻辑的类ViewModel,一个专门保存ViewModel的类ViewModelStore，以及利用接口ViewModelStoreOwner去声明相关职责了。保存清空的思路也都有了。</p> 
+<p> 4、下面就需要考虑如何去创建了</p> 
+<p>用户是可以自由定义ViewModel的具体的类的，只需要继承我们的ViewModel就好了，并且ViewModel的构造函数中，可能有用户自己的参数。也可能没有参数或者是有一个Application的参数。这种情况下，作者想到了利用工厂模式，为每一个ViewModel提供一个工厂类，如果有构造函数有自定义的参数，那就自己搞个工厂类去创建，没有参数或这有一个Application参数的时候，由我们提供的工厂创建就好了。</p> 
+<p>工厂类接口很简单：</p> 
+<p><img alt="" height="554" src="https://images2.imgbox.com/c1/67/JsSw4NM9_o.png" width="1200"></p> 
+<p> 作者为没有参数的构造函数和参数只有一个Applicaiton的构造函数，创建一个默认的工厂类NewInstanceFactory和AndridViewModelFactory</p> 
+<p><img alt="" height="558" src="https://images2.imgbox.com/ca/98/uKS8ILQy_o.png" width="1200"></p> 
+<p> 使用反射直接获取具体的类对象。带有Application参数的工厂类也是一样的，只是多了一个参数而已。问题不大：AndroidViewModelFactory</p> 
+<p>5、创建的方法已经有了。下面就是思考如何获取拿到ViewModel实例对象了。为什么要这么考虑呢？利用工厂模式不是已经可以获取到实例对象了？</p> 
+<p>因为我们有存储机制，当配置变化的时候，不再是通过factory获取了，而是从ViewModelStore中获取。</p> 
+<p>先整理一下获取ViewModel需要的相关逻辑：</p> 
+<p>（1）获取到对应的工厂实例对象</p> 
+<p>（2）从viewModelStore中获取ViewModel，或者利用工厂去创建一个ViewModel。</p> 
+<p>（3）创建之后，同时需要保存ViewModel。</p> 
+<p>这三部就是创建的流程需要涉及的相关逻辑</p> 
+<p>对于用户而言，他不应该关心如何保存我们的ViewMdel，什么时候从ViewModelStore中获取，什么时候创建，这些都应该是用户无感知的。这遵循迪米特原则：最少知道原则，用户在调用ViewModel组件的时候，不应该知道这个类的内部细节，以及内部调用逻辑。比如说外观者模式，或者中介者模式就符合迪米特原则。外观者，封装了组件内部实现细节，并提供统一的接口或者函数给外部。也降低了使用成本。这种最常见的就是Glide。简单的一行内码，就可以整合了内部千军万马的组件调用逻辑。</p> 
+<p>作者创建了一个新的类：ViewModelProvider。对外提供一个get函数，利用传入的具体的class，使用对应的工厂创建ViewModel。内部逻辑怎么调用，与用户无关。</p> 
+<p>这个ViewModelProvider做了什么事情呢？</p> 
+<p>1、根据不同的情况，拿到对应的工厂类。</p> 
+<p>2、从缓存中获取ViewModel，拿不到的时候，利用工厂类创建ViewModel。</p> 
+<p>3、把ViewModel保存到ViewModelStore中。</p> 
+<p><strong>小结</strong>：创建的流程，使用了工厂模式和外观者模式，把创建的流程和业务代码隔离开，并且提供统一的对外访问函数get，降低用户使用成本。</p> 
+<p>5.1、具体看看这个ViewModelProvider是怎么做的，</p> 
+<p>ViewModelStore肯定是从外部（View层）带进来了，View层的ComponentActivtiy和Fragment都实现了ViewModelStoreOwner的接口，利用这个接口，就可以拿到了ViewModelStore了。另外还需要根据具体情况获取到默认的Factory。提供默认Factory这个职责，作者又创建一个接口类，HasDefaultViewModelProviderFactory，这个接口也只有一个方法，就是用来返回默认的Factory的。ComponentActivity去负责创建这个默认Factory在合适不过了。毕竟还要获取到application。这个接口类和Owner接口类搭配使用。</p> 
+<p><img alt="" height="664" src="https://images2.imgbox.com/98/72/UAc5sImK_o.png" width="1200">可以发现，对于<strong>每一个不同的功能职责声明</strong>，都有一个独立的接口去负责，并不会因为这些功能都和VeiwModel相关，也都用在一起，而把不同功能的接口整合在一起。就是典型的接口隔离的思想。</p> 
+<p></p> 
+<p>到这里，基本的逻辑已经完善了，创建了几个单一职责的类：ViewModel、ViewModelStore，外观者模式类：ViewModelProder、工厂模式涉及的具体的Factory。每一个类都有各自的功能。创建了声明职责的HasDefaultViewModelProviderFactory、ViewModelStoreOwner接口，遵循接口隔离原则。</p> 
+<p>继续看：</p> 
+<p>6、ViewModel只能保存因为配置发生变化导致界面重建的数据，如果因为系统资源限制等，导致回来的时候进程重新创建了，我们现有的逻辑是保存数据走onSaveInstanceState的方法。这个只能在View层处理了，这不就是解耦的不够彻底了。于是，就有一个新的类SaveStateHandle</p> 
+<p>保存这块数据，底层逻辑肯定还是需要调用OnSaveInstanceState,但是ViewModel和Activity是完全解耦的，如何交互呢？</p> 
+<p>作者想到使用第三者（一个新的类saveStateRegistry）来建立两者的沟通，这就有一些中介者味道了，比如我们非常熟悉的MVC架构，controller就是M和V的中介者。</p> 
+<p>通过第三者，在onCreate的时候，拿到数据，在onSaveInstanceState的时候，把数据存起来</p> 
+<p><img alt="" height="218" src="https://images2.imgbox.com/56/f6/VzHhQBkC_o.png" width="1200"></p> 
+<p> <img alt="" height="380" src="https://images2.imgbox.com/4e/1c/fJlUEH4A_o.png" width="1200"></p> 
+<p> mSaveStateRegistry这个类和ViewModelStore一样，就是用来做数据存储的，从onCreate中获取数据，把数据用map保存，当需要调用onSaveInstanceState的时候，从外部拿到bundle，把我们的map都存到这个bundle中。</p> 
+<p></p> 
+<p>这个mSaveStateRegistry就像是一个model，提供数据的。当然，作者并不直接像上面这样，在onCreate中直接调用mSaveStateRegistry，在调用mSaveStateRegsitry.performStore方法得时候，增加了一些逻辑判断。而逻辑处理的逻辑不应该写在Activity中，更不应该写在数据存储类里面，作者使用了mvc模式，增加一个类作为控制层SaveStateRegistryController,负责处理SaveStateRegistry存储数据时候的额外逻辑。V是Activity，M就是SaveStateRegistry。最终：</p> 
+<p><img alt="" height="298" src="https://images2.imgbox.com/dc/03/vmKL1CVY_o.png" width="1200"></p> 
+<p> <img alt="" height="662" src="https://images2.imgbox.com/ca/ed/EZGTIWat_o.png" width="1200"></p> 
+<p> 下面就是要思考如何把我们的ViewModel和这个SaveStateRegistry建立关系了。作者并没有直接让SaveStateRegistry持有ViewModel。这点和ViewModelStore不同。通过创建了一个接口类SavedStateProvider，这个接口的唯一方法就是返回一个bundle。SaveStateRegistry使用map存储这个接口。而ViewModel间接持有这个接口的实例对象。从而实现了ViewModel和SaveStateRegistry的解耦。</p> 
+<p></p> 
+<p>另外，对于ViewModel而言，也需要一个数据类，作者创建了一个新的数据类：SaveStateHandle。目的是通过该类存储我们希望进程意外杀死重建的时候的数据。同样的，SaveStateHandle是对数据的存储操作，该类就持有SaveStateProvider的接口实例对象。作者同样需要做一些额外的操作，比如把SaveStateHandle中的SaveStateProvider对象注册到SaveStateRegistry中，并监听生命周期，保证只注册一次。这些额外的逻辑操作同理交给SaveStatehandleController处理。</p> 
+<p>所以，ViewModel会持有SaveStateHandle,SaveStateHandle是数据类型，是Model，由控制类SaveStateHandleController提供，逻辑也有它负责。同样是MVC模式。</p> 
+<p><strong>题外话：</strong>ViewModel和Activity的关系很淡泊，ViewModel持有SaveStateHandle对象，SaveStateHandle持有一个SaveStateProvider对象，这个对象被注册到SaveStateRegistry中，SaveStateRegistry不会直接和View层交互，而是通过SaveStateRegistryController。旁系三代以外就可以结婚了。这俩隔离这么远，可以说是妥妥的没啥联系了。</p> 
+<p><strong>SaveStateHandle怎么和ViewModel建立联系呢？</strong></p> 
+<p>现在只要在创建ViewModel的时候，把这个SaveStateHandler传给ViewModel即可。</p> 
+<p>如果是我的话，我会在ViewModel抽象父类中，创建这个成员变量。但作者的思路不同，他对构造函数进行解析，如果构造函数的参数只有SaveStateHandle这个类，或者是SaveStateHandle和Application的类型，在创建的时候，就把这个SaveStateHandle传输传入。这样用户就可以创建一个次构，来获取这个SaveStateHandle了。不过这种做法，有一个问题，如果是用户自定义的Factory，那要就获取不到了。所以在SaveStateHandle的注释中有提到：</p> 
+<p><img alt="" height="654" src="https://images2.imgbox.com/4f/b3/YqxssYrZ_o.png" width="1200"></p> 
+<p> </p> 
+<p>如果想拿到这货，就需要使用SaveStateViewModelFactory了，不能用自己的。如果用全局变量，感觉就没有构造函数的限制了。</p> 
+<p>大致依赖关系</p> 
+<p><img alt="" height="454" src="https://images2.imgbox.com/49/6e/kLrLAagE_o.png" width="1200"></p> 
+<p></p> 
+<p> </p> 
+<h2><strong>小彩蛋：</strong></h2> 
+<p>1、在SaveStateHandle中，这里key是直接写死的：</p> 
+<p><img alt="" height="324" src="https://images2.imgbox.com/99/87/BeDzTLZv_o.png" width="1200"></p> 
+<p> 获取的时候</p> 
+<p><img alt="" height="150" src="https://images2.imgbox.com/44/4b/K2ouAtma_o.png" width="1200"></p> 
+<p> <img alt="" height="178" src="https://images2.imgbox.com/c6/11/1loLiQu4_o.png" width="1200"></p> 
+<p> 2、比如ViewModelStore：使用的都是hashmap,而不是ArrayMap。</p> 
+<p></p> 
+<p><img alt="" height="690" src="https://images2.imgbox.com/81/a7/C05n1skG_o.png" width="1200"></p> 
+<p> 思考：是否在某些场景下，HashMap的性能会优于ArrayMap？因为如果HashMap一无是处，为什么没有被打上过期的标识？</p> 
+<p><img alt="" height="516" src="https://images2.imgbox.com/50/59/VvdduYhG_o.png" width="1200"></p> 
+<p> <img alt="" height="468" src="https://images2.imgbox.com/e1/16/K9hy3n8i_o.png" width="1200"></p> 
+<p>3、外部访问权限控制</p> 
+<p></p> 
+<p><img alt="" height="1018" src="https://images2.imgbox.com/3c/1f/j4c7xPrX_o.png" width="1200"> 这段代码源自NewInstanceFactory中，可以发现，专门创建了一个instance用来对外返回sInstance这个对象。而sInstance被声明称内部私有。pubclic修饰不可修改，很早之前google的一些VeiwModel中也遇到过。感觉意义不是很大。</p> 
+<p></p> 
+<p><strong>最后</strong></p> 
+<p>ViewModel组件设计思路差不多就到这了。本次技术分享主要是浅谈一下ViewModel组件的作者可能是如何思考并设计这个组件的。ViewModel的源码细节实际更多一些，可以发现该组件的设计也运用了大量的设计模式和设计思想，当我们自己设计组件的时候，有相似场景的时候。可以参考借鉴一下~。</p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/1ce43ab05c82c933fcc0363521aefadb/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">虚拟机连不上网络 -- 解决</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c8dc5e39d9b88d1fabadcb50e0e4478b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">MyBatis-Plus只查询固定条数记录</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>ARS大陆毫米波雷达ROS开发包解析及二次开发（二） - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="ARS大陆毫米波雷达ROS开发包解析及二次开发（二）" />
+<meta property="og:description" content="文章目录 预备知识与前期工作ARS_40X源码架构雷达数据格式及流向数据流向图雷达数据格式socket_can通信格式（以雷达配置帧通信为例）关键数据介绍及格式说明cluster数据帧can_messages 关键参数：topic与服务SubscriptionServices 关键类与继承关系二次开发流程展示:TODO下一步工作 预备知识与前期工作 前期工作链接雷达手册链接中文注释版本源码（未添加完成滤波器，暂时不能跑，仅提供注释参考） 最近阅读了前段时间刚部署到电脑上的源码，作者的源码是基于c&#43;&#43;的，最近穿插着复习c&#43;&#43;并完成了雷达的源码阅读，对源码关键部分进行了注释，增加了可读性。另外此架构上进行修改，完成了雷达滤波的初步开发，下一步部署到电脑进行效果验证。
+首先，雷达检测有两种方式，一种是cluster模式，即点云模式，将所有的扫描到的点云经过内部滤波后，不加处理的发布出来，具体效果可见我前一篇博客。这种状态下生成的地图可以看作点云图，优点是点云信息密集，利于二次开发。缺点也很明显：噪声大，一个物体上存在多个雷达点，分辨起来较为困难。
+另一种模式就是object模式，其中将点云进一步处理，以RCS等参数判断物体的类别并输出。这种模式的优点是：可视化程度高，易于分辨，同时噪声点少。缺点是：难以进行二次开发，对的点云特征的利用度较低。
+ARS_40X源码架构 源码架构 如图所示，源码主要分为三个功能部分：
+与雷达接口socket_can的通信与数据处理、发布等任务；在第一个的基础上，实现与rviz“通信”的可视化任务；同样在第一个人物的基础上，实现object mode下的目标姿态发布任务； 图中源码文件结构如图所示，基本上由hpp文件定义通信的数据基本格式和所有类的初始化，然后再src文件中对所有类进行初始化，其中./src/ros文件下的ros文件初始化各类上层接口类，其功能包含利用service服务将更改的参数传递给socket_can接口，可视化点云等上层服务。
+雷达数据格式及流向 数据流向图 源码数据流向图 如上图所示，soket_can负责与毫米波雷达的通信，包括对数据的封装以及读取等功能，供ars_40x_can.cpp使用，包括建立的通信类来实现与socket_can的通信、并负责更新所有数据，，实现的功能有：receive_data(), write_data()，端口设置，获取雷达状态等，这个是底层接口中最重要的文件。
+实现了数据的更新后，上层的ros接口要继承底层接口，建立ROS功能包间的通信，以进一步实现可视化与用户的实时更改。综上，实现了数据从底层获取到上层的接口开发，具体细节请读者自行看源码。
+雷达数据格式 数据的通信包含：源码与socket_can包的通信、源码内部之间的数据通信。通信之间的数据格式对于理清楚源码的架构及运行机制有着重要作用。在大陆雷达开发手册中有着清楚的说明，建议读者首先读一下开发手册。
+socket_can通信格式（以雷达配置帧通信为例） 源码与socket_can通信是符合大陆雷达的标准格式的。
+数据发送包括：数据头(fram_id） &#43; 数据（n byte）
+其中：数据头说明我要发送什么数据：例如配置数据中对于最大距离的配置、滤波配置等。
+数据请求：数据头(fram_id） &#43; 数据（n byte），与数据发送同理，不过功能是对于雷达状态的请求、雷达点云数据的请求等。
+这是雷达配置信息的设置帧参数：可以看到，其中对于雷达的配置帧，包含了8 * 8位的数据，每一位都有特殊的用途，例如要设置雷达最大距离，就要设置其中的max_distance块，并包装进一个8byte的数据中，发送出去，当然，这些底层的移位操作作者通过union体帮我们解决了，我们只需要按照作者给定的格式进行编码，如下图所示。
+如上图，这是雷达的配置数据格式，这些变量按照名字都是雷达配置帧中的关键变量。雷达的配置帧数据格式是按照：第一位，第二位…每一位分别配置的，通过union体与&#34;:&#34;符号(每个变量后面都是一个整数，这是设置的union位域)是每个变量对应其在8byte中特定的位置，免去了需要单独移位的操作。
+raw_data就是8byte的数据，raw_data用来保存所有的数据，同时还能够按照位域整体接收来自socket_can的雷达8byte数据，这样在查看某个参数时也不需要移位操作就能取到对应的雷达配置参数，非常方便。
+通过以上，可以了解到源码内部对于雷达配置等参数的封装格式以及和底层雷达通信的数据格式，下面介绍其他比较关键的数据格式。
+关键数据介绍及格式说明 同样重要的还有：雷达状态帧、目标模式下的目标帧、cluster模式下的数据帧、can_messages
+重点介绍：cluster下的数据帧，can_messages
+cluster数据帧 cluster数据帧主要是包括三个部分：
+cluster_0_status：包含一帧内的点云数量等基本点云信息；cluster_1_general：点云的速度和方向等信息；cluster_2_quality：点云的质量信息：例如点的真实存在概率等；
+cluster的数据格式定义 can_messages 这个信息头的作用在于发送的时候作为fram_id，说明自己要发送或者要取什么数据，例如要ars_40x_can.cpp中的receive_data()中，要发送数据前必须要加上frame_id = RadarCfg。
+ars_40x_can.cpp中关于发送配置请求的部分 前面的can_messsages作为frame_id就是这个作用，通过socket_can提供的can_.write来确定写入的信息类别，类的get方法返回的raw_data传入雷达中修改配置信息等雷达运行参数。
+关键参数：topic与服务 通过查看topic，可以实时获取雷达的当前状态与目标点的信息等，ROS的topic机制实现了ROS系统内的信息共享，免去了复杂的进程间通信，利用其在系统内发布的信息进行订阅，继而可以方便的进行二次开发。
+MessageTypeDescriptionMessage Box/radar_statusars_40X/RadarStatusDescribe the radar configuration0x201/ars_40X/clustersars_40X/ClusterListRaw clusters data from radar0x600, 0x701/ars_40X/objectsars_40X/ObjectListRaw objects data from radar0x60A, 0x60B, 0x60C, 0x60D/visualize_clustersvisualization_msgs/MarkerArrayClusters markers for RViz visualization-/visualize_objectsvisualization_msgs/MarkerArrayObject markers for RViz visualization- 这是作者源码中定义的基本topic。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/185b0278d560143c54c08d71b3d22565/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-12-07T18:55:25+08:00" />
+<meta property="article:modified_time" content="2021-12-07T18:55:25+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">ARS大陆毫米波雷达ROS开发包解析及二次开发（二）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">预备知识与前期工作</a></li><li><a href="#ARS_40X_10" rel="nofollow">ARS_40X源码架构</a></li><li><a href="#_22" rel="nofollow">雷达数据格式及流向</a></li><li><ul><li><a href="#_23" rel="nofollow">数据流向图</a></li><li><a href="#_29" rel="nofollow">雷达数据格式</a></li><li><ul><li><a href="#socket_can_31" rel="nofollow">socket_can通信格式（以雷达配置帧通信为例）</a></li><li><a href="#_44" rel="nofollow">关键数据介绍及格式说明</a></li><li><ul><li><a href="#cluster_47" rel="nofollow">cluster数据帧</a></li><li><a href="#can_messages_55" rel="nofollow">can_messages</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+  </li><li><a href="#topic_64" rel="nofollow">关键参数：topic与服务</a></li><li><ul><li><a href="#Subscription_80" rel="nofollow">Subscription</a></li><li><a href="#Services_87" rel="nofollow">Services</a></li></ul> 
+  </li><li><a href="#_108" rel="nofollow">关键类与继承关系</a></li><li><a href="#TODO_126" rel="nofollow">二次开发流程展示:TODO</a></li><li><a href="#_127" rel="nofollow">下一步工作</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>预备知识与前期工作</h2> 
+<ol><li><a href="https://blog.csdn.net/weixin_43253464/article/details/121208924">前期工作链接</a></li><li><a href="https://download.csdn.net/download/weixin_43253464/57895869">雷达手册链接</a></li><li><a href="https://github.com/nacayu/ars_40X-_filter-master">中文注释版本源码</a>（未添加完成滤波器，暂时不能跑，仅提供注释参考）</li></ol> 
+<p>  最近阅读了前段时间刚部署到电脑上的源码，作者的源码是基于c++的，最近穿插着复习c++并完成了雷达的源码阅读，对源码<strong>关键部分进行了注释</strong>，增加了可读性。另外此架构上进行修改，完成了<strong>雷达滤波</strong>的初步开发，下一步部署到电脑进行效果验证。<br>   首先，雷达检测有两种方式，一种是cluster模式，即点云模式，将所有的扫描到的点云经过内部滤波后，<strong>不加处理</strong>的发布出来，具体效果可见我前一篇博客。这种状态下生成的地图可以看作点云图，优点是点云信息密集，利于二次开发。缺点也很明显：噪声大，一个物体上存在多个雷达点，分辨起来较为困难。<br>   另一种模式就是object模式，其中将点云进一步处理，以RCS等参数判断物体的类别并输出。这种模式的优点是：可视化程度高，易于分辨，同时噪声点少。缺点是：难以进行二次开发，对的点云特征的利用度较低。</p> 
+<h2><a id="ARS_40X_10"></a>ARS_40X源码架构</h2> 
+<p><img src="https://images2.imgbox.com/22/14/4TW5MdaX_o.png" alt="在这里插入图片描述"></p> 
+<center>
+  源码架构 
+</center> 
+<p>  如图所示，源码主要分为三个功能部分：</p> 
+<ol><li>与雷达接口socket_can的通信与数据处理、发布等任务；</li><li>在第一个的基础上，实现与rviz“通信”的可视化任务；</li><li>同样在第一个人物的基础上，实现object mode下的目标姿态发布任务；</li></ol> 
+<p>  图中源码文件结构如图所示，基本上由hpp文件定义通信的数据基本格式和所有类的初始化，然后再src文件中对所有类进行初始化，其中./src/ros文件下的ros文件初始化各类上层接口类，其功能包含利用service服务将更改的参数传递给socket_can接口，可视化点云等上层服务。</p> 
+<h2><a id="_22"></a>雷达数据格式及流向</h2> 
+<h3><a id="_23"></a>数据流向图</h3> 
+<p><img src="https://images2.imgbox.com/ad/1a/o2HctP88_o.png" alt="请添加图片描述"></p> 
+<center>
+  源码数据流向图 
+</center> 
+<p>  如上图所示，soket_can负责与毫米波雷达的通信，包括对数据的封装以及读取等功能，供ars_40x_can.cpp使用，<strong>包括建立的通信类来实现与socket_can的通信、并负责更新所有数据</strong>，，实现的功能有：receive_data(), write_data()，端口设置，获取雷达状态等，这个是底层接口中最重要的文件。<br>   实现了数据的更新后，上层的ros接口要继承底层接口，建立ROS功能包间的通信，以进一步实现可视化与用户的实时更改。综上，实现了数据从底层获取到上层的接口开发，具体细节请读者自行看源码。</p> 
+<h3><a id="_29"></a>雷达数据格式</h3> 
+<p>  数据的通信包含：源码与socket_can包的通信、源码内部之间的数据通信。通信之间的数据格式对于理清楚源码的架构及运行机制有着重要作用。<strong>在大陆雷达开发手册中有着清楚的说明，建议读者首先读一下开发手册。</strong></p> 
+<h4><a id="socket_can_31"></a>socket_can通信格式（以雷达配置帧通信为例）</h4> 
+<p>  源码与socket_can通信是符合大陆雷达的标准格式的。<br> <strong>数据发送</strong>包括：数据头(fram_id） + 数据（n byte）<br> 其中：数据头说明我要发送什么数据：例如配置数据中对于最大距离的配置、滤波配置等。<br> <strong>数据请求</strong>：数据头(fram_id） + 数据（n byte），与数据发送同理，不过功能是对于雷达状态的请求、雷达点云数据的请求等。<br> <img src="https://images2.imgbox.com/76/82/rGy44qfm_o.png" alt="在这里插入图片描述"><br>   这是雷达配置信息的设置帧参数：可以看到，其中对于雷达的配置帧，包含了8 * 8位的数据，每一位都有特殊的用途，例如要设置雷达最大距离，就要设置其中的max_distance块，并包装进一个8byte的数据中，发送出去，当然，这些底层的移位操作作者通过union体帮我们解决了，我们只需要按照作者给定的格式进行编码，如下图所示。<br> <img src="https://images2.imgbox.com/24/3c/onB2KW9z_o.png" alt="在这里插入图片描述"></p> 
+<p>  如上图，这是雷达的配置数据格式，这些变量按照名字都是雷达配置帧中的关键变量。雷达的配置帧数据格式是按照：第一位，第二位…每一位分别配置的，通过union体与":"符号(每个变量后面都是一个整数，这是设置的union位域)是每个变量对应其在8byte中特定的位置，免去了需要单独移位的操作。<br>   raw_data就是8byte的数据，raw_data用来保存所有的数据，同时还能够按照位域整体接收来自socket_can的雷达8byte数据，这样在查看某个参数时也不需要移位操作就能取到对应的雷达配置参数，非常方便。<br>   通过以上，可以了解到<strong>源码内部对于雷达配置</strong>等参数的封装格式以及和<strong>底层雷达通信</strong>的数据格式，下面介绍其他比较关键的数据格式。</p> 
+<h4><a id="_44"></a>关键数据介绍及格式说明</h4> 
+<p><strong>同样重要的还有：雷达状态帧、目标模式下的目标帧、cluster模式下的数据帧、can_messages</strong><br> <strong>重点介绍：cluster下的数据帧，can_messages</strong></p> 
+<h5><a id="cluster_47"></a>cluster数据帧</h5> 
+<p>  cluster数据帧主要是包括三个部分：</p> 
+<ol><li>cluster_0_status：包含一帧内的点云数量等基本点云信息；</li><li>cluster_1_general：点云的速度和方向等信息；</li><li>cluster_2_quality：点云的质量信息：例如点的真实存在概率等；<br> <img src="https://images2.imgbox.com/8f/3b/dPTfMihr_o.png" alt="在这里插入图片描述"></li></ol> 
+<center>
+  cluster的数据格式定义 
+</center> 
+<h5><a id="can_messages_55"></a>can_messages</h5> 
+<p><img src="https://images2.imgbox.com/e9/d6/oKhByQXw_o.png" alt="在这里插入图片描述"><br>   这个信息头的作用在于发送的时候作为fram_id，说明自己要发送或者要取什么数据，例如要ars_40x_can.cpp中的receive_data()中，要发送数据前必须要加上frame_id = RadarCfg。<br> <img src="https://images2.imgbox.com/5e/b5/A9wZuW8z_o.png" alt="在这里插入图片描述"></p> 
+<center>
+  ars_40x_can.cpp中关于发送配置请求的部分 
+</center> 
+<p>  前面的can_messsages作为frame_id就是这个作用，通过socket_can提供的can_.write来确定写入的信息类别，类的get方法返回的raw_data传入雷达中修改配置信息等雷达运行参数。</p> 
+<h2><a id="topic_64"></a>关键参数：topic与服务</h2> 
+<p>  通过查看topic，可以实时获取雷达的当前状态与目标点的信息等，ROS的topic机制实现了ROS系统内的信息共享，免去了复杂的进程间通信，利用其在系统内发布的信息进行订阅，继而可以方便的进行二次开发。</p> 
+<table><thead><tr><th>Message</th><th>Type</th><th>Description</th><th>Message Box</th></tr></thead><tbody><tr><td>/radar_status</td><td>ars_40X/RadarStatus</td><td>Describe the radar configuration</td><td>0x201</td></tr><tr><td>/ars_40X/clusters</td><td>ars_40X/ClusterList</td><td>Raw clusters data from radar</td><td>0x600, 0x701</td></tr><tr><td>/ars_40X/objects</td><td>ars_40X/ObjectList</td><td>Raw objects data from radar</td><td>0x60A, 0x60B, 0x60C, 0x60D</td></tr><tr><td>/visualize_clusters</td><td>visualization_msgs/MarkerArray</td><td>Clusters markers for RViz visualization</td><td>-</td></tr><tr><td>/visualize_objects</td><td>visualization_msgs/MarkerArray</td><td>Object markers for RViz visualization</td><td>-</td></tr></tbody></table> 
+<p>  这是作者源码中定义的基本topic。</p> 
+<pre><code class="prism language-bash"><span class="token variable">$sudo</span> rostopic <span class="token builtin class-name">echo</span> /radar_status
+</code></pre> 
+<p>通过这个语句，可以获取实时的雷达状态：最大距离、功率等信息。</p> 
+<h3><a id="Subscription_80"></a>Subscription</h3> 
+<table><thead><tr><th>Message</th><th>Type</th><th>Description</th><th>Message Box</th></tr></thead><tbody><tr><td>/odom</td><td>nav_msgs/Odometry</td><td>Velocity and accleration information</td><td>0x300, 0x301</td></tr></tbody></table> 
+<h3><a id="Services_87"></a>Services</h3> 
+<table><thead><tr><th>Services</th></tr></thead><tbody><tr><td>/set_ctrl_relay_cfg</td></tr><tr><td>/set_max_distance</td></tr><tr><td>/set_output_type</td></tr><tr><td>/set_radar_power</td></tr><tr><td>/set_rcs_threshold</td></tr><tr><td>/set_send_ext_info</td></tr><tr><td>/set_send_quality</td></tr><tr><td>/set_sensor_id</td></tr><tr><td>/set_sort_index</td></tr><tr><td>/set_store_in_nvm</td></tr></tbody></table> 
+<p>这是源码中提供的服务，可以通过服务来更改雷达的各项参数，调节雷达使其满足自己的使用需求，例如我要更改检测的最大距离，可以这么做：</p> 
+<pre><code class="prism language-bash"><span class="token variable">$rosservice</span> call /set_max_distance <span class="token number">200</span> <span class="token comment">#将最大检测距离更改到200米</span>
+</code></pre> 
+<p>  这里很关键，后面我们进行二次开发，需要对雷达点云进行滤波等需要与雷达通信的功能，都需要进行<strong>基于service</strong>进行更改，service提供给我们一个非常方便与雷达进行<strong>人机交互的接口</strong>，我们可以添加滤波服务，对静态物体进行滤除或者对一定距离的物体进行滤除。</p> 
+<h2><a id="_108"></a>关键类与继承关系</h2> 
+<p>  源码中的数据获取等都是基于类的方法进行的，利用类的方法实现数据的更新，雷达参数的订阅、获取及人工设置。<br> <img src="https://images2.imgbox.com/6e/91/sRlJ3IKW_o.png" alt="请添加图片描述"></p> 
+<center>
+  类的继承关系及引用框架 
+</center>   如上图所示（以**雷达配置类**相关为例）： 
+<ol><li><strong>基本类：</strong></li></ol> 
+<p><img src="https://images2.imgbox.com/60/79/kAkDw7mY_o.png" alt="在这里插入图片描述"></p> 
+<center>
+  雷达配置基本类 
+</center>   这个类实现的基本功能有：初始化雷达配置信息，设置雷达的运行参数，返回雷达的配置信息指针(radar_cfg * get_radar_cfg() )，初始化雷达配置信息(radar_cfg radar_cfg_msg)。 
+<p><img src="https://images2.imgbox.com/77/c0/wug4TNB1_o.png" alt="在这里插入图片描述"></p> 
+<center>
+  ros对于基本的继承 
+</center>   如上图所示，ROS继承类得到基本类对于数据的获取、发送等工作，实现对底层数据的抽象化工作，通过ROS的消息与服务机制对接雷达设置的参数，来达到调节的功能。 
+<h2><a id="TODO_126"></a>二次开发流程展示:TODO</h2> 
+<h2><a id="_127"></a>下一步工作</h2> 
+<p>  下一步工作主要是测试自己添加的滤波的代码。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/af361e795ff0bdbe6b69f83c7f030b8b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C&#43;&#43;函数：多项式求值</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/5f0afca7bb042e936328d9db7f975e49/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">如何正确选择高防服务器</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

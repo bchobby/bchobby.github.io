@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>容器云系列之Docker Swarm集群管理 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="容器云系列之Docker Swarm集群管理" />
+<meta property="og:description" content="Docker Swarm是Docker的集群管理工具，它提供了标准的Docker API，所有任何已经与Docker守护程序通信的工具都可以使用Swarm轻松地扩展到多个主机。支持的工具包括Dokku、Docker Compose、Docker Machine和Jenkins等。
+1、Swarm原理 Swarm集群由多个运行在swarm mode的docker主机组成，这些docker主机分为管理节点（manager）和工作节点（work node）。Swarm mananger节点负责整个集群的管理工作包括集群配置、服务管理等；Work node节点主要负责运行相应的服务来执行任务（task）。
+Swarm集群和standalone部署的docker有以下优点：1）在线修改Service的配置，包括networks和volumes，不需要重启docker服务；2）Swarm集群时候，可以将其它standalone模式的docker主机加入到Swarm集群。
+Swarm中有几个基本概念，包括nodes、Service和tasks以及load balancing：
+Node Node是加入到Swarm集群中的Docker实例，也可以认为是一个docker节点，包括管理节点和工作节点。在部署应用到Swarm集群的时候，会向管理节点提交service定义，管理节点会将这些这些work也就是tasks分发到work节点中。Work节点接收并执行管理节点分配的任务，work节点也会将当前tasks的状态通知到管理节点以维护节点的状态信息。
+Service and tasks Service是manage和work节点上执行的task的定义，当创建service的时候可以指定使用哪个container image以及执行的命令。在replicated service模式下，swarm管理节点会根据desired state中设置的scale分发replica tasks；对于global service模式，swarm集群会向每个可用的节点运行tasks。
+Load balancing Swarm集群使用ingress loading balancing提供集群服务，Swarm集群会自动为service分配PublishedPort，默认使用30000-32767范围。
+1.1 Node节点 Swarm中node节点包括manage管理节点和work工作节点。
+Manager node Manager使用raft算法维护整个集群和运行的service的internal状态，主要完成以下tasks：
+维护cluster statescheduling服务service swarm mode集群服务 Docker建议使用基数manager节点以保证可用性，最大使用7个manager节点。
+Work node Work节点是容器实际运行的实例，在Swarm集群中必须存在manager节点。默认情况下manager节点也是work节点，但在多节点的Swarm集群中为了避免调度任务运行在manager节点，可以将manager节点设置为Drain模式，这样调度不会将任务分配到Drain模式，只会在Active模式的节点上分配任务。
+Role变化 通过运行命令docker node promote可以将worker节点变为manager节点，同样也可以将manager节点转换为worker节点。
+1.2 Service 当Service部署到Swarm集群的时候，swarm管理节点会将service定义作为service的理想状态，然后会将service调度到集群的节点上，以一个或多个tasks执行，这些nodes上运行的tasks之间是相互独立的。
+如图所示，在三个HTTP listener实例中实现负载均衡，service中有三个replica tasks，每个实例是Swarm集群中的一个task。Task是Swarm集群中调度的最小单元，当创建或更新service时候给定了desired state，集群会调度tasks来实现这种理想状态。Task是一种单向机制，在它的整个周期过程中会完成一系列的状态，如assigned、prepared和running等。如果tasks失败了，集群会remove这个tasks并创建新的tasks来替代。
+上图展示了Swarm集群中service创建请求并将tasks调度到worker节点的过程：
+Client发送创建service请求
+Swarm manager节点
+a) API：接收到命令并创建service
+b) Orchestrator：协调者为service循环创建tasks
+c) Allocater：为tasks分配ip地址
+d) Dispatcher：将tasks分配到node
+e) Scheduler：引导worker节点运行tasks" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/bc8a79b7366f44febbd09797f582d313/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-11-27T18:26:07+08:00" />
+<meta property="article:modified_time" content="2021-11-27T18:26:07+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">容器云系列之Docker Swarm集群管理</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>Docker Swarm是Docker的集群管理工具，它提供了标准的Docker API，所有任何已经与Docker守护程序通信的工具都可以使用Swarm轻松地扩展到多个主机。支持的工具包括Dokku、Docker Compose、Docker Machine和Jenkins等。</p> 
+<hr> 
+<h5><a id="1Swarm_3"></a>1、Swarm原理</h5> 
+<p>Swarm集群由多个运行在swarm mode的docker主机组成，这些docker主机分为管理节点（manager）和工作节点（work node）。Swarm mananger节点负责整个集群的管理工作包括集群配置、服务管理等；Work node节点主要负责运行相应的服务来执行任务（task）。<br> Swarm集群和standalone部署的docker有以下优点：1）在线修改Service的配置，包括networks和volumes，不需要重启docker服务；2）Swarm集群时候，可以将其它standalone模式的docker主机加入到Swarm集群。</p> 
+<p>Swarm中有几个基本概念，包括nodes、Service和tasks以及load balancing：</p> 
+<ul><li>Node</li></ul> 
+<p>Node是加入到Swarm集群中的Docker实例，也可以认为是一个docker节点，包括管理节点和工作节点。在部署应用到Swarm集群的时候，会向管理节点提交service定义，管理节点会将这些这些work也就是tasks分发到work节点中。Work节点接收并执行管理节点分配的任务，work节点也会将当前tasks的状态通知到管理节点以维护节点的状态信息。</p> 
+<ul><li>Service and tasks</li></ul> 
+<p>Service是manage和work节点上执行的task的定义，当创建service的时候可以指定使用哪个container image以及执行的命令。在replicated service模式下，swarm管理节点会根据desired state中设置的scale分发replica tasks；对于global service模式，swarm集群会向每个可用的节点运行tasks。</p> 
+<ul><li>Load balancing</li></ul> 
+<p>Swarm集群使用ingress loading balancing提供集群服务，Swarm集群会自动为service分配PublishedPort，默认使用30000-32767范围。</p> 
+<h6><a id="11_Node_21"></a>1.1 Node节点</h6> 
+<p>Swarm中node节点包括manage管理节点和work工作节点。<br> <img src="https://images2.imgbox.com/7a/3d/xYqeu6aq_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>Manager node</li></ul> 
+<p>Manager使用raft算法维护整个集群和运行的service的internal状态，主要完成以下tasks：</p> 
+<ol><li>维护cluster state</li><li>scheduling服务</li><li>service swarm mode集群服务</li></ol> 
+<p>Docker建议使用基数manager节点以保证可用性，最大使用7个manager节点。</p> 
+<ul><li>Work node</li></ul> 
+<p>Work节点是容器实际运行的实例，在Swarm集群中必须存在manager节点。默认情况下manager节点也是work节点，但在多节点的Swarm集群中为了避免调度任务运行在manager节点，可以将manager节点设置为Drain模式，这样调度不会将任务分配到Drain模式，只会在Active模式的节点上分配任务。</p> 
+<ul><li>Role变化</li></ul> 
+<p>通过运行命令docker node promote可以将worker节点变为manager节点，同样也可以将manager节点转换为worker节点。</p> 
+<h6><a id="12_Service_42"></a>1.2 Service</h6> 
+<p>当Service部署到Swarm集群的时候，swarm管理节点会将service定义作为service的理想状态，然后会将service调度到集群的节点上，以一个或多个tasks执行，这些nodes上运行的tasks之间是相互独立的。<br> <img src="https://images2.imgbox.com/d0/ad/5w4rBPVe_o.png" alt="在这里插入图片描述" width="80%" height="80%"></p> 
+<p>如图所示，在三个HTTP listener实例中实现负载均衡，service中有三个replica tasks，每个实例是Swarm集群中的一个task。Task是Swarm集群中调度的最小单元，当创建或更新service时候给定了desired state，集群会调度tasks来实现这种理想状态。Task是一种单向机制，在它的整个周期过程中会完成一系列的状态，如assigned、prepared和running等。如果tasks失败了，集群会remove这个tasks并创建新的tasks来替代。<br> <img src="https://images2.imgbox.com/e0/f6/joj8AOdJ_o.png" alt="在这里插入图片描述" width="80%" height="80%"></p> 
+<p>上图展示了Swarm集群中service创建请求并将tasks调度到worker节点的过程：</p> 
+<ol><li> <p>Client发送创建service请求</p> </li><li> <p>Swarm manager节点<br> a) API：接收到命令并创建service<br> b) Orchestrator：协调者为service循环创建tasks<br> c) Allocater：为tasks分配ip地址<br> d) Dispatcher：将tasks分配到node<br> e) Scheduler：引导worker节点运行tasks</p> </li><li> <p>Swarm Work节点<br> a) Worker：连接到dispatcher并检查分配的tasks<br> b) Executor：执行分配到worker节点的tasks</p> </li></ol> 
+<h6><a id="13_Swarm_task_63"></a>1.3 Swarm task状态</h6> 
+<p>Docker创建service运行tasks，service是desired state和work task的描述。在Swarm集群中work按照以下顺序执行：</p> 
+<ol><li>使用docker service create创建service</li><li>Request进入Docker manager node</li><li>Docker manager节点将service调度到指定的node上运行</li><li>每个service可以启动多个tasks</li><li>每个tasks有一个生命周期，task状态如NEW、PENDING和COMPLETE</li></ol> 
+<p>Tasks是执行的单元，当一个tasks停止的时候，它将不再执行，并且会被新的tasks替代。在整个运行周期中，Tasks会依次进入以下状态：</p> 
+<table><thead><tr><th>状态</th><th>描述</th></tr></thead><tbody><tr><td>NEW</td><td>Tasks初始化</td></tr><tr><td>PENDING</td><td>Tasks分配资源</td></tr><tr><td>ASSIGNED</td><td>Docker将tasks分配到node</td></tr><tr><td>ACCEPTED</td><td>Worker node接受tasks，如果reject，状态会变成REJECTED.</td></tr><tr><td>PREPARING</td><td>Docker正在准备task</td></tr><tr><td>STARTING</td><td>Docker启动the task</td></tr><tr><td>RUNNING</td><td>Task正在执行</td></tr><tr><td>COMPLETE</td><td>Task成功结束</td></tr><tr><td>FAILED</td><td>Task出错</td></tr><tr><td>SHUTDOWN</td><td>Docker请求将task shut down.</td></tr><tr><td>REJECTED</td><td>Worker node reject task</td></tr><tr><td>ORPHANED</td><td>Node宕掉时间过长</td></tr><tr><td>REMOVE</td><td>Task没有结束但是对应的service已经被remove</td></tr></tbody></table> 
+<p>使用命令docker service ps 可以获得task的状态：</p> 
+<pre><code>docker@swarm-manager:~$ docker service ps helloworld                                                                                                                      
+ID                  NAME                IMAGE               NODE                DESIRED STATE       CURRENT STATE            ERROR               PORTS
+j8txqvg8t73c        helloworld.1        alpine:latest       swarm-manager       Running             Running 51 seconds ago
+</code></pre> 
+<h6><a id="14_Swarm_modeRaft_95"></a>1.4 Swarm mode中的Raft算法</h6> 
+<p>Docker在Swarm模式下，管理节点应用Raft Consensus算法来维护集群的全局状态，这样可以保证所有的管理节点处于相同的一致性状态。集群中的一致性状态可以保证在管理节点出现故障的时候，其它的管理节点能够接管任务并恢复到稳定的状态。Raft算法可以忍受(N-1)/2的节点故障，并且需要集群中多数派(N/2+1)节点选举同意。比如在5个管理节点的集群中，如果3个节点不可用，则系统不能接收任何新的请求，但是当前正在运行的tasks可以继续工作。</p> 
+<h6><a id="15_Service_Placement_98"></a>1.5 Service Placement</h6> 
+<p>Swarm service提供了不同的方法来控制不同节点上service的scale和placement：</p> 
+<ol><li>配置Service运行的replicas</li><li>配置CPU和内存</li><li>Placement constraints限制service运行在某些特定的节点</li><li>Placement preferences为节点设置标签，并将服务根据算法分发到这些节点上</li></ol> 
+<ul><li>REPLICATED OR GLOBAL SERVICES</li></ul> 
+<p>Swarm有两种service模式：replicated和global，replicated模式会根据指定的任务副本分发到节点上，global模式会在每个可用的节点上分发任务。通过–mode标签可以控制service的模式，默认为replicated模式。</p> 
+<pre><code>docker service create --name my_web --replicas 3 nginx
+docker service create --name myservice   --mode global  alpine top
+</code></pre> 
+<ul><li>限制service的CPU和内存使用</li></ul> 
+<p>使用–reserve-memory或–reserve-cpu关键字可以限制service的CPU和内存使用，如果没有节点满足条件，则service会处于pending状态。如果service使用的内存超过节点可用的内存，会出现内存溢出OOME。</p> 
+<ul><li>Placement Constraints</li></ul> 
+<p>使用placement constraints可以限制service分发的节点，如下service只会运行在region标签为east的节点上，如果该类标签的节点不存在，tasks会处于pending状态。</p> 
+<pre><code>docker service create \
+  --name my-nginx \
+  --replicas 5 \
+  --constraint node.labels.region==east \
+  nginx
+</code></pre> 
+<p>节点的标签可在Swarm中通过命令“docker node update --label-add”添加</p> 
+<ul><li>Placement Preferences</li></ul> 
+<p>Placement preference是根据算法将任务分发到目标节点上，如下会根据“datacenter”标签来分发服务：</p> 
+<pre><code>$ docker service create \
+  --replicas 9 \
+  --name redis_2 \
+  --placement-pref 'spread=node.labels.datacenter' \
+  redis:3.0.6
+</code></pre> 
+<p>创建service时候可以指定多个placement references，任务会根据定义的顺序进行分发。下图描述了placement references的原理：<br> <img src="https://images2.imgbox.com/28/71/4fMcSVHr_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="2Swarm_142"></a>2、Swarm使用</h5> 
+<p>以下案例环境是在Centos环境上通过docker machine和virtualbox创建了虚拟机，也可以直接在Centos主机上通过“docker swarm init”命令创建swarm管理节点以及“docker swarm join”命令创建swarm工作节点。</p> 
+<h6><a id="21_swarmmanager_145"></a>2.1 创建swarm集群管理节点（manager）</h6> 
+<p>1）创建swarm管理节点swarm-manager：</p> 
+<pre><code>[root@tango-01 ~]# docker-machine create -d virtualbox swarm-manager
+Running pre-create checks...
+(swarm-manager) Unable to get the latest Boot2Docker ISO release version:  Get https://api.github.com/repos/boot2docker/boot2docker/releases/latest: read tcp 192.168.112.10:45354-&gt;54.169.195.247:443: read: connection reset by peer
+Creating machine...
+(swarm-manager) Unable to get the latest Boot2Docker ISO release version:  Get https://api.github.com/repos/boot2docker/boot2docker/releases/latest: read tcp 192.168.112.10:45356-&gt;54.169.195.247:443: read: connection reset by peer
+(swarm-manager) Copying /root/.docker/machine/cache/boot2docker.iso to /root/.docker/machine/machines/swarm-manager/boot2docker.iso...
+(swarm-manager) Creating VirtualBox VM...
+(swarm-manager) Creating SSH key...
+(swarm-manager) Starting the VM...
+(swarm-manager) Check network to re-create if needed...
+(swarm-manager) Waiting for an IP...
+Waiting for machine to be running, this may take a few minutes...
+Detecting operating system of created instance...
+Waiting for SSH to be available...
+Detecting the provisioner...
+Provisioning with boot2docker...
+Copying certs to the local machine directory...
+Copying certs to the remote machine...
+Setting Docker configuration on the remote daemon...
+Checking connection to Docker...
+Docker is up and running!
+To see how to connect your Docker Client to the Docker Engine running on this virtual machine, run: docker-machine env swarm-manager
+[root@tango-01 ~]# docker-machine ls
+NAME            ACTIVE   DRIVER       STATE     URL                         SWARM   DOCKER      ERRORS
+swarm-manager   -        virtualbox   Running   tcp://192.168.99.101:2376           v19.03.12
+</code></pre> 
+<p>2）初始化swarm集群，进行初始化的这台机器，就是集群的管理节点</p> 
+<pre><code>[root@tango-01 ~]# docker-machine ssh swarm-manager
+   ( '&gt;')
+  /) TC (\   Core is distributed with ABSOLUTELY NO WARRANTY.
+ (/-_--_-\)           www.tinycorelinux.net
+
+docker@swarm-manager:~$ docker swarm init --advertise-addr 192.168.99.101
+Swarm initialized: current node (jlcr3zi9dc38ihljnwwp10cwe) is now a manager.
+
+To add a worker to this swarm, run the following command:
+
+    docker swarm join --token SWMTKN-1-1pdftuve6z8jqub8pgw5p6mrpl07dinkd7p8tgeqd0filf1uw2-91z7ukqoxeb2f25tgncdz3gqf 192.168.99.101:2377
+
+To add a manager to this swarm, run 'docker swarm join-token manager' and follow the instructions.
+</code></pre> 
+<p>需要把以下这行复制出来，在增加工作节点时会用到：</p> 
+<pre><code>docker swarm join --token SWMTKN-1-1pdftuve6z8jqub8pgw5p6mrpl07dinkd7p8tgeqd0filf1uw2-91z7ukqoxeb2f25tgncdz3gqf 192.168.99.101:2377
+</code></pre> 
+<h6><a id="22_swarmworker_196"></a>2.2 创建swarm集群工作节点（worker）</h6> 
+<p>1）创建两台工作节点swarm-worker1 和 swarm-worker2 ：</p> 
+<pre><code>[root@tango-01 ~]# docker-machine create -d virtualbox swarm-worker1
+[root@tango-01 ~]# docker-machine create -d virtualbox swarm-worker2
+[root@tango-01 ~]# docker-machine ls
+NAME            ACTIVE   DRIVER       STATE     URL                         SWARM   DOCKER      ERRORS
+swarm-manager   -        virtualbox   Running   tcp://192.168.99.101:2376           v19.03.12   
+swarm-worker1   -        virtualbox   Running   tcp://192.168.99.102:2376           v19.03.12   
+swarm-worker2   -        virtualbox   Running   tcp://192.168.99.103:2376           v19.03.12
+</code></pre> 
+<p>2）添加节点到Swarm集群</p> 
+<p>分别进入swarm-worker1 和 swarm-worker2，指定添加至上一步中创建的集群</p> 
+<pre><code>[root@tango-01 ~]# docker-machine ssh swarm-worker1
+   ( '&gt;')
+  /) TC (\   Core is distributed with ABSOLUTELY NO WARRANTY.
+ (/-_--_-\)           www.tinycorelinux.net
+
+docker@swarm-worker1:~$ docker swarm join --token SWMTKN-1-1pdftuve6z8jqub8pgw5p6mrpl07dinkd7p8tgeqd0filf1uw2-91z7ukqoxeb2f25tgncdz3gqf 192.168.99.101:2377
+This node joined a swarm as a worker.
+docker@swarm-worker1:~$ exit                                                                                                                                              
+logout
+[root@tango-01 ~]# docker-machine ssh swarm-worker2
+   ( '&gt;')
+  /) TC (\   Core is distributed with ABSOLUTELY NO WARRANTY.
+ (/-_--_-\)           www.tinycorelinux.net
+
+docker@swarm-worker2:~$ docker swarm join --token SWMTKN-1-1pdftuve6z8jqub8pgw5p6mrpl07dinkd7p8tgeqd0filf1uw2-91z7ukqoxeb2f25tgncdz3gqf 192.168.99.101:2377
+This node joined a swarm as a worker.
+docker@swarm-worker2:~$
+</code></pre> 
+<p>出现信息“This node joined a swarm as a worker.”表示添加成功<br> <img src="https://images2.imgbox.com/8a/cf/qNW0RVlT_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="23__232"></a>2.3 查看集群信息</h6> 
+<p>进入管理节点swarm-manager，执行docker info 可以查看当前集群的信息：</p> 
+<pre><code>[root@tango-01 ~]# docker-machine ssh swarm-manager
+   ( '&gt;')
+  /) TC (\   Core is distributed with ABSOLUTELY NO WARRANTY.
+ (/-_--_-\)           www.tinycorelinux.net
+
+docker@swarm-manager:~$ docker info
+……
+Swarm: active
+  NodeID: jlcr3zi9dc38ihljnwwp10cwe
+  Is Manager: true
+  ClusterID: 8f98onsca8dnl45yo5cd06510
+  Managers: 1
+  Nodes: 3
+  Default Address Pool: 10.0.0.0/8  
+  SubnetSize: 24
+  Data Path Port: 4789
+  Orchestration:
+   Task History Retention Limit: 5
+  Raft:
+   Snapshot Interval: 10000
+   Number of Old Snapshots to Retain: 0
+   Heartbeat Tick: 1
+   Election Tick: 10
+  Dispatcher:
+   Heartbeat Period: 5 seconds
+  CA Configuration:
+   Expiry Duration: 3 months
+   Force Rotate: 0
+  Autolock Managers: false
+  Root Rotation In Progress: false
+  Node Address: 192.168.99.101
+  Manager Addresses:
+   192.168.99.101:2377
+……
+</code></pre> 
+<p>Swarm信息中可以知道当前运行的集群中有三个节点，其中有一个是管理节点。通过docker node ls可以看到节点信息：</p> 
+<pre><code>docker@swarm-manager:~$ docker node ls                                                                                                                                    
+ID                            HOSTNAME            STATUS              AVAILABILITY        MANAGER STATUS      ENGINE VERSION
+jlcr3zi9dc38ihljnwwp10cwe *   swarm-manager       Ready               Active              Leader              19.03.12
+93hi5m0i0lpf1ier4ymemv8of     swarm-worker1       Ready               Active                                  19.03.12
+5eqml7demkoxogrc9p2emgzfw     swarm-worker2       Ready               Active                                  19.03.12
+</code></pre> 
+<h6><a id="24__279"></a>2.4 部署服务到集群中</h6> 
+<p>在管理节点上为其中一个工作节点创建一个名为 helloworld 的服务，这里是随机指派给一个工作节点：</p> 
+<pre><code>docker@swarm-manager:~$ docker service create --replicas 1 --name helloworld alpine ping docker.com                                                                       
+jbg09xbutgjt6tyb2gu1xz368
+overall progress: 1 out of 1 tasks 
+1/1: running   [==================================================&gt;] 
+verify: Service converged
+</code></pre> 
+<h6><a id="25__289"></a>2.5 查看服务部署情况</h6> 
+<p>查看 helloworld 服务运行在哪个节点上，可以看到目前是在swarm-manager 节点：</p> 
+<pre><code>docker@swarm-manager:~$ docker service ps helloworld                                                                                                                      
+ID                  NAME                IMAGE               NODE                DESIRED STATE       CURRENT STATE            ERROR               PORTS
+j8txqvg8t73c        helloworld.1        alpine:latest       swarm-manager       Running             Running 51 seconds ago
+</code></pre> 
+<p>查看 helloworld 部署的具体信息：</p> 
+<pre><code>docker@swarm-manager:~$ docker service inspect --pretty helloworld                                                                                                        
+
+ID:             jbg09xbutgjt6tyb2gu1xz368
+Name:           helloworld
+Service Mode:   Replicated
+ Replicas:      1
+Placement:
+UpdateConfig:
+ Parallelism:   1
+ On failure:    pause
+ Monitoring Period: 5s
+ Max failure ratio: 0
+ Update order:      stop-first
+RollbackConfig:
+ Parallelism:   1
+ On failure:    pause
+ Monitoring Period: 5s
+ Max failure ratio: 0
+ Rollback order:    stop-first
+ContainerSpec:
+ Image:         alpine:latest@sha256:c0e9560cda118f9ec63ddefb4a173a2b2a0347082d7dff7dc14272e7841a5b5a
+ Args:          ping docker.com 
+ Init:          false
+Resources:
+Endpoint Mode:  vip
+</code></pre> 
+<h6><a id="26__325"></a>2.6 扩展集群服务</h6> 
+<p>将上述的 helloworld 服务扩展到2个节点</p> 
+<pre><code>docker@swarm-manager:~$ docker service scale helloworld=2                                                                                                                 
+helloworld scaled to 2
+overall progress: 2 out of 2 tasks 
+1/2: running   [==================================================&gt;] 
+2/2: running   [==================================================&gt;] 
+verify: Service converged
+</code></pre> 
+<p>可以看到helloworld服务已经从一个节点，扩展到两个节点</p> 
+<pre><code>docker@swarm-manager:~$ docker service ps helloworld                                                                                                                      
+ID                  NAME                IMAGE               NODE                DESIRED STATE       CURRENT STATE                ERROR               PORTS
+j8txqvg8t73c        helloworld.1        alpine:latest       swarm-manager       Running             Running 3 hours ago                              
+r28ytdtsony1        helloworld.2        alpine:latest       swarm-worker1       Running             Running about a minute ago
+</code></pre> 
+<h6><a id="27__343"></a>2.7 删除服务</h6> 
+<p>使用docker service rm删除服务</p> 
+<pre><code>docker@swarm-manager:~$ docker service rm helloworld                                                                                                                      
+helloworld
+docker@swarm-manager:~$ docker service ps helloworld                                                                                                                      
+no such service: helloworld
+docker@swarm-manager:~$
+</code></pre> 
+<h6><a id="28__353"></a>2.8 滚动升级服务</h6> 
+<p>以redis版本如何滚动升级至更高版本为例</p> 
+<p>1）创建一个 3.0.6 版本的 redis</p> 
+<pre><code>docker@swarm-manager:~$ docker service create --replicas 1 --name redis --update-delay 10s redis:3.0.6
+eqlobo3vwbxatb0zdsb1l5up2
+overall progress: 1 out of 1 tasks 
+1/1: running   [==================================================&gt;] 
+verify: Service converged
+docker@swarm-manager:~$ docker service ps redis                                                                                                                           
+ID                  NAME                IMAGE               NODE                DESIRED STATE       CURRENT STATE           ERROR               PORTS
+2u248hxu23qr        redis.1             redis:3.0.6         swarm-worker2       Running             Running 2 minutes ago
+</code></pre> 
+<p>2）滚动升级 redis</p> 
+<pre><code>docker@swarm-manager:~$ docker service update --image redis:3.0.7 redis                                                                                                   
+redis
+overall progress: 1 out of 1 tasks 
+1/1: running   [==================================================&gt;] 
+verify: Service converged 
+docker@swarm-manager:~$ docker service ps redis                                                                                                                           
+ID                  NAME                IMAGE               NODE                DESIRED STATE       CURRENT STATE             ERROR               PORTS
+mve6j6um9knl        redis.1             redis:3.0.7         swarm-worker1       Running             Running 22 seconds ago                        
+2u248hxu23qr         \_ redis.1         redis:3.0.6         swarm-worker2       Shutdown            Shutdown 45 seconds ago
+</code></pre> 
+<p>以上信息可以知道redis的版本已经从3.0.6升级到了3.0.7，说明服务已经升级成功。</p> 
+<h6><a id="29__382"></a>2.9 停止某个节点接收新的任务</h6> 
+<p>1）查看所有的节点</p> 
+<pre><code>docker@swarm-manager:~$ docker node ls                                                                                                                                    
+ID                            HOSTNAME            STATUS              AVAILABILITY        MANAGER STATUS      ENGINE VERSION
+jlcr3zi9dc38ihljnwwp10cwe *   swarm-manager       Ready               Active              Leader              19.03.12
+93hi5m0i0lpf1ier4ymemv8of     swarm-worker1       Ready               Active                                  19.03.12
+5eqml7demkoxogrc9p2emgzfw     swarm-worker2       Ready               Active                                  19.03.12
+</code></pre> 
+<p>可以看到目前所有的节点都是 Active, 可以接收新的任务分配。</p> 
+<p>2）停止节点swarm-manager</p> 
+<pre><code>docker@swarm-manager:~$ docker node update --availability drain swarm-manager                                                                                             
+swarm-manager
+docker@swarm-manager:~$ docker node ls                                                                                                                                    
+ID                            HOSTNAME            STATUS              AVAILABILITY        MANAGER STATUS      ENGINE VERSION
+jlcr3zi9dc38ihljnwwp10cwe *   swarm-manager       Ready               Drain               Leader              19.03.12
+93hi5m0i0lpf1ier4ymemv8of     swarm-worker1       Ready               Active                                  19.03.12
+5eqml7demkoxogrc9p2emgzfw     swarm-worker2       Ready               Active                                  19.03.12
+</code></pre> 
+<p>注意：swarm-manager状态变为Drain状态，不会影响到集群的服务，只是swarm-manager节点不再接收新的任务，集群的负载能力有所下降。</p> 
+<p>3）可以通过以下命令重新激活节点</p> 
+<pre><code>docker@swarm-manager:~$ docker node update --availability active swarm-manager                                                                                            
+swarm-manager
+docker@swarm-manager:~$ docker node ls                                                                                                                                    
+ID                            HOSTNAME            STATUS              AVAILABILITY        MANAGER STATUS      ENGINE VERSION
+jlcr3zi9dc38ihljnwwp10cwe *   swarm-manager       Ready               Active              Leader              19.03.12
+93hi5m0i0lpf1ier4ymemv8of     swarm-worker1       Ready               Active                                  19.03.12
+5eqml7demkoxogrc9p2emgzfw     swarm-worker2       Ready               Active                                  19.03.12
+</code></pre> 
+<h6><a id="210__416"></a>2.10 节点的升级和降级</h6> 
+<p>1）使用命令docker node promote可以将worker节点升级为manager节点</p> 
+<pre><code>docker@swarm-manager:~$ docker node promote swarm-worker1
+Node swarm-worker1 promoted to a manager in the swarm.
+docker@swarm-manager:~$ docker node ls                                                                                                                                    
+ID                            HOSTNAME            STATUS              AVAILABILITY        MANAGER STATUS      ENGINE VERSION
+jlcr3zi9dc38ihljnwwp10cwe *   swarm-manager       Ready               Active              Leader              19.03.12
+93hi5m0i0lpf1ier4ymemv8of     swarm-worker1       Ready               Active              Reachable           19.03.12
+5eqml7demkoxogrc9p2emgzfw     swarm-worker2       Ready               Active                                  19.03.12
+</code></pre> 
+<p>状态Reachable表示参与到Raft仲裁算法的管理者节点，当管理节点不可用的时候，该节点有资格被选举为管理节点。</p> 
+<p>2）使用命令docker node demote可以将manager节点降级为worker节点</p> 
+<pre><code>docker@swarm-manager:~$ docker node demote swarm-manager 
+Manager swarm-manager demoted in the swarm.
+docker@swarm-manager:~$ docker node ls                                                                                                                                    
+Error response from daemon: This node is not a swarm manager. Worker nodes can't be used to view or modify cluster state. Please run this command on a manager node or promote the current node to a manager.
+</code></pre> 
+<p>切换到swarm-worker1节点，看到manager管理节点已经发生变化</p> 
+<pre><code>[root@tango-01 ~]# docker-machine ssh swarm-worker1
+   ( '&gt;')
+  /) TC (\   Core is distributed with ABSOLUTELY NO WARRANTY.
+ (/-_--_-\)           www.tinycorelinux.net
+
+docker@swarm-worker1:~$ docker node ls
+ID                            HOSTNAME            STATUS              AVAILABILITY        MANAGER STATUS      ENGINE VERSION
+jlcr3zi9dc38ihljnwwp10cwe     swarm-manager       Ready               Active                                  19.03.12
+93hi5m0i0lpf1ier4ymemv8of *   swarm-worker1       Ready               Active              Leader              19.03.12
+5eqml7demkoxogrc9p2emgzfw     swarm-worker2       Ready               Active                                  19.03.12
+</code></pre> 
+<h6><a id="211_Swarm_450"></a>2.11 Swarm集群备份恢复</h6> 
+<ul><li>备份Swarm集群</li></ul> 
+<ol><li>如果Swarm开启了auto-lock，需要unlock key从backup中恢复swarm</li><li>停止管理节点</li><li>备份/var/lib/docker/swarm整个目录</li><li>重启管理节点</li></ol> 
+<ul><li>恢复Swarm集群</li></ul> 
+<ol><li>在目标主机关闭docker</li><li>将Swarm节点的/var/lib/docker/swarm目录移除</li><li>恢复/var/lib/docker/swarm目录的内容</li><li>在新的节点启动Swarm，使用如下命令重新初始化swarm集群，–force-new-cluster命令执行后Swarm变成只有manager节点的单节点Swarm集群</li></ol> 
+<pre><code>docker swarm init --force-new-cluster
+</code></pre> 
+<ol start="5"><li>检查Swarm节点的状态</li><li>添加manage节点和worker节点</li></ol> 
+<hr> 
+<blockquote> 
+ <p>参考资料：</p> 
+</blockquote> 
+<ol><li><a href="https://docs.docker.com/engine/swarm/" rel="nofollow">https://docs.docker.com/engine/swarm/</a></li><li><a href="http://thesecretlivesofdata.com/raft/" rel="nofollow">http://thesecretlivesofdata.com/raft/</a></li></ol> 
+<hr> 
+<blockquote> 
+ <p>转载请注明原文地址：<a href="https://blog.csdn.net/solihawk/article/details/121581187">https://blog.csdn.net/solihawk/article/details/121581187</a><br> 文章会同步在公众号“牧羊人的方向”更新，感兴趣的可以关注公众号，谢谢！<br> <img src="https://images2.imgbox.com/3f/78/lJZ70elh_o.jpg" alt="在这里插入图片描述"></p> 
+</blockquote>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/91241f824ffd4f0188a0ea30ab8577fa/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Jmeter学习笔记之聚合报告</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b36588b993d920d21fb5cf7461488b0f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">学习笔记 辗转相除法</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

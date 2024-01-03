@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【RocketMQ】学习RocketMQ必须要知道的主从同步原理 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【RocketMQ】学习RocketMQ必须要知道的主从同步原理" />
+<meta property="og:description" content="本文主要参考《RocketMQ技术内幕》和《RocketMQ实战与原理分析》两本书，​以及RocketMQ 4.8.0的源码，作为学习的记录
+RocketMQ的Broker分为Master和Slave两个角色，为了保证高可用性(HA)， Master角色的机器接收到消息后，要把内容同步到Slave机器上，这样一旦Master宕机，Slave机器依然可以提供服务。 下面介绍Master和Slave角色机器间同步功能实现的源码。
+同步元数据 ​ Slave需要和Master同步的不只是消息本身，一些元数据信息也需要同步，比如TopicConfig信息、ConsumerOffset信息、DelayOffset和SubscriptionGroupConfig信息。 元数据的同步操作是由Slave发起的，定时从Master获取，核心代码如下：
+private void handleSlaveSynchronize(BrokerRole role) { if (role == BrokerRole.SLAVE) { if (null != slaveSyncFuture) { slaveSyncFuture.cancel(false); } this.slaveSynchronize.setMasterAddr(null); slaveSyncFuture = this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() { @Override public void run() { try { BrokerController.this.slaveSynchronize.syncAll(); } catch (Throwable e) { log.error(&#34;ScheduledTask SlaveSynchronize syncAll error.&#34;, e); } } }, 1000 * 3, 1000 * 10, TimeUnit.MILLISECONDS); } else { //handle the slave synchronise if (null !" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/d07bf938b9fd71b93d02130aa033f724/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-04-21T18:44:30+08:00" />
+<meta property="article:modified_time" content="2021-04-21T18:44:30+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【RocketMQ】学习RocketMQ必须要知道的主从同步原理</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <blockquote> 
+ <p>本文主要参考《RocketMQ技术内幕》和《RocketMQ实战与原理分析》两本书，​以及RocketMQ 4.8.0的源码，作为学习的记录</p> 
+</blockquote> 
+<p>RocketMQ的Broker分为Master和Slave两个角色，为了保证高可用性(HA)， Master角色的机器接收到消息后，要把内容同步到Slave机器上，这样一旦Master宕机，Slave机器依然可以提供服务。 下面介绍Master和Slave角色机器间同步功能实现的源码。</p> 
+<h2><a id="_4"></a>同步元数据</h2> 
+<p>​ Slave需要和Master同步的不只是消息本身，一些元数据信息也需要同步，比如TopicConfig信息、ConsumerOffset信息、DelayOffset和SubscriptionGroupConfig信息。 元数据的同步操作是由Slave发起的，定时从Master获取，核心代码如下：</p> 
+<pre><code class="prism language-java">    <span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">handleSlaveSynchronize</span><span class="token punctuation">(</span>BrokerRole role<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>role <span class="token operator">==</span> BrokerRole<span class="token punctuation">.</span>SLAVE<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>null <span class="token operator">!=</span> slaveSyncFuture<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                slaveSyncFuture<span class="token punctuation">.</span><span class="token function">cancel</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>slaveSynchronize<span class="token punctuation">.</span><span class="token function">setMasterAddr</span><span class="token punctuation">(</span>null<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            slaveSyncFuture <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>scheduledExecutorService<span class="token punctuation">.</span><span class="token function">scheduleAtFixedRate</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Runnable</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token annotation punctuation">@Override</span>
+                <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                        BrokerController<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>slaveSynchronize<span class="token punctuation">.</span><span class="token function">syncAll</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                    <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token string">"ScheduledTask SlaveSynchronize syncAll error."</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token number">1000</span> <span class="token operator">*</span> <span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">1000</span> <span class="token operator">*</span> <span class="token number">10</span><span class="token punctuation">,</span> TimeUnit<span class="token punctuation">.</span>MILLISECONDS<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">//handle the slave synchronise</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>null <span class="token operator">!=</span> slaveSyncFuture<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                slaveSyncFuture<span class="token punctuation">.</span><span class="token function">cancel</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>slaveSynchronize<span class="token punctuation">.</span><span class="token function">setMasterAddr</span><span class="token punctuation">(</span>null<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>该方法会在3个地方被调用，Broker启动时、Master和Slave角色发生变化时<br> <img src="https://images2.imgbox.com/4e/2a/OhQ2GYc8_o.png" alt="">syncAll方法代码如下：</p> 
+<pre><code class="prism language-java">    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">syncAll</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">syncTopicConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">syncConsumerOffset</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">syncDelayOffset</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">syncSubscriptionGroupConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>​ 在syncAll方法里，调用syncTopicConfig()、syncConsumerOffset()、syncDelayOffset()和 syncSubscriptionGroupConfig()进行元数据同步 。 以syncConsumerOffset为例，来看看底层的具体实现</p> 
+<pre><code class="prism language-java">        String masterAddrBak <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>masterAddr<span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>masterAddrBak <span class="token operator">!=</span> null <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>masterAddrBak<span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>brokerController<span class="token punctuation">.</span><span class="token function">getBrokerAddr</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                ConsumerOffsetSerializeWrapper offsetWrapper <span class="token operator">=</span>
+                    <span class="token keyword">this</span><span class="token punctuation">.</span>brokerController<span class="token punctuation">.</span><span class="token function">getBrokerOuterAPI</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getAllConsumerOffset</span><span class="token punctuation">(</span>masterAddrBak<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">this</span><span class="token punctuation">.</span>brokerController<span class="token punctuation">.</span><span class="token function">getConsumerOffsetManager</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getOffsetTable</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                    <span class="token punctuation">.</span><span class="token function">putAll</span><span class="token punctuation">(</span>offsetWrapper<span class="token punctuation">.</span><span class="token function">getOffsetTable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">this</span><span class="token punctuation">.</span>brokerController<span class="token punctuation">.</span><span class="token function">getConsumerOffsetManager</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">persist</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                log<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"Update slave consumer offset from master, {}"</span><span class="token punctuation">,</span> masterAddrBak<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token string">"SyncConsumerOffset Exception, {}"</span><span class="token punctuation">,</span> masterAddrBak<span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>核心方法：getAllConsumerOffset()：</p> 
+<pre><code class="prism language-java">    <span class="token keyword">public</span> ConsumerOffsetSerializeWrapper <span class="token function">getAllConsumerOffset</span><span class="token punctuation">(</span>
+        <span class="token keyword">final</span> String addr<span class="token punctuation">)</span> <span class="token keyword">throws</span> InterruptedException<span class="token punctuation">,</span> RemotingTimeoutException<span class="token punctuation">,</span>
+        RemotingSendRequestException<span class="token punctuation">,</span> RemotingConnectException<span class="token punctuation">,</span> MQBrokerException <span class="token punctuation">{<!-- --></span>
+        RemotingCommand request <span class="token operator">=</span> RemotingCommand<span class="token punctuation">.</span><span class="token function">createRequestCommand</span><span class="token punctuation">(</span>RequestCode<span class="token punctuation">.</span>GET_ALL_CONSUMER_OFFSET<span class="token punctuation">,</span> null<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        RemotingCommand response <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>remotingClient<span class="token punctuation">.</span><span class="token function">invokeSync</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> request<span class="token punctuation">,</span> <span class="token number">3000</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">assert</span> response <span class="token operator">!=</span> null<span class="token punctuation">;</span>
+        <span class="token keyword">switch</span> <span class="token punctuation">(</span>response<span class="token punctuation">.</span><span class="token function">getCode</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">case</span> ResponseCode<span class="token punctuation">.</span>SUCCESS<span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">return</span> ConsumerOffsetSerializeWrapper<span class="token punctuation">.</span><span class="token function">decode</span><span class="token punctuation">(</span>response<span class="token punctuation">.</span><span class="token function">getBody</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> ConsumerOffsetSerializeWrapper<span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">default</span><span class="token operator">:</span>
+                <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">MQBrokerException</span><span class="token punctuation">(</span>response<span class="token punctuation">.</span><span class="token function">getCode</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> response<span class="token punctuation">.</span><span class="token function">getRemark</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>invokeSync()方法：</p> 
+<pre><code class="prism language-java">    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> RemotingCommand <span class="token function">invokeSync</span><span class="token punctuation">(</span>String addr<span class="token punctuation">,</span> <span class="token keyword">final</span> RemotingCommand request<span class="token punctuation">,</span> <span class="token keyword">long</span> timeoutMillis<span class="token punctuation">)</span>
+        <span class="token keyword">throws</span> InterruptedException<span class="token punctuation">,</span> RemotingConnectException<span class="token punctuation">,</span> RemotingSendRequestException<span class="token punctuation">,</span> RemotingTimeoutException <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">long</span> beginStartTime <span class="token operator">=</span> System<span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">final</span> Channel channel <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getAndCreateChannel</span><span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>channel <span class="token operator">!=</span> null <span class="token operator">&amp;&amp;</span> channel<span class="token punctuation">.</span><span class="token function">isActive</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">doBeforeRpcHooks</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> request<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">long</span> costTime <span class="token operator">=</span> System<span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> beginStartTime<span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>timeoutMillis <span class="token operator">&lt;</span> costTime<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingTimeoutException</span><span class="token punctuation">(</span><span class="token string">"invokeSync call timeout"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                RemotingCommand response <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">invokeSyncImpl</span><span class="token punctuation">(</span>channel<span class="token punctuation">,</span> request<span class="token punctuation">,</span> timeoutMillis <span class="token operator">-</span> costTime<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token function">doAfterRpcHooks</span><span class="token punctuation">(</span>RemotingHelper<span class="token punctuation">.</span><span class="token function">parseChannelRemoteAddr</span><span class="token punctuation">(</span>channel<span class="token punctuation">)</span><span class="token punctuation">,</span> request<span class="token punctuation">,</span> response<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">return</span> response<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">RemotingSendRequestException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"invokeSync: send request exception, so close the channel[{}]"</span><span class="token punctuation">,</span> addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">closeChannel</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> channel<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">throw</span> e<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">RemotingTimeoutException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>nettyClientConfig<span class="token punctuation">.</span><span class="token function">isClientCloseSocketIfTimeout</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">closeChannel</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> channel<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"invokeSync: close socket because of timeout, {}ms, {}"</span><span class="token punctuation">,</span> timeoutMillis<span class="token punctuation">,</span> addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"invokeSync: wait response timeout exception, the channel[{}]"</span><span class="token punctuation">,</span> addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">throw</span> e<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">closeChannel</span><span class="token punctuation">(</span>addr<span class="token punctuation">,</span> channel<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RemotingConnectException</span><span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>​ 基本逻辑就是是组装一个RemotingCommand，底层通过Netty将消息发送到Master角色的Broker，然后获取Offset信息，不同的RequestCode，代表不同的请求：<br> <img src="https://images2.imgbox.com/ec/e5/eHC00YxK_o.png" alt=""></p> 
+<h2><a id="_123"></a>同步消息体</h2> 
+<p>​ Master和Slave之间同步消息体，也就是同步CommitLog内容。CommitLog和元数据信息不同：首先，CommitLog的数据量比元数据要大；其次，对实时性和可靠性要求也不一样。元数据信息是定时同步的，在两次同步的时间差里，如果出现异常可能会造成 Master上的元数据内容和Slave上的元数据内容不一致，不过这种情况还可以补救 (手动调整Offset，重启Consumer等)。 CommitLog在高可靠性场景下如果没有及时同步，一旦Master机器出故障，消息就彻底丢失了。所以有专门的代码来实现Master和Slave之间消息体内容的同步。CommitLog的同步，不是经过netty command的方式，而是直接进行TCP连接，这样效率更高。</p> 
+<p>​ RocketMQ的主从同步方式分为同步和异步，通过Master中的配置项：brokerRole决定，有三种选项：sync_master、async_master和slave。从字面意思理解， sync_master是同步方式，也就是Master角色Broker中的消息要立刻同步过去；async_master是异步方式，也就是Master角色Broker中的消息是通过异步处理的方式同步到Slave角色的机器上的。</p> 
+<p>​ 实现HA主要的代码在org.apache.rocketmq.store.ha包中，里面包括HAService、HAConnection和WaitNotifyObject这三个类。<br> <img src="https://images2.imgbox.com/c8/f8/V2Sspq6o_o.png" alt=""></p> 
+<ul><li>HAService: RocketMQ主从同步核心实现类；</li><li>HAService$AcceptSocketService: HA Master端监昕客户端连接实现类；</li><li>HAService$GroupTransferService: 主从同步通知实现类；</li><li>HAService$HAClient: HA Client端实现类，主从同步Slave端的核心实现类；</li><li>HAConnection: HAMaster服务端HA连接对象的封装，与Broker从服务器的网络读写实现类；</li><li>HAConnection$ReadSocketService: HA Master网络读实现类；</li><li>HAConnection$WriteSocketServicce: HA Master网络写实现类</li></ul> 
+<h3><a id="async_master_137"></a>异步(async_master)</h3> 
+<p>​ 如果是异步的方式，生产消息会调用方法：org.apache.rocketmq.store.CommitLog#asyncPutMessage</p> 
+<pre><code class="prism language-java">    <span class="token keyword">public</span> CompletableFuture<span class="token generics function"><span class="token punctuation">&lt;</span>PutMessageResult<span class="token punctuation">&gt;</span></span> <span class="token function">asyncPutMessage</span><span class="token punctuation">(</span><span class="token keyword">final</span> MessageExtBrokerInner msg<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Set the storage time</span>
+        msg<span class="token punctuation">.</span><span class="token function">setStoreTimestamp</span><span class="token punctuation">(</span>System<span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// Set the message body BODY CRC (consider the most appropriate setting</span>
+        <span class="token comment">// on the client)</span>
+        msg<span class="token punctuation">.</span><span class="token function">setBodyCRC</span><span class="token punctuation">(</span>UtilAll<span class="token punctuation">.</span><span class="token function">crc32</span><span class="token punctuation">(</span>msg<span class="token punctuation">.</span><span class="token function">getBody</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// Back to Results</span>
+        AppendMessageResult result <span class="token operator">=</span> null<span class="token punctuation">;</span>
+    		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    		CompletableFuture<span class="token generics function"><span class="token punctuation">&lt;</span>PutMessageStatus<span class="token punctuation">&gt;</span></span> flushResultFuture <span class="token operator">=</span> <span class="token function">submitFlushRequest</span><span class="token punctuation">(</span>result<span class="token punctuation">,</span> msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        CompletableFuture<span class="token generics function"><span class="token punctuation">&lt;</span>PutMessageStatus<span class="token punctuation">&gt;</span></span> replicaResultFuture <span class="token operator">=</span> <span class="token function">submitReplicaRequest</span><span class="token punctuation">(</span>result<span class="token punctuation">,</span> msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">}</span>   
+</code></pre> 
+<p>主从同步由异步的方法完成，大致步骤如下：</p> 
+<p><strong>Master端</strong>：</p> 
+<ul><li> <p>监听端口<br> org.apache.rocketmq.store.ha.HAService.AcceptSocketService#beginAccept</p> </li><li> <p>建立连接<br> org.apache.rocketmq.store.ha.HAService.AcceptSocketService#run</p> </li><li> <p>读取slave上报的maxOffset<br> org.apache.rocketmq.store.ha.HAConnection.ReadSocketService#run</p> </li><li> <p>传输数据给slave<br> org.apache.rocketmq.store.ha.HAConnection.WriteSocketService#run</p> </li></ul> 
+<p><strong>Slave端</strong>：</p> 
+<ul><li> <p>连接master<br> org.apache.rocketmq.store.ha.HAService.HAClient#connectMaster</p> </li><li> <p>定时报告maxOffset给master<br> org.apache.rocketmq.store.ha.HAService.HAClient#run</p> </li><li> <p>接收master传输来的数据<br> org.apache.rocketmq.store.ha.HAService.HAClient#processReadEvent</p> </li></ul> 
+<p><strong>交互图</strong>：<br> <img src="https://images2.imgbox.com/ae/4c/jVWzC4xo_o.png" alt=""><br> 下面看看具体的代码：</p> 
+<p><strong>Master端</strong>：</p> 
+<p>​ Master服务器在收到从服务器的连接请求后，会将主从服务器的连接 SocketChannel封装成HAConnection对象，实现主服务器与从服务器的读写操作。</p> 
+<p>1、开启监听：org.apache.rocketmq.store.ha.HAService.AcceptSocketService#beginAccept</p> 
+<pre><code class="prism language-java">        <span class="token comment">/**
+         * Starts listening to slave connections.
+         *
+         * @throws Exception If fails.
+         */</span>
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">beginAccept</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">throws</span> Exception <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>serverSocketChannel <span class="token operator">=</span> ServerSocketChannel<span class="token punctuation">.</span><span class="token function">open</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>selector <span class="token operator">=</span> RemotingUtil<span class="token punctuation">.</span><span class="token function">openSelector</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>serverSocketChannel<span class="token punctuation">.</span><span class="token function">socket</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">setReuseAddress</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>serverSocketChannel<span class="token punctuation">.</span><span class="token function">socket</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">bind</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>socketAddressListen<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>serverSocketChannel<span class="token punctuation">.</span><span class="token function">configureBlocking</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>serverSocketChannel<span class="token punctuation">.</span><span class="token function">register</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>selector<span class="token punctuation">,</span> SelectionKey<span class="token punctuation">.</span>OP_ACCEPT<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p>​ 创建 ServerSocketChannel、创建 Selector、设置 TCP reuseAddress、 绑定监昕端口 、设置为非阻塞模式，并注册OP_ACCEPT (连接事件)。</p> 
+<p>2、建立连接：org.apache.rocketmq.store.ha.HAService.AcceptSocketService#run</p> 
+<pre><code class="prism language-java">        <span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            log<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getServiceName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">" service started"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">isStopped</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">this</span><span class="token punctuation">.</span>selector<span class="token punctuation">.</span><span class="token function">select</span><span class="token punctuation">(</span><span class="token number">1000</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    Set<span class="token generics function"><span class="token punctuation">&lt;</span>SelectionKey<span class="token punctuation">&gt;</span></span> selected <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>selector<span class="token punctuation">.</span><span class="token function">selectedKeys</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>selected <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token keyword">for</span> <span class="token punctuation">(</span>SelectionKey k <span class="token operator">:</span> selected<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>k<span class="token punctuation">.</span><span class="token function">readyOps</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&amp;</span> SelectionKey<span class="token punctuation">.</span>OP_ACCEPT<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                                SocketChannel sc <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>ServerSocketChannel<span class="token punctuation">)</span> k<span class="token punctuation">.</span><span class="token function">channel</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">accept</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                                <span class="token keyword">if</span> <span class="token punctuation">(</span>sc <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                                    HAService<span class="token punctuation">.</span>log<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"HAService receive new connection, "</span>
+                                        <span class="token operator">+</span> sc<span class="token punctuation">.</span><span class="token function">socket</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getRemoteSocketAddress</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                                    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                                        HAConnection conn <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HAConnection</span><span class="token punctuation">(</span>HAService<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">,</span> sc<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                                        conn<span class="token punctuation">.</span><span class="token function">start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                                        HAService<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">addConnection</span><span class="token punctuation">(</span>conn<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                                    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                                        log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token string">"new HAConnection exception"</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                                        sc<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                                    <span class="token punctuation">}</span>
+                                <span class="token punctuation">}</span>
+                            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                                log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"Unexpected ops in select "</span> <span class="token operator">+</span> k<span class="token punctuation">.</span><span class="token function">readyOps</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token punctuation">}</span>
+                        <span class="token punctuation">}</span>
+
+                        selected<span class="token punctuation">.</span><span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getServiceName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">" service has exception."</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+
+            log<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getServiceName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">" service end"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p>​ 选择器每 1s 处理一次连接就绪事件。连接事件就绪后，调用ServerSocketChannel的accept()方法创建SocketChannel。然后为每一个连接创建一个HAConnection对象， 该HAConnection将负责主从数据同步逻辑。</p> 
+<p>3、读取slave上报的maxOffset：org.apache.rocketmq.store.ha.HAConnection.ReadSocketService#run</p> 
+<pre><code class="prism language-java"> <span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            HAConnection<span class="token punctuation">.</span>log<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getServiceName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">" service started"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">isStopped</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">this</span><span class="token punctuation">.</span>selector<span class="token punctuation">.</span><span class="token function">select</span><span class="token punctuation">(</span><span class="token number">1000</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">boolean</span> ok <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">processReadEvent</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>ok<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        HAConnection<span class="token punctuation">.</span>log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token string">"processReadEvent error"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">break</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+
+                    <span class="token keyword">long</span> interval <span class="token operator">=</span> HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>haService<span class="token punctuation">.</span><span class="token function">getDefaultMessageStore</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getSystemClock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token keyword">this</span><span class="token punctuation">.</span>lastReadTimestamp<span class="token punctuation">;</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>interval <span class="token operator">&gt;</span> HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>haService<span class="token punctuation">.</span><span class="token function">getDefaultMessageStore</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getMessageStoreConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getHaHousekeepingInterval</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"ha housekeeping, found this connection["</span> <span class="token operator">+</span> HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>clientAddr <span class="token operator">+</span> <span class="token string">"] expired, "</span> <span class="token operator">+</span> interval<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">break</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    HAConnection<span class="token punctuation">.</span>log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getServiceName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">" service has exception."</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">break</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">makeStop</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            writeSocketService<span class="token punctuation">.</span><span class="token function">makeStop</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            haService<span class="token punctuation">.</span><span class="token function">removeConnection</span><span class="token punctuation">(</span>HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>haService<span class="token punctuation">.</span><span class="token function">getConnectionCount</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">decrementAndGet</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            SelectionKey sk <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>socketChannel<span class="token punctuation">.</span><span class="token function">keyFor</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>selector<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>sk <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                sk<span class="token punctuation">.</span><span class="token function">cancel</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">this</span><span class="token punctuation">.</span>selector<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">this</span><span class="token punctuation">.</span>socketChannel<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">IOException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                HAConnection<span class="token punctuation">.</span>log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token string">""</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            HAConnection<span class="token punctuation">.</span>log<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getServiceName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">" service end"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p>org.apache.rocketmq.store.ha.HAConnection.ReadSocketService#processReadEvent</p> 
+<pre><code class="prism language-java"><span class="token keyword">private</span> <span class="token keyword">boolean</span> <span class="token function">processReadEvent</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">int</span> readSizeZeroTimes <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+  					<span class="token comment">/*
+             * 如果byteBufferRead没有剩余空间，说明该position==limit==capacity
+             * 调用byteBufferRead.flip()方法，产生的效果为position=O,limit=capacity
+             * 并设置processPostion为0，表示从头开始处理
+             */</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferRead<span class="token punctuation">.</span><span class="token function">hasRemaining</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferRead<span class="token punctuation">.</span><span class="token function">flip</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">this</span><span class="token punctuation">.</span>processPosition <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+						
+            <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferRead<span class="token punctuation">.</span><span class="token function">hasRemaining</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                  		<span class="token comment">//NIO网络读的常规方法，一般使用循环的方式进行读写，直到byteBuffer中没有剩余的空间</span>
+                    <span class="token keyword">int</span> readSize <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>socketChannel<span class="token punctuation">.</span><span class="token function">read</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferRead<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token comment">/*
+                     * 如果读取的字节大于0，并且本次读取到的内容大于等于8，表明收到了从服务器一条拉取消息的请求。
+                     * 由于有新的从服务器反馈拉取偏移量，服务端会通知由于同步等待HA复制结果而阻塞的消息发送者线程
+                     */</span>
+                  	<span class="token keyword">if</span> <span class="token punctuation">(</span>readSize <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        readSizeZeroTimes <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+                        <span class="token keyword">this</span><span class="token punctuation">.</span>lastReadTimestamp <span class="token operator">=</span> HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>haService<span class="token punctuation">.</span><span class="token function">getDefaultMessageStore</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getSystemClock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferRead<span class="token punctuation">.</span><span class="token function">position</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token keyword">this</span><span class="token punctuation">.</span>processPosition<span class="token punctuation">)</span> <span class="token operator">&gt;=</span> <span class="token number">8</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token keyword">int</span> pos <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferRead<span class="token punctuation">.</span><span class="token function">position</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferRead<span class="token punctuation">.</span><span class="token function">position</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">%</span> <span class="token number">8</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token keyword">long</span> readOffset <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferRead<span class="token punctuation">.</span><span class="token function">getLong</span><span class="token punctuation">(</span>pos <span class="token operator">-</span> <span class="token number">8</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token keyword">this</span><span class="token punctuation">.</span>processPosition <span class="token operator">=</span> pos<span class="token punctuation">;</span>
+
+                            HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>slaveAckOffset <span class="token operator">=</span> readOffset<span class="token punctuation">;</span>
+                            <span class="token keyword">if</span> <span class="token punctuation">(</span>HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>slaveRequestOffset <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                                HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>slaveRequestOffset <span class="token operator">=</span> readOffset<span class="token punctuation">;</span>
+                                log<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"slave["</span> <span class="token operator">+</span> HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>clientAddr <span class="token operator">+</span> <span class="token string">"] request offset "</span> <span class="token operator">+</span> readOffset<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token punctuation">}</span>
+
+                            HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>haService<span class="token punctuation">.</span><span class="token function">notifyTransferSome</span><span class="token punctuation">(</span>HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>slaveAckOffset<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+                    <span class="token comment">/*
+                     * 如果读取到的字节数等于0，则重复三次，否则结束本次读请求处理；
+                     * 如果读取到的字节数小于0，表示连接处于半关闭状态，返回false则意味着消息服务器将关闭该链接
+                     */</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>readSize <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">++</span>readSizeZeroTimes <span class="token operator">&gt;=</span> <span class="token number">3</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token keyword">break</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                        log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token string">"read socket["</span> <span class="token operator">+</span> HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>clientAddr <span class="token operator">+</span> <span class="token string">"] &lt; 0"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">IOException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token string">"processReadEvent exception"</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p>3、传输数据给slave：org.apache.rocketmq.store.ha.HAConnection.WriteSocketService#run</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            HAConnection<span class="token punctuation">.</span>log<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getServiceName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">" service started"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">isStopped</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">this</span><span class="token punctuation">.</span>selector<span class="token punctuation">.</span><span class="token function">select</span><span class="token punctuation">(</span><span class="token number">1000</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+										<span class="token comment">/*
+                     * 如果slaveRequestOffset等于-1，说明Master还未收到从服务器的拉取请求，放弃本次事件处理。 
+                     * slaveRequestOffset在收到从服务器拉取请求时更新
+                     */</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span> <span class="token operator">==</span> HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>slaveRequestOffset<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        Thread<span class="token punctuation">.</span><span class="token function">sleep</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">continue</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+										<span class="token comment">/*
+                     * 如果nextTransferFromWhere为-1，表示初次进行数据传输，
+                     * 计算待传输的物理偏移量，如果slaveRequestOffset为0，则从当前commitlog文件最大偏移量开始传输，
+                     * 否则根据从服务器的拉取请求偏移量开始传输
+                     */</span> 
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span> <span class="token operator">==</span> <span class="token keyword">this</span><span class="token punctuation">.</span>nextTransferFromWhere<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token number">0</span> <span class="token operator">==</span> HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>slaveRequestOffset<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token keyword">long</span> masterOffset <span class="token operator">=</span> HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>haService<span class="token punctuation">.</span><span class="token function">getDefaultMessageStore</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getCommitLog</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getMaxOffset</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            masterOffset <span class="token operator">=</span>
+                                masterOffset
+                                    <span class="token operator">-</span> <span class="token punctuation">(</span>masterOffset <span class="token operator">%</span> HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>haService<span class="token punctuation">.</span><span class="token function">getDefaultMessageStore</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getMessageStoreConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                                    <span class="token punctuation">.</span><span class="token function">getMappedFileSizeCommitLog</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                            <span class="token keyword">if</span> <span class="token punctuation">(</span>masterOffset <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                                masterOffset <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+                            <span class="token punctuation">}</span>
+
+                            <span class="token keyword">this</span><span class="token punctuation">.</span>nextTransferFromWhere <span class="token operator">=</span> masterOffset<span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token keyword">this</span><span class="token punctuation">.</span>nextTransferFromWhere <span class="token operator">=</span> HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>slaveRequestOffset<span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+
+                        log<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"master transfer data from "</span> <span class="token operator">+</span> <span class="token keyword">this</span><span class="token punctuation">.</span>nextTransferFromWhere <span class="token operator">+</span> <span class="token string">" to slave["</span> <span class="token operator">+</span> HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>clientAddr
+                            <span class="token operator">+</span> <span class="token string">"], and slave request "</span> <span class="token operator">+</span> HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>slaveRequestOffset<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+										<span class="token comment">/*
+                     * 判断上次写事件是否已将信息全部写人客户端。
+                     * 1、如果已全部写入，且当前系统时间与上次最后写人的时间间隔大于HA心跳检测时间，则发送一个心跳包，
+                     *    心跳包的长度为12个字节(从服务器待拉取偏移量+size), 消息长度默认为0，避免长连接由于空闲被关闭。
+                     *    HA心跳包发送间隔通过haSendHeartbeat-interval放置，默认值为5s
+                     * 2、如果上次数据未写完，则先传输上一次的数据，如果消息还是未全部传输，则结束此次事件处理
+                     */</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>lastWriteOver<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+                        <span class="token keyword">long</span> interval <span class="token operator">=</span>
+                            HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>haService<span class="token punctuation">.</span><span class="token function">getDefaultMessageStore</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getSystemClock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token keyword">this</span><span class="token punctuation">.</span>lastWriteTimestamp<span class="token punctuation">;</span>
+
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span>interval <span class="token operator">&gt;</span> HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>haService<span class="token punctuation">.</span><span class="token function">getDefaultMessageStore</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getMessageStoreConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                            <span class="token punctuation">.</span><span class="token function">getHaSendHeartbeatInterval</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+                            <span class="token comment">// Build Header</span>
+                            <span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferHeader<span class="token punctuation">.</span><span class="token function">position</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferHeader<span class="token punctuation">.</span><span class="token function">limit</span><span class="token punctuation">(</span>headerSize<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferHeader<span class="token punctuation">.</span><span class="token function">putLong</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>nextTransferFromWhere<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferHeader<span class="token punctuation">.</span><span class="token function">putInt</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferHeader<span class="token punctuation">.</span><span class="token function">flip</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                            <span class="token keyword">this</span><span class="token punctuation">.</span>lastWriteOver <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">transferData</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token keyword">this</span><span class="token punctuation">.</span>lastWriteOver<span class="token punctuation">)</span>
+                                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token keyword">this</span><span class="token punctuation">.</span>lastWriteOver <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">transferData</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token keyword">this</span><span class="token punctuation">.</span>lastWriteOver<span class="token punctuation">)</span>
+                            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+										<span class="token comment">/*
+                     * 传输消息到从服务器：
+                     * 1)根据消息从服务器请求的待拉取偏移量查找该偏移量之后所有的可读消息，如果未查到匹配的消息，通知所有等待线程继续等待1OOms。
+                     * 2)如果匹配到消息，且查找到的消息总长度大于配置HA传输一次同步任务最大传输的字节数，则通过设置ByteBuffer的limit来控制只传输指定长度的字节，
+                     *   这就意味着HA客户端收到的消息会包含不完整的消息。 HA一批次传输消息最大字节通过haTransfer-BatchSize设置，默认值为32K。
+                     *   HA服务端消息的传输一直以上述步骤循环运行，每次事件处理完成后等待1s
+                     */</span>
+                    SelectMappedBufferResult selectResult <span class="token operator">=</span>
+                        HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>haService<span class="token punctuation">.</span><span class="token function">getDefaultMessageStore</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getCommitLogData</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>nextTransferFromWhere<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>selectResult <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token keyword">int</span> size <span class="token operator">=</span> selectResult<span class="token punctuation">.</span><span class="token function">getSize</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span>size <span class="token operator">&gt;</span> HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>haService<span class="token punctuation">.</span><span class="token function">getDefaultMessageStore</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getMessageStoreConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getHaTransferBatchSize</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            size <span class="token operator">=</span> HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>haService<span class="token punctuation">.</span><span class="token function">getDefaultMessageStore</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getMessageStoreConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getHaTransferBatchSize</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+
+                        <span class="token keyword">long</span> thisOffset <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>nextTransferFromWhere<span class="token punctuation">;</span>
+                        <span class="token keyword">this</span><span class="token punctuation">.</span>nextTransferFromWhere <span class="token operator">+=</span> size<span class="token punctuation">;</span>
+
+                        selectResult<span class="token punctuation">.</span><span class="token function">getByteBuffer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">limit</span><span class="token punctuation">(</span>size<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">this</span><span class="token punctuation">.</span>selectMappedBufferResult <span class="token operator">=</span> selectResult<span class="token punctuation">;</span>
+
+                        <span class="token comment">// Build Header</span>
+                        <span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferHeader<span class="token punctuation">.</span><span class="token function">position</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferHeader<span class="token punctuation">.</span><span class="token function">limit</span><span class="token punctuation">(</span>headerSize<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferHeader<span class="token punctuation">.</span><span class="token function">putLong</span><span class="token punctuation">(</span>thisOffset<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferHeader<span class="token punctuation">.</span><span class="token function">putInt</span><span class="token punctuation">(</span>size<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferHeader<span class="token punctuation">.</span><span class="token function">flip</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                        <span class="token keyword">this</span><span class="token punctuation">.</span>lastWriteOver <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">transferData</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+
+                        HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>haService<span class="token punctuation">.</span><span class="token function">getWaitNotifyObject</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">allWaitForRunning</span><span class="token punctuation">(</span><span class="token number">100</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+                    HAConnection<span class="token punctuation">.</span>log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getServiceName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">" service has exception."</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">break</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+
+            HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>haService<span class="token punctuation">.</span><span class="token function">getWaitNotifyObject</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">removeFromWaitingThreadTable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>selectMappedBufferResult <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">this</span><span class="token punctuation">.</span>selectMappedBufferResult<span class="token punctuation">.</span><span class="token function">release</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">makeStop</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            readSocketService<span class="token punctuation">.</span><span class="token function">makeStop</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            haService<span class="token punctuation">.</span><span class="token function">removeConnection</span><span class="token punctuation">(</span>HAConnection<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            SelectionKey sk <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>socketChannel<span class="token punctuation">.</span><span class="token function">keyFor</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>selector<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>sk <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                sk<span class="token punctuation">.</span><span class="token function">cancel</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">this</span><span class="token punctuation">.</span>selector<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">this</span><span class="token punctuation">.</span>socketChannel<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">IOException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                HAConnection<span class="token punctuation">.</span>log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token string">""</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            HAConnection<span class="token punctuation">.</span>log<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getServiceName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">" service end"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>Slave端</strong>：</p> 
+<p>主要执行步骤：org.apache.rocketmq.store.ha.HAService.HAClient#run</p> 
+<pre><code class="prism language-java">    <span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            log<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getServiceName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">" service started"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">isStopped</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                  	<span class="token comment">//1.连接Master</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">connectMaster</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+												<span class="token comment">//2.判断是否需要发送报告</span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">isTimeToReportOffset</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                          <span class="token comment">//3.报告maxOffset给master</span>
+                            <span class="token keyword">boolean</span> result <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">reportSlaveMaxOffset</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>currentReportedOffset<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>result<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                                <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">closeMaster</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token punctuation">}</span>
+                        <span class="token punctuation">}</span>
+                      	<span class="token comment">//4.进行事件选择，其执行间隔为ls</span>
+                        <span class="token keyword">this</span><span class="token punctuation">.</span>selector<span class="token punctuation">.</span><span class="token function">select</span><span class="token punctuation">(</span><span class="token number">1000</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+												<span class="token comment">//5.接收Master传输的数据</span>
+                        <span class="token keyword">boolean</span> ok <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">processReadEvent</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>ok<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">closeMaster</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+                      <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+                      <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p>1、连接Master：org.apache.rocketmq.store.ha.HAService.HAClient#connectMaster</p> 
+<pre><code class="prism language-java">        <span class="token keyword">private</span> <span class="token keyword">boolean</span> <span class="token function">connectMaster</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">throws</span> ClosedChannelException <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>null <span class="token operator">==</span> socketChannel<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                String addr <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>masterAddress<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>addr <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+                    SocketAddress socketAddress <span class="token operator">=</span> RemotingUtil<span class="token punctuation">.</span><span class="token function">string2SocketAddress</span><span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>socketAddress <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token keyword">this</span><span class="token punctuation">.</span>socketChannel <span class="token operator">=</span> RemotingUtil<span class="token punctuation">.</span><span class="token function">connect</span><span class="token punctuation">(</span>socketAddress<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>socketChannel <span class="token operator">!=</span> null<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token keyword">this</span><span class="token punctuation">.</span>socketChannel<span class="token punctuation">.</span><span class="token function">register</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>selector<span class="token punctuation">,</span> SelectionKey<span class="token punctuation">.</span>OP_READ<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span>
+
+                <span class="token keyword">this</span><span class="token punctuation">.</span>currentReportedOffset <span class="token operator">=</span> HAService<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>defaultMessageStore<span class="token punctuation">.</span><span class="token function">getMaxPhyOffset</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                <span class="token keyword">this</span><span class="token punctuation">.</span>lastWriteTimestamp <span class="token operator">=</span> System<span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">.</span>socketChannel <span class="token operator">!=</span> null<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p>​ Slave服务器连接Master服务器。 如果socketChannel为空， 则尝试连接Master。 如果Master地址为 空 ，返回false；如果Master 地址不为空，则建立到Master的TCP连接，然后注册OP_READ (网络读事件)，初始化currentReportedOffset为commitlog文件的最大偏移量、lastWriteTimestamp上次写入时间戳为当前时间戳，并返回true。 该方法最终返回是否成功连接上Master。</p> 
+<p>2、判断是否需要发送报告：org.apache.rocketmq.store.ha.HAService.HAClient#isTimeToReportOffset</p> 
+<pre><code class="prism language-java">        <span class="token keyword">private</span> <span class="token keyword">boolean</span> <span class="token function">isTimeToReportOffset</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">long</span> interval <span class="token operator">=</span>
+                HAService<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>defaultMessageStore<span class="token punctuation">.</span><span class="token function">getSystemClock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token keyword">this</span><span class="token punctuation">.</span>lastWriteTimestamp<span class="token punctuation">;</span>
+            <span class="token keyword">boolean</span> needHeart <span class="token operator">=</span> interval <span class="token operator">&gt;</span> HAService<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>defaultMessageStore<span class="token punctuation">.</span><span class="token function">getMessageStoreConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">getHaSendHeartbeatInterval</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">return</span> needHeart<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p>​ 判断是否需要向Master反馈当前待拉取偏移量，Master与Slave的HA心跳发送间隔默认为5s，可通过配置 haSendHeartbeatlnterval来改变心跳间隔。</p> 
+<p>3、发送报告：org.apache.rocketmq.store.ha.HAService.HAClient#reportSlaveMaxOffset</p> 
+<pre><code class="prism language-java">        <span class="token keyword">private</span> <span class="token keyword">boolean</span> <span class="token function">reportSlaveMaxOffset</span><span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token keyword">long</span> maxOffset<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>reportOffset<span class="token punctuation">.</span><span class="token function">position</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>reportOffset<span class="token punctuation">.</span><span class="token function">limit</span><span class="token punctuation">(</span><span class="token number">8</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>reportOffset<span class="token punctuation">.</span><span class="token function">putLong</span><span class="token punctuation">(</span>maxOffset<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>reportOffset<span class="token punctuation">.</span><span class="token function">position</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>reportOffset<span class="token punctuation">.</span><span class="token function">limit</span><span class="token punctuation">(</span><span class="token number">8</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token number">3</span> <span class="token operator">&amp;&amp;</span> <span class="token keyword">this</span><span class="token punctuation">.</span>reportOffset<span class="token punctuation">.</span><span class="token function">hasRemaining</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">this</span><span class="token punctuation">.</span>socketChannel<span class="token punctuation">.</span><span class="token function">write</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>reportOffset<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">IOException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getServiceName</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                        <span class="token operator">+</span> <span class="token string">"reportSlaveMaxOffset this.socketChannel.write exception"</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+
+            lastWriteTimestamp <span class="token operator">=</span> HAService<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>defaultMessageStore<span class="token punctuation">.</span><span class="token function">getSystemClock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span> <span class="token operator">!</span><span class="token keyword">this</span><span class="token punctuation">.</span>reportOffset<span class="token punctuation">.</span><span class="token function">hasRemaining</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p>​ 向Master服务器反馈拉取偏移量。这里有两重意义，对于Slave端来说，是发送下次待拉取消息偏移量，而对于Master服务端来说，既可以认为是Slave本次请求拉取的消息偏移量，也可以理解为Slave的消息同步ACK确认消息。</p> 
+<p>4、进行事件选择:</p> 
+<pre><code class="prism language-java">				<span class="token keyword">this</span><span class="token punctuation">.</span>selector<span class="token punctuation">.</span><span class="token function">select</span><span class="token punctuation">(</span><span class="token number">1000</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>5、接收Master传输的数据：org.apache.rocketmq.store.ha.HAService.HAClient#processReadEvent</p> 
+<pre><code class="prism language-java">        <span class="token keyword">private</span> <span class="token keyword">boolean</span> <span class="token function">processReadEvent</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">int</span> readSizeZeroTimes <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+            <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferRead<span class="token punctuation">.</span><span class="token function">hasRemaining</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">int</span> readSize <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>socketChannel<span class="token punctuation">.</span><span class="token function">read</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>byteBufferRead<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>readSize <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        readSizeZeroTimes <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+                        <span class="token keyword">boolean</span> result <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">dispatchReadRequest</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>result<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token string">"HAClient, dispatchReadRequest error"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>readSize <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">++</span>readSizeZeroTimes <span class="token operator">&gt;=</span> <span class="token number">3</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token keyword">break</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                        log<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"HAClient, processReadEvent read socket &lt; 0"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">IOException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    log<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"HAClient, processReadEvent read socket exception"</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p>​ 处理网络读请求，即处理从Master服务器传来的消息数据。循环判断readByteBuffer是否还有剩余空间，如果存在剩余空间，则调用SocketChannel#read( ByteBuff readByteBuffer)，将通道中的数据读入到读缓存区中。</p> 
+<ul><li> <p>如果读取到的字节数大于 0，重置读取到0字节的次数，并更新最后一次写入时间戳( lastWriteTimestamp)，然后调用 dispatchReadRequest方法将读取到的所有消息全部追加到消息内存映射文件中，然后再次反馈拉取进度给服务器。</p> </li><li> <p>如果连续3次从网络通道读取到0个字节，则结束本次读，返回true。</p> </li><li> <p>如果读取到的字节数小于0或发生IO异常，则返回false。HAClient线程反复执行上述5个步骤完成主从同步复制功能</p> </li></ul> 
+<h3><a id="sync_master_664"></a>同步(sync_master)</h3> 
+<p>​ 如果是异步的方式，生产消息会调用方法：org.apache.rocketmq.store.CommitLog#putMessage</p> 
+<pre><code class="prism language-java">    <span class="token keyword">public</span> PutMessageResult <span class="token function">putMessage</span><span class="token punctuation">(</span><span class="token keyword">final</span> MessageExtBrokerInner msg<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Set the storage time</span>
+        msg<span class="token punctuation">.</span><span class="token function">setStoreTimestamp</span><span class="token punctuation">(</span>System<span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// Set the message body BODY CRC (consider the most appropriate setting</span>
+        <span class="token comment">// on the client)</span>
+        msg<span class="token punctuation">.</span><span class="token function">setBodyCRC</span><span class="token punctuation">(</span>UtilAll<span class="token punctuation">.</span><span class="token function">crc32</span><span class="token punctuation">(</span>msg<span class="token punctuation">.</span><span class="token function">getBody</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// Back to Results</span>
+        AppendMessageResult result <span class="token operator">=</span> null<span class="token punctuation">;</span>
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        
+        <span class="token function">handleDiskFlush</span><span class="token punctuation">(</span>result<span class="token punctuation">,</span> putMessageResult<span class="token punctuation">,</span> msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">handleHA</span><span class="token punctuation">(</span>result<span class="token punctuation">,</span> putMessageResult<span class="token punctuation">,</span> msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> putMessageResult<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>​ 可以看到，如果是同步主从模式，消息发送者将消息刷写到磁盘后，需要继续等待新数据被传输到从服务器，从服务器数据的复制是在另外一个线程HAConnection中去拉取，所以消息发送者在这里需要等待数据传输的结果。该功能由GroupTransferService实现。</p> 
+<p>核心代码：org.apache.rocketmq.store.ha.HAService.GroupTransferService#doWaitTransfer</p> 
+<pre><code class="prism language-java">        <span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">doWaitTransfer</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">synchronized</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>requestsRead<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token keyword">this</span><span class="token punctuation">.</span>requestsRead<span class="token punctuation">.</span><span class="token function">isEmpty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">for</span> <span class="token punctuation">(</span>CommitLog<span class="token punctuation">.</span>GroupCommitRequest req <span class="token operator">:</span> <span class="token keyword">this</span><span class="token punctuation">.</span>requestsRead<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token keyword">boolean</span> transferOK <span class="token operator">=</span> HAService<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>push2SlaveMaxOffset<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&gt;=</span> req<span class="token punctuation">.</span><span class="token function">getNextOffset</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">long</span> waitUntilWhen <span class="token operator">=</span> HAService<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>defaultMessageStore<span class="token punctuation">.</span><span class="token function">getSystemClock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                            <span class="token operator">+</span> HAService<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>defaultMessageStore<span class="token punctuation">.</span><span class="token function">getMessageStoreConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getSyncFlushTimeout</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token operator">!</span>transferOK <span class="token operator">&amp;&amp;</span> HAService<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>defaultMessageStore<span class="token punctuation">.</span><span class="token function">getSystemClock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> waitUntilWhen<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token keyword">this</span><span class="token punctuation">.</span>notifyTransferObject<span class="token punctuation">.</span><span class="token function">waitForRunning</span><span class="token punctuation">(</span><span class="token number">1000</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            transferOK <span class="token operator">=</span> HAService<span class="token punctuation">.</span><span class="token keyword">this</span><span class="token punctuation">.</span>push2SlaveMaxOffset<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&gt;=</span> req<span class="token punctuation">.</span><span class="token function">getNextOffset</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>transferOK<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            log<span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"transfer messsage to slave timeout, "</span> <span class="token operator">+</span> req<span class="token punctuation">.</span><span class="token function">getNextOffset</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+
+                        req<span class="token punctuation">.</span><span class="token function">wakeupCustomer</span><span class="token punctuation">(</span>transferOK <span class="token operator">?</span> PutMessageStatus<span class="token punctuation">.</span>PUT_OK <span class="token operator">:</span> PutMessageStatus<span class="token punctuation">.</span>FLUSH_SLAVE_TIMEOUT<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+
+                    <span class="token keyword">this</span><span class="token punctuation">.</span>requestsRead<span class="token punctuation">.</span><span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p>​ GroupTransferService的职责是负责当主从同步复制结束后通知由于等待HA同步结果而阻塞的消息发送者线程。判断主从同步是否完成的依据是Slave中已成功复制的最大偏移量是否大于等于消息生产者发送消息后消息服务端返回下一条消息的起始偏移量，如果是则 表示主从同步复制已经完成，唤醒消息发送线程，否则等待 1s再次判断，每一个任务在一批任务中循环判断5次。消息发送者返回有两种情况: 等待超过5s或GroupTransferService通知主从复制完成，可以通过 syncFlushTimeout来设置发送线程等待超时时间。Group­TransferService通知主从复制的实现如下：org.apache.rocketmq.store.ha.HAService#notifyTransferSome</p> 
+<pre><code class="prism language-java">    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">notifyTransferSome</span><span class="token punctuation">(</span><span class="token keyword">final</span> <span class="token keyword">long</span> offset<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">long</span> value <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>push2SlaveMaxOffset<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> offset <span class="token operator">&gt;</span> value<span class="token punctuation">;</span> <span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">boolean</span> ok <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>push2SlaveMaxOffset<span class="token punctuation">.</span><span class="token function">compareAndSet</span><span class="token punctuation">(</span>value<span class="token punctuation">,</span> offset<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>ok<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">this</span><span class="token punctuation">.</span>groupTransferService<span class="token punctuation">.</span><span class="token function">notifyTransferSome</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">break</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                value <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>push2SlaveMaxOffset<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>​ 该方法在Master收到从服务器的拉取请求后被调用，表示从服务器当前已同步的偏移量，既然收到从服务器的反馈信息，需要唤醒某些消息发送者线程。如果从服务器收到的确认偏移量大于push2SlaveMaxOffset，则更新 push2SlaveMaxOffset，然后唤醒 GroupTransferService线程，各消息发送者线程再次判断自己本次发送的消息是否已经成功复制到从服务器。</p> 
+<p>参考：</p> 
+<blockquote> 
+ <p>《RocketMQ技术内幕》<br> 《RocketMQ实战与原理解析》</p> 
+</blockquote>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/37bd441973a918b60cc2d7c484f9e458/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C&#43;&#43;设计模式--Strategy 策略模式 和 Observer 观察者模式</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/3ef96cfed83428995c039b92fbfd671c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C&#43;&#43;设计模式--Decorator 装饰模式</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

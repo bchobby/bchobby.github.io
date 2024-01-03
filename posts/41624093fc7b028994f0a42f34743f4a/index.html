@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>一、Gstreamer动态操作元素 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="一、Gstreamer动态操作元素" />
+<meta property="og:description" content="1 通过gst-launch-1.0大致实现播放与录像 1.1 命令 gst-launch-1.0 rtspsrc location=rtsp://admin:yangquan123@192.168.10.11:554/Streaming/Channels/101 ! \ rtph264depay ! h264parse ! nvv4l2decoder ! \ nvvideoconvert ! &#34;video/x-raw(memory:NVMM),width=1280,height=720,format=I420&#34; ! tee name=t ! \ queue ! nvv4l2h264enc ! h264parse ! qtmux ! filesink location=~/Desktop/file.mp4 t. ! \ queue ! nvegltransform ! nveglglessink window-width=1280 window-height=720 sync=false 播放视频sink一直存在，每隔5秒保存一次录像
+15582303530
+2 更换动态管道中间的某一元素 参考：Changing elements in a pipeline
+这个参考来自于GStreamer官网，示例在管道Playing状态下，更换元素。所有代码在gst-dynamic-manipulation目录下。
+is-live = true，窗口sink sync=false 属性下依然可以稳定操作
+具体操作方法如下：
+阻塞queue的src pad，通过GST_PAD_PROBE_TYPE_BLOCK_DOWNSTREAM监听需要更换元素的src pad，通过GST_PAD_PROBE_TYPE_BLOCK |
+GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM阻塞回调函数中，给需要更换元素的sink pad发送event事件更换元素的src pad回调函数中进行
+gst_element_set_state (element, GST_STATE_NULL)" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/41624093fc7b028994f0a42f34743f4a/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-02-04T08:42:01+08:00" />
+<meta property="article:modified_time" content="2023-02-04T08:42:01+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">一、Gstreamer动态操作元素</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="1_gstlaunch10_0"></a>1 通过gst-launch-1.0大致实现播放与录像</h2> 
+<h3><a id="11__1"></a>1.1 命令</h3> 
+<pre><code class="prism language-bash">gst-launch-1.0 rtspsrc <span class="token assign-left variable">location</span><span class="token operator">=</span>rtsp://admin:yangquan123@192.168.10.11:554/Streaming/Channels/101 <span class="token operator">!</span> <span class="token punctuation">\</span>
+rtph264depay <span class="token operator">!</span> h264parse <span class="token operator">!</span> nvv4l2decoder <span class="token operator">!</span> <span class="token punctuation">\</span>
+nvvideoconvert <span class="token operator">!</span> <span class="token string">"video/x-raw(memory:NVMM),width=1280,height=720,format=I420"</span> <span class="token operator">!</span> <span class="token function">tee</span> <span class="token assign-left variable">name</span><span class="token operator">=</span>t <span class="token operator">!</span> <span class="token punctuation">\</span>
+queue <span class="token operator">!</span> nvv4l2h264enc <span class="token operator">!</span> h264parse <span class="token operator">!</span> qtmux <span class="token operator">!</span> filesink <span class="token assign-left variable">location</span><span class="token operator">=~</span>/Desktop/file.mp4 t. <span class="token operator">!</span> <span class="token punctuation">\</span>
+queue <span class="token operator">!</span> nvegltransform <span class="token operator">!</span> nveglglessink window-width<span class="token operator">=</span><span class="token number">1280</span> window-height<span class="token operator">=</span><span class="token number">720</span> <span class="token assign-left variable">sync</span><span class="token operator">=</span>false
+</code></pre> 
+<p>播放视频sink一直存在，每隔5秒保存一次录像<br> 15582303530</p> 
+<h2><a id="2__12"></a>2 更换动态管道中间的某一元素</h2> 
+<p><a href="https://thiblahute.github.io/GStreamer-doc/application-development/advanced/pipeline-manipulation.html?gi-language=c#changing-elements-in-a-pipeline" rel="nofollow">参考：Changing elements in a pipeline</a></p> 
+<p>这个参考来自于GStreamer官网，示例在管道Playing状态下，更换元素。所有代码在gst-dynamic-manipulation目录下。</p> 
+<p>is-live = true，窗口sink sync=false 属性下依然可以稳定操作</p> 
+<p>具体操作方法如下：</p> 
+<ol><li>阻塞queue的src pad，通过GST_PAD_PROBE_TYPE_BLOCK_DOWNSTREAM</li><li>监听需要更换元素的src pad，通过GST_PAD_PROBE_TYPE_BLOCK |<br> GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM</li><li>阻塞回调函数中，给需要更换元素的sink pad发送event事件</li><li>更换元素的src pad回调函数中进行<br> gst_element_set_state (element, GST_STATE_NULL)<br> gst_bin_remove (GST_BIN (pipeline), element);<br> gst_bin_add (GST_BIN (pipeline), add_element);<br> gst_element_link_many (conv_before, add_element, conv_after, NULL);<br> gst_element_set_state (add_element, GST_STATE_PLAYING);</li></ol> 
+<p><code>注意</code>：经过 gst_element_set_state (effect_a, GST_STATE_NULL);<br> gst_bin_remove (GST_BIN (pipeline), effect_a)操作后。<br> 我对g_object对象查看引用总数，以及GST_IS_ELEMENT (effect_a)发现引用总数并不为0,而且effect_a是元素对象，<strong>但是</strong>并不能再次解引用（再次解引用会引起系统崩溃），可能gstreamer通过上面两步已经把所有内存释放（暂时没有找到相关资料支持此说法）</p> 
+<blockquote> 
+ <p>lieryang 877554 26.3 0.2 383756 14068 pts/0 Sl+ 13:04 0:13 ./01_changing_element<br> lieryang 877554 26.3 0.2 383756 14580 pts/0 Sl+ 13:04 3:57 ./01_changing_element</p> 
+</blockquote> 
+<p>查看内存并没有明显的泄漏问题。具体代码如下：</p> 
+<pre><code class="prism language-c"><span class="token comment">/* filename: 01_changing_element.c */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;gst/gst.h&gt;</span></span>
+
+<span class="token function">GST_DEBUG_CATEGORY_STATIC</span> <span class="token punctuation">(</span>my_category<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">GST_CAT_DEFAULT</span> <span class="token expression">my_category</span></span>
+
+<span class="token keyword">static</span> gchar <span class="token operator">*</span>opt_effects <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">DEFAULT_EFFECTS</span> <span class="token string">"identity,exclusion,navigationtest,"</span> <span class="token punctuation">\</span>
+    <span class="token string">"agingtv,videoflip,vertigotv,gaussianblur,shagadelictv,edgetv"</span></span>
+
+<span class="token keyword">static</span> GstPad <span class="token operator">*</span>queue_1_src_pad<span class="token punctuation">;</span>
+<span class="token keyword">static</span> GstElement <span class="token operator">*</span>conv_before<span class="token punctuation">;</span>
+<span class="token keyword">static</span> GstElement <span class="token operator">*</span>conv_after<span class="token punctuation">;</span>
+<span class="token keyword">static</span> GstElement <span class="token operator">*</span>effect_a<span class="token punctuation">;</span>
+<span class="token keyword">static</span> GstElement <span class="token operator">*</span>effect_b<span class="token punctuation">;</span>
+<span class="token keyword">static</span> GstElement <span class="token operator">*</span>pipeline<span class="token punctuation">;</span>
+<span class="token keyword">static</span> gboolean effect_flag<span class="token punctuation">;</span>
+
+<span class="token keyword">static</span> GQueue effects <span class="token operator">=</span> G_QUEUE_INIT<span class="token punctuation">;</span>
+
+<span class="token keyword">static</span> GstPadProbeReturn
+<span class="token function">event_probe_cb</span> <span class="token punctuation">(</span>GstPad <span class="token operator">*</span> pad<span class="token punctuation">,</span> GstPadProbeInfo <span class="token operator">*</span> info<span class="token punctuation">,</span> gpointer user_data<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  GMainLoop <span class="token operator">*</span>loop <span class="token operator">=</span> user_data<span class="token punctuation">;</span>
+  GstElement <span class="token operator">*</span>cur_effect<span class="token punctuation">;</span>
+  GstElement <span class="token operator">*</span>next<span class="token punctuation">;</span>
+  gint ret<span class="token punctuation">;</span>
+
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">GST_EVENT_TYPE</span> <span class="token punctuation">(</span><span class="token function">GST_PAD_PROBE_INFO_DATA</span> <span class="token punctuation">(</span>info<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">!=</span> GST_EVENT_EOS<span class="token punctuation">)</span>
+    <span class="token keyword">return</span> GST_PAD_PROBE_PASS<span class="token punctuation">;</span>
+
+  <span class="token function">gst_pad_remove_probe</span> <span class="token punctuation">(</span>pad<span class="token punctuation">,</span> <span class="token function">GST_PAD_PROBE_INFO_ID</span> <span class="token punctuation">(</span>info<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>effect_flag <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    effect_b <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"gaussianblur"</span><span class="token punctuation">,</span> <span class="token string">"effect_b"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">gst_element_set_state</span> <span class="token punctuation">(</span>effect_a<span class="token punctuation">,</span> GST_STATE_NULL<span class="token punctuation">)</span> <span class="token operator">==</span> GST_STATE_CHANGE_FAILURE<span class="token punctuation">)</span>
+      <span class="token function">g_printerr</span> <span class="token punctuation">(</span><span class="token string">"%s set to NULL state fail\n"</span><span class="token punctuation">,</span> <span class="token function">GST_ELEMENT_NAME</span><span class="token punctuation">(</span>effect_a<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">/**
+     * 从bin中移除会有以下两个隐含操作：
+     * 1.断开元素链接
+     * 2.对元素进行了一次解引用
+    */</span>
+    <span class="token comment">//g_print ("GST_OBJECT_REFCOUNT_VALUE(effect_a) = %d\n", GST_OBJECT_REFCOUNT_VALUE(effect_a));</span>
+    
+    <span class="token function">gst_bin_remove</span> <span class="token punctuation">(</span><span class="token function">GST_BIN</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">)</span><span class="token punctuation">,</span> effect_a<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//gst_object_unref (effect_a);</span>
+    <span class="token comment">//g_print ("GST_OBJECT_REFCOUNT_VALUE(effect_a) = %d\n", GST_OBJECT_REFCOUNT_VALUE(effect_a));</span>
+    <span class="token comment">/**
+     * 经过 gst_element_set_state (effect_a, GST_STATE_NULL);
+     *     gst_bin_remove (GST_BIN (pipeline), effect_a); 操作
+     * 依据我对g_object对象的理解和查看引用总数、以及GST_IS_ELEMENT (effect_a)
+     * 发现引用总数并不为0,而且effect_a是元素对象
+     * @@@但是@@@并不能再次解引用（再次解引用会引起系统崩溃），可能gstreamer通过上面两步已经把所有内存释放
+    */</span>
+    <span class="token comment">g_object_unref (effect_a);</span>
+    <span class="token comment">//g_print ("GST_IS_ELEMENT (effect_a) = %d\n", GST_IS_ELEMENT (effect_a));</span>
+
+    <span class="token comment">/* 更换元素 */</span>
+    <span class="token function">gst_bin_add</span> <span class="token punctuation">(</span><span class="token function">GST_BIN</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">)</span><span class="token punctuation">,</span> effect_b<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_element_link_many</span> <span class="token punctuation">(</span>conv_before<span class="token punctuation">,</span> effect_b<span class="token punctuation">,</span> conv_after<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_element_set_state</span> <span class="token punctuation">(</span>effect_b<span class="token punctuation">,</span> GST_STATE_PLAYING<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    effect_flag <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token function">g_print</span> <span class="token punctuation">(</span><span class="token string">"effect_a -&gt;  effect_b\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+    effect_a <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"shagadelictv"</span><span class="token punctuation">,</span> <span class="token string">"effect_a"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_element_set_state</span> <span class="token punctuation">(</span>effect_b<span class="token punctuation">,</span> GST_STATE_NULL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_bin_remove</span> <span class="token punctuation">(</span><span class="token function">GST_BIN</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">)</span><span class="token punctuation">,</span> effect_b<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_bin_add</span> <span class="token punctuation">(</span><span class="token function">GST_BIN</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">)</span><span class="token punctuation">,</span> effect_a<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_element_link_many</span> <span class="token punctuation">(</span>conv_before<span class="token punctuation">,</span> effect_a<span class="token punctuation">,</span> conv_after<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_element_set_state</span> <span class="token punctuation">(</span>effect_a<span class="token punctuation">,</span> GST_STATE_PLAYING<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">g_print</span> <span class="token punctuation">(</span><span class="token string">"effect_b -&gt;  effect_a\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    effect_flag <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token keyword">return</span> GST_PAD_PROBE_DROP<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">static</span> GstPadProbeReturn
+<span class="token function">pad_probe_cb</span> <span class="token punctuation">(</span>GstPad <span class="token operator">*</span> pad<span class="token punctuation">,</span> GstPadProbeInfo <span class="token operator">*</span> info<span class="token punctuation">,</span> gpointer user_data<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  GstPad <span class="token operator">*</span>srcpad<span class="token punctuation">,</span> <span class="token operator">*</span>sinkpad<span class="token punctuation">;</span>
+
+  <span class="token function">GST_DEBUG_OBJECT</span> <span class="token punctuation">(</span>pad<span class="token punctuation">,</span> <span class="token string">"pad is blocked now"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token comment">/* remove the probe first */</span>
+  <span class="token function">gst_pad_remove_probe</span> <span class="token punctuation">(</span>pad<span class="token punctuation">,</span> <span class="token function">GST_PAD_PROBE_INFO_ID</span> <span class="token punctuation">(</span>info<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>effect_flag <span class="token operator">==</span> <span class="token number">0</span> <span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">/* 目前是effect_a */</span>
+    srcpad <span class="token operator">=</span> <span class="token function">gst_element_get_static_pad</span> <span class="token punctuation">(</span>effect_a<span class="token punctuation">,</span> <span class="token string">"src"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sinkpad <span class="token operator">=</span> <span class="token function">gst_element_get_static_pad</span> <span class="token punctuation">(</span>effect_a<span class="token punctuation">,</span> <span class="token string">"sink"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+    srcpad <span class="token operator">=</span> <span class="token function">gst_element_get_static_pad</span> <span class="token punctuation">(</span>effect_b<span class="token punctuation">,</span> <span class="token string">"src"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sinkpad <span class="token operator">=</span> <span class="token function">gst_element_get_static_pad</span> <span class="token punctuation">(</span>effect_b<span class="token punctuation">,</span> <span class="token string">"sink"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token comment">/* install new probe for EOS */</span>
+  <span class="token function">gst_pad_add_probe</span> <span class="token punctuation">(</span>srcpad<span class="token punctuation">,</span> GST_PAD_PROBE_TYPE_BLOCK <span class="token operator">|</span>
+    GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM<span class="token punctuation">,</span> event_probe_cb<span class="token punctuation">,</span> user_data<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">gst_object_unref</span> <span class="token punctuation">(</span>srcpad<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token comment">/* push EOS into the element, the probe will be fired when the
+   * EOS leaves the effect and it has thus drained all of its data */</span>
+  <span class="token function">gst_pad_send_event</span> <span class="token punctuation">(</span>sinkpad<span class="token punctuation">,</span> <span class="token function">gst_event_new_eos</span> <span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">gst_object_unref</span> <span class="token punctuation">(</span>sinkpad<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token keyword">return</span> GST_PAD_PROBE_OK<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">static</span> gboolean
+<span class="token function">timeout_cb</span> <span class="token punctuation">(</span>gpointer user_data<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  <span class="token function">gst_pad_add_probe</span> <span class="token punctuation">(</span>queue_1_src_pad<span class="token punctuation">,</span> GST_PAD_PROBE_TYPE_BLOCK_DOWNSTREAM<span class="token punctuation">,</span>
+      pad_probe_cb<span class="token punctuation">,</span> user_data<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token keyword">return</span> TRUE<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">static</span> gboolean
+<span class="token function">bus_cb</span> <span class="token punctuation">(</span>GstBus <span class="token operator">*</span> bus<span class="token punctuation">,</span> GstMessage <span class="token operator">*</span> msg<span class="token punctuation">,</span> gpointer user_data<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  GMainLoop <span class="token operator">*</span>loop <span class="token operator">=</span> user_data<span class="token punctuation">;</span>
+
+  <span class="token keyword">switch</span> <span class="token punctuation">(</span><span class="token function">GST_MESSAGE_TYPE</span> <span class="token punctuation">(</span>msg<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">case</span> GST_MESSAGE_ERROR<span class="token operator">:</span><span class="token punctuation">{<!-- --></span>
+      GError <span class="token operator">*</span>err <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+      gchar <span class="token operator">*</span>dbg<span class="token punctuation">;</span>
+      <span class="token function">GST_DEBUG_BIN_TO_DOT_FILE</span><span class="token punctuation">(</span><span class="token function">GST_BIN</span><span class="token punctuation">(</span>pipeline<span class="token punctuation">)</span><span class="token punctuation">,</span> GST_DEBUG_GRAPH_SHOW_ALL<span class="token punctuation">,</span> <span class="token string">"6.dynamic-change-element"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">gst_message_parse_error</span> <span class="token punctuation">(</span>msg<span class="token punctuation">,</span> <span class="token operator">&amp;</span>err<span class="token punctuation">,</span> <span class="token operator">&amp;</span>dbg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">gst_object_default_error</span> <span class="token punctuation">(</span>msg<span class="token operator">-&gt;</span>src<span class="token punctuation">,</span> err<span class="token punctuation">,</span> dbg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">g_clear_error</span> <span class="token punctuation">(</span><span class="token operator">&amp;</span>err<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">g_free</span> <span class="token punctuation">(</span>dbg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">g_main_loop_quit</span> <span class="token punctuation">(</span>loop<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">break</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">default</span><span class="token operator">:</span>
+      <span class="token keyword">break</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  <span class="token keyword">return</span> TRUE<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">int</span>
+<span class="token function">main</span> <span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token operator">*</span><span class="token operator">*</span>argv<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  GError <span class="token operator">*</span>err <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+  GMainLoop <span class="token operator">*</span>loop<span class="token punctuation">;</span>
+  GstElement <span class="token operator">*</span>videotestsrc<span class="token punctuation">,</span> <span class="token operator">*</span>capsfilter<span class="token punctuation">,</span> <span class="token operator">*</span>queue_1<span class="token punctuation">,</span> <span class="token operator">*</span>queue_2<span class="token punctuation">,</span> <span class="token operator">*</span>sink<span class="token punctuation">;</span>
+
+  <span class="token function">g_setenv</span><span class="token punctuation">(</span><span class="token string">"GST_DEBUG_DUMP_DOT_DIR"</span><span class="token punctuation">,</span> <span class="token string">"./"</span><span class="token punctuation">,</span> TRUE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">gst_init</span> <span class="token punctuation">(</span><span class="token operator">&amp;</span>argc<span class="token punctuation">,</span> <span class="token operator">&amp;</span>argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token comment">/* gst初始化后初始 , 0日志字符表示无颜色输出， 1表示有颜色输出*/</span>
+  <span class="token function">GST_DEBUG_CATEGORY_INIT</span> <span class="token punctuation">(</span>my_category<span class="token punctuation">,</span> <span class="token string">"my category"</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token string">"This is my very own"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  
+  pipeline <span class="token operator">=</span> <span class="token function">gst_pipeline_new</span> <span class="token punctuation">(</span><span class="token string">"pipeline"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  videotestsrc <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"videotestsrc"</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  capsfilter <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"capsfilter"</span><span class="token punctuation">,</span> <span class="token string">"capsfilter"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  queue_1 <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"queue"</span><span class="token punctuation">,</span> <span class="token string">"queue_1"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  conv_before <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"videoconvert"</span><span class="token punctuation">,</span> <span class="token string">"conv_before"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  effect_a <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"shagadelictv"</span><span class="token punctuation">,</span> <span class="token string">"effect_a"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  conv_after <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"videoconvert"</span><span class="token punctuation">,</span> <span class="token string">"conv_after"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  queue_2 <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"queue"</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  sink <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"ximagesink"</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  
+  <span class="token function">gst_util_set_object_arg</span> <span class="token punctuation">(</span><span class="token function">G_OBJECT</span> <span class="token punctuation">(</span>capsfilter<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">"caps"</span><span class="token punctuation">,</span>
+    <span class="token string">"video/x-raw, width=320, height=240, "</span>
+    <span class="token string">"format={ I420, YV12, YUY2, UYVY, AYUV, Y41B, Y42B, "</span>
+    <span class="token string">"YVYU, Y444, v210, v216, NV12, NV21, UYVP, A420, YUV9, YVU9, IYU1 }"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  queue_1_src_pad <span class="token operator">=</span> <span class="token function">gst_element_get_static_pad</span> <span class="token punctuation">(</span>queue_1<span class="token punctuation">,</span> <span class="token string">"src"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">g_object_set</span> <span class="token punctuation">(</span>videotestsrc<span class="token punctuation">,</span> <span class="token string">"is-live"</span><span class="token punctuation">,</span> TRUE<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">g_object_set</span> <span class="token punctuation">(</span>sink<span class="token punctuation">,</span> <span class="token string">"sync"</span><span class="token punctuation">,</span> FALSE<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">gst_bin_add_many</span> <span class="token punctuation">(</span><span class="token function">GST_BIN</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">)</span><span class="token punctuation">,</span> videotestsrc<span class="token punctuation">,</span> capsfilter<span class="token punctuation">,</span> queue_1<span class="token punctuation">,</span> conv_before<span class="token punctuation">,</span> effect_a<span class="token punctuation">,</span>
+      conv_after<span class="token punctuation">,</span> queue_2<span class="token punctuation">,</span> sink<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">gst_element_link_many</span> <span class="token punctuation">(</span>videotestsrc<span class="token punctuation">,</span> capsfilter<span class="token punctuation">,</span> queue_1<span class="token punctuation">,</span> conv_before<span class="token punctuation">,</span> effect_a<span class="token punctuation">,</span>
+      conv_after<span class="token punctuation">,</span> queue_2<span class="token punctuation">,</span> sink<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  effect_flag <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+  <span class="token function">gst_element_set_state</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">,</span> GST_STATE_PLAYING<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  loop <span class="token operator">=</span> <span class="token function">g_main_loop_new</span> <span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> FALSE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">gst_bus_add_watch</span> <span class="token punctuation">(</span><span class="token function">GST_ELEMENT_BUS</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">)</span><span class="token punctuation">,</span> bus_cb<span class="token punctuation">,</span> loop<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">g_timeout_add_seconds</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> timeout_cb<span class="token punctuation">,</span> loop<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">g_main_loop_run</span> <span class="token punctuation">(</span>loop<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">gst_element_set_state</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">,</span> GST_STATE_NULL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">gst_object_unref</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>以下是修改版本（依据文件02_dynamic_filter元素释放步骤）：</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;gst/gst.h&gt;</span></span>
+
+<span class="token function">GST_DEBUG_CATEGORY_STATIC</span> <span class="token punctuation">(</span>my_category<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">GST_CAT_DEFAULT</span> <span class="token expression">my_category</span></span>
+
+<span class="token keyword">static</span> GstPad <span class="token operator">*</span>queue_1_src_pad<span class="token punctuation">;</span>
+<span class="token keyword">static</span> GstElement <span class="token operator">*</span>conv_before<span class="token punctuation">;</span>
+<span class="token keyword">static</span> GstElement <span class="token operator">*</span>conv_after<span class="token punctuation">;</span>
+<span class="token keyword">static</span> GstElement <span class="token operator">*</span>effect_a<span class="token punctuation">;</span>
+<span class="token keyword">static</span> GstElement <span class="token operator">*</span>effect_b<span class="token punctuation">;</span>
+<span class="token keyword">static</span> GstElement <span class="token operator">*</span>pipeline<span class="token punctuation">;</span>
+
+<span class="token keyword">static</span> gint probe <span class="token operator">=</span> FALSE<span class="token punctuation">;</span>
+<span class="token keyword">static</span> gulong block_probe_id <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+<span class="token keyword">static</span> GstPadProbeReturn
+<span class="token function">event_probe_cb</span> <span class="token punctuation">(</span>GstPad <span class="token operator">*</span> pad<span class="token punctuation">,</span> GstPadProbeInfo <span class="token operator">*</span> info<span class="token punctuation">,</span> gpointer user_data<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">GST_EVENT_TYPE</span> <span class="token punctuation">(</span><span class="token function">GST_PAD_PROBE_INFO_DATA</span> <span class="token punctuation">(</span>info<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">!=</span> GST_EVENT_EOS<span class="token punctuation">)</span>
+    <span class="token keyword">return</span> GST_PAD_PROBE_PASS<span class="token punctuation">;</span>
+
+  <span class="token function">gst_pad_remove_probe</span> <span class="token punctuation">(</span>pad<span class="token punctuation">,</span> <span class="token function">GST_PAD_PROBE_INFO_ID</span> <span class="token punctuation">(</span>info<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">g_atomic_int_compare_and_exchange</span> <span class="token punctuation">(</span><span class="token operator">&amp;</span>probe<span class="token punctuation">,</span> FALSE<span class="token punctuation">,</span> TRUE<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">g_print</span> <span class="token punctuation">(</span><span class="token string">"g_atomic\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> GST_PAD_PROBE_OK<span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>effect_a<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">gst_element_unlink_many</span> <span class="token punctuation">(</span>conv_after<span class="token punctuation">,</span> effect_a<span class="token punctuation">,</span> conv_before<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_bin_remove</span> <span class="token punctuation">(</span><span class="token function">GST_BIN</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">)</span><span class="token punctuation">,</span> effect_a<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_element_set_state</span> <span class="token punctuation">(</span>effect_a<span class="token punctuation">,</span> GST_STATE_NULL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">g_print</span> <span class="token punctuation">(</span><span class="token string">"GST_OBJECT_REFCOUNT_VALUE(effect_a) = %d\n"</span><span class="token punctuation">,</span> <span class="token function">GST_OBJECT_REFCOUNT_VALUE</span><span class="token punctuation">(</span>effect_a<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_clear_object</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>effect_a<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * 经过 gst_element_set_state (effect_a, GST_STATE_NULL);
+     *     gst_bin_remove (GST_BIN (pipeline), effect_a); 操作
+     * 依据我对g_object对象的理解和查看引用总数、以及GST_IS_ELEMENT (effect_a)
+     * 发现引用总数并不为0,而且effect_a是元素对象
+     * @@@但是@@@并不能再次解引用（再次解引用会引起系统崩溃），可能gstreamer通过上面两步已经把所有内存释放
+     * 
+     * 通过其他示例，我知道如何解决这个问题：
+     * 元素创建完成之后进行 ref (造成这个问题的原因可能是因为浮点引用)
+     * 删除元素的方法：
+     * 1.断开链接
+     * 2.移除元素
+     * 3.设定NULL状态
+     * 4.解引用
+     * 
+     * 引用数稳定在1,不能再次解引用，再次解应用内存错误 （为什么02_dynamic_filter引用计数为0？？？）
+     * 
+    */</span>
+
+    <span class="token comment">/* 更换元素 */</span>
+    effect_b <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"gaussianblur"</span><span class="token punctuation">,</span> <span class="token string">"effect_b"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_object_ref</span> <span class="token punctuation">(</span>effect_b<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_bin_add</span> <span class="token punctuation">(</span><span class="token function">GST_BIN</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">)</span><span class="token punctuation">,</span> effect_b<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_element_sync_state_with_parent</span> <span class="token punctuation">(</span>effect_b<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_element_link_many</span> <span class="token punctuation">(</span>conv_before<span class="token punctuation">,</span> effect_b<span class="token punctuation">,</span> conv_after<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">g_print</span> <span class="token punctuation">(</span><span class="token string">"effect_a -&gt;  effect_b\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>effect_b<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+    <span class="token function">gst_element_unlink_many</span> <span class="token punctuation">(</span>conv_after<span class="token punctuation">,</span> effect_b<span class="token punctuation">,</span> conv_before<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_bin_remove</span> <span class="token punctuation">(</span><span class="token function">GST_BIN</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">)</span><span class="token punctuation">,</span> effect_b<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_element_set_state</span> <span class="token punctuation">(</span>effect_b<span class="token punctuation">,</span> GST_STATE_NULL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">g_print</span> <span class="token punctuation">(</span><span class="token string">"GST_OBJECT_REFCOUNT_VALUE(effect_b) = %d\n"</span><span class="token punctuation">,</span> <span class="token function">GST_OBJECT_REFCOUNT_VALUE</span><span class="token punctuation">(</span>effect_b<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_clear_object</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>effect_b<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    effect_a <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"shagadelictv"</span><span class="token punctuation">,</span> <span class="token string">"effect_a"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_object_ref</span> <span class="token punctuation">(</span>effect_a<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_bin_add</span> <span class="token punctuation">(</span><span class="token function">GST_BIN</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">)</span><span class="token punctuation">,</span> effect_a<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_element_sync_state_with_parent</span> <span class="token punctuation">(</span>effect_a<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">gst_element_link_many</span> <span class="token punctuation">(</span>conv_before<span class="token punctuation">,</span> effect_a<span class="token punctuation">,</span> conv_after<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">g_print</span> <span class="token punctuation">(</span><span class="token string">"effect_b -&gt;  effect_a\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token comment">/* 移除queue阻塞 */</span>
+  <span class="token function">gst_pad_remove_probe</span> <span class="token punctuation">(</span>queue_1_src_pad<span class="token punctuation">,</span> block_probe_id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  block_probe_id <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+  <span class="token keyword">return</span> GST_PAD_PROBE_DROP<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">static</span> GstPadProbeReturn
+<span class="token function">pad_probe_cb</span> <span class="token punctuation">(</span>GstPad <span class="token operator">*</span> pad<span class="token punctuation">,</span> GstPadProbeInfo <span class="token operator">*</span> info<span class="token punctuation">,</span> gpointer user_data<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  GstPad <span class="token operator">*</span>srcpad<span class="token punctuation">,</span> <span class="token operator">*</span>sinkpad<span class="token punctuation">;</span>
+
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>effect_a<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> 
+    srcpad <span class="token operator">=</span> <span class="token function">gst_element_get_static_pad</span> <span class="token punctuation">(</span>effect_a<span class="token punctuation">,</span> <span class="token string">"src"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sinkpad <span class="token operator">=</span> <span class="token function">gst_element_get_static_pad</span> <span class="token punctuation">(</span>effect_a<span class="token punctuation">,</span> <span class="token string">"sink"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>effect_b<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+    srcpad <span class="token operator">=</span> <span class="token function">gst_element_get_static_pad</span> <span class="token punctuation">(</span>effect_b<span class="token punctuation">,</span> <span class="token string">"src"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sinkpad <span class="token operator">=</span> <span class="token function">gst_element_get_static_pad</span> <span class="token punctuation">(</span>effect_b<span class="token punctuation">,</span> <span class="token string">"sink"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token comment">/* install new probe for EOS */</span>
+  <span class="token function">gst_pad_add_probe</span> <span class="token punctuation">(</span>srcpad<span class="token punctuation">,</span> GST_PAD_PROBE_TYPE_BLOCK <span class="token operator">|</span>
+    GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM<span class="token punctuation">,</span> event_probe_cb<span class="token punctuation">,</span> user_data<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">gst_object_unref</span> <span class="token punctuation">(</span>srcpad<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token comment">/* push EOS into the element, the probe will be fired when the
+   * EOS leaves the effect and it has thus drained all of its data */</span>
+  <span class="token function">gst_pad_send_event</span> <span class="token punctuation">(</span>sinkpad<span class="token punctuation">,</span> <span class="token function">gst_event_new_eos</span> <span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">gst_object_unref</span> <span class="token punctuation">(</span>sinkpad<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token keyword">return</span> GST_PAD_PROBE_OK<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">static</span> gboolean
+<span class="token function">timeout_cb</span> <span class="token punctuation">(</span>gpointer user_data<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  probe <span class="token operator">=</span> FALSE<span class="token punctuation">;</span>
+
+  block_probe_id <span class="token operator">=</span> <span class="token function">gst_pad_add_probe</span> <span class="token punctuation">(</span>queue_1_src_pad<span class="token punctuation">,</span> GST_PAD_PROBE_TYPE_BLOCK_DOWNSTREAM<span class="token punctuation">,</span>
+                                         pad_probe_cb<span class="token punctuation">,</span> user_data<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token keyword">return</span> TRUE<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">static</span> gboolean
+<span class="token function">bus_cb</span> <span class="token punctuation">(</span>GstBus <span class="token operator">*</span> bus<span class="token punctuation">,</span> GstMessage <span class="token operator">*</span> msg<span class="token punctuation">,</span> gpointer user_data<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  GMainLoop <span class="token operator">*</span>loop <span class="token operator">=</span> user_data<span class="token punctuation">;</span>
+
+  <span class="token keyword">switch</span> <span class="token punctuation">(</span><span class="token function">GST_MESSAGE_TYPE</span> <span class="token punctuation">(</span>msg<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">case</span> GST_MESSAGE_ERROR<span class="token operator">:</span><span class="token punctuation">{<!-- --></span>
+      GError <span class="token operator">*</span>err <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+      gchar <span class="token operator">*</span>dbg<span class="token punctuation">;</span>
+      <span class="token function">GST_DEBUG_BIN_TO_DOT_FILE</span><span class="token punctuation">(</span><span class="token function">GST_BIN</span><span class="token punctuation">(</span>pipeline<span class="token punctuation">)</span><span class="token punctuation">,</span> GST_DEBUG_GRAPH_SHOW_ALL<span class="token punctuation">,</span> <span class="token string">"6.dynamic-change-element"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">gst_message_parse_error</span> <span class="token punctuation">(</span>msg<span class="token punctuation">,</span> <span class="token operator">&amp;</span>err<span class="token punctuation">,</span> <span class="token operator">&amp;</span>dbg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">gst_object_default_error</span> <span class="token punctuation">(</span>msg<span class="token operator">-&gt;</span>src<span class="token punctuation">,</span> err<span class="token punctuation">,</span> dbg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">g_clear_error</span> <span class="token punctuation">(</span><span class="token operator">&amp;</span>err<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">g_free</span> <span class="token punctuation">(</span>dbg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">g_main_loop_quit</span> <span class="token punctuation">(</span>loop<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">break</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">default</span><span class="token operator">:</span>
+      <span class="token keyword">break</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  <span class="token keyword">return</span> TRUE<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">int</span>
+<span class="token function">main</span> <span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token operator">*</span><span class="token operator">*</span>argv<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  GError <span class="token operator">*</span>err <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+  GMainLoop <span class="token operator">*</span>loop<span class="token punctuation">;</span>
+  GstElement <span class="token operator">*</span>videotestsrc<span class="token punctuation">,</span> <span class="token operator">*</span>capsfilter<span class="token punctuation">,</span> <span class="token operator">*</span>queue_1<span class="token punctuation">,</span> <span class="token operator">*</span>queue_2<span class="token punctuation">,</span> <span class="token operator">*</span>sink<span class="token punctuation">;</span>
+
+  <span class="token function">g_setenv</span><span class="token punctuation">(</span><span class="token string">"GST_DEBUG_DUMP_DOT_DIR"</span><span class="token punctuation">,</span> <span class="token string">"./"</span><span class="token punctuation">,</span> TRUE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">gst_init</span> <span class="token punctuation">(</span><span class="token operator">&amp;</span>argc<span class="token punctuation">,</span> <span class="token operator">&amp;</span>argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token comment">/* gst初始化后初始 , 0日志字符表示无颜色输出， 1表示有颜色输出*/</span>
+  <span class="token function">GST_DEBUG_CATEGORY_INIT</span> <span class="token punctuation">(</span>my_category<span class="token punctuation">,</span> <span class="token string">"my category"</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token string">"This is my very own"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  
+  pipeline <span class="token operator">=</span> <span class="token function">gst_pipeline_new</span> <span class="token punctuation">(</span><span class="token string">"pipeline"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  videotestsrc <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"videotestsrc"</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  capsfilter <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"capsfilter"</span><span class="token punctuation">,</span> <span class="token string">"capsfilter"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  queue_1 <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"queue"</span><span class="token punctuation">,</span> <span class="token string">"queue_1"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  conv_before <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"videoconvert"</span><span class="token punctuation">,</span> <span class="token string">"conv_before"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  effect_a <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"shagadelictv"</span><span class="token punctuation">,</span> <span class="token string">"effect_a"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  conv_after <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"videoconvert"</span><span class="token punctuation">,</span> <span class="token string">"conv_after"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  queue_2 <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"queue"</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  sink <span class="token operator">=</span> <span class="token function">gst_element_factory_make</span> <span class="token punctuation">(</span><span class="token string">"ximagesink"</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">gst_object_ref</span> <span class="token punctuation">(</span>effect_a<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  
+  <span class="token function">gst_util_set_object_arg</span> <span class="token punctuation">(</span><span class="token function">G_OBJECT</span> <span class="token punctuation">(</span>capsfilter<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">"caps"</span><span class="token punctuation">,</span>
+    <span class="token string">"video/x-raw, width=320, height=240, "</span>
+    <span class="token string">"format={ I420, YV12, YUY2, UYVY, AYUV, Y41B, Y42B, "</span>
+    <span class="token string">"YVYU, Y444, v210, v216, NV12, NV21, UYVP, A420, YUV9, YVU9, IYU1 }"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  queue_1_src_pad <span class="token operator">=</span> <span class="token function">gst_element_get_static_pad</span> <span class="token punctuation">(</span>queue_1<span class="token punctuation">,</span> <span class="token string">"src"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">g_object_set</span> <span class="token punctuation">(</span>videotestsrc<span class="token punctuation">,</span> <span class="token string">"is-live"</span><span class="token punctuation">,</span> TRUE<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">g_object_set</span> <span class="token punctuation">(</span>sink<span class="token punctuation">,</span> <span class="token string">"sync"</span><span class="token punctuation">,</span> FALSE<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">gst_bin_add_many</span> <span class="token punctuation">(</span><span class="token function">GST_BIN</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">)</span><span class="token punctuation">,</span> videotestsrc<span class="token punctuation">,</span> capsfilter<span class="token punctuation">,</span> queue_1<span class="token punctuation">,</span> conv_before<span class="token punctuation">,</span> effect_a<span class="token punctuation">,</span>
+      conv_after<span class="token punctuation">,</span> queue_2<span class="token punctuation">,</span> sink<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">gst_element_link_many</span> <span class="token punctuation">(</span>videotestsrc<span class="token punctuation">,</span> capsfilter<span class="token punctuation">,</span> queue_1<span class="token punctuation">,</span> conv_before<span class="token punctuation">,</span> effect_a<span class="token punctuation">,</span>
+      conv_after<span class="token punctuation">,</span> queue_2<span class="token punctuation">,</span> sink<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">gst_element_set_state</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">,</span> GST_STATE_PLAYING<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  loop <span class="token operator">=</span> <span class="token function">g_main_loop_new</span> <span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> FALSE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">gst_bus_add_watch</span> <span class="token punctuation">(</span><span class="token function">GST_ELEMENT_BUS</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">)</span><span class="token punctuation">,</span> bus_cb<span class="token punctuation">,</span> loop<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">g_timeout_add_seconds</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> timeout_cb<span class="token punctuation">,</span> loop<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">g_main_loop_run</span> <span class="token punctuation">(</span>loop<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">gst_element_set_state</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">,</span> GST_STATE_NULL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">gst_object_unref</span> <span class="token punctuation">(</span>pipeline<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="3__filertspsink_446"></a>3 动态增加/删除 file(rtsp)sink</h2> 
+<p><a href="https://forums.developer.nvidia.com/t/how-to-add-delete-rtsp-sink-during-runtime/115886" rel="nofollow">参考： How to add/delete rtsp sink during runtime?</a><br> 上面链接NVIDIA论坛zongxp提问到：</p> 
+<p>我已经实现了在运行时为deepstream-app添加/删除source。现在我想要对sink实现相同的功能，而不是source。<br> 在github的runtime_source_add_add_delete中，sink只是一个平铺显示。我想在不同的rtsp端口显示它。<br> 你能给我一些关于这个功能的建议吗?</p> 
+<p>NVIDIA相关人员回复：并没有实现这个功能（我猜测动态操作sink可能并不稳定）。</p> 
+<p>prominence_ai回复：你可以这样做，具体可以参考<a href="https://coaxion.net/blog/2014/01/gstreamer-dynamic-pipelines/" rel="nofollow">GStreamer Dynamic Pipelines</a>和<a href="https://github.com/sdroege/gst-snippets/tree/217ae015aaddfe3f7aa66ffc936ce93401fca04e">Github代码链接</a></p> 
+<pre><code class="prism language-c">srcpad <span class="token operator">=</span> <span class="token function">gst_element_get_static_pad</span> <span class="token punctuation">(</span>tee<span class="token punctuation">,</span> pad_name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">gst_pad_send_event</span> <span class="token punctuation">(</span>srcpad<span class="token punctuation">,</span> <span class="token function">gst_event_new_eos</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">gst_element_release_request_pad</span> <span class="token punctuation">(</span>tee<span class="token punctuation">,</span> srcpad<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">gst_object_unref</span> <span class="token punctuation">(</span>srcpad<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span> <span class="token directive keyword">remove</span> <span class="token expression">sink bin and unref</span></span>
+
+</code></pre> 
+<p>上述博客中主要使用的是GST_PAD_PROBE_TYPE_IDLE标志去添加的监听函数。（无论IDLE还是BLOCK，<code>回调函数执行过程中</code>，都是暂会阻塞数据传输，函数执行完之后是否阻塞，取决于函数返回值和FLAG）。</p> 
+<p>我认为上面博客中删除元素的方法，最后元素的引用计数值比较稳定（较好的释放内存）。</p> 
+<blockquote> 
+ <p>元素创建完成之后进行 ref (IDLE监听函数下，被释放元素引用计数=0,BLOCK/EVENT监听函数下，被释放元素引用计数=1，虽然是1,但是不能再次解引用了)</p> 
+</blockquote> 
+<p>删除元素的方法：</p> 
+<ol><li>断开链接</li><li>移除元素</li><li>设定NULL状态</li><li>解引用</li></ol> 
+<p><code>待补充</code></p> 
+<h2><a id="_484"></a>智能录像（检测到目标进行录像）</h2> 
+<h3><a id="1_NVDIA_Smart_Video_485"></a>方案1 NVDIA Smart Video</h3> 
+<p>https://docs.nvidia.com/metropolis/deepstream/dev-guide/text/DS_Smart_video.html</p> 
+<h3><a id="add_remove_filesink_488"></a>讨论了关于动态add remove filesink</h3> 
+<p>https://forums.developer.nvidia.com/t/how-to-dynamically-add-remove-filesink/108821/41</p> 
+<h3><a id="Dynamically_updating_filesink_location_at_runtime_on_the_fly_491"></a>Dynamically updating filesink location at run-time, on the fly</h3> 
+<p>https://gstreamer-devel.narkive.com/2nMJgA88/dynamically-updating-filesink-location-at-run-time-on-the-fly</p> 
+<h3><a id="GSTREAMER_access_video_before_an_event___494"></a>GSTREAMER access video before an event ( 参考意义不大)</h3> 
+<p>https://stackoverflow.com/questions/52098093/gstreamer-access-video-before-an-event</p> 
+<h2><a id="5_Debug__497"></a>5 Debug 问题</h2> 
+<h3><a id="51_498"></a>5.1</h3> 
+<p>目前使用gstreamer version = 1.16.3</p> 
+<pre><code class="prism language-bash">:00:04.824886967 <span class="token number">45630</span> 0xffff58037b60 WARN              bufferpool gstbufferpool.c:1235:default_reset_buffer:<span class="token operator">&lt;</span>nvv4l2_decoder:pool:sink<span class="token operator">&gt;</span> Buffer 0xffff300a4120 without the memory tag has maxsize <span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span> that is smaller than the configured buffer pool size <span class="token punctuation">(</span><span class="token number">4194304</span><span class="token punctuation">)</span>. The buffer will be not be reused. This is <span class="token function">most</span> likely a bug <span class="token keyword">in</span> this GstBufferPool subclass
+<span class="token number">0</span>:00:04.833062287 <span class="token number">45630</span> 0xaaaad98cb0c0 WARN              bufferpool gstbufferpool.c:1235:default_reset_buffer:<span class="token operator">&lt;</span>nvv4l2_h264enc:pool:sink<span class="token operator">&gt;</span> Buffer 0xffff300abc60 without the memory tag has maxsize <span class="token punctuation">(</span><span class="token number">192</span><span class="token punctuation">)</span> that is smaller than the configured buffer pool size <span class="token punctuation">(</span><span class="token number">1382400</span><span class="token punctuation">)</span>. The buffer will be not be reused. This is <span class="token function">most</span> likely a bug <span class="token keyword">in</span> this GstBufferPool subclass
+</code></pre> 
+<p><img src="https://images2.imgbox.com/69/6e/tMIzZtAs_o.png" alt="请添加图片描述"><br> 我在NVIDIA官网找到了相关问题的提问，可是通过降低版本并不能解决。gstbufferpool.c文件并不在gst-plugins-good里面，而是gst文件夹里面，是一个核心库里面，并不是good plugins里面。</p> 
+<p>我下载编译了1.19.3版本的gstreamer（建议使用1.16.3版本），注释掉了警告部分。通过查看源码中的注释，提到</p> 
+<blockquote> 
+ <p>检查我们是否可以调整到最小配置的池大小。如果不能,<br> 然后这将在gst_buffer_resize()内部失败。<br> 如果尺寸不匹配，default_release_buffer()将从缓冲区池中删除缓冲区</p> 
+</blockquote> 
+<p>据此，应该不会造成内存泄漏，故注释掉了此部分代码。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a0dd6a755560d385c922f5087174ed7e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">uniapp(一)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/0fca5b5ffb70c4a4bf8e611f833e1a44/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">python 有哪些自动化测试库</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

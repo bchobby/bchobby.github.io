@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>RocketMQ的NameServer - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="RocketMQ的NameServer" />
+<meta property="og:description" content="NameServer的设计：
+(1)NameServer互相独立，彼此没有通信关系，单台NameServer挂掉，不影响其他NameServer。
+(2) NameServer不去连接别的机器，不主动推消息。
+(3)单个Broker (Master、Slave)与所有NameServer进行定时注册，以便告知NameServer自己还活着。
+Broker每隔30秒向所有NameServer发送心跳，心跳包含了自身的topic配置信息。
+NameServer每隔10秒，扫描所有还存活的broker连接,如果某个连接的最后更新时间
+与当前时间差值超过2分钟，则断开此连接，NameServer也会断开此broker下所有与slave的连接。同时更新topic与队列的对应关系，但不通知生产者和消费者。
+Broker slave同步或者异步从Broker master上拷贝数据。
+(4)Consumer随机与一个NameServer建立长连接，如果该NameServer断开，则从NameServer列表中查找下一个进行连接。
+Consumer主要从NameServer中根据Topic查询Broker的地址，查到就会缓存到客户端，并向提供Topic服务的Master、Slave建立长连接，且定时向Master、Slave发送心跳。
+如果Broker宕机，则NameServer 会将其剔除，而Consumer端的定时任务MQClientInstance.this.updateTopicRouteInfoFromNameserver每30秒执行一次，将Topic对应的Broker地址拉取下来，此地址只有Slave地址了，此时Consumer从Slave上消费。
+消费者与Master和Slave都建有连接，在不同场景有不同的消费规则。
+(5)Producer随机与一个NameServer建立长连接，每隔30秒(此处时间可配置)从NameServer获取Topic的最新队列情况，如果某个Broker Master宕机，Producer最多30秒才能感知，在这个期间，发往该broker master的消息失败。Producer向提供Topic服务的Master建立长连接，且定时向Master发送心跳。
+生产者与所有的master连接，但不能向slave写入。
+客户端是先从NameServer寻址的，得到可用Broker的IP和端口信息，然后据此信息连接broker。
+综上所述，NameServer在RocketMQ中的作用：
+(1)NameServer用来保存活跃的broker列表，包括Master和Slave。
+(2)NameServer用来保存所有topic和该topic 所有队列的列表。
+(3)NameServer用来保存所有broker的Filter 列表。
+(4)命名服务器为客户端，包括生产者,消费者和命令行客户端提供最新的路由信息。
+RocketMQ为什么不使用ZooKeeper而自己开发NameServer？
+在服务发现领域，ZooKeeper 根本就不能算是最佳的选择。
+(1)注册中心是CP还是AP系统？
+在分布式系统中，即使是对等部署的服务，因为请求到达的时间，硬件的状态，操作系统的调度，虚拟机的GC等，任何一个时间点，这些对等部署的节点状态也不可能完全一致，而流量不一致的情况下，只要注册中心在A承诺的时间内(例如1s内)将数据收敛到一致状态(即满足最终一致)，流量将很快趋于统计学意义上的一致，所以注册中心以最终一致的模型设计在生产实践中完全可以接受。
+(2)分区容忍及可用性需求分析实践中，注册中心不能因为自身的任何原因破坏服务之间本身的可连通性，这是注册中心设计应该遵循的铁律！
+在CAP的权衡中，注册中心的可用性比数据强一致性更宝贵，所以整体设计更应该偏向AP，而非CP，数据不一致在可接受范围，而P下舍弃A却完全违反了注册中心不能因为自身的任何原因破坏服务本身的可连通性的原则。
+(3)服务规模、容量、服务联通性
+当数据中心服务规模超过一定数量，作为注册中心的ZooKeeper性能堪忧。
+在服务发现和健康监测场景下，随着服务规模的增大，无论是应用频繁发布时的服务注册带来的写请求，还是刷毫秒级的服务健康状态带来的写请求，还是恨不能整个数据中心的机器或者容器皆与注册中心有长连接带来的连接压力上，ZooKeeper很快就会力不从心，而ZooKeeper的写并不是可扩展的，不可以通过加节点解决水平扩展性问题。
+(4)注册中心需要持久存储和事务日志么?需要,也不需要。
+在服务发现场景中，其最核心的数据——实时的健康的服务的地址列表，真的需要数据持久化么？不需要
+在服务发现中，服务调用发起方更关注的是其要调用的服务的实时的地址列表和实时健康状态，每次发起调用时，并不关心要调用的服务的历史服务地址列表、过去的健康状态。
+但是一个完整的生产可用的注册中心，除了服务的实时地址列表以及实时的健康状态之外，还会存储一些服务的元数据信息，例如服务的版本，分组，所在的数据中心，权重，鉴权策略信息，服务标签等元数据，这些数据需要持久化存储，并且注册中心应该提供对这些元数据的检索的能力。
+(5)服务健康检查
+使用ZooKeeper作为服务注册中心时，服务的健康检测绑定在了ZooKeeper对于Session的健康监测上，或者说绑定在TCP长链接活性探测上了。
+ZK与服务提供者机器之间的TCP长链接活性探测正常的时候，该服务就是健康的么？答案当然是否定的！注册中心应该提供更丰富的健康监测方案，服务的健康与否的逻辑应该开放给服务提供方自己定义，而不是一刀切搞成了TCP活性检测！
+健康检测的一大基本设计原则就是尽可能真实的反馈服务本身的真实健康状态，否则一个不敢被服务调用者相信的健康状态判定结果还不如没有健康检测。
+(5)注册中心的容灾考虑
+如果注册中心(Registry)本身完全宕机了，服务调用链路应该受到影响么？不应该受到影响。
+服务调用(请求响应流)链路应该是弱依赖注册中心，必须仅在服务发布，机器上下线，服务扩缩容等必要时才依赖注册中心。
+这需要注册中心仔细的设计自己提供的客户端，客户端中应该有针对注册中心服务完全不可用时做容灾的手段，例如设计客户端缓存数据机制就是行之有效的手段。另外，注册中心的健康检查机制也要仔细设计以便在这种情况不会出现诸如推空等情况的出现。
+ZooKeeper的原生客户端并没有这种能力，所以利用ZooKeeper实现注册中心的时候我们一定要问自己，如果把ZooKeeper所有节点全干掉，你生产上的所有服务调用链路能不受任何影响么？
+阿里巴巴是不是完全没有使用ZooKeeper？并不是。
+熟悉阿里巴巴技术体系的都知道，其实阿里巴巴维护了目前国内最大规模的ZooKeeper集群，整体规模有近千台的ZooKeeper服务节点。
+在粗粒度分布式锁，分布式选主，主备高可用切换等不需要高TPS支持的场景下有不可替代的作用，而这些需求往往多集中在大数据、离线任务等相关的业务领域，因为大数据领域，讲究分割数据集，并且大部分时间分任务多进程/线程并行处理这些数据集，但是总是有一些点上需要将这些任务和进程统一协调，这时候就是ZooKeeper发挥巨大作用的用武之地。
+但是在交易场景交易链路上，在主业务数据存取，大规模服务发现、大规模健康监测等方面有天然的短板，应该竭力避免在这些场景下引入ZooKeeper，在阿里巴巴的生产实践中，应用对ZooKeeper申请使用的时候要进行严格的场景、容量、SLA需求的评估." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/600648bcd273830fbff7b6e41ead5df8/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-09-03T10:30:00+08:00" />
+<meta property="article:modified_time" content="2023-09-03T10:30:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">RocketMQ的NameServer</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p style="margin-left:.0001pt;text-align:justify;">NameServer的设计：</p> 
+<p style="margin-left:.0001pt;text-align:justify;">(1)NameServer互相独立，彼此没有通信关系，单台NameServer挂掉，不影响其他NameServer。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">(2) NameServer不去连接别的机器，不主动推消息。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">(3)单个Broker (Master、Slave)与所有NameServer进行定时注册，以便告知NameServer自己还活着。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">Broker每隔30秒向所有NameServer发送心跳，心跳包含了自身的topic配置信息。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">NameServer每隔10秒，扫描所有还存活的broker连接,如果某个连接的最后更新时间</p> 
+<p style="margin-left:.0001pt;text-align:justify;">与当前时间差值超过2分钟，则断开此连接，NameServer也会断开此broker下所有与slave的连接。同时更新topic与队列的对应关系，但不通知生产者和消费者。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">Broker slave同步或者异步从Broker master上拷贝数据。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">(4)Consumer随机与一个NameServer建立长连接，如果该NameServer断开，则从NameServer列表中查找下一个进行连接。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">Consumer主要从NameServer中根据Topic查询Broker的地址，查到就会缓存到客户端，并向提供Topic服务的Master、Slave建立长连接，且定时向Master、Slave发送心跳。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">如果Broker宕机，则NameServer 会将其剔除，而Consumer端的定时任务MQClientInstance.this.updateTopicRouteInfoFromNameserver每30秒执行一次，将Topic对应的Broker地址拉取下来，此地址只有Slave地址了，此时Consumer从Slave上消费。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">消费者与Master和Slave都建有连接，在不同场景有不同的消费规则。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">(5)Producer随机与一个NameServer建立长连接，每隔30秒(此处时间可配置)从NameServer获取Topic的最新队列情况，如果某个Broker Master宕机，Producer最多30秒才能感知，在这个期间，发往该broker master的消息失败。Producer向提供Topic服务的Master建立长连接，且定时向Master发送心跳。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">生产者与所有的master连接，但不能向slave写入。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">客户端是先从NameServer寻址的，得到可用Broker的IP和端口信息，然后据此信息连接broker。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">综上所述，NameServer在RocketMQ中的作用：</p> 
+<p style="margin-left:.0001pt;text-align:justify;">(1)NameServer用来保存活跃的broker列表，包括Master和Slave。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">(2)NameServer用来保存所有topic和该topic 所有队列的列表。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">(3)NameServer用来保存所有broker的Filter 列表。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">(4)命名服务器为客户端，包括生产者,消费者和命令行客户端提供最新的路由信息。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">RocketMQ为什么不使用ZooKeeper而自己开发NameServer？</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在服务发现领域，ZooKeeper 根本就不能算是最佳的选择。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">(1)注册中心是CP还是AP系统？</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在分布式系统中，即使是对等部署的服务，因为请求到达的时间，硬件的状态，操作系统的调度，虚拟机的GC等，任何一个时间点，这些对等部署的节点状态也不可能完全一致，而流量不一致的情况下，只要注册中心在A承诺的时间内(例如1s内)将数据收敛到一致状态(即满足最终一致)，流量将很快趋于统计学意义上的一致，所以注册中心以最终一致的模型设计在生产实践中完全可以接受。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">(2)分区容忍及可用性需求分析实践中，注册中心不能因为自身的任何原因破坏服务之间本身的可连通性，这是注册中心设计应该遵循的铁律！</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在CAP的权衡中，注册中心的可用性比数据强一致性更宝贵，所以整体设计更应该偏向AP，而非CP，数据不一致在可接受范围，而P下舍弃A却完全违反了注册中心不能因为自身的任何原因破坏服务本身的可连通性的原则。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">(3)服务规模、容量、服务联通性</p> 
+<p style="margin-left:.0001pt;text-align:justify;">当数据中心服务规模超过一定数量，作为注册中心的ZooKeeper性能堪忧。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在服务发现和健康监测场景下，随着服务规模的增大，无论是应用频繁发布时的服务注册带来的写请求，还是刷毫秒级的服务健康状态带来的写请求，还是恨不能整个数据中心的机器或者容器皆与注册中心有长连接带来的连接压力上，ZooKeeper很快就会力不从心，而ZooKeeper的写并不是可扩展的，不可以通过加节点解决水平扩展性问题。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">(4)注册中心需要持久存储和事务日志么?需要,也不需要。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在服务发现场景中，其最核心的数据——实时的健康的服务的地址列表，真的需要数据持久化么？不需要</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在服务发现中，服务调用发起方更关注的是其要调用的服务的实时的地址列表和实时健康状态，每次发起调用时，并不关心要调用的服务的历史服务地址列表、过去的健康状态。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">但是一个完整的生产可用的注册中心，除了服务的实时地址列表以及实时的健康状态之外，还会存储一些服务的元数据信息，例如服务的版本，分组，所在的数据中心，权重，鉴权策略信息，服务标签等元数据，这些数据需要持久化存储，并且注册中心应该提供对这些元数据的检索的能力。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">(5)服务健康检查</p> 
+<p style="margin-left:.0001pt;text-align:justify;">使用ZooKeeper作为服务注册中心时，服务的健康检测绑定在了ZooKeeper对于Session的健康监测上，或者说绑定在TCP长链接活性探测上了。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">ZK与服务提供者机器之间的TCP长链接活性探测正常的时候，该服务就是健康的么？答案当然是否定的！注册中心应该提供更丰富的健康监测方案，服务的健康与否的逻辑应该开放给服务提供方自己定义，而不是一刀切搞成了TCP活性检测！</p> 
+<p style="margin-left:.0001pt;text-align:justify;">健康检测的一大基本设计原则就是尽可能真实的反馈服务本身的真实健康状态，否则一个不敢被服务调用者相信的健康状态判定结果还不如没有健康检测。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">(5)注册中心的容灾考虑</p> 
+<p style="margin-left:.0001pt;text-align:justify;">如果注册中心(Registry)本身完全宕机了，服务调用链路应该受到影响么？不应该受到影响。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">服务调用(请求响应流)链路应该是弱依赖注册中心，必须仅在服务发布，机器上下线，服务扩缩容等必要时才依赖注册中心。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">这需要注册中心仔细的设计自己提供的客户端，客户端中应该有针对注册中心服务完全不可用时做容灾的手段，例如设计客户端缓存数据机制就是行之有效的手段。另外，注册中心的健康检查机制也要仔细设计以便在这种情况不会出现诸如推空等情况的出现。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">ZooKeeper的原生客户端并没有这种能力，所以利用ZooKeeper实现注册中心的时候我们一定要问自己，如果把ZooKeeper所有节点全干掉，你生产上的所有服务调用链路能不受任何影响么？</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">阿里巴巴是不是完全没有使用ZooKeeper？并不是。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">熟悉阿里巴巴技术体系的都知道，其实阿里巴巴维护了目前国内最大规模的ZooKeeper集群，整体规模有近千台的ZooKeeper服务节点。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在粗粒度分布式锁，分布式选主，主备高可用切换等不需要高TPS支持的场景下有不可替代的作用，而这些需求往往多集中在大数据、离线任务等相关的业务领域，因为大数据领域，讲究分割数据集，并且大部分时间分任务多进程/线程并行处理这些数据集，但是总是有一些点上需要将这些任务和进程统一协调，这时候就是ZooKeeper发挥巨大作用的用武之地。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">但是在交易场景交易链路上，在主业务数据存取，大规模服务发现、大规模健康监测等方面有天然的短板，应该竭力避免在这些场景下引入ZooKeeper，在阿里巴巴的生产实践中，应用对ZooKeeper申请使用的时候要进行严格的场景、容量、SLA需求的评估.</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4c3593729e4375e5231ad856f0dc36ba/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Elasticsearch 简介</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ab6019f130bb3b2fc80840c54baa0a9b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">如何一键提取Word里面的图片？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

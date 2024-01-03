@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>elasticsearch index doc过程概述 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="elasticsearch index doc过程概述" />
+<meta property="og:description" content="文章目录 概述1.es中的基础概念2.es中的索引过程2.1 一次index请求的大体流程2.2 为什么是near real time2.3 为什么要有translog2.3.1 translog的作用2.3.2 translog的持久化机制2.3.2 commit产生的时机 概述 这里主要讲讲es index的过程，努力揭示es在index过程中具体做了哪些工作。
+从而增加我们对es的了解，以便于更好的使用和优化es。
+1.es中的基础概念 es的基础支撑是使用lucene,每个es的索引(index)有多个shard，每个shard都是一个独立的lucene实例每个lucene实例通过多个segment来管理自己存储的数据，每个segment可一个认为是独立的存储单元，从存储功能上来说类似于mysql中分表中的一张表每个lucene实例同时引入了一个commit的概念来管理segment,因为segment是要写入磁盘的，如果每产生一个segment都要写入磁盘的话，那么效率会受到影响，所以一般都是多个segment进行一次写磁盘操作，叫做commit，每次commit记录了本次提交的节点的一个快照信息。也就是一个commit check point。这里的每个commit 产生的check point 对应的文件是lucene data存储目录下的segment_N文件，看lucene网上说每个lucene实例中可能有多个segment_N文件(主要是因为有些segment_N文件暂时不能删除，或者使用了自定义的删除策略)
+参考这里只有数据进入一个segment当中才能够被搜索到。 2.es中的索引过程 基于上面的基础知识，我们来梳理一下对于客户端通过http请求过来的一个index操作，对应的在elasticsearch的后端会对应的经历哪些操作
+2.1 一次index请求的大体流程 请求的路由:请求可能被发往es集群当中的任意一个节点（此时假设为A）。所有在Elasticsearch集群中的节点都包含：有关哪个分片存在于哪个节点上的元数据。根据一定的规则计算该文档需要被发往哪个shard(主要是根绝文档的id来计算),接收请求的节点将请求路由到对应的主分片所在节点(假设为B)。
+请求的处理:当节点B接收到来自节点A的请求时，请求被写入到translog（下面会讲到），并将该文档添加到内存缓冲区。如果请求在主分片上成功，则请求将并行发送到副本分片。只有在所有主分片和副本分片上的translog被持久化(fsync’ed)后，客户端才会收到该请求成功的确认。
+2.2 为什么是near real time 在经过上面两步介绍，基本上了解了es处理请求的一个大致的套路
+那为什么说es是一个近实时(near real time)的搜索引擎呢，因为通过上面的请求写进es的文档并不能立即被搜索到。正常情况下可能会有一秒钟的延迟，也就是在add之后，最长可能需要经过1s以后才能搜索的到。是什么原因导致的呢，我们就来更进一步的深入其中。
+上面第2步当中的内存缓冲区中的内容是不能直接被搜索的，因为在lucene，只有一个打开的segment才能被搜索，此时缓冲区的内容还不是在一个段当中，但是缓冲区的内容会以固定的间隔刷新（默认为1秒）刷新的过程是:
+将内存缓冲区的内容写入文件系统缓存中的新段。此新段的内容更尚未被写入文件系统，但是分段是打开的，内容可被搜索。清空内存缓冲区。这里解释了搜索问什么是近实时的，也就是默认的情况下会有1s的延迟。 当然，这里的内存缓冲区刷新到文件系统缓存的节奏是可以控制的，我们可以通过设置&#34;refresh_interval&#34;: &#34;1s&#34;来设置刷新的时间间隔;或者进行强制刷新POST /${index}/_refresh(但是这个在生产中不太建议频繁使用)
+文件系统缓存中的数据会在满足一定的条件下进行持久化操作，写入磁盘，产生一个commit check point。
+2.3 为什么要有translog 在前面讲es应对一次写入请求的过程中提到，在主片写入请求之前会先生成一个tranlog并进行持久化。那么为什么要有这个呢。
+2.3.1 translog的作用 其实es的translog很好理解，基本上和其他系统中的各种用于记录的log类似，比如mysql中的binlog,redis中的aof日志，都是为了快速记录操作记录，防止因服务宕机等产生数据的丢失，当然binlog和aof log可能更加强大，因为他们保存的时间更久一些，可以直接用来做数据的回溯等操作。
+在上面的介绍中我们也可以看到，es除了translog的记录使用的是同步持久化的方式,其他的操作都是对内存的操作，包括内存缓冲区和文件系统缓存都是对内存的操作。假如在这中间产生了一些意外，比如你不小心踢掉了插头(这个理由确实有点烂。。。)，那么内存缓冲区和 文件系统缓存中的内容都丢了，即使你插上了插头，重新启动了服务，也是无济于事啊。这个时候tranlog就要闪亮登场力挽狂澜了。因为tranlog在请求能够给客户端正确返回的时候一般都是保证了已经进行了持久化的(默认是都会持久化，你也可以配置成非同步持久化模式，下面会介绍),所以这个时候就可以将translog中的数据拿出来进行回放就行了（并不是全部回放，只是和已经持久化的最后一次commit check point 对比，将之后的tanslog进行重放就行了）。
+2.3.2 translog的持久化机制 同时translog的持久化机制也是可以设置的，主要分为同步和异步两种，设置分别如下
+index.translog.durability:request|async request模式:这个是默认的模式，在每次写请求完成之后执行(index, delete, update, bulk)。这个过程在主分片和复制分片都会发生。最终， 基本上，这意味着在整个请求被 fsync 到主分片和复制分片的translog之前，你的客户端不会得到一个 200 OK 响应async模式:会在后台异步的按照一个配置参数&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/c0b8528fc78a6fefb59c9f1f1e3c4bf3/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-02-26T14:31:58+08:00" />
+<meta property="article:modified_time" content="2021-02-26T14:31:58+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">elasticsearch index doc过程概述</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#_2" rel="nofollow">概述</a></li><li><a href="#1es_6" rel="nofollow">1.es中的基础概念</a></li><li><a href="#2es_13" rel="nofollow">2.es中的索引过程</a></li><li><ul><li><a href="#21_index_17" rel="nofollow">2.1 一次index请求的大体流程</a></li><li><a href="#22_near_real_time_22" rel="nofollow">2.2 为什么是near real time</a></li><li><a href="#23_translog_35" rel="nofollow">2.3 为什么要有translog</a></li><li><ul><li><a href="#231_translog_37" rel="nofollow">2.3.1 translog的作用</a></li><li><a href="#232_translog_41" rel="nofollow">2.3.2 translog的持久化机制</a></li><li><a href="#232_commit_51" rel="nofollow">2.3.2 commit产生的时机</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="_2"></a>概述</h3> 
+<p>  这里主要讲讲es index的过程，努力揭示es在index过程中具体做了哪些工作。<br> 从而增加我们对es的了解，以便于更好的使用和优化es。</p> 
+<h3><a id="1es_6"></a>1.es中的基础概念</h3> 
+<ol><li>es的基础支撑是使用lucene,每个es的索引(index)有多个shard，每个shard都是一个独立的lucene实例</li><li>每个lucene实例通过多个segment来管理自己存储的数据，每个segment可一个认为是独立的存储单元，从存储功能上来说类似于mysql中分表中的一张表</li><li>每个lucene实例同时引入了一个commit的概念来管理segment,因为segment是要写入磁盘的，如果每产生一个segment都要写入磁盘的话，那么效率会受到影响，所以一般都是多个segment进行一次写磁盘操作，叫做commit，每次commit记录了本次提交的节点的一个快照信息。也就是一个commit check point。这里的每个commit 产生的check point 对应的文件是lucene data存储目录下的segment_N文件，看lucene网上说每个lucene实例中可能有多个segment_N文件(主要是因为有些segment_N文件暂时不能删除，或者使用了自定义的删除策略)<br> 参考<a href="https://lucene.apache.org/core/7_6_0/core/org/apache/lucene/index/SegmentInfos.html" rel="nofollow">这里</a></li><li>只有数据进入一个segment当中才能够被搜索到。</li></ol> 
+<h3><a id="2es_13"></a>2.es中的索引过程</h3> 
+<p>  基于上面的基础知识，我们来梳理一下对于客户端通过http请求过来的一个index操作，对应的在elasticsearch的后端会对应的经历哪些操作</p> 
+<h4><a id="21_index_17"></a>2.1 一次index请求的大体流程</h4> 
+<ol><li> <p>请求的路由:请求可能被发往es集群当中的任意一个节点（此时假设为A）。所有在Elasticsearch集群中的节点都包含：有关哪个分片存在于哪个节点上的元数据。根据一定的规则计算该文档需要被发往哪个shard(主要是根绝文档的id来计算),接收请求的节点将请求路由到对应的主分片所在节点(假设为B)。</p> </li><li> <p>请求的处理:当节点B接收到来自节点A的请求时，请求被写入到translog（下面会讲到），并将该文档添加到<code>内存缓冲区</code>。如果请求在主分片上成功，则请求将并行发送到副本分片。只有在所有主分片和副本分片上的translog被持久化(fsync’ed)后，客户端才会收到该请求成功的确认。</p> </li></ol> 
+<h4><a id="22_near_real_time_22"></a>2.2 为什么是near real time</h4> 
+<p>在经过上面两步介绍，基本上了解了es处理请求的一个大致的套路<br>   那为什么说es是一个近实时(near real time)的搜索引擎呢，因为通过上面的请求写进es的文档并不能立即被搜索到。正常情况下可能会有一秒钟的延迟，也就是在add之后，最长可能需要经过1s以后才能搜索的到。是什么原因导致的呢，我们就来更进一步的深入其中。</p> 
+<ol><li> <p>上面第2步当中的<code>内存缓冲区</code>中的内容是不能直接被搜索的，因为在lucene，只有一个打开的segment才能被搜索，此时缓冲区的内容还不是在一个段当中，但是缓冲区的内容会以固定的间隔刷新（默认为1秒）刷新的过程是:</p> 
+  <ol><li>将<code>内存缓冲区</code>的内容写入<code>文件系统缓存</code>中的新段。此新段的内容更尚未被写入文件系统，但是分段是打开的，内容可被搜索。</li><li>清空<code>内存缓冲区</code>。这里解释了搜索问什么是近实时的，也就是默认的情况下会有1s的延迟。</li></ol> </li><li> <p>当然，这里的<code>内存缓冲区</code>刷新到<code>文件系统缓存</code>的节奏是可以控制的，我们可以通过设置<code>"refresh_interval": "1s"</code>来设置刷新的时间间隔;或者进行强制刷新<code>POST /${index}/_refresh</code>(但是这个在生产中不太建议频繁使用)</p> </li><li> <p><code>文件系统缓存</code>中的数据会在满足一定的条件下进行持久化操作，写入磁盘，产生一个commit check point。</p> </li></ol> 
+<h4><a id="23_translog_35"></a>2.3 为什么要有translog</h4> 
+<p>  在前面讲es应对一次写入请求的过程中提到，在主片写入请求之前会先生成一个tranlog并进行持久化。那么为什么要有这个呢。</p> 
+<h5><a id="231_translog_37"></a>2.3.1 translog的作用</h5> 
+<p>  其实es的translog很好理解，基本上和其他系统中的各种用于记录的log类似，比如mysql中的binlog,redis中的aof日志，都是为了快速记录操作记录，防止因服务宕机等产生数据的丢失，当然binlog和aof log可能更加强大，因为他们保存的时间更久一些，可以直接用来做数据的回溯等操作。<br>   在上面的介绍中我们也可以看到，es除了translog的记录使用的是同步持久化的方式,其他的操作都是对内存的操作，包括<code>内存缓冲区</code>和<code>文件系统缓存</code>都是对内存的操作。假如在这中间产生了一些意外，比如你不小心踢掉了插头(这个理由确实有点烂。。。)，那么<code>内存缓冲区</code>和 <code>文件系统缓存</code>中的内容都丢了，即使你插上了插头，重新启动了服务，也是无济于事啊。这个时候tranlog就要闪亮登场力挽狂澜了。因为tranlog在请求能够给客户端正确返回的时候一般都是保证了已经进行了持久化的(默认是都会持久化，你也可以配置成非同步持久化模式，下面会介绍),所以这个时候就可以将translog中的数据拿出来进行回放就行了（并不是全部回放，只是和已经持久化的最后一次commit check point 对比，将之后的tanslog进行重放就行了）。</p> 
+<h5><a id="232_translog_41"></a>2.3.2 translog的持久化机制</h5> 
+<p>同时translog的持久化机制也是可以设置的，主要分为同步和异步两种，设置分别如下</p> 
+<pre><code>index.translog.durability:request|async
+
+</code></pre> 
+<ul><li>request模式:这个是默认的模式，在每次写请求完成之后执行(index, delete, update, bulk)。这个过程在主分片和复制分片都会发生。最终， 基本上，这意味着在整个请求被 fsync 到主分片和复制分片的translog之前，你的客户端不会得到一个 200 OK 响应</li><li>async模式:会在后台异步的按照一个配置参数<code>"index.translog.sync_interval": "5s"</code>进行translog的异步持久化，但是突然宕机的话有可能会导致数据丢失。所以没有特殊情况，还是使用request 模式</li></ul> 
+<h5><a id="232_commit_51"></a>2.3.2 commit产生的时机</h5> 
+<p>es会在满足一定的条件下进行一次commit操作(也叫flush操作或者lucene commit),对应的条件是:</p> 
+<pre><code>1.index.translog.flush_threshold_size : 这个是没有持久化的操作的最大数据存储量，默认是512mb
+2.index.translog.retention.age: 这个设置了不再用于帮助lucene commit 持久化的translog能够保存的最长时间，默认是12h
+3.index.translog.retention.size: 这个设置了不再用于帮助lucene commit 持久化的的translog的文件存储量,可以比flush_threshold_size更大
+
+</code></pre> 
+<p>对于上面三个参数的翻译稍微有些模糊，从git的源码中找到的注释是这样<a href="https://github.com/elastic/elasticsearch/blob/master/server/src/main/java/org/elasticsearch/index/IndexSettings.java#L203-L220">说的</a><br> 大概的意思是现在的flush操作只会提交lucene commit 并不会直接delete translog ，也就是把flush和delete translog分开为分别控制的了,也就是只有参数<code>index.translog.flush_threshold_size</code>会影响flush操作。这一段的解释主要是因为之前的老文档中有这样的<a href="https://www.elastic.co/guide/cn/elasticsearch/guide/current/translog.html" rel="nofollow">解释</a>中的第四点。</p> 
+<p>在进行flush操作时:</p> 
+<ol><li>所有在内存缓冲区的文档都被写入一个新的段。</li><li>缓冲区被清空。</li><li>一个提交点被写入硬盘。</li><li>文件系统缓存通过 fsync 被刷新（flush）。<br> <s>5. 老的 translog 被删除。</s> 这个目前应该不会立即删除了</li></ol> 
+<p>refer<br> https://www.elastic.co/guide/cn/elasticsearch/guide/current/translog.html<br> https://blog.csdn.net/zg_hover/article/details/77171014</p> 
+<p>这个里面有说明flush并不是delete old translog<br> https://github.com/elastic/elasticsearch/blob/master/docs/reference/index-modules/translog.asciidoc</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/152f52139d5be4dac85f9de618b9217f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【谷歌日语输入法】离线安装包官方下载链接（Windows）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c80233856b443c79c5dcfcff32936566/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">搜索的一般过程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

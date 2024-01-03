@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>STM32F407 SPI配置和时序图讲解（二） - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="STM32F407 SPI配置和时序图讲解（二）" />
+<meta property="og:description" content="上节讲了SPI的基本配置，这节主要讲解如何看时序图，SPI数据到底是如何传输的。
+SPI初始化后，就可以开始向对象发送数据了，但是要发送数据给W25Q128模块，需要按照它的时序图来发送（个人用的是W25Q128模块）
+W25Q128模块简介
+W25Q128是一款常见的串行闪存存储器模块，属于Winbond Electronics生产的产品系列之一。以下是关于W25Q128模块的一些基本信息：
+存储容量：W25Q128模块的存储容量为128Mb（兆比特）或16MB（兆字节）。它可以存储大量的数据，如代码、配置文件、图像、音频等。
+SPI接口：W25Q128模块使用SPI（Serial Peripheral Interface）接口进行数据通信。SPI是一种常用的串行通信协议，可以实现高速的数据传输。
+供电电压：W25Q128模块通常工作在3.3V的供电电压下，但也支持1.8V的供电电压。在使用时需要根据实际情况选择适当的供电电压。
+特性：W25Q128模块具有快速的读写速度和低功耗特性。它支持多种读写模式，包括普通读写、高速读写、扇区擦除、块擦除等。
+什么是时序图
+时序图（Timing diagram）是一种用于描述系统内部或组件之间时序关系的图形表示方法。它展示了信号、事件或数据在时间轴上的传输和交互情况，帮助我们理解系统各个组件之间的时序行为。
+时序图通常由水平的时间轴和垂直的信号线组成。时间轴表示时间的流逝，从左到右逐渐增加。信号线代表电平、状态或数据的变化。通过在时间轴上绘制信号线的高低变化、起始时间和持续时间等信息，时序图能够清晰地展示不同组件之间的交互和同步。
+时序图可以用于多种场景，如硬件电路设计、软件系统调试、通信协议分析等。它有助于可视化和验证系统的时序约束、响应时间、并发操作、数据流动和交互行为，帮助开发人员了解系统执行的顺序以及事件之间的依赖关系。
+上述只是简单介绍一下这个模块和时序图，下面开始正题！
+每一款模块都会给你原理图和数据手册以及时序图
+以下是W25Q128获取厂商ID的时序图
+这是两段时序图，因为一张图放不下，截取两部分，可以仔细观察一下看不看得懂，下面是拼接解析之后的时序图
+第一步：先看是谁的时序图，这是W25Q128的时序图，W25Q128相对于stm32芯片来说是从机，所以最左边四个引脚要搞清楚是什么，再stm32芯片中如何配置
+第二步：再看数据如何传输的（高位先出还是地位先出）这对下面编程来说很重要，对于这幅时序图来说是高位先出（MSB）（看图可以找到MSB，左上）
+第三步：看第一段，各个引脚的开始状态是什么，高电平还是低电平
+第四步：看第二段，片选引脚拉低，开始工作，时钟线开始变化
+第五步：看第三段，主机（stm32）开始发送指令(每个指令都不相同)，这里可以看到查询厂商ID指令为：0x09（小图也标注了它的二进制），这就是数据的传输过程。
+注释：为何看出来是主机发送，因为数据变化的MOSI(主输出从输入)这一根数据线，而MISO这跟数据线没有变化，只是起始电平，目前不管它
+第六步：看第四段，主机发送一个24位地址值，每个指令的地址值不一样，具体看时序图
+第七步：看第五段，主机随便发送数据（随便发不用管是什么，因为从机不会处理这些数据）发这些数据就是为了保持同步（SPI为高速串行全双工同步通信），我们发送这些数据的同时，从机就会给我们反发（因为现在MISO这跟数据线开始变化了）厂商号和设备号
+第八步：看第六段，片选引脚拉高，回到空闲状态，通信结束
+现在看懂了，来看看代码如何编写
+//SPI发送/接收1字节数据函数（自己对SPI接收和发送库函数做的简单封装） uint8_t Spi_Send_And_Recv_Byte_Data(uint8_t byte) { //判断SR寄存器(状态寄存器)1----&gt;发送缓冲区为空（具体查看寄存器手册） while(SPI_I2S_GetFlagStatus(SPI1,SPI_I2S_FLAG_TXE) == RESET); //通过spi发送数据 SPI_I2S_SendData(SPI1,byte);	//STM32F4系列 SPI标准发送库函数 //再次判断SR寄存器 while(SPI_I2S_GetFlagStatus(SPI1,SPI_I2S_FLAG_RXNE) == RESET); //返回spi接收值 return SPI_I2S_ReceiveData(SPI1);	//STM32F4系列 SPI的标准接收库函数 } //读取厂商ID和设备ID void Read_W25Q128_ID(uint8_t *M_ID,uint8_t *D_ID) { //cs引脚拉低开始通信 GPIO_PIN_NSS(0);	//自己定义的片选宏（不会宏定义的私发我，我亲自教，我不相信学到SPI还有人不会C语言宏定义） //发送获取ID号指令 Spi_Send_And_Recv_Byte_Data(0x90);	//读取设备号ID指令（0x90） //发送24位地址（因为SPI发送函数只能发一个字节，所以分三次发送） //记住这个是高位先出，所以要先发高位，这些细节我在上面时序图解析全部提出来了，注意看！ uint32_t Address = 0x000000;//要发送的地址值 Spi_Send_And_Recv_Byte_Data((uint8_t)Address&gt;&gt;16);	//发送高八位 Spi_Send_And_Recv_Byte_Data((uint8_t)Address&gt;&gt;8);	//发送中间八位 Spi_Send_And_Recv_Byte_Data((uint8_t)Address);	//发送低八位 //接收设备号（发一些无用数据是为了保持通信同步） *M_ID = Spi_Send_And_Recv_Byte_Data(0xFF);//这里就是发送一些无用数据，从机给我们反发ID号 *D_ID = Spi_Send_And_Recv_Byte_Data(0xFF);//这里就是发送一些无用数据，从机给我们反发ID号 //cs拉高电平，结束通信 GPIO_PIN_NSS(1); } 上面所有的细节和需要主义的地方我都标注清楚了" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/a6971992c296529826de02d767f3e748/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-07-05T17:40:09+08:00" />
+<meta property="article:modified_time" content="2023-07-05T17:40:09+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">STM32F407 SPI配置和时序图讲解（二）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>上节讲了SPI的基本配置，这节主要讲解<strong>如何看时序图</strong>，SPI数据到底是如何传输的。<br> SPI初始化后，就可以开始向对象发送数据了，但是要发送数据给W25Q128模块，需要按照它的时序图来发送（<strong>个人用的是W25Q128模块</strong>）</p> 
+<p>W25Q128模块简介<br> W25Q128是一款常见的串行闪存存储器模块，属于Winbond Electronics生产的产品系列之一。以下是关于W25Q128模块的一些基本信息：<br> <strong>存储容量</strong>：W25Q128模块的存储容量为128Mb（兆比特）或16MB（兆字节）。它可以存储大量的数据，如代码、配置文件、图像、音频等。<br> <strong>SPI接口</strong>：W25Q128模块使用SPI（Serial Peripheral Interface）接口进行数据通信。SPI是一种常用的串行通信协议，可以实现高速的数据传输。<br> <strong>供电电压</strong>：W25Q128模块通常工作在3.3V的供电电压下，但也支持1.8V的供电电压。在使用时需要根据实际情况选择适当的供电电压。<br> <strong>特性</strong>：W25Q128模块具有快速的读写速度和低功耗特性。它支持多种读写模式，包括普通读写、高速读写、扇区擦除、块擦除等。</p> 
+<p>什么是时序图<br> 时序图（Timing diagram）是一种用于<strong>描述系统内部或组件之间时序关系</strong>的图形表示方法。它展示了<strong>信号、事件或数据在时间轴上的传输和交互情况</strong>，帮助我们理解系统各个组件之间的时序行为。<br> 时序图通常由<strong>水平的时间轴</strong>和<strong>垂直的信号线</strong>组成。时间轴表示<strong>时间的流逝</strong>，从左到右逐渐增加。信号线代表<strong>电平、状态或数据的变化</strong>。通过在时间轴上绘制信号线的高低变化、起始时间和持续时间等信息，时序图能够清晰地展示不同组件之间的交互和同步。<br> 时序图可以用于多种场景，如<strong>硬件电路设计</strong>、<strong>软件系统调试</strong>、<strong>通信协议分析</strong>等。它有助于可视化和验证系统的时序约束、响应时间、并发操作、数据流动和交互行为，帮助开发人员了解系统执行的顺序以及事件之间的<strong>依赖关系</strong>。</p> 
+<p>上述只是简单介绍一下这个模块和时序图，下面开始正题！<br> 每一款模块都会给你原理图和数据手册以及时序图</p> 
+<p><strong>以下是W25Q128获取厂商ID的时序图</strong></p> 
+<p><img src="https://images2.imgbox.com/4e/40/h6BG6jKo_o.png" alt="在这里插入图片描述"><br> 这是两段时序图，因为一张图放不下，截取两部分，可以仔细观察一下看不看得懂，下面是<strong>拼接解析</strong>之后的时序图<br> <img src="https://images2.imgbox.com/01/29/8Xzt2Nnj_o.png" alt="在这里插入图片描述"><br> <strong>第一步</strong>：先看是谁的时序图，这是W25Q128的时序图，W25Q128相对于stm32芯片来说是从机，所以最左边四个引脚要搞清楚是什么，再stm32芯片中如何配置<br> <strong>第二步</strong>：再看数据如何传输的（高位先出还是地位先出）这对下面编程来说很重要，对于这幅时序图来说是<strong>高位先出（MSB）</strong>（看图可以找到MSB，左上）<br> <strong>第三步</strong>：看第一段，各个引脚的开始状态是什么，高电平还是低电平<br> <strong>第四步</strong>：看第二段，<strong>片选引脚拉低，开始工作</strong>，时钟线开始变化<br> <strong>第五步</strong>：看第三段，<strong>主机</strong>（stm32）开始<strong>发送</strong>指令(每个指令都不相同)，这里可以看到查询厂商ID指令为：0x09（小图也标注了它的二进制），这就是数据的传输过程。<br> <strong>注释：为何看出来是主机发送，因为数据变化的MOSI(主输出从输入)这一根数据线，而MISO这跟数据线没有变化，只是起始电平，目前不管它</strong><br> <strong>第六步</strong>：看第四段，主机发送一个24位地址值，每个指令的地址值不一样，具体看时序图<br> <strong>第七步</strong>：看第五段，主机随便发送数据（随便发不用管是什么，因为从机不会处理这些数据）发这些数据就是为了保持同步（<strong>SPI为高速串行全双工同步通信</strong>），我们发送这些数据的<strong>同时</strong>，从机就会给我们<strong>反发</strong>（因为现在MISO这跟数据线开始变化了）厂商号和设备号<br> <strong>第八步</strong>：看第六段，<strong>片选引脚拉高，回到空闲状态</strong>，<strong>通信结束</strong></p> 
+<p>现在看懂了，来看看代码如何编写</p> 
+<pre><code class="prism language-c"><span class="token comment">//SPI发送/接收1字节数据函数（自己对SPI接收和发送库函数做的简单封装）</span>
+<span class="token class-name">uint8_t</span> <span class="token function">Spi_Send_And_Recv_Byte_Data</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> byte<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//判断SR寄存器(状态寄存器)1----&gt;发送缓冲区为空（具体查看寄存器手册）</span>
+	<span class="token keyword">while</span><span class="token punctuation">(</span><span class="token function">SPI_I2S_GetFlagStatus</span><span class="token punctuation">(</span>SPI1<span class="token punctuation">,</span>SPI_I2S_FLAG_TXE<span class="token punctuation">)</span> <span class="token operator">==</span> RESET<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">//通过spi发送数据</span>
+	<span class="token function">SPI_I2S_SendData</span><span class="token punctuation">(</span>SPI1<span class="token punctuation">,</span>byte<span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">//STM32F4系列 SPI标准发送库函数</span>
+	
+	<span class="token comment">//再次判断SR寄存器</span>
+	<span class="token keyword">while</span><span class="token punctuation">(</span><span class="token function">SPI_I2S_GetFlagStatus</span><span class="token punctuation">(</span>SPI1<span class="token punctuation">,</span>SPI_I2S_FLAG_RXNE<span class="token punctuation">)</span> <span class="token operator">==</span> RESET<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">//返回spi接收值</span>
+	<span class="token keyword">return</span> <span class="token function">SPI_I2S_ReceiveData</span><span class="token punctuation">(</span>SPI1<span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">//STM32F4系列 SPI的标准接收库函数</span>
+	
+<span class="token punctuation">}</span>
+
+
+<span class="token comment">//读取厂商ID和设备ID</span>
+<span class="token keyword">void</span> <span class="token function">Read_W25Q128_ID</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> <span class="token operator">*</span>M_ID<span class="token punctuation">,</span><span class="token class-name">uint8_t</span> <span class="token operator">*</span>D_ID<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//cs引脚拉低开始通信</span>
+	<span class="token function">GPIO_PIN_NSS</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">//自己定义的片选宏（不会宏定义的私发我，我亲自教，我不相信学到SPI还有人不会C语言宏定义）</span>
+	
+	<span class="token comment">//发送获取ID号指令</span>
+	<span class="token function">Spi_Send_And_Recv_Byte_Data</span><span class="token punctuation">(</span><span class="token number">0x90</span><span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">//读取设备号ID指令（0x90）</span>
+	
+	<span class="token comment">//发送24位地址（因为SPI发送函数只能发一个字节，所以分三次发送）</span>
+	<span class="token comment">//记住这个是高位先出，所以要先发高位，这些细节我在上面时序图解析全部提出来了，注意看！</span>
+	<span class="token class-name">uint32_t</span> Address <span class="token operator">=</span> <span class="token number">0x000000</span><span class="token punctuation">;</span><span class="token comment">//要发送的地址值</span>
+	<span class="token function">Spi_Send_And_Recv_Byte_Data</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span><span class="token punctuation">)</span>Address<span class="token operator">&gt;&gt;</span><span class="token number">16</span><span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">//发送高八位</span>
+	<span class="token function">Spi_Send_And_Recv_Byte_Data</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span><span class="token punctuation">)</span>Address<span class="token operator">&gt;&gt;</span><span class="token number">8</span><span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">//发送中间八位</span>
+	<span class="token function">Spi_Send_And_Recv_Byte_Data</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span><span class="token punctuation">)</span>Address<span class="token punctuation">)</span><span class="token punctuation">;</span>		<span class="token comment">//发送低八位</span>
+	
+	<span class="token comment">//接收设备号（发一些无用数据是为了保持通信同步）</span>
+	<span class="token operator">*</span>M_ID <span class="token operator">=</span> <span class="token function">Spi_Send_And_Recv_Byte_Data</span><span class="token punctuation">(</span><span class="token number">0xFF</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//这里就是发送一些无用数据，从机给我们反发ID号</span>
+	<span class="token operator">*</span>D_ID <span class="token operator">=</span> <span class="token function">Spi_Send_And_Recv_Byte_Data</span><span class="token punctuation">(</span><span class="token number">0xFF</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//这里就是发送一些无用数据，从机给我们反发ID号</span>
+	
+	<span class="token comment">//cs拉高电平，结束通信</span>
+	<span class="token function">GPIO_PIN_NSS</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>上面所有的细节和需要主义的地方我都标注清楚了<br> 是不是很简单，只要看得懂原理图，写代码就是严格按照步骤来写就好</p> 
+<p>下面再来几张时序图，这次只有简单的解析，看得懂的可以看看每张时序图的代码步骤，<strong>看不懂的小伙伴可以继续看看上面的获取厂商ID的具体解析</strong>。</p> 
+<p><strong>解除写保护时序图</strong><br> <img src="https://images2.imgbox.com/4e/d9/1dNT7TzT_o.png" alt="在这里插入图片描述"><br> 代码如下：</p> 
+<pre><code class="prism language-c"><span class="token comment">/*开启/关闭写使能（我把解除写保护和添加写保护封装在一起了，
+虽然上面只有一张时序图，但是大家应该也能猜出添加写保护是什么样的）*/</span>
+<span class="token keyword">void</span> <span class="token function">Spi_Write_Cmd</span><span class="token punctuation">(</span>FunctionalState NewState<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//cs拉低，通信开始</span>
+	<span class="token function">GPIO_PIN_NSS</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">//判断开始写使能还是关闭</span>
+	  <span class="token function">assert_param</span><span class="token punctuation">(</span><span class="token function">IS_FUNCTIONAL_STATE</span><span class="token punctuation">(</span>NewState<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	  <span class="token keyword">if</span> <span class="token punctuation">(</span>NewState <span class="token operator">!=</span> DISABLE<span class="token punctuation">)</span>
+	  <span class="token punctuation">{<!-- --></span>
+		  <span class="token comment">//发送 使能写权限 指令</span>
+		  <span class="token function">Spi_Send_And_Recv_Byte_Data</span><span class="token punctuation">(</span><span class="token number">0x06</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	  <span class="token punctuation">}</span>
+	  <span class="token keyword">else</span>
+	  <span class="token punctuation">{<!-- --></span>
+		  <span class="token comment">//发送 不使能写权限 指令 </span>
+		  <span class="token function">Spi_Send_And_Recv_Byte_Data</span><span class="token punctuation">(</span><span class="token number">0x04</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	  <span class="token punctuation">}</span>
+	
+	<span class="token comment">//cs拉高，通信结束</span>
+	<span class="token function">GPIO_PIN_NSS</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>很简单，下面看看发送数据的时序图</strong>（看不清的可以点开放大看，支持下载）<br> <img src="https://images2.imgbox.com/d5/83/j5cFHzvw_o.png" alt="在这里插入图片描述"><br> 看看代码：</p> 
+<pre><code class="prism language-c"><span class="token comment">//写入数据函数(页编程)</span>
+<span class="token keyword">void</span> <span class="token function">Page_Program</span><span class="token punctuation">(</span><span class="token class-name">uint32_t</span> Addr<span class="token punctuation">,</span><span class="token class-name">uint8_t</span> <span class="token operator">*</span>data<span class="token punctuation">,</span><span class="token class-name">uint8_t</span> size<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//cs拉低，通信开始</span>
+	<span class="token function">GPIO_PIN_NSS</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">//发送写指令</span>
+	<span class="token function">Spi_Send_And_Recv_Byte_Data</span><span class="token punctuation">(</span><span class="token number">0x02</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">//发送24位地址</span>
+	<span class="token function">Spi_Send_And_Recv_Byte_Data</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span><span class="token punctuation">)</span><span class="token punctuation">(</span>Addr<span class="token operator">&gt;&gt;</span><span class="token number">16</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">Spi_Send_And_Recv_Byte_Data</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span><span class="token punctuation">)</span><span class="token punctuation">(</span>Addr<span class="token operator">&gt;&gt;</span><span class="token number">8</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">Spi_Send_And_Recv_Byte_Data</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span><span class="token punctuation">)</span>Addr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">//发送要写入的数据</span>
+	<span class="token keyword">for</span><span class="token punctuation">(</span><span class="token keyword">int</span> i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span>size<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+		<span class="token function">Spi_Send_And_Recv_Byte_Data</span><span class="token punctuation">(</span>data<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">//查看状态寄存器是否BUSY位（这个就是看具体的寄存器，这里想教会大家的是如何看懂时序图）</span>
+	<span class="token comment">//BUSY位在最低位，与上0x01则，如果是0则写入完成，退出循环</span>
+	<span class="token keyword">while</span><span class="token punctuation">(</span><span class="token function">Read_Status_Register1</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&amp;</span> <span class="token number">0x01</span><span class="token punctuation">)</span><span class="token punctuation">;</span>	
+
+	<span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"Write data finsh\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">//cs拉高，通信结束</span>
+	<span class="token function">GPIO_PIN_NSS</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>最后留一张<strong>接收数据的时序图</strong>，个人解析过，大家也可以看看，这次没有代码，大家可以看看按照逻辑会不会自己写出步骤，代码就是调用函数罢了<br> <img src="https://images2.imgbox.com/c5/7a/wwtuH8V6_o.png" alt="在这里插入图片描述"><br> 代码就没必要看了，会步骤就好了，能自己看懂就可以了！<br> 只要认真看了本章内容，就算是一个新手也能看得懂时序图，如果对您有什么帮助，请留下免费的赞，谢谢！！！<br> <strong><strong>这几天会继续更新其他类型的时序图如何查看</strong>！！！</strong></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/655fdfb75e2b8360a0fe3f2dcda437dc/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Element-UI的使用（入门）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/81fcb4e713e2efaf28f40b4bb62f0c3c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">第五节：springboot整合Mybatis（声明式事务@Transactional）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

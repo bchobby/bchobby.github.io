@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>编码踩坑——Redis Pipeline中调用Lua脚本报错JedisMoveDataException的问题 / Lua脚本常遇到的问题 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="编码踩坑——Redis Pipeline中调用Lua脚本报错JedisMoveDataException的问题 / Lua脚本常遇到的问题" />
+<meta property="og:description" content="本篇记录使用Redis Pipeline时，调用redis.clients.jedis.PipelineBase#eval时，报错JedisMoveDataException的问题；通过查看源码发现问题的原因，通过jedis在Github的issue了解了解决方案；涉及知识：Redis slot、Redis Pipeline、Redis Lua；
+问题背景 有一段涉及用户通知疲劳度控制相关的代码，由于要保证执行逻辑的原子性，用到了Lua脚本：先判断rateLimiterKey是否exist存在，若存在则返回0-不通过，否则对该key赋值并设置ttl（setex），返回1-通过；如下：
+local key = KEYS[1] local duration = tonumber(ARGV[1]) local exists = tonumber(redis.call(&#39;exists&#39;, key)) --exists=1,则表示存在,返回0; if exists == 1 then return 0 end --否则设置key及ttl,返回1; redis.call(&#39;setex&#39;, key, duration, &#34;&#34;) return 1 在对批量用户做上述校验时，想到是否可用Redis Pipeline来优化，从而减小网络传输开销；关于Redis Pipeline的知识可查阅我之前的文章《编码技巧——Redis Pipeline》；
+通过查看JedisClusterPipeLine对象的方法，发现Jedis确实提供了pipeline下的eval方法，如下：
+于是，立即试了下，代码如下：
+try { pipeline = jedisCluster.pipelined(); for (String receiverId : receiverIds) { final String rateLimitKey = buildRecieverRateLimiterKey(msgType, receiverId, topic); pipeline.eval(LuaScript.setexFlag(), Lists.newArrayList(rateLimitKey), Lists.newArrayList(String.valueOf(ttl))); } // pipeline执行并获取结果 final List&lt;Object&gt; allVal = pipeline." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/b0e149d616c7e63ad0ff3e3b68742516/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-05-24T14:29:32+08:00" />
+<meta property="article:modified_time" content="2023-05-24T14:29:32+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">编码踩坑——Redis Pipeline中调用Lua脚本报错JedisMoveDataException的问题 / Lua脚本常遇到的问题</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>本篇记录使用Redis Pipeline时，调用redis.clients.jedis.PipelineBase#eval时，报错JedisMoveDataException的问题；通过查看源码发现问题的原因，通过jedis在Github的issue了解了解决方案；涉及知识：Redis slot、Redis Pipeline、Redis Lua；</p> 
+<h3>问题背景</h3> 
+<p>有一段涉及用户通知疲劳度控制相关的代码，由于要保证执行逻辑的<span style="color:#1c7331;">原子性</span>，用到了Lua脚本：先判断rateLimiterKey是否exist存在，若存在则返回0-不通过，否则对该key赋值并设置ttl（setex），返回1-通过；如下：</p> 
+<pre><code class="language-Lua">local key = KEYS[1]
+local duration = tonumber(ARGV[1])
+local exists = tonumber(redis.call('exists', key))
+--exists=1,则表示存在,返回0;
+if exists == 1 then
+    return 0
+end
+--否则设置key及ttl,返回1;
+redis.call('setex', key, duration, "")
+return 1</code></pre> 
+<p>在对批量用户做上述校验时，想到是否可用Redis Pipeline来优化，从而减小网络传输开销；关于Redis Pipeline的知识可查阅我之前的文章<a href="https://blog.csdn.net/minghao0508/article/details/129424151" title="《编码技巧——Redis Pipeline》">《编码技巧——Redis Pipeline》</a>；</p> 
+<p>通过查看JedisClusterPipeLine对象的方法，发现Jedis确实提供了pipeline下的eval方法，如下：</p> 
+<p><img alt="" height="248" src="https://images2.imgbox.com/cc/2f/J0lPvtcl_o.png" width="606"></p> 
+<p>于是，立即试了下，代码如下：</p> 
+<pre><code class="language-java">	try {
+        pipeline = jedisCluster.pipelined();
+        for (String receiverId : receiverIds) {
+            final String rateLimitKey = buildRecieverRateLimiterKey(msgType, receiverId, topic);
+            pipeline.eval(LuaScript.setexFlag(), Lists.newArrayList(rateLimitKey), Lists.newArrayList(String.valueOf(ttl)));
+        }
+        // pipeline执行并获取结果
+        final List&lt;Object&gt; allVal = pipeline.syncAndReturnAll();
+        if (CollectionUtils.isNotEmpty(allVal)) {
+                final List&lt;Long&gt; flags = allVal.stream().map(val -&gt; Long.valueOf(String.valueOf(val))).collect(Collectors.toList());
+                if (flags.size() == receiverIds.size()) {
+                    final List&lt;String&gt; filtered = Lists.newArrayList();
+                    for (int i = 0; i &lt; flags.size(); i++) {
+                        final String receiverId = receiverIds.get(i);
+                        if (EXISTS != flags.get(i)) {
+                            filtered.add(receiverId);
+                            log.warn("rateLimiterFilter_pass. [rateLimiterKey={}]", buildRecieverRateLimiterKey(msgType, receiverId, topic));
+                        } else {
+                            log.warn("rateLimiterFilter_not_pass. [rateLimiterKey={}]", buildRecieverRateLimiterKey(msgType, receiverId, topic));
+                        }
+                    }
+                    return filtered;
+                }
+            }
+    } catch (Exception e) {
+        log.error("pipeline_rateLimiter_fr_redis_error. [msgType={} topic={} receiverIds={}]", msgType, topic, JSON.toJSONString(receiverIds), e);
+    } finally {
+        if (pipeline != null) {
+            pipeline.close();
+        }
+    }</code></pre> 
+<p></p> 
+<h3>问题现象</h3> 
+<p>以上代码一旦执行到 pipeline.syncAndReturnAll() 时，返回Lua执行的结果中，全是异常，异常类型为 <span style="color:#1a439c;">redis.clients.jedis.exceptions.JedisMovedDataException</span>，描述为"MOVED 10493 10.101.39.148:11115"；</p> 
+<p></p> 
+<h3>原因分析</h3> 
+<p>Redis集群模式下，通过hash槽算法维护key与slot的映射，从而来确定一次命令需要路由到哪个节点执行；关于Redis solt的知识点，可参考我之前的文章<a href="https://blog.csdn.net/minghao0508/article/details/124974445" title="《Redis——Cluster数据分布算法&amp;哈希槽》">《Redis——Cluster数据分布算法&amp;哈希槽》</a>；</p> 
+<p>顾名思义，<span style="color:#1a439c;">JedisMovedDataException </span>这类问题一般发生于执行redis命令时，发现准备路由的节点与该key实际所在的节点不一致；常见的场景如Redis节点扩缩容导致的slot迁移，<span style="color:#1c7331;">最简单的解决办法就是使用JedisCluster对象替换Jedis对象</span>；</p> 
+<p>但是有时候，"JedisCluster对象替换Jedis对象"并不能由我们决定，如此次使用的JedisClusterPipeLine对象，执行eval方法时，封装好的源码就是通过Jedis来执行的，也就是说我们改不了；</p> 
+<p>既然不能直接解决问题，就得分析原因了，为什么根据key找不到正确的slot？在搞清楚这个问题之前，先要弄清楚一个问题——Lua脚本是允多key和多参数的，对应Lua中的<span style="color:#1a439c;">KEY[N]</span>和<span style="color:#1a439c;">ARGV[N]</span>，既然hash槽算法是通过 <span style="color:#1a439c;">CRC16("key")%16384</span> 计算slot的，那么当可能存在单key OR 多key 情况时——</p> 
+<h4 id="articleContentId">Redis Cluster模式下能否使用Lua脚本呢？</h4> 
+<p>先说结论——可以，但是对Multi-keys有要求；分以下2种情况：</p> 
+<ul><li><span style="color:#1a439c;">单Key</span></li><li><span style="color:#1a439c;">多Key</span></li></ul> 
+<p>集群模式下，是支持执行单Key的Lua脚本的；比较容易理解，因为只有1个key，所以直接根据这个key来找slot即可，不存在冲突问题；</p> 
+<p>但是对于多key，当这多个key执行 <span style="color:#1a439c;">CRC16("key")%16384 </span>落到相同的slot时，Lua脚本可以正常执行；当结果分散在不同的slot时，会发现Redis<span style="color:#be191c;">报错</span>：</p> 
+<p><span style="color:#be191c;"><span style="background-color:#f9eda6;">(error) CROSSSLOT Keys in request don’t hash to the same slot</span></span></p> 
+<p>如何能保证Lua中的多个key落在相同的hash槽呢？</p> 
+<p>默认下，redis在计算key的槽时，会对整个key做CRC16哈希取值，但是其API也开放了功能——<span style="color:#1c7331;"><strong>redis hashtag</strong></span>，即通过tag，对key中指定的一段做CRC16哈希取值，这样可以让不同的key落到相同的哈希槽上；</p> 
+<p>通过redis hashtag源码解析可知，仅对key中{...}里的部分参与hash，如果有多个花括号，从左向右，取第一个花括号中的内容进行hash；若第一个花括号中内容为空如：a{}c{d}，则整个key参与hash；<span style="color:#1c7331;">达到的效果就是，相同的hashtag被分配到相同的槽，即相同的redis节点；不过滥用hash tag可能导致节点上的key数量分布不均匀</span>；</p> 
+<p>明确上面的问题后，再来看下我们的问题——</p> 
+<p><strong>既然我们的Lua只有单个Key，为什么根据key找不到正确的slot</strong>？</p> 
+<p>查看 pipeline.eval(...) 的源码，如下：</p> 
+<p><img alt="" height="182" src="https://images2.imgbox.com/5e/dd/3vCKTnfM_o.png" width="787"></p> 
+<p>可以看到，源码是用script来作为计算slot的参数的，而非key；那这算不算Bug呢？</p> 
+<p>——算！查阅jedis的GitHub issues，发现确实有：<a href="https://github.com/redis/jedis/pull/2257" title="fix eval &amp; evalsha in pipeline by minisancy · Pull Request #2257 · redis/jedis · GitHub">fix eval &amp; evalsha in pipeline by minisancy · Pull Request #2257 · redis/jedis · GitHub</a></p> 
+<p><img alt="" height="879" src="https://images2.imgbox.com/cf/ee/6GWPugEj_o.png" width="1200"></p> 
+<p>后面咨询了公司中间件工程师，了解到该问题于2020年9月修复，已经是Jedis 3.x版本了，我们当前的Jedis版本不支持；</p> 
+<p><img alt="" height="166" src="https://images2.imgbox.com/2e/50/VsefzjAY_o.png" width="1200"></p> 
+<p>所以，问题的原因是Jedis旧版本的一个BUG；</p> 
+<p>看了下后序Jedis的一个commit修复记录，如下：</p> 
+<p><span style="color:#1a439c;">src/main/java/redis/clients/jedis/MultiNodePipelineBase.java</span></p> 
+<p><img alt="" height="782" src="https://images2.imgbox.com/2c/f9/qn6SDcXp_o.png" width="1189"></p> 
+<p>使用了CommandObjects对象来包装命令，根据命令key来计算slot，解决了pipeline执行Lua脚本的问题；</p> 
+<p>此外还发现了旧版本Jedis执行Lua脚本的一个"限制 OR Bug"，Jedis封装Lua脚本的执行结果时，强制返回类型为String，如果Lua返回的值为数值型，执行后会报错Long转byte[]的类型转换错误，代码如下：</p> 
+<p><img alt="" height="250" src="https://images2.imgbox.com/96/63/fPdoKpHX_o.png" width="707"></p> 
+<p></p> 
+<h3>小结</h3> 
+<p>问题的结论就是，老版本的Jedis的pipeline开放了eval方法，但是实际上是不支持的，因为无法确保对script取slot跟对原key取到的slot一致；此外，执行eval的结果强制为String类型，而我们一般的Lua返回结果为数值型，在执行时会出现运行时异常java.lang.ClassCastException；</p> 
+<p>可见，第三方的中间件包也不一定靠谱，在发现问题时要能根据源码和原理分析原因，敢于去官方Git下去咨询或提Issue；</p> 
+<p></p> 
+<h3>补充：使用Lua脚本常遇到的问题</h3> 
+<h4>1. Lua中get命令获得的东西判断nil的坑</h4> 
+<p>现象：</p> 
+<p><img alt="" height="609" src="https://images2.imgbox.com/84/31/BsvZ12Ki_o.png" width="680"></p> 
+<p>此时的key不存在，那么按理说Lua结果应该返回nil，也就是说上面的执行结果应该是0才对，但是<span style="color:#be191c;">Lua给出了1这个匪夷所思的结果</span>；</p> 
+<p>参考了stackoverflow上的这个问题<a href="https://stackoverflow.com/questions/48087764/redis-lua-cant-work-properly-due-to-wrong-type-comparison" rel="nofollow" title="redis lua can't work properly due to wrong type comparison - Stack Overflow">redis lua can't work properly due to wrong type comparison - Stack Overflow</a>以及它里面提到的官方的这篇文章<a href="https://redis.io/commands/eval/#conversion-between-lua-and-redis-data-types" rel="nofollow" title="EVAL | Redis">EVAL | Redis</a>，发现了下面这个“潜规则”：</p> 
+<blockquote> 
+ <p><strong>Redis Nil bulk reply and Nil multi bulk reply -&gt; Lua false boolean type</strong></p> 
+</blockquote> 
+<p>也就是说，Lua中的get会将nil转换成false，根据这个结果，我们重新调整了上面的Lua script如下：<br><img alt="" height="613" src="https://images2.imgbox.com/08/5f/AU295SBF_o.png" width="925"></p> 
+<p><strong>结论</strong>：<span style="color:#1c7331;">对get的返回结果预期为数值型时，使用tonumber转换结果再判断；若非数值型，通过false判断是否存在而不要使用nil判断</span>；</p> 
+<h4>2. Redis到Lua数据的类型转换</h4> 
+<p>示例：</p> 
+<pre><code class="language-bash">127.0.0.1:6379&gt; set test 2
+OK
+127.0.0.1:6379&gt; object encoding test
+"int"</code></pre> 
+<p>可以看到，我们将key test设置成了整型2，查看它的encoding发现也是int类型，那么我们在lua script中将test get成一个变量，感觉应该也是number类型吧，但是现实是残酷的：</p> 
+<pre><code class="language-bash">127.0.0.1:6379&gt; eval "local a = redis.call('get', 'test'); return type(a);" 0
+"string"</code></pre> 
+<p>我们得到的是string类型。这是为啥嘞？</p> 
+<p>这个问题我们google了很久，最后查看了很长时间的源码，后来发现官方的文档其实已经说明了这个问题，但是不是那么明显。在<a href="https://redis.io/commands/eval" rel="nofollow" title="官方的这篇文档中">官方的这篇文档中</a>，提到了Redis将会怎样把类型映射到lua中：</p> 
+<blockquote> 
+ <p><strong>Redis to Lua</strong> conversion table.</p> 
+ <ul><li>Redis integer reply -&gt; Lua number</li><li>Redis bulk reply -&gt; Lua string</li><li>Redis multi bulk reply -&gt; Lua table (may have other Redis data types nested)</li><li>Redis status reply -&gt; Lua table with a single ok field containing the status</li><li>Redis error reply -&gt; Lua table with a single err field containing the error</li><li><span style="color:#be191c;">Redis Nil bulk reply and Nil multi bulk reply -&gt; Lua false boolean type</span></li></ul> 
+</blockquote> 
+<p>官方文档中提到的这个table，有一个很重要的信息，就是redis对于类型的转换，是针对每一个命令的，和key本身是个啥没有关系，这就是上面每一条对应的都是一个XXX reply；</p> 
+<p><strong>结论</strong>：<span style="color:#1c7331;">lua内获得的redis的数据，不根据key的类型决定，而是根据key的reply决定；另外多提一句，eval中传入的ARGV数组，redis官方全部都是作为string来处理的</span>！</p> 
+<h4>3. Lua script在cluster中执行的目标机器</h4> 
+<p>在redis cluster环境中，key是按照slot槽来存储的，而不同的slot槽又是存储在不同的机器上的，那当我们运行的一个lua script涉及到多个key时，到底由哪个机器来执行呢？</p> 
+<p>这个坑里涉及2个问题：</p> 
+<ul><li><strong>（1）能不能把key直接写到lua script里？</strong></li><li><strong>（2）如果我们有多个key，redis到底会把lua script放到哪个机器上去执行？</strong></li></ul> 
+<p>eval命令后面会跟一个key的列表，但是同样，命令没有禁止我们把key直接写到lua script里，即也提供了不含key的eval重载方法；</p> 
+<p>如果我们把key写到了lua script中，那么即使lua script能够顺利进入某个机器开始执行，大概率也会出现当前机器中没有我们写死的这个key，此时会得到下面的错误：</p> 
+<p><span style="color:#be191c;"><span style="background-color:#f9eda6;">Lua script attempted to access a non local key in a cluster node</span></span></p> 
+<p>下面这段是来自Redis官方的eval命令的文档：</p> 
+<blockquote> 
+ <p>All Redis commands must be analyzed before execution to determine which keys the command will operate on. In order for this to be true for EVAL, keys must be passed explicitly. This is useful in many ways, but especially to make sure Redis Cluster can forward your request to the appropriate cluster node.</p> 
+</blockquote> 
+<p>加粗的那句话表明，为了能让redis正确的搞明白key到底该怎么执行，需要显式的传进去，也就是说，<span style="color:#1c7331;">我们需要用eval的key的参数列表来传入我们要操作的key，而不能把它直接写到lua script里</span>！</p> 
+<p>接下来的一个问题就是，如果我们有多个key，redis到底会把lua script放到哪个机器上去执行？<br> 我们其实可以自己去尝试一下，执行一个需要多个key的lua script，极大概率你会得到下面的错误：</p> 
+<p><span style="color:#be191c;"><span style="background-color:#f9eda6;">(error) CROSSSLOT Keys in request don't hash to the same slot</span></span></p> 
+<p><span style="color:#1c7331;">Redis要求，在使用eval的时候，涉及到的key必须在同一个slot槽中，否则，就会出现上面的错误</span>！</p> 
+<p><span style="color:#1c7331;">解决上面问题的方法就是使用hash tag</span>（hash tag可以参照<a href="https://redis.io/topics/cluster-spec#keys-hash-tags" rel="nofollow" title="官方文档">官方文档</a>）；我们需要把key中的一部分使用{}包起来，redis将通过{}中间的内容作为计算slot的key，类似key1{mykey}、key2{mykey}这样的都会存放到同一个slot中；当然，hash tag带来的一个问题就是会让cluster中某个节点压力增加，这个只能取舍了；</p> 
+<h4>4. eval和evalsha的使用区别</h4> 
+<p>eval会把script全部都发过去执行，而evalsha是执行缓存在redis服务器的scipt（通过参数中的script的hash值去找），如果redis服务器上没有缓存这个script，会抛出错误NoScriptError；</p> 
+<p><span style="color:#1c7331;">建议使用evalsha方法</span>，因为会节省网络传输的数据提升性能，但是首次需要先把写好的lua script使用script load方式加载到redis服务器，事实上通过eval命令就可以触发；下面是spring-data-redis的代码实现：</p> 
+<pre><code class="language-java">Object result;
+try {    
+    result = connection.evalSha(script.getSha1(), returnType, numKeys, keysAndArgs);
+} catch (Exception e) {
+    if (!ScriptUtils.exceptionContainsNoScriptError(e)) {
+        throw e instanceof RuntimeException ? (RuntimeException) e : new       
+                RedisSystemException(e.getMessage(), e); 
+    }
+    // 通过eval命令达到load script的作用
+    result = connection.eval(scriptBytes(script), returnType, numKeys, keysAndArgs);
+}</code></pre> 
+<h4>5. Redis LuaScript并非真的强原子性</h4> 
+<p>redis script 不具备<span style="color:#1a439c;"><strong><span style="background-color:#f9eda6;"> all or nothing </span></strong></span>特性的，可能是 crud 程序猿会遇到，这可能是思维惯性导致的；举个例子：</p> 
+<pre><code class="language-Lua">redis.call('SET', 'key1', 'value1');
+local a = b;
+redis.call('SET', 'key2', 'value2');</code></pre> 
+<p>redis 在执行 local a = b; 这一行时，就会报错如下的错误：</p> 
+<p><span style="color:#be191c;"><span style="background-color:#f9eda6;">(error) ERR Error running script (call to f_71007e955106f406b23cfaba7647eec1081fda7d): </span><br><span style="background-color:#f9eda6;">@enable_strict_lua:15: user_script:1: Script attempted to access nonexistent global variable 'b'</span></span></p> 
+<p>然后后续的代码便不再执行，对于长期习惯于丢异常就会回滚修改的 crud 程序员来说，key1 和 key2 的值肯定没有设置成功；<span style="color:#be191c;">然而事实是，上诉代码是一半成功（成功设置 key1），一半根本没有执行（没有执行到 key2 的位置）</span>；</p> 
+<p>简而言之，redis script 的原子性特性只是指 redis 只使用一个 lua 解释器执行 script，且是单线程执行 script；但是 script 执行中途报错，是不会将修改回滚的，回滚特性应该属于事务，而 redis 其实是没有严格的事务特性的，redis script 是没有 all or nothing 的特性；关于Lua脚本事务性的验证可参考我之前的文章<a href="https://blog.csdn.net/minghao0508/article/details/123895579" title="Redis——“事务“/Lua脚本_lua脚本">Redis——“事务“/Lua脚本_lua脚本</a>；</p> 
+<p>其他：B站之前一次大的线上问题也是由网关层的Lua脚本对执行结果的预期值与实际结果类型不一致导致的：<a href="https://www.bilibili.com/video/av685973100/?vd_source=e86b63b87689477f3253b4e322a4fd66" rel="nofollow" title="2021.07.13 B站是这样崩的_哔哩哔哩_bilibili">2021.07.13 B站是这样崩的_哔哩哔哩_bilibili</a></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p>参考：</p> 
+<p><a href="https://blog.csdn.net/minghao0508/article/details/124974445" title="Redis——Cluster数据分布算法&amp;哈希槽">Redis——Cluster数据分布算法&amp;哈希槽</a></p> 
+<p><a href="https://blog.csdn.net/qq_20128967/article/details/108611161" title="Redis Cluster中使用Lua脚本">Redis Cluster中使用Lua脚本</a></p> 
+<p><a href="https://www.cnblogs.com/jing-yi/p/15746982.html" rel="nofollow" title="Redis集群扩容导致的Jedis客户端报JedisMovedDataException异常">Redis集群扩容导致的Jedis客户端报JedisMovedDataException异常</a></p> 
+<p><a href="https://github.com/redis/jedis/pull/2257" title="fix eval &amp; evalsha in pipeline by minisancy · Pull Request #2257 · redis/jedis · GitHub">fix eval &amp; evalsha in pipeline by minisancy · Pull Request #2257 · redis/jedis · GitHub</a></p> 
+<p><a href="https://github.com/nethibernate/blog/issues/7" title="Redis eval命令踩得那些坑 · Issue #7 · nethibernate/blog · GitHub">Redis eval命令踩得那些坑 · Issue #7 · nethibernate/blog · GitHub</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/7feb2cf68d02822298f6e832c9b451f6/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">光敏晶体管(ALS-PT19-315C/L177/TR8) 光照度和电压,电流关系分析.</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/2ce0b55695e34f8249256cc99fb49508/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">用户自定义控件依赖属性Command的绑定</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

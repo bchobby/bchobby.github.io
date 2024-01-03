@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>BARF: Bundle-Adjusting Neural Radiance Fields论文阅读 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="BARF: Bundle-Adjusting Neural Radiance Fields论文阅读" />
+<meta property="og:description" content="摘要 神经辐射场 (NeRF)可以合成真实世界场景的全新视角的照片，其性能优异，因此在计算机视觉领域引起较大的兴趣。NeRF的一个限制条件是需要准确相机位姿。本文提出了集束调整神经辐射场 (BARF) ，可以用不完美的（甚至不知道）相机位姿进行训练，同时学习三维表示和配准相机帧。本文建立了与经典图像对齐的理论联系，并指出由粗到精配准同样适用于NeRF。并且发现简单地使用位置编码对合成物体（指的应该是不同于原始数据，由算法生成的数据）的校准有负面影响。在人造数据和真实数据上的实验表明，BARF可以有效地神经场景表征并解决相机位姿未对准问题。这使得在未知相机位姿的情况下视角合成和视频序列定位成为可能，为视觉定位系统和在三维重建领域的潜在应用打开了大门。
+1. 引用 重建物体和配准相机属于先有鸡先有蛋的问题，重建需要精确相机位姿，相机配准需要精确重建信息。sfm或slam的常用方法是通过局部配准，然后在结构和摄像机上进行全局几何捆绑调整(Bundle Adjustment)来解决这个问题。但以来局部配准，而且容易陷入次优解，而且输出的点云不利于下游任务。
+NeRF等重建方法对相机位姿要求严苛，最简单的想法是通过back-propagation对相机位姿也同时优化，但是在实践中发现这对初始化很敏感，而且容易收敛到次优解，降低重建质量。注意，positional encoding益于重建，但同时导致次优解。
+图1：训练NeRF要求所有图片都有精确的相机位姿。我们提出了BARF，对配准和重建进行联合优化，从而实现从不完善的（或未知）相机位姿学习三维场景表征。 本文处理从不完善的相机位姿训练NeRF表征问题，也就是把重建三维场景和对准相机位姿联合起来（图1）。我们从经典图像对准方法中获得灵感并建议了理论连接，证明了由粗到精配准对NeRF也是极其重要的。我们特别指出，输入三维点的位置编码扮演重要角色，它使系统高频函数的拟合成为可能，位置编码更易受次优对准结果的影响。为了这个目地，我们提出了集束调整NeRF (BARF)，使用简单有效的策略在基于坐标和场景表征上由粗到精地对准。可以认为BARF是一类光度BA，只是目替换成了人造视角。但是，与传统BA不同，BARF可以从零开始学习场景表征（也就是说可以随机初始化网络权重），解除局部匹配子过程的依赖并允许更为通用的应用。
+主要贡献
+建立了经典图像对齐到联合配准和用神经辐射场重建的理论联系；表明positional encoding对配准的影响，提出coarse-to-fine配准策略；BARF可以从不完美相机位姿中重建场景三维表示，使得新视角合成和视频序列定位能从位未知视角中获得。 2. 相关工作 2.1. Structure from motion (SfM) and SLAM 给定一组图片，SfM和SLAM可以恢复三维结构和传感器位姿。其方法可以分为直接法和特征点法。目前特征点法已经取得了巨大的成功，但在无纹理和重复纹理区域其效果并不好。所以一些人正在使用神经网络来直接从数据中学习特征。直接法并不依赖于特征，它的每个像素光度语差有贡献。这使得在特征较为稀疏的情况下更为鲁棒，而且了更容易集成进深度学习框架。BARF就是一种直接法。但BARF并没有使用显示的几何信息（如点云）来表征三维场景，而是用神经网络把场景编码为坐标表征。
+2.2. 视角合成 给定一组已知位姿的图片，视角合成技术可以模拟出一个全新视角的图片，该技术与三维重建技术有紧密有联系。
+2.3. Neural Radiance Fields (NeRF) 由于简单和优异和性能，目前NeRF获得广泛的关注，而且它也被扩展到了许多其它方向。最近还有人使用大量数据预训练多层感知机，使其能够从单张图片推理辐射场。但是这些方法都有一个明显的缺点：它们需要图片的位姿是已知的。BARF恰恰可以规避这一需求，BARF使用了由粗到精的集束调整技术，可以用不完善的相机位姿甚至位姿的视频序列来恢复辐射场。
+3. 方法 我们从二维情况开始，以经典的图片对准为便展开本文。然后讨论相同的概念对三维情况如何适用，它们如何提示我们提出BARF。
+3.1. 平面图片对齐(2D) 2D图像对齐可以归纳成一个问题就是学习一个变换使得photometric error最小
+W就是warp function从2维映射到2维，由p维向量作为权重参数化，由于是个非线性问题，可以用梯度下降法，其中
+如果用随机梯度下降法A就是一个标量学习率
+而J可以表示为
+其中是warp雅可比矩阵限制对预定义warp的像素位移。
+基于梯度方法的配准核心是图像梯度建模了一个局部的逐像素的表面和空间位移之间的线性关系，经常由有限差分来估计。显然的是如果每像素的预测之间有关系（即信号是光滑的），那么的估计会更有效。
+因此，通过在配准的早期阶段模糊图像，有效地扩大吸引区域和smoothening the alignment landscape，实践了从粗到细的策略。
+图片作为神经网络 另一种方式是在解决p的时候用神经网络学一个图像的表示，神经网络参数是
+或者对每个图分别学一个p，回顾一下，p是warp function的P维向量参数
+神经网络使得梯度不再是数值估计而是网络参数对位置的偏导，不再依赖启发式的对图像的模糊，这使得能泛化到三维情况。
+3.2. 神经辐射场(3D) 为了保持一致性， 三维情况下x表示三维坐标，W表示nerf中的网络。NeRF实际上是用MLP 把三维坐标映射到四维输出，记为
+是网络参数。实际上还有d，这里简化处理。
+设一个像素点的坐标是u，那么齐次坐标是，根据多视图几何理论，在深度的坐标就是，那么渲染公式可以写为
+由于是N个采样点，最终得到的是一个三通道颜色，可以直接改写为
+一个相机的参数，而相机坐标系下的x也可以通过W映射变到世界坐标系下，那么颜色可以写成关于像素坐标u和相机位姿p的函数
+这个网络参数就是学习的神经辐射场的三维表示
+如果有M张图，那么目标就是优化NeRF学习三维表示，并且优化相机位姿" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/b6756637afc26c4a1bcbe8efae3f8270/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-18T18:28:07+08:00" />
+<meta property="article:modified_time" content="2023-03-18T18:28:07+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">BARF: Bundle-Adjusting Neural Radiance Fields论文阅读</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>摘要</h2> 
+<p>神经辐射场 (NeRF)可以合成真实世界场景的全新视角的照片，其性能优异，因此在计算机视觉领域引起较大的兴趣。NeRF的一个限制条件是需要准确相机位姿。本文提出了集束调整神经辐射场 (BARF) ，可以用不完美的（甚至不知道）相机位姿进行训练，同时学习三维表示和配准相机帧。本文建立了与经典图像对齐的理论联系，并指出由粗到精配准同样适用于NeRF。并且发现简单地使用位置编码对合成物体（指的应该是不同于原始数据，由算法生成的数据）的校准有负面影响。在人造数据和真实数据上的实验表明，BARF可以有效地神经场景表征并解决相机位姿未对准问题。这使得在未知相机位姿的情况下视角合成和视频序列定位成为可能，为视觉定位系统和在三维重建领域的潜在应用打开了大门。</p> 
+<h2>1. 引用</h2> 
+<p>重建物体和配准相机属于先有鸡先有蛋的问题，重建需要精确相机位姿，相机配准需要精确重建信息。sfm或slam的常用方法是通过局部配准，然后在结构和摄像机上进行全局几何捆绑调整(Bundle Adjustment)来解决这个问题。但以来局部配准，而且容易陷入次优解，而且输出的点云不利于下游任务。<br> NeRF等重建方法对相机位姿要求严苛，最简单的想法是通过back-propagation对相机位姿也同时优化，但是在实践中发现这对初始化很敏感，而且容易收敛到次优解，降低重建质量。注意，positional encoding益于重建，但同时导致次优解。</p> 
+<figure class="image"> 
+ <img alt="" height="425" src="https://images2.imgbox.com/2c/38/HGNFETJb_o.png" width="485"> 
+ <figcaption>
+   图1：训练NeRF要求所有图片都有精确的相机位姿。我们提出了BARF，对配准和重建进行联合优化，从而实现从不完善的（或未知）相机位姿学习三维场景表征。 
+ </figcaption> 
+</figure> 
+<p>本文处理从不完善的相机位姿训练NeRF表征问题，也就是把重建三维场景和对准相机位姿联合起来（图1）。我们从经典图像对准方法中获得灵感并建议了理论连接，证明了由粗到精配准对NeRF也是极其重要的。我们特别指出，输入三维点的位置编码扮演重要角色，它使系统高频函数的拟合成为可能，位置编码更易受次优对准结果的影响。为了这个目地，我们提出了集束调整NeRF (BARF)，使用简单有效的策略在基于坐标和场景表征上由粗到精地对准。可以认为BARF是一类光度BA，只是目替换成了人造视角。但是，与传统BA不同，BARF可以从零开始学习场景表征（也就是说可以随机初始化网络权重），解除局部匹配子过程的依赖并允许更为通用的应用。</p> 
+<p>主要贡献</p> 
+<ul><li>建立了经典图像对齐到联合配准和用神经辐射场重建的理论联系；</li><li>表明positional encoding对配准的影响，提出coarse-to-fine配准策略；</li><li>BARF可以从不完美相机位姿中重建场景三维表示，使得新视角合成和视频序列定位能从位未知视角中获得。</li></ul> 
+<h2>2. 相关工作</h2> 
+<h3>2.1. Structure from motion (SfM) and SLAM</h3> 
+<p>给定一组图片，SfM和SLAM可以恢复三维结构和传感器位姿。其方法可以分为直接法和特征点法。目前特征点法已经取得了巨大的成功，但在无纹理和重复纹理区域其效果并不好。所以一些人正在使用神经网络来直接从数据中学习特征。直接法并不依赖于特征，它的每个像素光度语差有贡献。这使得在特征较为稀疏的情况下更为鲁棒，而且了更容易集成进深度学习框架。BARF就是一种直接法。但BARF并没有使用显示的几何信息（如点云）来表征三维场景，而是用神经网络把场景编码为坐标表征。</p> 
+<h3>2.2. 视角合成</h3> 
+<p>给定一组已知位姿的图片，视角合成技术可以模拟出一个全新视角的图片，该技术与三维重建技术有紧密有联系。</p> 
+<h3>2.3. Neural Radiance Fields (NeRF)</h3> 
+<p>由于简单和优异和性能，目前NeRF获得广泛的关注，而且它也被扩展到了许多其它方向。最近还有人使用大量数据预训练多层感知机，使其能够从单张图片推理辐射场。但是这些方法都有一个明显的缺点：它们需要图片的位姿是已知的。BARF恰恰可以规避这一需求，BARF使用了由粗到精的集束调整技术，可以用不完善的相机位姿甚至位姿的视频序列来恢复辐射场。</p> 
+<h2>3. 方法</h2> 
+<p>我们从二维情况开始，以经典的图片对准为便展开本文。然后讨论相同的概念对三维情况如何适用，它们如何提示我们提出BARF。</p> 
+<h3>3.1. 平面图片对齐(2D)</h3> 
+<p>2D图像对齐可以归纳成一个问题就是学习一个变换使得photometric error最小</p> 
+<p><img alt="" height="54" src="https://images2.imgbox.com/95/71/jVp6MnsR_o.png" width="374"></p> 
+<p>W就是warp function从2维映射到2维，由p维向量作为权重参数化，由于是个非线性问题，可以用梯度下降法，其中</p> 
+<p><img alt="" height="48" src="https://images2.imgbox.com/71/75/7cMMXyax_o.png" width="433"></p> 
+<p>如果用随机梯度下降法A就是一个标量学习率<br><br> 而J可以表示为</p> 
+<p><img alt="" height="64" src="https://images2.imgbox.com/75/54/CAD5nJFb_o.png" width="424"></p> 
+<p>其中<img alt="\frac{\partial W(x; \textbf{p})}{\partial \textbf{p}} \in R^{2 \times P}" class="mathcode" src="https://images2.imgbox.com/37/84/tHLjEbri_o.png">是warp雅可比矩阵限制对预定义warp的像素位移。<br><br> 基于梯度方法的配准核心是图像梯度<img alt="\frac{\partial \mathcal{I}(\textbf{x})}{ \partial \textbf{x}} \in R^{3 \times 2}" class="mathcode" src="https://images2.imgbox.com/30/84/ZkNK7kCD_o.png">建模了一个局部的逐像素的表面和空间位移之间的线性关系，经常由有限差分来估计。显然的是如果每像素的预测之间有关系（即信号是光滑的），那么<img alt="\Delta \textbf{p}" class="mathcode" src="https://images2.imgbox.com/89/f2/a7gMKQSV_o.png">的估计会更有效。</p> 
+<p><img alt="" height="482" src="https://images2.imgbox.com/a6/66/p4CTBhZ7_o.png" width="560"></p> 
+<p>因此，通过在配准的早期阶段模糊图像，有效地扩大吸引区域和smoothening the alignment landscape，实践了从粗到细的策略。</p> 
+<h4>图片作为神经网络</h4> 
+<p>另一种方式是在解决p的时候用神经网络学一个图像的表示，神经网络参数是<img alt="\Theta" class="mathcode" src="https://images2.imgbox.com/d8/d8/K8Hezd9L_o.png"></p> 
+<p><img alt="" height="108" src="https://images2.imgbox.com/fc/a5/caNEOjkK_o.png" width="529"></p> 
+<p>或者对每个图分别学一个p，回顾一下，p是warp function的P维向量参数</p> 
+<p><img alt="" height="81" src="https://images2.imgbox.com/e9/12/5Xzra1Vf_o.png" width="529"></p> 
+<p>神经网络使得梯度不再是数值估计而是网络参数对位置的偏导，不再依赖启发式的对图像的模糊，这使得能泛化到三维情况。</p> 
+<h3>3.2. 神经辐射场(3D)</h3> 
+<p>为了保持一致性， 三维情况下x表示三维坐标，W表示nerf中的网络。NeRF实际上是用MLP <img alt="f: R^3 \rightarrow R^4" class="mathcode" src="https://images2.imgbox.com/7e/ba/S0XGyAyt_o.png">把三维坐标映射到四维输出，记为</p> 
+<p><img alt="" height="43" src="https://images2.imgbox.com/e8/57/laSI33fO_o.png" width="222"></p> 
+<p><img alt="\Theta" class="mathcode" src="https://images2.imgbox.com/4c/7e/M57tDjPt_o.png">是网络参数。实际上还有d，这里简化处理。<br><br> 设一个像素点的坐标是u，那么齐次坐标是<img alt="\bar{u} = [u; 1]^T \in R^3" class="mathcode" src="https://images2.imgbox.com/31/dc/RCSIW0mH_o.png">，根据多视图几何理论，在深度<img alt="z_i" class="mathcode" src="https://images2.imgbox.com/63/c3/hsuctqnJ_o.png">的坐标就是<img alt="x_i = z_i \bar{u}" class="mathcode" src="https://images2.imgbox.com/aa/93/w6jjKGwg_o.png">，那么渲染公式可以写为</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/01/fe/y0Fr4PGG_o.png"></p> 
+<p>由于是N个采样点，最终得到的是一个三通道颜色，可以直接改写为</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/8c/4b/z7utGIF2_o.png"></p> 
+<p><br> 一个相机的参数<img alt="p \in R^6" class="mathcode" src="https://images2.imgbox.com/7c/3b/0AuuaXzV_o.png">，而相机坐标系下的x也可以通过W映射变到世界坐标系下，那么颜色可以写成关于像素坐标u和相机位姿p的函数</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/86/d2/OLgEt8if_o.png"></p> 
+<p><br> 这个网络参数<img alt="\Theta" class="mathcode" src="https://images2.imgbox.com/81/03/bJ5Q06Wy_o.png">就是学习的神经辐射场的三维表示<br><br> 如果有M张图，那么目标就是优化NeRF学习三维表示，并且优化相机位姿<img alt="\left \{ {p_i} \right \} _{i=1}^M" class="mathcode" src="https://images2.imgbox.com/ac/05/BywA7rnL_o.png"></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/ee/82/HxYmwgny_o.png"></p> 
+<p><br> 同样地可以推导出J的表达式用于更新p</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/8a/89/QPctrZ6J_o.png"></p> 
+<h3>3.3. 位置编码与配准</h3> 
+<p>位置编码就是把信号映射到高频</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/bd/b0/BmGLdFN2_o.png"></p> 
+<p><img alt="" height="53" src="https://images2.imgbox.com/9e/a2/LbMoaicN_o.png" width="493"></p> 
+<p>但是可以看到雅克比矩阵会有一个离谱的增益<img alt="2^k \pi" class="mathcode" src="https://images2.imgbox.com/a2/16/wISoeyBw_o.png">，这对预测来说是很不好的，适合重建中学习高频信号但是不适合配准中的学习，图像配准更希望平滑的信号。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/5e/35/S0TOIBBU_o.png"></p> 
+<h3>3.4. 集束调整神经辐射场</h3> 
+<p>处理上述问题的方法是加一个mask，作为一个低通滤波器，第k频率的位置编码就变成了</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/55/7d/RVozNeRJ_o.png"></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/9d/1b/Y2z3iQkw_o.png"></p> 
+<p><img alt="\alpha" class="mathcode" src="https://images2.imgbox.com/bf/25/Qzr5fXan_o.png">是一个和优化进程正相关的[0,L]之间的可控参数，那么雅克比矩阵就变成了</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/6b/21/VrgqF7Jc_o.png"></p> 
+<p><br> 所以最开始raw input中<img alt="\alpha" class="mathcode" src="https://images2.imgbox.com/6b/81/uwJsbHHZ_o.png">是0，高频信号的雅可比矩阵系数都是0，慢慢的到最后<img alt="\alpha" class="mathcode" src="https://images2.imgbox.com/b5/84/DCft6lnL_o.png">变成L，高频信号就和原始NeRF一样了。<br><br> 这使得最开始从平滑信号学习图像配准，到后边学习高保真场景表示。</p> 
+<h2>参考文献</h2> 
+<p>BARF: Bundle-Adjusting Neural Radiance Fields</p> 
+<p><a href="https://zhuanlan.zhihu.com/p/533942110" rel="nofollow" title="论文随记｜BARF : Bundle-Adjusting Neural Radiance Fields - 知乎">论文随记｜BARF : Bundle-Adjusting Neural Radiance Fields - 知乎</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b0cbd9b6b0b1bf793ca6f0bfe3b8520a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">06发布文章</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/38f237b69fc8ebb21a6c24df71694104/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">clion&#43;cubemx开发stm32整体流程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

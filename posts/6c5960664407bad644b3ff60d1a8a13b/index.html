@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>带你理清：ROS机器人导航功能实现、解析、以及参数说明 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="带你理清：ROS机器人导航功能实现、解析、以及参数说明" />
+<meta property="og:description" content="本篇博客字数较多，难免存在争议、问题，我们评论区多交流。
+！！！ 表示解释的不好，存在问题，欢迎各位小伙伴评论留言。
+目 录 机器人导航先决条件导航1. move_base1.1 move_base功能包参数1.2 全局路径规划器的参数1.3 局部路径规划器的参数1.4 代价地图的参数1.5 在RViz中查看global_costmap和local_costmap1.6 运动恢复1.7 问题&amp;解决1.8 好文章 2. AMCL3. Gmapping4. URDF仿真实现 机器人导航先决条件 在调整新机器人上的导航包时遇到的大部分问题都在本地规划器调谐参数之外的区域。机器人的里程计，定位，传感器以及有效运行导航的其他先决条件常常会出错。所以，第一件事是确保机器人本身准备好了，具有导航能力。这包括三个组件检查：距离传感器、里程计、定位。
+距离传感器
+如激光雷达、距离传感器等，传感器没有正常工作，无法提供信息，那么导航将无法顺利完成。
+可以尝试在rviz中查看传感器信息，是否可以通过话题Topic获取传感器信息，并以预期的速度获取。
+里程计
+往往机器人无法正确定位，问题根源不在Amcl算法调参，而是里程计不可靠。
+可以通过两个健全检查，验证里程计是否可靠。
+第一个测试检查角速度是否合理 ：打开rviz，将坐标系设置为“odom”，显示机器人提供的激光扫描， 设置topic的延时时间(decay time)为20s左右，然后原地旋转，然后，看看扫描出来的边线在随后的旋转中如何相互匹配。理想情况下，每次扫描将刚好落在相互的顶端，会重叠在一起，但是有些旋转漂移是预期的，所以我只是确保扫描之间误差，不会超过一度或两度以上。
+第二个测试检查线速度是否合理：机器人放置在与距离墙壁几米远地方，然后以上面相同的方式设置rviz。接着控制机器人向墙壁前进，从rviz中聚合的激光扫描看看扫描出来边线的厚度。理想情况下，墙体应该看起来像一个扫描，但我只是确保它的厚度不超过几厘米。如果显示扫描边线的分散在半米以上，但有些可能是错误的测距。
+定位
+假设里程计和距离传感器都可靠，建图结果和Amcl定位结果通常并不会太糟糕。首先，我将运行gmapping或karto，并操纵机器人来生成环境地图。然后，我将在该地图上进行Amcl定位，良好的定位效果应该是可视化激光扫描和环境地图，机器人移动过程中激光扫描保持与环境地图很好地匹配。
+导航 这项工作并不像看起来那么简单。如果对概念和推理了解不清楚，可能会随意尝试，这将浪费大量的时间。 本文旨在引导读者正确微调导航参数。当在设置一些关键参数的时候，需要知道“如何”和“为什么”。
+在ROS中，实现导航功能需要使用到的三个包是：
+（1） move_base：根据参照的消息进行路径规划，使移动机器人到达指定的位置。
+（2） amcl：根据已经有的地图进行定位。
+（3） gmapping：根据激光数据（或者深度数据模拟的激光数据）建立地图。
+1. move_base 结构框架图：
+move_base的输入topic：
+/tf：提要提供的tf包括map_frame、odom_frame、base_frame以及机器人各关节之间的完成的一棵tf树。/odom：里程计信息/scan 或 /pointcloud：传感器的输入信息，最常用的是激光雷达(sensor_msgs/LaserScan类型)，也有用点云数据(sensor_msgs/PointCloud)的/map：地图，可以由SLAM程序来提供，也可以由map_server来指定已知地图（或自定义的室内地图） 以上四个Topic是必须持续提供给导航系统的，下面这个是可随时发布的topic：
+move_base_simple/goal：目标点位置（也就是导航的目标点） move_base包内包括三种插件：base_local_planner、base_global_planner和recovery_behavior，这三种插件都得用户指定，否则系统会指定默认值。
+base_local_planner插件：
+base_local_planner/TrajectoryPlannerROS: 实现了Trajectory Rollout和DWA两种局部规划算法dwa_local_planner: 实现了DWA局部规划算法，可以看作是base_local_planner的改进版本除此之外还有：teb_local_planner、eband_local_planner、asr_ftc_local_planner、dwb_local_planner，需要用户自行安装（可以源码安装，可以sudo apt install） base_global_planner插件：
+parrot_planner: 实现了较简单的全局规划算法navfn/NavfnROS: 实现了Dijkstra和A*全局规划算法global_planner: 重新实现了Dijkstra和A*全局规划算法,可以看作navfn的改进版 recovery_behavior插件：
+clear_costmap_recovery: 实现了清除代价地图的恢复行为rotate_recovery: 实现了旋转的恢复行为move_slow_and_clear: 实现了缓慢移动的恢复行为 DWA与Trajectory Rollout的区别主要是在机器人的控制空间采样差异。Trajectory Rollout采样点来源于整个前向模拟阶段所有可用速度集合，而DWA采样点仅仅来源于一个模拟步骤中的可用速度集合。这意味着相比之下DWA是一种更加有效算法，因为其使用了更小采样空间；然而对于低加速度的机器人来说可能Trajectory Rollout更好，因为DWA不能对常加速度做前向模拟。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/6c5960664407bad644b3ff60d1a8a13b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-04-26T15:23:07+08:00" />
+<meta property="article:modified_time" content="2023-04-26T15:23:07+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">带你理清：ROS机器人导航功能实现、解析、以及参数说明</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>本篇博客字数较多，难免存在争议、问题，我们评论区多交流。<br> <mark>！！！</mark> 表示解释的不好，存在问题，欢迎各位小伙伴评论留言。</p> 
+<p></p> 
+<div class="toc"> 
+ <h4> 
+  <center>
+    目 录 
+  </center></h4> 
+ <ul><li><ul><li><a href="#_9" rel="nofollow">机器人导航先决条件</a></li><li><a href="#_26" rel="nofollow">导航</a></li><li><ul><li><ul><li><a href="#1_move_base_35" rel="nofollow">1. move_base</a></li><li><ul><li><ul><li><a href="#11_move_base_69" rel="nofollow">1.1 move_base功能包参数</a></li><li><a href="#12__115" rel="nofollow">1.2 全局路径规划器的参数</a></li><li><a href="#13__158" rel="nofollow">1.3 局部路径规划器的参数</a></li><li><a href="#14__397" rel="nofollow">1.4 代价地图的参数</a></li><li><a href="#15_RVizglobal_costmaplocal_costmap_553" rel="nofollow">1.5 在RViz中查看global_costmap和local_costmap</a></li><li><a href="#16__560" rel="nofollow">1.6 运动恢复</a></li><li><a href="#17__575" rel="nofollow">1.7 问题&amp;解决</a></li><li><a href="#18__596" rel="nofollow">1.8 好文章</a></li></ul> 
+     </li></ul> 
+     </li><li><a href="#2_AMCL_603" rel="nofollow">2. AMCL</a></li><li><a href="#3_Gmapping_667" rel="nofollow">3. Gmapping</a></li><li><a href="#4_URDF_672" rel="nofollow">4. URDF仿真实现</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="_9"></a>机器人导航先决条件</h3> 
+<p>在调整新机器人上的导航包时遇到的大部分问题都在本地规划器调谐参数之外的区域。机器人的里程计，定位，传感器以及有效运行导航的其他先决条件常常会出错。所以，<strong>第一件事是确保机器人本身准备好了，具有导航能力</strong>。这包括三个组件检查：<strong>距离传感器</strong>、<strong>里程计</strong>、<strong>定位</strong>。</p> 
+<ul><li> <p><strong>距离传感器</strong><br> 如激光雷达、距离传感器等，传感器没有正常工作，无法提供信息，那么导航将无法顺利完成。<br> 可以尝试在rviz中查看传感器信息，是否可以通过话题Topic获取传感器信息，并以预期的速度获取。</p> </li><li> <p><strong>里程计</strong><br> 往往机器人无法正确定位，问题根源不在Amcl算法调参，而是里程计不可靠。<br> 可以通过两个健全检查，验证里程计是否可靠。<br> <strong>第一个测试检查角速度是否合理</strong> ：打开rviz，将坐标系设置为“odom”，显示机器人提供的激光扫描， 设置topic的延时时间(decay time)为20s左右，然后原地旋转，然后，看看扫描出来的边线在随后的旋转中如何相互匹配。理想情况下，每次扫描将刚好落在相互的顶端，会重叠在一起，但是有些旋转漂移是预期的，所以我只是确保扫描之间误差，不会超过一度或两度以上。<br> <strong>第二个测试检查线速度是否合理</strong>：机器人放置在与距离墙壁几米远地方，然后以上面相同的方式设置rviz。接着控制机器人向墙壁前进，从rviz中聚合的激光扫描看看扫描出来边线的厚度。理想情况下，墙体应该看起来像一个扫描，但我只是确保它的厚度不超过几厘米。如果显示扫描边线的分散在半米以上，但有些可能是错误的测距。</p> </li><li> <p><strong>定位</strong><br> 假设里程计和距离传感器都可靠，建图结果和Amcl定位结果通常并不会太糟糕。首先，我将运行gmapping或karto，并操纵机器人来生成环境地图。然后，我将在该地图上进行Amcl定位，良好的定位效果应该是可视化激光扫描和环境地图，机器人移动过程中激光扫描保持与环境地图很好地匹配。</p> </li></ul> 
+<h3><a id="_26"></a>导航</h3> 
+<p>这项工作并不像看起来那么简单。如果对概念和推理了解不清楚，可能会随意尝试，这将浪费大量的时间。 本文旨在引导读者正确微调导航参数。当在设置一些关键参数的时候，需要知道“如何”和“为什么”。</p> 
+<p>在ROS中，实现导航功能需要使用到的三个包是：<br> （1） move_base：根据参照的消息进行路径规划，使移动机器人到达指定的位置。<br> （2） amcl：根据已经有的地图进行定位。<br> （3） gmapping：根据激光数据（或者深度数据模拟的激光数据）建立地图。</p> 
+<h5><a id="1_move_base_35"></a>1. move_base</h5> 
+<p>结构框架图：<br> <img src="https://images2.imgbox.com/e1/24/Nx4OTgMK_o.png" alt="在这里插入图片描述"><br> move_base的输入topic：</p> 
+<ul><li>/tf：提要提供的tf包括map_frame、odom_frame、base_frame以及机器人各关节之间的完成的一棵tf树。</li><li>/odom：里程计信息</li><li>/scan 或 /pointcloud：传感器的输入信息，最常用的是激光雷达(sensor_msgs/LaserScan类型)，也有用点云数据(sensor_msgs/PointCloud)的</li><li>/map：地图，可以由SLAM程序来提供，也可以由map_server来指定已知地图（或自定义的室内地图）</li></ul> 
+<p>以上四个Topic是必须持续提供给导航系统的，下面这个是可随时发布的topic：</p> 
+<ul><li>move_base_simple/goal：目标点位置（也就是导航的目标点）</li></ul> 
+<p><strong>move_base</strong>包内包括三种插件：<strong>base_local_planner</strong>、<strong>base_global_planner</strong>和<strong>recovery_behavior</strong>，这三种插件都得用户指定，否则系统会指定默认值。</p> 
+<p><strong>base_local_planner</strong>插件：</p> 
+<ul><li>base_local_planner/TrajectoryPlannerROS: 实现了Trajectory Rollout和DWA两种局部规划算法</li><li>dwa_local_planner: 实现了DWA局部规划算法，可以看作是base_local_planner的改进版本</li><li>除此之外还有：teb_local_planner、eband_local_planner、asr_ftc_local_planner、dwb_local_planner，需要用户自行安装（可以源码安装，可以sudo apt install）</li></ul> 
+<p><strong>base_global_planner</strong>插件：</p> 
+<ul><li>parrot_planner: 实现了较简单的全局规划算法</li><li>navfn/NavfnROS: 实现了Dijkstra和A*全局规划算法</li><li>global_planner: 重新实现了Dijkstra和A*全局规划算法,可以看作navfn的改进版</li></ul> 
+<p><strong>recovery_behavior</strong>插件：</p> 
+<ul><li>clear_costmap_recovery: 实现了清除代价地图的恢复行为</li><li>rotate_recovery: 实现了旋转的恢复行为</li><li>move_slow_and_clear: 实现了缓慢移动的恢复行为</li></ul> 
+<blockquote> 
+ <p>DWA与Trajectory Rollout的区别主要是在机器人的控制空间采样差异。Trajectory Rollout采样点来源于整个前向模拟阶段所有可用速度集合，而DWA采样点仅仅来源于一个模拟步骤中的可用速度集合。这意味着相比之下DWA是一种更加有效算法，因为其使用了更小采样空间；然而对于低加速度的机器人来说可能Trajectory Rollout更好，因为DWA不能对常加速度做前向模拟。</p> 
+</blockquote> 
+<blockquote> 
+ <p>当前上面这些插件只是官方实现的，我们也可以来实现自己的规划算法，以插件的形式包含进move_base，这样就可以来改进这些路径规划算法了。</p> 
+</blockquote> 
+<h6><a id="11_move_base_69"></a>1.1 move_base功能包参数</h6> 
+<p>move_base_params.yaml，这个文件可有可无，因为可以直接在launch文件中直接设定如base_global_planner / base_local_planner，如</p> 
+<pre><code>    &lt;param name="base_global_planner" value="global_planner/GlobalPlanner" /&gt;
+    &lt;param name="planner_frequency" value="1.0" /&gt;
+    &lt;param name="planner_patience" value="5.0" /&gt;
+
+    &lt;param name="base_local_planner" value="dwa_local_planner/DWAPlannerROS" /&gt;
+    &lt;param name="controller_frequency" value="5.0" /&gt;
+    &lt;param name="controller_patience" value="5.0" /&gt;
+</code></pre> 
+<p>下面介绍move_base_params.yaml</p> 
+<pre><code>#   move_base软件包的通用配置参数，参数意义如下：
+#   shutdown_costmaps：当move_base在不活动状态时,是否关掉costmap
+#   controller_frequency：向底盘控制移动话题cmd_vel发送命令的频率，单位Hz
+#   controller_patience：在空间清理操作执行前,控制器花多长时间等有效控制下发
+#   planner_frequency：全局规划操作的执行频率.如果设置为0.0,则全局规划器仅
+#                      在接收到新的目标点或者局部规划器报告路径堵塞时才会重新执行规划操作
+#   planner_patience：在空间清理操作执行前,留给规划器多长时间来找出一条有效规划
+#   oscillation_timeout：执行修复机制前,允许振荡的时长
+#   oscillation_distance：来回运动在多大距离以上不会被认为是振荡（DWA planner里也有一个类似的参数）
+#   base_local_planner：指定用于move_base的局部规划器插件名称
+#   base_global_planner：指定用于move_base的全局规划器插件名称
+#   recovery_behavior_enabled：是否启用机器人恢复行为
+#   recovery_behaviors：定义机器人恢复行为
+#   clearing_rotation_allowed：机器人是否在尝试清理空间时进行原地旋转
+#   max_planning_retries：在执行恢复行为前允许重新规划的次数。-1.0 的值对应于无限重试
+
+shutdown_costmaps: false
+controller_frequency: 5.0
+controller_patience: 3.0
+planner_frequency: 1.0
+planner_patience: 5.0
+oscillation_timeout: 8.0
+oscillation_distance: 0.3
+recovery_behavior_enabled: true
+base_local_planner: "dwa_local_planner/DWAPlannerROS"
+base_global_planner: "global_planner/GlobalPlanner"
+recovery_behaviors:
+clearing_rotation_allowed: true
+max_planning_retries:
+</code></pre> 
+<p><mark>move_base_params.yaml里参数不全，更多参数与解释见 <a href="http://wiki.ros.org/move_base" rel="nofollow">http://wiki.ros.org/move_base</a></mark></p> 
+<h6><a id="12__115"></a>1.2 全局路径规划器的参数</h6> 
+<p>global_planner_params.yaml，全局路径规划器也是以插件的形式被使用，这里主要对全局路径规划器GlobalPlanner插件及参数进行申明，</p> 
+<pre><code>GlobalPlanner:                            # Also see: http://wiki.ros.org/global_planner
+  old_navfn_behavior: true                # Exactly mirror behavior of navfn, use defaults for other boolean parameters, default false
+  use_quadratic: true                     # Use the quadratic approximation of the potential. Otherwise, use a simpler calculation, default true
+  use_dijkstra: false                     # Use dijkstra's algorithm. Otherwise, A*, default true
+  use_grid_path: false                    # Create a path that follows the grid boundaries. Otherwise, use a gradient descent method, default false
+  
+  allow_unknown: false                    # Allow planner to plan through unknown space, default true
+                                          # Needs to have track_unknown_space: true in the obstacle / voxel layer (in costmap_commons_param) to work
+  planner_window_x: 0.0                   # default 0.0
+  planner_window_y: 0.0                   # default 0.0
+  default_tolerance: 0.5                  # If goal in obstacle, plan to the closest point in radius default_tolerance, default 0.0
+  
+  publish_scale: 100                      # Scale by which the published potential gets multiplied, default 100
+  planner_costmap_publish_frequency: 2.0   # default 0.0
+  
+  lethal_cost: 253                        # default 253
+  neutral_cost: 66                        # default 50
+  cost_factor: 0.55                       # Factor to multiply each cost from costmap by, default 3.0
+  publish_potential: true                 # Publish Potential Costmap (this is not like the navfn pointcloud2 potential), default true
+</code></pre> 
+<ul><li>old_navfn_behavior：是否使用原来功能包navfn的规划路径方法，若在某些情况下，想让global_planner完全复制navfn的功能，那就设置为true，但是需要注意navfn是非常旧的ROS系统中使用的,现在已经都用global_planner代替navfn了，所以一般设置为false</li><li>use_quadratic：如果true，则使用二次近似函数；如果false，则使用更简单的计算方式节省硬件资源 <mark>！！！</mark></li><li>use_dijkstra：是否使用Dijkstra算法作为全局路径规划器算法，否，则用A*</li><li>use_grid_path：如果设置为true，则会规划一条沿着网格边界的路径，偏向于直线穿越网格，否则将使用梯度下降算法，路径更为光滑点</li><li>allow_unknown：是否允许路径规划器在未知空间（灰色区域）创建路径规划</li><li>planner_window_x / planner_window_y：指定可选窗口的x，y大小以限定规划器的工作空间，其有利于限定路径规划器在大型代价地图的小窗口下工作</li><li>default_tolerance：允许规划结果与目标点的误差范围，当目标点在障碍物中，则规划路径到与目标点半径为default_tolerance圆中最近的点</li><li>publish_scale：设定发布可行性点的最大值（astar/Dijkstra搜索算法扩展的栅格点）<mark>！！！</mark></li><li>planner_costmap_publish_frequency：</li><li>publish_potential：是否发布costmap的势函数</li><li>lethal_cost、neutral_cost、cost_factor，这三个参数会决定全局路径规划的性能：<br> 往往设定cost_factor=0.55，neutral_cost=66.，lethal_cost=253，这个时候的全局的路径规划效果是最好的</li><li>orientation_mode：如何设置每个点的方向（None = 0,Forward = 1,Interpolate = 2,ForwardThenInterpolate = 3,Backward = 4,Leftward = 5,Rightward = 6）（可动态重新配置）</li><li>orientation_window_size：根据orientation_mode指定的位置积分来得到使用窗口的方向。默认值1，可以动态重新配置</li></ul> 
+<blockquote> 
+ <p>这样的设定是在一篇论文中进行实验得到的。https://github.com/ros-planning/navigation/blob/indigo-devel/navfn/include/navfn/navfn.h</p> 
+</blockquote> 
+<p>如果我们想在 RVIZ 中查看势力图可以将 visualize_potential 值由 FALSE 设为 TRUE。</p> 
+<p><mark>注意：不是所有的参数都能在ROS网页上找到，可以运行<code>rosrun rqt_reconfigure rqt_reconfigure</code>来查看。</mark></p> 
+<h6><a id="13__158"></a>1.3 局部路径规划器的参数</h6> 
+<p>局部路径规划器也是以插件的形式被使用，这里分别进行局部路径规划器DWALocalPlannerROS和TebLocalPlannerROS插件及参数进行申明</p> 
+<p><strong>1.DWA：</strong><br> DWA局部规划器采用动态窗口方法，它是一个能够驱动底盘移动的控制器，该控制器连接了路径规划器和机器人，使用地图，规划器产生从起点到目标点的运动轨迹，在移动时，规划器在机器人周围产生一个用网格地图表示的函数，利用这个函数来确定发送给机器人的速度dx，dy和dtheta。ROS 维基上提供了这种算法执行过程的介绍：</p> 
+<ol><li>将机器人的控制空间离散化（dx,dy,dtheta）</li><li>对于每一个采样速度，从机器人的当前状态执行前向模拟，以预测如果在短时间段内采用采样速度将会发生什么</li><li>评估从正向模拟产生的每个轨迹使用包含诸如：障碍物接近度、目标接近度、全局路径接近度和速度等特征的度量，丢弃非法轨迹（与障碍物相撞的轨迹）</li><li>选择得分最高的轨迹，将相关联的速度发送给移动基站</li><li>清零然后重复以上过程</li></ol> 
+<p>前向模拟是DWA算法的第二步。在这一步中，DWA规划器会对机器人进行速度采样，并检查由这些速度样本表示的圆形轨迹，并最终消除不良速度（如轨迹与障碍物相交）。在机器人的一段时间间隔内，每个速度样本由仿真时间控制及仿真。<br> 评估正向模拟轨迹是通过计算目标函数进行的，最大化目标函数获得最佳速度对。目标函数的值依赖于三个组成部分：到目标点的过程、清除障碍物和前进速度。在ROS 中，目标函数的计算公式如下：<br> <img src="https://images2.imgbox.com/45/37/452v8wrz_o.png" alt="在这里插入图片描述"></p> 
+<p>参数解释与调整：<br> dwa_local_planner_params.yaml</p> 
+<pre><code>DWAPlannerROS:
+  max_vel_x: 0.44  # 0.55
+  min_vel_x: 0.32 
+  max_vel_y: 0.0
+  min_vel_y: 0.0
+  max_vel_trans: 0.6 # choose slightly less than the base's capability
+  min_vel_trans: 0.05  # this is the min trans velocity when there is negligible rotational velocity
+  trans_stopped_vel: 0.1
+
+  # Warning!
+  #   do not set min_trans_vel to 0.0 otherwise dwa will always think translational velocities
+  #   are non-negligible and small in place rotational velocities will be created.
+
+  max_vel_theta: 0.8  # choose slightly less than the base's capability
+  min_vel_theta: 0.45  # this is the min angular velocity when there is negligible translational velocity
+  theta_stopped_vel: 0.1
+  acc_lim_x: 18.0 # maximum is theoretically 2.0, but we 
+  acc_lim_theta: 18.0
+  acc_lim_y: 0.0      # diff drive robot
+
+# Goal Tolerance Parameters
+  yaw_goal_tolerance: 0.8  # 0.05
+  xy_goal_tolerance: 0.3  # 0.10
+  latch_xy_goal_tolerance: false
+
+# Forward Simulation Parameters
+  sim_time: 2.1       # 1.7
+  vx_samples: 8       # 3
+  vy_samples: 1       # diff drive robot, there is only one sample
+  vtheta_samples: 20  # 20
+
+# Trajectory Scoring Parameters
+  path_distance_bias: 35.0      # 32.0   - weighting for how much it should stick to the global path plan
+  goal_distance_bias: 26.0      # 24.0   - wighting for how much it should attempt to reach its goal
+  occdist_scale: 0.6            # 0.01   - weighting for how much the controller should avoid obstacles
+  forward_point_distance: 0.2 # 0.325  - how far along to place an additional scoring point
+  stop_time_buffer: 0.2         # 0.2    - amount of time a robot must stop in before colliding for a valid traj.
+  scaling_speed: 0.25           # 0.25   - absolute velocity at which to start scaling the robot's footprint
+  max_scaling_factor: 0.2       # 0.2    - how much to scale the robot's footprint when at speed.
+# Oscillation Prevention Parameters
+  oscillation_reset_dist: 0.05  # 0.05   - how far to travel before resetting oscillation flags
+# Differential-drive robot configuration - necessary?
+#  holonomic_robot: false
+
+</code></pre> 
+<ul><li> <p>sim_time：我们可以将模拟时间sim_time视为允许机器人以采样速度移动的时间。仿真时间越长，计算负荷越大，同时规划器产生的路径也会变长。<strong>注意：</strong> 如果将仿真时间设置为非常低的值(≤2.0) 将导致性能有限,特别是当机器人需要通过狭窄的门口或家具之间的间隙时，因为没有足够的时间来获得最佳轨迹来通过狭窄的通道。另一方面，由于使用DWA本地规划器，所有的轨迹都是简单的圆弧，如果将仿真时间设置的非常高(&gt;=5.0) ，会导致长曲线不是非常灵活。因为规划器在每个时间间隔后都会积极地重新规划，可以进行小的调整。对于高性能的计算机，4.0秒的值也是足够的。<br> <img src="https://images2.imgbox.com/14/52/NFo76kVz_o.png" alt="在这里插入图片描述"></p> </li><li> <p>sim_granularity：模拟步长，轨迹上采样点之间的距离，影响轨迹上点的密集程度。单位米<br> <img src="https://images2.imgbox.com/93/65/S0jdpJCy_o.png" alt="在这里插入图片描述"></p> </li><li> <p>vx_sample，vy_sample 确定在 x，y 方向上取多少平移速度样本，vth_sample 控制旋转速度样本的数量。样本的数量取决于你的计算能力。在大多数情况下，倾向设置 vth_sample 高于平移速度样本，因为通常旋转比直线前进更复杂。如果将机器人y向最大速度设置为零（或者说不会在y方向运动），则不需要在 y 方向上提取速度样本，vy_sample设为0即可。</p> </li><li> <p>path_distance_bias：DWA规划结果与全局路径接近程度的权重。较大的值将使本地规划器更倾向于跟踪全局路径。wiki官网说明是：The weighting for how much the controller should stay close to the path it was given.</p> </li><li> <p>goal_distance_bias：是机器人尝试到达目标点的权重。实验表明增加 goal_distance_bias 值，会使规划路径与全局路径的一致性偏低。wiki官网说明是：The weighting for how much the controller should attempt to reach its local goal, also controls speed.</p> </li><li> <p>max_trans_vel：机器人的最大平移速度</p> </li><li> <p>min_trans_vel：机器人的最小平移速度</p> </li><li> <p>max_rot_vel：机器人的最大角速度的绝对值，单位为 rad/s</p> </li><li> <p>min_rot_vel：机器人的最小角速度的绝对值，单位为 rad/s</p> </li><li> <p>max_vel_x：X轴上的最大速度</p> </li><li> <p>min_vel_x：X轴上的最小速度，如果为负值表示可以后退</p> </li><li> <p>max_vel_y：Y轴上的最大速度</p> </li><li> <p>min_vel_y：Y轴上的最小速度</p> </li><li> <p>max_vel_theta：机器人的最大旋转速度，单位是弧度/秒。不要把这个值设的太高，不然机器人会错过它的目标方向</p> </li><li> <p>min_vel_theta：机器人的最小旋转速度</p> </li><li> <p>acc_lim_x：在x方向的加速度极限</p> </li><li> <p>acc_lim_y：在y方向的加速度极限，该值只有全向移动的机器人才需配置，对于差速驱动（非完整驱动）机器人，设为0</p> </li><li> <p>acc_lim_theta：角速度的加速度的极限</p> </li><li> <p>yaw_goal_tolerance：到达目标点时偏行角允许的误差，单位弧度</p> </li><li> <p>xy_goal_tolerance：到达目标点时,在xy平面内与目标点的距离误差</p> </li><li> <p>latch_xy_goal_tolerance（bool，默认：false）：如果为true，如果机器人到达目标 xy 位置，它将简单地旋转到位，即使这样做会超出目标容差。即当机器人到达目标点后通过旋转调整姿态（方向）后，偏离了目标点，也认为完成。</p> </li><li> <p>vx_samples：x方向速度空间的采样点数</p> </li><li> <p>vy_samples：y方向速度空间采样点数</p> </li><li> <p>vtheta_samples：角速度空间时要使用的采样点数</p> </li><li> <p>vth_samples：旋转方向的速度空间采样点数</p> </li><li> <p>controller_frequency：发送给底盘控制移动指令的频率，注意，在dwa_local_planner中，这个参数如果没有设置，则会使用在move_base包中设置的同名参数的值</p> </li><li> <p>occdist_scale：定义控制器躲避障碍物的权重，这个值偏大容易导致机器人陷入困境</p> </li><li> <p>stop_time_buffer：为防止碰撞，机器人必须提前停止的时间长度</p> </li><li> <p>scaling_speed：开始缩放机器人footprint的机器人底盘的速度</p> </li><li> <p>max_scaling_factor：最大缩放参数，机器人在运动时的footprint的缩放比例</p> </li><li> <p>publish_cost_grid：是否发布规划器在规划路径时的代价网格。如果设置为true,那么就会在~/cost_cloud话题上发布sensor_msgs/PointCloud2类型消息</p> </li><li> <p>oscillation_reset_dist：机器人至少走多少米，才不会被认为陷入了震荡</p> </li><li> <p>prune_plan：机器人前进是是否清除身后1m外的轨迹</p> </li><li> <p>trans_stopped_vel：机器人被认为属于“停止”状态的平移速度，如果机器人速度低于这个值，则认为机器人已停止</p> </li><li> <p>rot_stopped_vel：机器人被认为属于“停止”状态的旋转速度，如果机器人旋转速度低于这个值，则认为机器人已停止</p> </li><li> <p>forward_point_distance：以机器人为中心，额外放置一个计分点的距离</p> </li><li> <p>holonomic_robot：如果机器人是全向移动机器人那么为true，差分的则设为false</p> </li></ul> 
+<p><strong>2.TEB：</strong></p> 
+<pre><code>TebLocalPlannerROS:
+
+ odom_topic: odom
+ map_frame: /odom
+ # Trajectory
+  
+ teb_autosize: True
+ dt_ref: 0.3 #期望的轨迹时间分辨率
+ dt_hysteresis: 0.03 #根据当前时间分辨率自动调整大小的滞后现象，通常约为。建议使用dt ref的10%。
+#min_samples (int, default: 3)  #最小样本数（始终大于2）
+ global_plan_overwrite_orientation: True #覆盖由全局规划器提供的局部子目标的方向
+#global_plan_viapoint_sep (double, default: -0.1 (disabled)) 如果为正值，则通过点（via-points ）从全局计划（路径跟踪模式）展开，该值确定参考路径的分辨率（沿着全局计划的每两个连续通过点之间的最小间隔，可以参考参数weight_viapoint来调整大小
+ allow_init_with_backwards_motion: False
+ max_global_plan_lookahead_dist: 3.0 #指定考虑优化的全局计划子集的最大长度
+#force_reinit_new_goal_dist (double, default: 1.0) 重新引导轨迹如果先前的目标是更新分离超过指定值米(跳过hot-starting)
+
+ feasibility_check_no_poses: 5 #每个采样间隔的姿态可行性分析数，default：4
+#publish_feedback (bool, default: false) 发布包含完整轨迹和动态障碍的列表的规划器反馈 
+#shrink_horizon_backup (bool, default: true)  允许规划器在自动检测到问题(e.g. infeasibility)的情况下临时缩小horizon（50％） 
+#shrink_horizon_min_duration (double, default: 10.0) 指定最低持续时间减少地平线以备不可行轨迹检测 
+
+ # Robot         
+ max_vel_x: 0.4 #max_vel_x (double, default: 0.4)   
+ max_vel_x_backwards: 0.15 #max_vel_x_backwards (double, default: 0.2)  
+ acc_lim_x: 2.0 #acc_lim_x (double, default: 0.5) 
+
+ max_vel_theta: 1.0 #max_vel_theta (double, default: 0.3)  
+ acc_lim_theta: 1.0 #acc_lim_theta (double, default: 0.5)  
+
+#仅适用于全向轮
+# max_vel_y (double, default: 0.0)  
+# acc_lim_y (double, default: 0.5)
+#最小转弯半径
+ min_turning_radius: 0.0 # min_turning_radius (double, default: 0.0)  diff-drive: 0
+
+#是否允许原地转
+ cmd_angle_instead_rotvel: True  # cmd_angle_instead_rotvel(bool,defaule:false) 是否允许原地转
+ wheelbase: 0.0 #wheelbase (double, default: 1.0)  diff-drive: 0.0
+
+
+  
+ footprint_model: # types: "point", "circular", "two_circles", "line", "polygon"
+#   type: "point"
+   radius: 0.36 # for type "circular"
+#   line_start: [-0.3, 0.0] # for type "line" 线模型起始坐标
+#   line_end: [0.3, 0.0] # for type "line"    线模型尾部坐标
+#   front_offset: 0.2 # for type "two_circles" 前圆心坐标
+#   front_radius: 0.2 # for type "two_circles" 前圆半径
+#   rear_offset: 0.2 # for type "two_circles"  后圆心坐标
+#   rear_radius: 0.2 # for type "two_circles"  后圆半径
+#   vertices: [ [0.25, -0.05], [0.18, -0.05], [0.18, -0.18], [-0.19, -0.18], [-0.25, 0], [-0.19, 0.18], [0.18, 0.18], [0.18, 0.05], [0.25, 0.05] ] # for type "polygon"多边形边界点
+
+ # GoalTolerance
+    
+ xy_goal_tolerance: 0.2  #目标位置的允许距离误差
+ yaw_goal_tolerance: 0.2 #目标位置的允许角度误差
+ free_goal_vel: False #去除目标速度的约束
+    
+ # Obstacles
+    
+ min_obstacle_dist: 0.1 # 与障碍的最小期望距离,注意，teb_local_planner本身不考虑膨胀半径
+ include_costmap_obstacles: True #应否考虑到局部costmap的障碍
+ costmap_obstacles_behind_robot_dist: 1.0 #考虑后面n米内的障碍物
+ obstacle_poses_affected: 30 #为了保持距离，每个障碍物位置都与轨道上最近的位置相连。
+#inflation_dist (double, default: 0.6)  障碍物周围缓冲区(应大于min_obstacle_dist才能生效)
+#legacy_obstacle_association (bool, default: false) 切换到旧的的策略
+#obstacle_association_force_inclusion_factor (double, default: 1.5)  n * min_obstacle_dist的半径范围内强制考虑障碍
+#obstacle_association_cutoff_factor (double, default: 5) 只有在参数legacy为false时才使用此2参数
+ costmap_converter_plugin: ""
+#定义插件名称，用于将costmap的单元格转换成点/线/多边形。若设置为空字符，则视为禁用转换，将所有点视为点障碍
+ costmap_converter_spin_thread: True  #如果为true，则costmap转换器将以不同的线程调用其回调队列, default:true
+ costmap_converter_rate: 5 #定义costmap_converter插件处理当前costmap的频率（该值不高于costmap更新率
+
+ # Optimization
+    
+ no_inner_iterations: 5 #在每个外循环迭代中调用的实际求解器迭代次数
+ no_outer_iterations: 4 #在每个外循环迭代中调用的实际求解器迭代次数
+ optimization_activate: True
+ optimization_verbose: False
+ penalty_epsilon: 0.1 #为硬约束近似的惩罚函数添加一个小的安全范围
+ weight_max_vel_x: 2  #满足最大允许平移速度的优化权重
+ weight_max_vel_theta: 0 #满足最大允许平移速度的优化权重
+ weight_acc_lim_x: 1 #满足最大允许平移加速度的优化权重。
+ weight_acc_lim_theta: 0.01 #满足最大允许角加速度的优化权重。
+ weight_kinematics_nh: 1000 #运动学的优化权重
+ weight_kinematics_forward_drive: 2 #强制机器人仅选择正向（正的平移速度）的优化权重。
+ weight_kinematics_turning_radius: 1 #采用最小转向半径的优化权重
+ weight_optimaltime: 1 #根据转换/执行时间对轨迹进行收缩的优化权重。
+ weight_obstacle: 50 #保持与障碍物的最小距离的优化权重 default: 50.0
+# weight_viapoint: 1 #跟踪全据路径的权重
+# weight_inflation (double, default: 0.1)  #膨胀半径权重
+ weight_dynamic_obstacle: 10 # not in use yet
+# weight_adapt_factor: 2 #迭代地增加某些权重
+
+ alternative_time_cost: False
+
+ # Homotopy Class Planner
+
+ enable_homotopy_class_planning: False #激活并行规划（因为一次优化多个轨迹，占用更多的CPU资源
+ enable_multithreading: True #激活多个线程，以便在不同的线程中规划每个轨迹
+ simple_exploration: False
+ max_number_classes: 2 #考虑到的不同轨迹的最大数量
+
+#selection_cost_hysteresis: 1.0 #轨迹成本
+#selection_obst_cost_scale: 1.0 #障碍物成本
+#selection_alternative_time_cost: False #如果为真，时间成本(时间差平方和)被总转移时间(时间差和)所替代。
+ 
+ roadmap_graph_no_samples: 15 #指定为创建路线图而生成的样本数
+ roadmap_graph_area_width: 5 #指定该区域的宽度
+ h_signature_prescaler: 0.5 #（0.2 &lt; value &lt;= 1）缩放用于区分同伦类的内部参数（H-signature）。
+#警告：只能减少此参数，如果在局部costmap中遇到太多障碍物的情况，请勿选择极低值，否则无法将障碍物彼此区分开线缩放用于区分同伦类的内部参数（H-signature）。
+ h_signature_threshold: 0.1  #如果实部和复部的差都低于规定的阈值，则假定两个h签名相等。
+ obstacle_keypoint_offset: 0.1 
+ obstacle_heading_threshold: 0.45 #指定障碍标头和目标标头之间的标量积的值，以便将(障碍)考虑到勘探中
+ visualize_hc_graph: False #可视化创建的图形，用于探索不同的轨迹（在rviz中检查标记消息）
+#viapoints_all_candidates (bool, default: true) 如果为真，则不同拓扑的所有轨迹都附加到这组vio -points上，否则只有共享与初始/全局计划相同拓扑的轨迹与它们连接
+</code></pre> 
+<p>TEB下次再更新</p> 
+<p><mark>注意：不是所有的参数都能在ROS网页上找到，但是你可以通过运行<code>rosrun rqt_reconfigure rqt_reconfigure</code>来查看。</mark></p> 
+<h6><a id="14__397"></a>1.4 代价地图的参数</h6> 
+<p>代价地图，简单来说就是在原始地图上进行各种加工，方便后续路径规划。<br> 在ROS中使用costmap_2d这个软件包来实现的，该软件包在原始地图上生成了两张新的地图。一个是global_costmap，另外一个是local_costmap，一个是为全局路径规划准备的，另一个是为局部路径规划准备的。无论是global_costmap还是local_costmap，都可以配置多个图层，包括下面几种：</p> 
+<ul><li>Static Map Layer：静态地图层，基本上不变的地图层，一般是指SLAM建立完成的静态地图。</li><li>Obstacle Map Layer：障碍地图层，由激光雷达等障碍扫描传感器提供实时数据来构建。</li><li>Inflation Layer：膨胀层，在以上两层地图上进行膨胀（向外扩张），以避免机器人的撞上障碍物。</li><li>或者有voxel_layer体素层，利用三维空间中的体素。</li><li>Other Layers：你还可以通过插件的形式自己实现costmap，目前已有Social Costmap Layer、Range Sensor Layer等开源插件。</li></ul> 
+<p>几个图层通过融合，得到master_layer：<br> <img src="https://images2.imgbox.com/64/16/0N8aPGbd_o.png" alt="在这里插入图片描述"><br> 下图显示了膨胀层、膨胀半径的意义<br> <img src="https://images2.imgbox.com/0f/8b/P51RSzpy_o.png" alt="在这里插入图片描述"></p> 
+<p>代价地图配置文件一般包含3个：costmap_common_params.yaml、global_costmap_params.yaml、local_costmap_params.yaml，下面依次介绍，并解释参数含义。</p> 
+<p>costmap_common_params.yaml，该文件存储代价地图需要监听的传感器话题，代价地图公有参数等，全局代价地图和局部代价地图公有的参数放置进来，如此只需要载入这个配置文件就能完成共有参数的配置，避免了在全局代价地图和局部代价地图配置文件中重复配置一些相同参数的冗余。</p> 
+<pre><code>#map_type: voxel
+#map_type: costmap
+#robot_radius: 0.25
+
+footprint: [[0.23,0.19],[0.25,0],[0.23,-0.19],[-0.23, -0.19],[-0.23,0.19]]
+
+obstacle_layer:
+  enabled:              true
+  combination_method:   1
+  track_unknown_space:  false
+  origin_z: 0.0
+  z_voxels: 20
+  z_resolution: 0.1
+  unknown_cost_value: 0
+  unknown_threshold: 8
+  mark_threshold: 0
+  publish_voxel_map: false
+
+  obstacle_range: 6.0
+  raytrace_range: 7.0
+  robot_radius: 0.25
+  inflation_radius: 0.25
+  max_obstacle_height: 0.40
+  min_obstacle_height: 0.03
+  observation_sources: scan 
+  #point_cloud_sensor
+
+  scan: {sensor_frame: base_link,  observation_persistence: 0.0, 
+  max_obstacle_height: 0.3, min_obstacle_height: 0.05, data_type: LaserScan, topic: /scan, 
+  marking: true,clearing: true}
+
+inflation_layer:
+ enabled:              true
+ cost_scaling_factor:  5.0  # exponential rate at which the obstacle cost drops off (default: 10)
+ inflation_radius:     0.25  # max. distance from an obstacle at which costs are incurred for planning paths.
+ 
+static_layer:
+ enabled: true
+</code></pre> 
+<p>配置参数分为2类：机器人形状和代价地图各layer图层。代价地图各layer图层包括：静态层static_layer（由SLAM建立得到的地图提供数据）、障碍层obstacle_layer（由激光雷达等障碍扫描传感器提供实时数据）、膨胀层inflation_layer（在以上两层地图上进行膨胀（向外扩张），以避免机器人撞上障碍物）或者有voxel_layer体素层，Other Layers（你还可以通过插件的形式自己实现costmap，目前已有Social Costmap Layer、Range Sensor Layer等开源插件）。</p> 
+<ul><li>障碍物层obstacle_layer和体素层voxel_layer：这两层负责标注代价图上的障碍，他们可以被称为障碍层。障碍物层跟踪二维的，体素层跟踪三维的。障碍物是根据机器人传感器的数据进行检测或清除，其中需要订阅代价图的主题。 在 ROS 执行中，体素层从障碍物层继承，并且都是通过使用激光雷达发布的 Point Cloud 或 PointCloud2 类型的消息来获取障碍物信息。此外，体素层需要深度传感器，如 Microsoft Kinect 或华硕 Xtion 3D 障碍物最终会被膨胀为二维代价图。</li><li>footprint：指机器人的轮廓，用于探知机器人是否能穿过某个障碍物（如门）。在ROS中，它由二维数组表示[x0,y0] ; [x1,y1] ; [x2,y2]（坐标的起点应该是机器人的中心，机器人的中心被认为是原点(0.0,0.0)，顺时针和逆时针都可以，不需要重复第一个坐标，单位是米）。该占位面积将用于计算内切圆和外接圆的半径，用于以适合此机器人的方式对障碍物进行膨胀。为了安全起见，通常将设置的稍大于机器人的实际轮廓。获取方式：（1）参考机器人的图纸。（2）自行绘制轮廓，然后选择一些顶点并使用标尺来确定它们的坐标。<mark>需要注意，x方向是机器人正直前进方向，给出footprint这几个点的时候要考虑到坐标系，要设置正确机器人的x轴</mark><br> <img src="https://images2.imgbox.com/f5/8a/mSGvXGzp_o.png" alt="在这里插入图片描述"></li><li><strong>obstacle_layer</strong>：配置障碍物图层<br> enabled：是否启用该层<br> combination_method：只能设置为0或1，用来更新地图上的代价值，一般设置为1<br> track_unknown_space:如果设置为false，那么地图上代价值就只分为致命碰撞和自由区域两种，如果设置为true，那么就分为致命碰撞，自由区域和未知区域三种。<br> max_obstacle_height：插入代价图中的障碍物的最大高度。该参数设置为稍高于机器人的高度。对于体素层，一般就是体素网格的高度。<br> origin_z：地图的 Z 轴原点，以米为单位<br> z_resolution：地图 Z 轴精度<br> z_voxels：每个垂直列中的体素数，网格的高度是 Z 轴分辨率*Z 轴体素数<br> unknown_cost_value：<br> unknown_threshold：被认为是“已知”的列中允许的未知单元的数量<br> mark_threshold：在被认为是“自由”的列中允许的标记单元的最大数量<br> publish_voxel_map：<br> <strong>obstacle_range</strong>：设置机器人检测障碍物的最大范围。例如obstacle_range设为6.0，只有当机器人检测到一个距离小于6m的障碍物时，才会将这个障碍物引入到代价地图中。并可以在每个传感器的基础上进行覆盖。<br> <strong>raytrace_range</strong>：用来设置机器人检测自由空间的最大范围。此参数用于机器人运动过程中，实时清除代价地图中的障碍物，例如设置为7.0，在机器人将根据传感器的信息，清除机器人前方7m远内障碍物信息，使得无障碍区域变为自由空间。以米为单位。<br> <strong>observation_sources</strong>：定义一系列传递空间信息给代价地图的传感器。如上是scan，指激光雷达。 {<!-- --><strong>sensor_frame:</strong> 参数应设置为传感器坐标帧的名称, <strong>observation_persistence:</strong> 设置传感器读数保存多长时间，单位为 seconds 。若设为0.0，则为保存最新读数信息。<strong>expected_update_rate:</strong> 读取传感器数据的频率，单位为 seconds 。若设为0.0，则为不断续地读取传感器数据。如果每0.05秒进行一次激光扫描，可以将此参数设置为0.1秒，以提供大量的缓冲区并占用一定的系统延迟, <strong>max_obstacle_height:</strong> 为传感器读数的最大有效高度，通常设置为略高于机器人的高度。将此参数设置为大于全局max_obstacle_height参数的值，则此参数无效；设置为小于全局max_obstacle_height的值将过滤掉高于该高度的该传感器的点, <strong>min_obstacle_height:</strong> 指传感器读数的最小有效高度，传感器读数的最小高度（以米为单位）被认为有效。这通常设置为地面高度，但可以根据传感器的噪声模型设置更高或更低, <strong>data_type:</strong> 参数应设置为LaserScan或PointCloud，这取决于主题使用的消息, <strong>topic:</strong> 设置为发布传感器数据的话题的名称，如/scan,<br> <strong>marking:</strong> 是否将传感器数据用于向代价地图添加障碍物信息, <strong>clearing:</strong> 是否从代价地图清除障碍信息, **obstacle_range:**将障碍物插入代价地图的最大范围, <strong>raytrace_range:</strong> 从地图中扫描出障碍物的最大范围}</li><li><strong>inflation_layer</strong>：膨胀层，用于在障碍物外标记一层危险区域，在路径规划时需要避开该危险区域<br> enabled：是否启用该层<br> cost_scaling_factor：膨胀过程中应用到代价值的比例因子，增大该比例因子会降低代价值<br> inflation_radius：膨胀半径，膨胀层会把障碍物代价膨胀直到该半径为止，一般将该值设置为机器人底盘的直径大小。</li></ul> 
+<blockquote> 
+ <p><strong>inflation_radius</strong> 和 <strong>cost_scaling_factor</strong> 是决定膨胀的主要参数。inflation_radius 控制零成本点距离障碍物有多远，膨胀层会把障碍物的代价膨胀直到该半径为止。<mark>cost_scaling_factor 越大，膨胀点越宽，代价地图的边界越平滑，使得机器人越来越靠中间，远离墙边或障障碍物</mark></p> 
+</blockquote> 
+<blockquote> 
+ <p><strong>建议costmap的曲线是具有相对较低斜率的曲线（也就是让代价图的边缘不是消失的那么突然，如下方右图），以便最佳路径尽可能远离每侧的障碍物。优点是机器人可以在障碍物中间移动。</strong><br> <img src="https://images2.imgbox.com/d0/a9/Pzcqk8BC_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<ul><li> <p><strong>static_layer</strong>：静态地图层，即SLAM中构建的地图层<br> enabled：是否启用该地图层</p> </li><li> <p>costmap resolution：地图分辨率，该参数可分别为局部代价图和代价成本图设置，该参数直接影响计算量和路径规划效果。当分辨率较低(&gt;=0.05m)时，在狭窄的通道内，障碍物区域可能会重叠，导致局部规划无法找到一条合理通过的路径。如果你有足够的计算能力，可以考虑增大这个参数获取更好精度的地图。参数上限需要看激光雷达设备的分辨率，否则会出现很多小的“未知点”，因为分辨率过大，超过设备的能力范围。<mark>！！！！！！！！！！不知道建图时候分辨率怎么改呢还</mark></p> </li></ul> 
+<p>global_costmap_params.yaml，该文件存储特定于全局代价地图的配置参数</p> 
+<pre><code>global_costmap:
+  global_frame: map
+  robot_base_frame: base_link
+  update_frequency: 1.0
+  publish_frequency: 1.0
+  static_map: true
+  
+  rolling_window: false
+  resolution: 0.05
+  
+  transform_tolerance: 1.0
+  #inflation_radius: 0.1
+  plugins:
+     - {name: static_layer,            type: "costmap_2d::StaticLayer"}
+     - {name: obstacle_layer,          type: "costmap_2d::ObstacleLayer"}
+     - {name: inflation_layer,         type: "costmap_2d::InflationLayer"}
+</code></pre> 
+<ul><li>global_frame：全局代价地图需要在哪个坐标系下运行;</li><li>robot_base_frame：在全局代价地图中机器人本体的基坐标系。通过global_frame和robot_base_frame就可以计算两个坐标系之间的变换，得知机器人在全局坐标系global_frame中的坐标了</li><li>update_frequency：全局代价地图更新频率，一般全局代价地图更新频率设置的比较小，每个周期内，根据传感器信息mark/clear地图中的网格。</li><li>publish_frequency：全局代价地图的发布频率，只用于Rviz可视化，这个参数没必要太大</li><li>static_map：配置是否使用map_server提供的地图来初始化，因为全局地图都是静态的，一般都设置为true</li><li>rolling_window：是否在机器人移动过程中需要滚动窗口，始终保持机器人在当前窗口中心位置</li><li>resolution：栅格地图的分辨率，该分辨率可以从加载的地图相对应的配置文件中获取到</li><li>inflation_radius：全局代价地图的膨胀半径</li><li>transform_tolerance：坐标系间的转换可以忍受的最大延时，当计算机计算资源有限时，可能会在终端中报错“[WARN][1339438850.439571557]:Costmap2DROS transform timeout. Current time:1339438850.4395，global_pose stamp:1339438850.3170，tolerance:0.0001”，这时可以把这个参数调大一点</li><li>plugins：在global_costmap中使用下面三个插件来融合三个不同图层，分别是static_layer、obstacle_layer和inflation_layer，合成一个master_layer来进行全局路径规划。</li></ul> 
+<p>local_costmap_params.yaml，该文件存储特定于局部代价地图的配置参数</p> 
+<pre><code>local_costmap:
+  global_frame: odom
+  robot_base_frame: base_link
+  update_frequency: 3.0
+  publish_frequency: 3.0
+  #static_map: false
+  rolling_window: true
+  width: 2.5
+  height: 2.5
+  resolution: 0.05
+  plugins: 
+  - {name: obstacle_layer, type: "costmap_2d::ObstacleLayer"} 
+  - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
+</code></pre> 
+<ul><li>global_frame：在局部代价地图中的全局坐标系，一般需要设置为odom_frame</li><li>robot_base_frame：机器人本体的基坐标系</li><li>update_frequency：局部代价地图的更新频率，每个周期内，根据传感器信息mark/clear地图中的网格。</li><li>publish_frequency：局部代价地图的发布频率，只用于Rviz可视化，这个参数没必要太大</li><li>static_map：局部代价地图一般不设置为静态地图，因为需要检测是否在机器人附近有新增的动态障碍物</li><li>rolling_window：使用滚动窗口，始终保持机器人在当前局部地图的中心位置</li><li>width：代价地图（滚动窗口）的宽度，单位米</li><li>height：代价地图（滚动窗口）的高度，单位米</li><li>resolution：代价地图（滚动窗口）的分辨率，注意，这里的分辨率可以不同于所建地图的分辨率，但一般情况下该参数的值与所建的地图一致</li><li>transform_tolerance：局部代价地图中的坐标系之间转换的最大可忍受延时</li><li>plugins：在局部代价地图中，不需要静态地图层，因为我们使用滚动窗口来不断的扫描障碍物，所以就需要融合两层地图（inflation_layer和obstacle_layer）即可，融合后的地图用于进行局部路径规划</li></ul> 
+<h6><a id="15_RVizglobal_costmaplocal_costmap_553"></a>1.5 在RViz中查看global_costmap和local_costmap</h6> 
+<p><img src="https://images2.imgbox.com/93/f0/4uWcfZVI_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/02/2f/FGYkm93x_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="16__560"></a>1.6 运动恢复</h6> 
+<p>恢复行为的类型：ROS 导航包有两种恢复行为，分别是清除代价地图恢复和旋转恢复。清除代价地图恢复是将本地代价地图还原成全局代价地图的状态。旋转恢复是通过旋转 360°来恢复。</p> 
+<p>ROS当中有两种恢复运动的方式，第一种，clear_costmap_recovery，第二种，rotate_recovery。清除costmap当中的基本恢复状态，他会旋转360度在原来的位置。<br> 你应该查看你的激光雷达的扫描的分辨率，如果你想要的得到的地图的分辨率大于激光雷达的分辨率，那么就是出现一些 UNKNOW的点</p> 
+<p>ROS 导航包有两种恢复行为，分别是清除代价地图恢复和旋转恢复。清除代价地图恢复是将本地代价地图还原成全局代价地图的状态。旋转恢复是通过旋转 360°来恢复。 解救机器人：有时由于旋转故障，旋转恢复将无法执行。在这一点上，机器人可能会放弃，因为它已经尝试了所有的恢复行为。在大多数试验中，我们观察到，当机器人放弃时，实际上有很多方法可以解救机器人。为了避免放弃，我们使用 SMAC H 来连续尝试不同的恢复行为，通过其他额外的行为，例如设置非常接近机器人的临时目标，并返回到以前访问过得姿态（即退出）。这些方法可以显著提高机器人的耐久性，并且从以前观察到的无望空间中解救出来。</p> 
+<p>为了清除代价地图恢复，你可以设置一个相对较高的模拟时间 sim_time，这意味着轨迹很长，你可能需要考虑增加 res et_distance 参数的值，这样可以消除本地代价地图上更大的区域，并且有更好的机会寻找一条路径。</p> 
+<h6><a id="17__575"></a>1.7 问题&amp;解决</h6> 
+<ol><li> <p><a href="https://www.pianshen.com/article/580880695/" rel="nofollow">The origin for the sensor at (2.00, 1.98, 0.40) is out of map bounds. So, the costmap cannot raytrace for it.</a></p> </li><li> <p><a href="https://blog.csdn.net/qq_42406643/article/details/119007076">调参建议</a></p> </li><li> <p>怎样终止正在进行的导航navigation<br> how to cancel a navigation goal or how to stop current navigation?<br> 导航时，取消当前目标点或者暂停导航是一个常见的问题<br> 用如指令即可实现导航停止，小车停止：</p> </li></ol> 
+<pre><code>rostopic pub /move_base/cancel actionlib_msgs/GoalID -- {}
+或者
+ros::Publisher　 cancle_pub_ =  nh_.advertise&lt;actionlib_msgs::GoalID&gt;("move_base/cancel",1);
+actionlib_msgs::GoalID　first_goal;
+cancle_pub_.publish(first_goal);
+</code></pre> 
+<p>问题 8.1 陷入困境 在使用 ROS 导航的时候，这个问题经常出现，无论是在仿真还是实际中，机器人都可能陷入困境然后放弃目标 8.2 不同方向的不同速度 在导航堆栈中我们观察到一些奇怪的行为。当目标点设置在相对于 TF 原点的-x 方向时，dwa 局部规划器规划不稳定（局部规划路径跳跃），而且机器人的移动速度非常慢。但是当把目标设置在+x 方向时，dwa 局部规划器就比较稳定了，并且移动速度很快。 8.3 实际和仿真 实际与仿真是有区别的。在现实情况中，障碍物有各种各样的形状。例如，在实验室中有一个垂直的柜子，防止门闭上，由于太细，机器人有时无法检测到然后撞击上去。而且实际中也会有更多复杂的人类活动。 8.4 前后矛盾 使用 ROS 导航堆栈可能会出现不一致的行为。例如进门时，在不同时间本地代价地图会一次又一次的生成，这可能会影响路径规划，特别是在分辨率较低的时候。另外，机器人没有内存，它不记得上次从门进入房间，所以每次尝试进门都需要重新开始。因此，如果没有与以前相同的进门角度，机器人可能会卡住并放弃目标。</p> 
+<h6><a id="18__596"></a>1.8 好文章</h6> 
+<blockquote> 
+ <p>https://blog.csdn.net/hiram_zhang/article/details/88374519<br> https://blog.csdn.net/gwplovekimi/article/details/110230942<br> https://zhuanlan.zhihu.com/p/143202720<br> https://blog.csdn.net/qq_15390133/article/details/106875963</p> 
+</blockquote> 
+<h5><a id="2_AMCL_603"></a>2. AMCL</h5> 
+<p>AMCL 是处理机器人定位的 ROS 包。它是自适应蒙特卡罗定位的缩写（Adaptive Monte Carlo Localization）。这种定位方法的原理如下：每个样本存储表示机器人姿态的位置和方向数据。粒子是随机抽样的，当机器人移动时，粒子根据他们的状态记忆机器人的动作，采用递归贝叶斯估计进行重采样。</p> 
+<blockquote> 
+ <p>请参考 ROS 维基 http://wiki.ros.org/amcl 了解更多信息。</p> 
+</blockquote> 
+<p>粒子滤波，是一种思想，比如要计算一个矩形里面一个不规则形状的面积，这个问题不好直接计算，但是可以拿一把豆子均匀撒到矩形中，统计落在不规则形状中豆子的占比就能算出其面积了。在机器人定位问题中，我们在地图的任意位置撒上许多粒子点，然后通过传感器观测数据按照一定的评价方法对每个粒子点进行打分，评分高的粒子点表示机器人有更大的可能在此位置；在下一轮撒点时，就在评分高的粒子点附近多撒一些点，这样通过不断的迭代，粒子点就会聚拢到一个地方。这个粒子点聚集的地方，就是机器人位置的最优估计点。如下图中，红色的粒子点慢慢聚拢到一团。<br> <img src="https://images2.imgbox.com/66/a0/GeovtTUL_o.png" alt="在这里插入图片描述"></p> 
+<p>重要性采样，在粒子滤波的迭代过程中，评分高的粒子点会被下一轮迭代时更加看重，这样不断迭代真实估计值附近的粒子点会越来越多。</p> 
+<p>机器人绑架，当机器人被突然从一个地方抱走到另一个地方，这个时候前一轮迭代得到的粒子点完全不能在新的位置上试用，这样继续迭代下去就会发生位置估计的错误。</p> 
+<p>自适应蒙特卡洛，自适应主要体现在两个方面。通过判断粒子点的平均分突变来识别机器人绑架问题，并在全局重新撒点来解决机器人绑架问题；通过判断粒子点的聚集程度来确定位置估计是否准确，在估计比较准确的时候降低需要维护的粒子点数目，这样来降低算法的计算开销。</p> 
+<p><img src="https://images2.imgbox.com/c1/84/CEjnZuaB_o.png" alt="在这里插入图片描述"></p> 
+<p>amcl.yaml，该文件定义说明了机器人定位算法Amcl的可变参数</p> 
+<pre><code>&lt;?xml version="1.0" ?&gt;
+&lt;launch&gt;
+	&lt;node pkg="amcl" type="amcl" name="amcl" output="screen"&gt;
+		&lt;!-- Publish scans from best pose at a max of 10 Hz --&gt;
+		&lt;param name="odom_model_type" value="diff"/&gt;
+		&lt;param name="odom_alpha5" value="0.1"/&gt;
+		&lt;param name="transform_tolerance" value="0.2" /&gt;
+		&lt;param name="gui_publish_rate" value="10.0"/&gt; &lt;!-- Maximum rate (Hz) at which scans and paths are published for visualization, -1.0 to disable. --&gt;
+		&lt;param name="laser_max_beams" value="60"/&gt;
+		&lt;param name="min_particles" value="500"/&gt;
+		&lt;param name="max_particles" value="800"/&gt;
+		&lt;param name="kld_err" value="0.05"/&gt;
+		&lt;param name="kld_z" value="0.99"/&gt;
+		&lt;param name="odom_alpha1" value="0.3"/&gt; &lt;!-- Specifies the expected noise in odometry's rotation estimate from the rotational component of the robot's motion. --&gt;
+		&lt;param name="odom_alpha2" value="1.2"/&gt; &lt;!-- Specifies the expected noise in odometry's rotation estimate from translational component of the robot's motion. --&gt;
+		&lt;!-- translation std dev, m --&gt;
+		&lt;param name="odom_alpha3" value="3.7"/&gt; &lt;!-- Specifies the expected noise in odometry's translation estimate from the translational component of the robot's motion. --&gt;
+		&lt;param name="odom_alpha4" value="0.3"/&gt; &lt;!-- Specifies the expected noise in odometry's translation estimate from the rotational component of the robot's motion. --&gt;
+		&lt;param name="laser_z_hit" value="0.5"/&gt;
+		&lt;param name="laser_z_short" value="0.05"/&gt;
+		&lt;param name="laser_z_max" value="0.05"/&gt;
+		&lt;param name="laser_z_rand" value="0.5"/&gt;
+		&lt;param name="laser_sigma_hit" value="0.2"/&gt;
+		&lt;param name="laser_lambda_short" value="0.1"/&gt;
+		&lt;param name="laser_model_type" value="likelihood_field"/&gt;
+		&lt;!-- &lt;param name="laser_model_type" value="beam"/&gt; --&gt;
+		&lt;param name="laser_likelihood_max_dist" value="2.0"/&gt;
+		&lt;param name="update_min_d" value="0.1"/&gt; &lt;!-- Translational movement required before performing a filter update. --&gt;
+		&lt;param name="update_min_a" value="0.1"/&gt; &lt;!-- Rotational movement required before performing a filter update. 0.1 represents 5.7 degrees  --&gt;
+		&lt;param name="odom_frame_id" value="odom"/&gt;
+		&lt;param name="resample_interval" value="1"/&gt; &lt;!-- Number of filter updates required before resampling. --&gt;
+		&lt;!-- Increase tolerance because the computer can get quite busy --&gt;
+		&lt;param name="transform_tolerance" value="1.0"/&gt; &lt;!-- Default 0.1; time with which to post-date the transform that is published, to indicate that this transform is valid into the future. --&gt;
+		&lt;param name="recovery_alpha_slow" value="0.001"/&gt; &lt;!-- Exponential decay rate for the slow average weight filter, used in deciding when to recover by adding random poses. --&gt;
+		&lt;param name="recovery_alpha_fast" value="0.1"/&gt; &lt;!-- Exponential decay rate for the fast average weight filter, used in deciding when to recover by adding random poses. --&gt;
+	&lt;/node&gt;
+&lt;/launch&gt;
+</code></pre> 
+<ul><li>min_particles和max_particles：设定算法运行所允许的粒子的最小和最大数量，如果粒子数多，就算会更加精确，当然也后悔更加消耗cpu资源。</li><li>laser_model_type：配置激光雷达类型。也可以设置beam光束雷达。</li><li>laser_likelihood_max_dist：设置地图中障碍物膨胀的最大距离。</li></ul> 
+<p>下次更新</p> 
+<h5><a id="3_Gmapping_667"></a>3. Gmapping</h5> 
+<p>下次更新</p> 
+<h5><a id="4_URDF_672"></a>4. URDF仿真实现</h5> 
+<p>举例：<br> demo.urdf</p> 
+<pre><code>&lt;?xmlversion"1.0" encoding"UTF8" ?&gt;
+&lt;robot name "joint_rpy_demo"&gt;
+&lt;link name="base footprint"&gt;
+&lt;/link&gt;
+&lt;link name="base_link"&gt;
+&lt;/link&gt;
+&lt;joint name="base joint" type="fixed"&gt;
+&lt;origin xyz="0 0 1.0" rpy="0 0 0" /&gt;
+&lt;parent link="base footprint"/&gt;
+&lt;child link="base link" /&gt;
+&lt;/joint&gt;
+&lt;/robot&gt;
+</code></pre> 
+<p>launch</p> 
+<pre><code>&lt;?xmlversion"1.0" encoding"UTF8" ?&gt;
+&lt;launch&gt;
+&lt;param name="robot_description" textfile="$(find pkg)/urdf/demo.urdf" /&gt;
+&lt;node name="robot state publisher" pkg="robot state publisher" type="robot state publisher" /&gt;
+&lt;node pkg="rviz" type="rviz" name="rviz" /&gt;
+&lt;/launch&gt;
+</code></pre> 
+<p>rviz可视化：baselink于basefootprint方1米位置，<code>&lt;origin xyz="0 0 1.0" rpy="0 0 0" /&gt; </code>。<br> <img src="https://images2.imgbox.com/cc/aa/zcwVUld5_o.png" alt="在这里插入图片描述"><br> 当修改joint关系如下：</p> 
+<pre><code>&lt;origin xyz="0 0 1.0" rpy="1.57 0 0" /&gt;
+&lt;parent link="base_footprint"/&gt;
+&lt;child link="baselink"/&gt;
+</code></pre> 
+<p><img src="https://images2.imgbox.com/7a/d2/mDeAFspb_o.png" alt="在这里插入图片描述"><br> 可以发现坐标系绕x轴旋转了90度（红色-x轴，绿色-y轴，蓝色-z轴），并且以右手握四指指向方向为正方向。在urdf中的定义rpy（roll, pitch, yaw）分别表示绕x、y、z轴旋转，取值是弧度制，以3.14为旋转180度为单位。同时三者存在执行顺序：<br> <code>&lt;origin xyz="0 0 1.0" rpy="1.57 1.57 0" /&gt;</code>表示先绕x轴90度、再绕y轴90度<br> <img src="https://images2.imgbox.com/0d/9c/5l6rZyrZ_o.png" alt="在这里插入图片描述"><br> <code>&lt;origin xyz="0 0 1.0" rpy="1.57 1.57 -1.57" /&gt;</code>表示先绕x轴90度、再绕y轴90度、最后绕z轴-90度<br> <img src="https://images2.imgbox.com/fd/a6/Q294Pcon_o.png" alt="在这里插入图片描述"><br> 此外，一定切记，所有的旋转都是按照parent的坐标系坐标轴进行操作的。</p> 
+<p>推荐课程：https://www.bilibili.com/video/BV1Ci4y1L7ZZ/?p=260<br> 推荐课件：http://www.autolabor.com.cn/book/ROSTutorials/</p> 
+<blockquote> 
+ <p>https://wenku.baidu.com/view/7d1ee9cf82c758f5f61fb7360b4c2e3f572725a0.html?<em>wkts</em>=1682482079196&amp;bdQuery=urdf%E4%B8%AD+rpy%E5%A6%82%E4%BD%95%E8%AE%BE%E7%BD%AE</p> 
+</blockquote>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/d0a76d8eddebfae93f0e250efa3668d7/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">VMware 16 安装 CentOS7 教程</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b96891166a14932a819a718c2bfb4123/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Linux 使用教程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

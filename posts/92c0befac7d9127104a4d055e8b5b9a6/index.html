@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>记一次 K8s 控制平面排障的血泪经历！ - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="记一次 K8s 控制平面排障的血泪经历！" />
+<meta property="og:description" content="集群以及环境信息的信息：
+k8s v1.18.4
+3 节点 Master 均为 8 核 16Gi, 50Gi-SSD
+差异化配置的 19 节点 Minion
+control-plane 组件 (kube-apiserver,etcd,kube-controller-manager, kube-scheduler) 以 static-pod 的模式进行部署
+3 个 kube-apiserver 前端有一个 VIP 进行流量的 LoadBalance
+腾讯云的 SSD 性能大概是 130MB/s
+故障描述 在 2021-9-10 下午“诡异”的事情开始出现：kubectl 偶尔卡住无法正常 CRUDW 标准资源 (Pod, Node 等)，此时已经意识到是部分的 kube-apiserver 无法正常工作，然后尝试分别接入 3 台 kube-apiserver 所在宿主机，发现以下不正常的情况：
+现场的信息 k8s control-plane kube-apiserver Pod 信息 $ kubectl get pods -n kube-system kube-apiserver-x.x.x.x -o yaml ... containerStatuses: - containerID: docker://xxxxx ." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/92c0befac7d9127104a4d055e8b5b9a6/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-01-27T08:20:00+08:00" />
+<meta property="article:modified_time" content="2022-01-27T08:20:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">记一次 K8s 控制平面排障的血泪经历！</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <p style="text-align:center;"><img title="引导关注" src="https://images2.imgbox.com/1a/48/64xxMV1X_o.gif" alt="22f0a0ab0709fa159bff47429de50a59.gif"><br></p> 
+ <p>集群以及环境信息的信息：</p> 
+ <ul><li><p>k8s v1.18.4</p></li><li><p>3 节点 Master 均为 8 核 16Gi, 50Gi-SSD</p></li><li><p>差异化配置的 19 节点 Minion</p></li><li><p>control-plane 组件 (kube-apiserver,etcd,kube-controller-manager, kube-scheduler) 以 static-pod 的模式进行部署</p></li><li><p>3 个 kube-apiserver 前端有一个 VIP 进行流量的 LoadBalance</p></li><li><p>腾讯云的 SSD 性能大概是 130MB/s</p></li></ul> 
+ <h3>故障描述</h3> 
+ <blockquote> 
+  <p>在 2021-9-10 下午“诡异”的事情开始出现：kubectl 偶尔卡住无法正常 CRUDW 标准资源 (Pod, Node 等)，此时已经意识到是部分的 kube-apiserver 无法正常工作，然后尝试分别接入 3 台 kube-apiserver 所在宿主机，发现以下不正常的情况：</p> 
+ </blockquote> 
+ <h3>现场的信息</h3> 
+ <h4>k8s control-plane kube-apiserver Pod 信息</h4> 
+ <pre class="has"><code class="language-go">$ kubectl get pods -n kube-system kube-apiserver-x.x.x.x -o yaml
+...
+  containerStatuses:
+  - containerID: docker://xxxxx
+    ....
+    lastState:
+      terminated:
+        containerID: docker://yyyy
+        exitCode: 137
+        finishedAt: "2021-09-10T09:29:02Z"
+        reason: OOMKilled
+        startedAt: "2020-12-09T07:02:23Z"
+    name: kube-apiserver
+    ready: true
+    restartCount: 1
+    started: true
+    state:
+      running:
+        startedAt: "2021-09-10T09:29:08Z"
+...</code></pre> 
+ <blockquote> 
+  <p>9 月 10 日， kube-apiserver 因为 OOM 被 Kill 过</p> 
+ </blockquote> 
+ <h4>周边监控</h4> 
+ <h5>IaaS 层提供监控信息 (control-plane 所在宿主的黑盒监控信息)：</h5> 
+ <img src="https://images2.imgbox.com/eb/8c/AdDq9KQq_o.png" alt="ce5876ca19a36ddcbd8839f4b5d55f98.png"> 
+ <img src="https://images2.imgbox.com/a8/90/yCAjMbqm_o.png" alt="cb3debfd10d7265eb46d0f66813d4cf7.png"> 
+ <p>有效信息 :</p> 
+ <ul><li><p>内存 ,CPU, 读取磁盘呈现正相关，并且在 9 月 10 日开始明显下降各方面指标回归正常</p></li></ul> 
+ <h5>Kube-apiserver Prometheus 的监控信息 :</h5> 
+ <img src="https://images2.imgbox.com/6f/d0/RzGTKbo5_o.png" alt="60456a5b93f84c1ee15214941bece594.png"> 
+ <p>有效信息 :</p> 
+ <ul><li><p>kube-apiserver 的 IO 出现了问题，prometheus 在中途的某段事件无法正常的刮取 kube-apiserver 的 metrics 指标</p></li><li><p>kube-apiserver 占用的内存单调递增，内部 workqueue 的 <code>ADD</code>iops 很高</p></li></ul> 
+ <h5>实时的 Debug 信息</h5> 
+ <img src="https://images2.imgbox.com/ce/76/kYgxyq4i_o.png" alt="670708d20fb33f6c89d6d971c59d9de3.png"> 
+ <img src="https://images2.imgbox.com/91/a5/1Ko8tNI8_o.png" alt="a66f8933c9fc9771a4df5af28c704623.png"> 
+ <img src="https://images2.imgbox.com/ba/d8/o61VpR8m_o.png" alt="2ef239593e9ff0af345740dad667e1d9.png"> 
+ <img src="https://images2.imgbox.com/a5/f4/EeAMJBOn_o.png" alt="639b63e4af7d80ecda370234d2ea1314.png"> 
+ <p>有效信息 :</p> 
+ <ul><li><p>两个 Master 节点的内存都几乎被占用了 80%~90% 的样子</p></li><li><p>大量的内存都被 <code>kube-apiserver</code> 进程吃掉了</p></li><li><p>有一台 Master 组件格外特殊，除了内存之外，CPU 也已经被打满，并且大量的 CPU 陷入内核态，wa 很高</p></li><li><p>机器上几乎每个进程都 " 疯 " 了，都在进行大量的读盘操作，接入的 shell 已经基本不可用</p></li><li><p>唯一内存消耗相对较低（当时占用 8Gi）的 Master 节点上，kube-apiserver 曾经被 OOM-Kill 过</p></li></ul> 
+ <h3>一些疑问以及相关的猜想</h3> 
+ <p>那么为什么 kube-apiserver 消耗大量内存？</p> 
+ <ol><li><p>存在 Client 在进行全量 List 核心资源</p></li><li><p>etcd 无法提供正常服务，引发 kube-apiserver 无法正常为其他的 control-plane 组件无法提供选主服务，kube-controller-manager, kube-scheduler 不断重启，不断 ListAndWatch 进而打垮整个机器</p></li><li><p>kube-apiserver 代码有 bug，存在内存泄漏</p></li></ol> 
+ <p>etcd 集群为何无法正常工作？</p> 
+ <ol><li><p>etcd 集群内网络抖动</p></li><li><p>磁盘性能下降，无法满足正常的 etcd 工作</p></li><li><p>etcd 所在宿主机计算资源匮乏 (CPU, RAM)，etcd 只能分配到很少的时间轮片。而代码中设置的网络描述符的 Deadline 到期</p></li></ol> 
+ <p>kube-controller-manager，kube-scheduler 这种无状态服务为什么会大量的读盘？</p> 
+ <ol><li><p>kube-controller-manager，kube-scheduler 读取本地的配置文件</p></li><li><p>操作系统内存极度紧缩的情况下，会将部分代码段很大的进程的内存页驱逐。保证被调度的进程能够运行。当被驱逐的进程再度被调度的时候会重新读入内存。这样会导致 I/O 增加</p></li></ol> 
+ <h3>一些日志</h3> 
+ <p>kube-apiserver 相关 :</p> 
+ <pre class="has"><code class="language-go">I0907 07:04:17.611412       1 trace.go:116] Trace[1140445702]: "Get" url:/apis/storage.k8s.io/v1/volumeattachments/csi-b8d912ae5f2cd6d9cfaecc515568c455afdc729fd4c721e4a6ed24ae09d9bcb6,user-agent:kube-controller-manager/v1.18.4 (linux/amd64) kubernetes/f8797eb/system:serviceaccount:kube-system:attachdetach-controller,client:10.0.0.42 (started: 2021-09-07 07:04:16.635225967 +0800 CST m=+23472113.230522917) (total time: 976.1773ms):
+Trace[1140445702]: [976.164659ms] [976.159045ms] About to write a response
+I0907 07:04:17.611478       1 trace.go:116] Trace[630463685]: "Get" url:/apis/storage.k8s.io/v1/volumeattachments/csi-30c942388d7a835b685e5d5a44a15943bfc87b228e3b9ed2fa01ed071fbc1ada,user-agent:kube-controller-manager/v1.18.4 (linux/amd64) kubernetes/f8797eb/system:serviceaccount:kube-system:attachdetach-controller,client:10.0.0.42 (started: 2021-09-07 07:04:16.627643544 +0800 CST m=+23472113.222940496) (total time: 983.823847ms):
+Trace[630463685]: [983.812225ms] [983.803546ms] About to write a response
+I0907 07:04:17.611617       1 trace.go:116] Trace[1538026391]: "Get" url:/apis/storage.k8s.io/v1/volumeattachments/csi-3360a8de64a82e17aa96f373f6dc185489bbc653824b3099c81a6fce754a3f6f,user-agent:kube-controller-manager/v1.18.4 (linux/amd64) kubernetes/f8797eb/system:serviceaccount:kube-system:attachdetach-controller,client:10.0.0.42 (started: 2021-09-07 07:04:16.565151702 +0800 CST m=+23472113.160448667) (total time: 1.046416117s):
+Trace[1538026391]: [1.046397533s] [1.046390931s] About to write a response
+
+# ....N条类似的日志....
+I0907 07:04:24.171900       1 trace.go:116] Trace[1679666311]: "Get" url:/apis/storage.k8s.io/v1/volumeattachments/csi-b5ee4d68917fbf1262cc0a8047d9c37133a4a766f53f3566c40f868edd8a0bf0,user-agent:kube-controller-manager/v1.18.4 (linux/amd64) kubernetes/f8797eb/system:serviceaccount:kube-system:attachdetach-controller,client:10.0.0.42 (started: 2021-09-07 07:04:17.116692376 +0800 CST m=+23472113.711989328) (total time: 5.467094616s):
+Trace[1679666311]: [4.69843064s] [4.698422403s] About to write a response
+Trace[1679666311]: [5.467093266s] [768.662626ms] Transformed response object
+I0907 07:04:24.142154       1 trace.go:116] Trace[2029984150]: "Get" url:/apis/storage.k8s.io/v1/volumeattachments/csi-29407a58f021e9911d3ed9b5745dddfd40e61d64e1ecc62cf71ab9e037f83107,user-agent:kube-controller-manager/v1.18.4 (linux/amd64) kubernetes/f8797eb/system:serviceaccount:kube-system:attachdetach-controller,client:10.0.0.42 (started: 2021-09-07 07:04:17.102181932 +0800 CST m=+23472113.697478883) (total time: 5.50528966s):
+Trace[2029984150]: [4.704869664s] [4.704865103s] About to write a response
+Trace[2029984150]: [5.505288975s] [800.419311ms] Transformed response object
+E0907 07:04:37.327057       1 authentication.go:53] Unable to authenticate the request due to an error: [invalid bearer token, context canceled]
+I0907 07:04:40.391602       1 trace.go:116] Trace[2032502471]: "Update" url:/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases/10.0.0.8,user-agent:kubelet/v1.18.4 (linux/amd64) kubernetes/f8797eb,client:10.0.0.8 (started: 2021-09-07 07:04:17.392952999 +0800 CST m=+23472113.988249966) (total time: 20.164329656s):
+Trace[2032502471]: [286.281637ms] [286.281637ms] About to convert to expected version
+Trace[2032502471]: [481.650367ms] [195.36873ms] Conversion done
+Trace[2032502471]: [674.825685ms] [193.175318ms] About to store object in database
+Trace[2032502471]: [20.164329656s] [19.489503971s] END
+I0907 07:04:41.502454       1 trace.go:116] Trace[951110924]: "Get" url:/apis/storage.k8s.io/v1/volumeattachments/csi-0938f8852ff15a3937d619216756f9bfa5b0d91c0eb95a881b3caccbf8e87fb2,user-agent:kube-controller-manager/v1.18.4 (linux/amd64) kubernetes/f8797eb/system:serviceaccount:kube-system:attachdetach-controller,client:10.0.0.42 (started: 2021-09-07 07:04:17.29109778 +0800 CST m=+23472113.886395069) (total time: 20.41128212s):
+Trace[951110924]: [12.839487235s] [12.839478549s] About to write a response
+Trace[951110924]: [20.411280569s] [7.571793334s] Transformed response object
+
+W0907 07:10:39.496915       1 clientconn.go:1208] grpc: addrConn.createTransport failed to connect to {https://etcd0:2379  &lt;nil&gt; 0 &lt;nil&gt;}. Err :connection error: desc = "transport: Error while dialing context deadline exceeded". Reconnecting...
+I0907 07:10:39.514215       1 clientconn.go:882] blockingPicker: the picked transport is not ready, loop back to repick
+E0907 07:10:39.514473       1 status.go:71] apiserver received an error that is not an metav1.Status: &amp;errors.errorString{s:"context canceled"}
+E0907 07:10:39.514538       1 status.go:71] apiserver received an error that is not an metav1.Status: &amp;errors.errorString{s:"context canceled"}
+I0907 07:10:39.514662       1 clientconn.go:882] blockingPicker: the picked transport is not ready, loop back to repick
+E0907 07:10:39.514679       1 status.go:71] apiserver received an error that is not an metav1.Status: &amp;errors.errorString{s:"context canceled"}
+E0907 07:10:39.514858       1 status.go:71] apiserver received an error that is not an metav1.Status: &amp;errors.errorString{s:"context canceled"}
+W0907 07:10:39.514925       1 clientconn.go:1208] grpc: addrConn.createTransport failed to connect to {https://etcd0:2379  &lt;nil&gt; 0 &lt;nil&gt;}. Err :connection error: desc = "transport: Error while dialing context deadline exceeded". Reconnecting...</code></pre> 
+ <blockquote> 
+  <p>可以看到对 etcd 的操作耗时越来越慢。并且最后甚至丢失了与 etcd 的连接</p> 
+ </blockquote> 
+ <p>etcd 日志【已经丢失 9 月 7 日的日志】:</p> 
+ <pre class="has"><code class="language-go">{"level":"warn","ts":"2021-09-10T17:14:50.559+0800","caller":"embed/config_logging.go:279","msg":"rejected connection","remote-addr":"10.0.0.42:49824","server-name":"","error":"read tcp 10.0.0.8:2380-&gt;10.0.0.42:49824: i/o timeout"}
+{"level":"warn","ts":"2021-09-10T17:14:58.993+0800","caller":"embed/config_logging.go:279","msg":"rejected connection","remote-addr":"10.0.0.6:54656","server-name":"","error":"EOF"}
+{"level":"warn","ts":"2021-09-10T17:15:03.961+0800","caller":"embed/config_logging.go:279","msg":"rejected connection","remote-addr":"10.0.0.6:54642","server-name":"","error":"EOF"}
+{"level":"warn","ts":"2021-09-10T17:15:32.253+0800","caller":"embed/config_logging.go:279","msg":"rejected connection","remote-addr":"10.0.0.6:54658","server-name":"","error":"EOF"}
+{"level":"warn","ts":"2021-09-10T17:15:49.299+0800","caller":"embed/config_logging.go:279","msg":"rejected connection","remote-addr":"10.0.0.42:49690","server-name":"","error":"EOF"}
+{"level":"warn","ts":"2021-09-10T17:15:55.930+0800","caller":"embed/config_logging.go:279","msg":"rejected connection","remote-addr":"10.0.0.42:49736","server-name":"","error":"EOF"}
+{"level":"warn","ts":"2021-09-10T17:16:29.446+0800","caller":"embed/config_logging.go:279","msg":"rejected connection","remote-addr":"10.0.0.6:54664","server-name":"","error":"EOF"}
+{"level":"warn","ts":"2021-09-10T17:16:24.026+0800","caller":"embed/config_logging.go:279","msg":"rejected connection","remote-addr":"10.0.0.42:49696","server-name":"","error":"EOF"}
+{"level":"warn","ts":"2021-09-10T17:16:36.625+0800","caller":"embed/config_logging.go:279","msg":"rejected connection","remote-addr":"10.0.0.42:49714","server-name":"","error":"EOF"}
+{"level":"warn","ts":"2021-09-10T17:17:54.241+0800","caller":"embed/config_logging.go:279","msg":"rejected connection","remote-addr":"10.0.0.42:49878","server-name":"","error":"read tcp 10.0.0.8:2380-&gt;10.0.0.42:49878: i/o timeout"}
+{"level":"warn","ts":"2021-09-10T17:18:31.712+0800","caller":"embed/config_logging.go:279","msg":"rejected connection","remote-addr":"10.0.0.42:49728","server-name":"","error":"EOF"}
+{"level":"warn","ts":"2021-09-10T17:18:31.785+0800","caller":"embed/config_logging.go:279","msg":"rejected connection","remote-addr":"10.0.0.42:49800","server-name":"","error":"EOF"}</code></pre> 
+ <blockquote> 
+  <p>可以看出，该节点的 etcd 与集群中的其他节点的通信也异常了。无法正常对外提供服务</p> 
+ </blockquote> 
+ <h3>深入调查</h3> 
+ <h4>查看 kube-apiserver Heap-Profile</h4> 
+ <img src="https://images2.imgbox.com/6d/3e/ULx0Zc8O_o.png" alt="a70ff193de91ac0cb27642a995a20836.png"> 
+ <p>获取到 kube-apiserver 最近的 Profile 可以发现大量的内存都被 <code>registry(*Store).DeleteCollection</code> 吃掉了。DeleteCollection 会先进行 List 操作，然后并发删除每个 Item。瞬间吃掉大量内存也在情理之中。也许我这么倒霉，这次抓的时候就正好处于 Delete 的疯狂调用期间，休息 10 分钟，等下再抓一次看看。</p> 
+ <p>怎么回事？怎么 <code>DeleteCollection</code> 还是持有这么多内存。此处其实已经开始怀疑 kube-apiserver 有 goroutine 泄漏的可能了。</p> 
+ <blockquote> 
+  <p>看来 heap 的 Profile 无法提供足够的信息进行进一步的问题确定，继续抓取 kube-apiserver goroutine 的 profile</p> 
+ </blockquote> 
+ <h4>查看 kube-apiserver goroutine-profile</h4> 
+ <p>1.8W goroutine</p> 
+ <pre class="has"><code class="language-go">goroutine 18970952966 [chan send, 429 minutes]:
+k8s.io/kubernetes/vendor/k8s.io/apiserver/pkg/registry/generic/registry.(*Store).DeleteCollection.func1(0xc00f082ba0, 0xc04e059b90, 0x9, 0x9, 0xc235e37570)
+--
+goroutine 18971918521 [chan send, 394 minutes]:
+k8s.io/kubernetes/vendor/k8s.io/apiserver/pkg/registry/generic/registry.(*Store).DeleteCollection.func1(0xc01f5a7c20, 0xc025cf8750, 0x9, 0x9, 0xc128042620)
+--
+goroutine 18975541850 [chan send, 261 minutes]:
+k8s.io/kubernetes/vendor/k8s.io/apiserver/pkg/registry/generic/registry.(*Store).DeleteCollection.func1(0xc08bb1c780, 0xc095222240, 0x9, 0x9, 0xc128667340)
+--
+goroutine 18972733441 [chan send, 363 minutes]:
+k8s.io/kubernetes/vendor/k8s.io/apiserver/pkg/registry/generic/registry.(*Store).DeleteCollection.func1(0xc015c2c9c0, 0xc0db776240, 0x9, 0x9, 0xc124b0f570)
+--
+goroutine 18973170460 [chan send, 347 minutes]:
+k8s.io/kubernetes/vendor/k8s.io/apiserver/pkg/registry/generic/registry.(*Store).DeleteCollection.func1(0xc07a804c60, 0xc04ee83200, 0x9, 0x9, 0xc23e555c00)
+--
+goroutine 18974040729 [chan send, 316 minutes]:
+k8s.io/kubernetes/vendor/k8s.io/apiserver/pkg/registry/generic/registry.(*Store).DeleteCollection.func1(0xc028d40780, 0xc243ea0cf0, 0x9, 0x9, 0xc14a6be770)
+--
+goroutine 18974695712 [chan send, 292 minutes]:
+k8s.io/kubernetes/vendor/k8s.io/apiserver/pkg/registry/generic/registry.(*Store).DeleteCollection.func1(0xc04573b5c0, 0xc04f0af290, 0x9, 0x9, 0xc1982732d0)
+--
+goroutine 18974885774 [chan send, 285 minutes]:
+k8s.io/kubernetes/vendor/k8s.io/apiserver/pkg/registry/generic/registry.(*Store).DeleteCollection.func1(0xc26065b9e0, 0xc06f025710, 0x9, 0x9, 0xc229945f80)
+--
+goroutine 18971511296 [chan send, 408 minutes]:
+k8s.io/kubernetes/vendor/k8s.io/apiserver/pkg/registry/generic/registry.(*Store).DeleteCollection.func1(0xc021e74480, 0xc0313a54d0, 0x9, 0x9, 0xc1825177a0)
+--
+goroutine 18975459144 [chan send, 263 minutes]:
+k8s.io/kubernetes/vendor/k8s.io/apiserver/pkg/registry/generic/registry.(*Store).DeleteCollection.func1(0xc26cb9d1a0, 0xc17672b440, 0x9, 0x9, 0xc156fcd810)
+--
+goroutine 18973661056 [chan send, 331 minutes]:
+k8s.io/kubernetes/vendor/k8s.io/apiserver/pkg/registry/generic/registry.(*Store).DeleteCollection.func1(0xc2ba3f1680, 0xc19df40870, 0x9, 0x9, 0xc24b888a10)
+--
+goroutine 18973633598 [chan send, 331 minutes]:
+k8s.io/kubernetes/vendor/k8s.io/apiserver/pkg/registry/generic/registry.(*Store).DeleteCollection.func1(0xc24a0ef5c0, 0xc05472a900, 0x9, 0x9, 0xc01ec14af0)
+--
+goroutine 18974804879 [chan send, 288 minutes]:
+k8s.io/kubernetes/vendor/k8s.io/apiserver/pkg/registry/generic/registry.(*Store).DeleteCollection.func1(0xc0863f9ce0, 0xc04fcee090, 0x9, 0x9, 0xc2257a1d50)
+--
+goroutine 18974203255 [chan send, 310 minutes]:
+k8s.io/kubernetes/vendor/k8s.io/apiserver/pkg/registry/generic/registry.(*Store).DeleteCollection.func1(0xc2727ed8c0, 0xc021d4ae10, 0x9, 0x9, 0xc173af3570)
+# ...还有很多，就不列举了...</code></pre> 
+ <p>果然大量密集的 goroutine 全部都 Block 在 chan send，并且时间上很密集。DeleteCollection 该接口的调用一般都是 kube-controller-manager 的 namespace_deleter。如果 kube-apiserver 的接口调用异常会进行 Backoff，然后继续请求，此处的异常是<strong>和 kube-apiserver 的通讯没问题，但是 kube-apiserver 无法正常和 etcd 交互</strong></p> 
+ <p>查看 kube-controller-manager 的日志</p> 
+ <pre class="has"><code class="language-go">E1027 15:15:01.016712       1 leaderelection.go:320] error retrieving resource lock kube-system/kube-controller-manager: etcdserver: request timed out
+I1027 15:15:01.950682       1 leaderelection.go:277] failed to renew lease kube-system/kube-controller-manager: timed out waiting for the condition
+F1027 15:15:01.950760       1 controllermanager.go:279] leaderelection lost
+I1027 15:15:01.962210       1 certificate_controller.go:131] Shutting down certificate controller "csrsigning"</code></pre> 
+ <p>虽然没有输出调用 DeleteCollection 相关的日志，但是 kube-controller-manager 进行 LeaderElection 的 ConfigMap 也无法正常的刷新了。并且报错也非常明确的指出是 kube-apiserver 请求 etcd 出现 timeout。</p> 
+ <h4>kube-apiserver DeleteCollection 实现</h4> 
+ <pre class="has"><code class="language-go">func (e *Store) DeleteCollection(ctx context.Context, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions, listOptions *metainternalversion.ListOptions) (runtime.Object, error) {
+
+    ...
+ listObj, err := e.List(ctx, listOptions)
+ if err != nil {
+  return nil, err
+ }
+ items, err := meta.ExtractList(listObj)
+ ...
+ wg := sync.WaitGroup{}
+ toProcess := make(chan int, 2*workersNumber)
+ errs := make(chan error, workersNumber+1)
+
+ go func() {
+  defer utilruntime.HandleCrash(func(panicReason interface{}) {
+   errs &lt;- fmt.Errorf("DeleteCollection distributor panicked: %v", panicReason)
+  })
+  for i := 0; i &lt; len(items); i++ {
+   toProcess &lt;- i
+  }
+  close(toProcess)
+ }()
+
+ wg.Add(workersNumber)
+ for i := 0; i &lt; workersNumber; i++ {
+  go func() {
+   // panics don't cross goroutine boundaries
+   defer utilruntime.HandleCrash(func(panicReason interface{}) {
+    errs &lt;- fmt.Errorf("DeleteCollection goroutine panicked: %v", panicReason)
+   })
+   defer wg.Done()
+
+   for index := range toProcess {
+       ...
+    if _, _, err := e.Delete(ctx, accessor.GetName(), deleteValidation, options.DeepCopy()); err != nil &amp;&amp; !apierrors.IsNotFound(err) {
+     klog.V(4).InfoS("Delete object in DeleteCollection failed", "object", klog.KObj(accessor), "err", err)
+     errs &lt;- err
+     return
+    }
+   }
+  }()
+ }
+ wg.Wait()
+ select {
+ case err := &lt;-errs:
+  return nil, err
+ default:
+  return listObj, nil
+ }
+}</code></pre> 
+ <blockquote> 
+  <p>如果 <code>e.Delete</code> 发生异常（也就是我们场景下的 etcd 异常）。worker goroutine 将会正常退出，但是任务分配 goroutine 无法正常退出，Block 在发送 toProcess chan 的代码块中。如果该 Goroutine 无法结束，那么通过 etcd 的 List 接口获取到的 <strong>items</strong> 也无法被 GC，在内存中大量堆积，导致 OOM</p> 
+ </blockquote> 
+ <h3>总结</h3> 
+ <ol><li><p>排障之前需要对正常有一个比较明确的定位，何谓“正常”？</p></li></ol> 
+ <blockquote> 
+  <p>根据之前的实践经验 : 100Node，1400Pod, 50 Configmap, 300 event.<code>kube-apiserver</code> 消耗的资源大概在 2Gi 的内存以及单核心 10% 的计算资源 .</p> 
+ </blockquote> 
+ <ol><li><p>本次排障过程中大概如下 :</p></li></ol> 
+ <ul><li><p>通过一些不正常的表现，感觉到问题的存在</p></li><li><p>大概确定引发故障的组件，通过管理工具获取该组件相关的信息</p></li><li><p>在相关的监控系统中寻找异常发生的时间，提取相关的有效信息比如 CPU，RAM，Disk 的消耗</p></li><li><p>对触发故障的原因做假设</p></li><li><p>查找相关组件的日志 , Profile 来印证假设</p></li></ul> 
+ <ol><li><p>如何防止 control-plane 链式崩溃</p></li></ol> 
+ <ul><li><p>明确设置 kube-apiserver 的 CPU 资源内存资源的消耗。防止在混部模式下因为 kube-apiserver 消耗大量内存资源的前提下影响到 etcd 的正常工作</p></li><li><p>etcd 集群独立于 control-plane 其他的组件部署</p></li></ul> 
+ <h3>修复 kube-apiserver Goroutine 泄漏的 PR</h3> 
+ <ul><li><p>https://github.com/kubernetes/kubernetes/pull/105606</p></li></ul> 
+ <p>原文链接：<strong>https://github.com/k8s-club/k8s-club/blob/main/articles/%E6%8A%93%E8%99%AB%E6%97%A5%E8%AE%B0%20-%20kube-apiserver.md</strong></p> 
+ <p><img src="https://images2.imgbox.com/2e/1f/6wJiPDxA_o.gif" alt="0d1f4ceb1e8a627236fbebc8a8e3ce34.gif"><br></p> 
+ <p><img title="" src="https://images2.imgbox.com/75/48/7un9QZCE_o.png" alt="2936bfed1ed0cf84c40262b61aecc970.png"></p> 
+ <p><strong>你可能还喜欢</strong></p> 
+ <p>点击下方图片即可阅读<br><br></p> 
+ <p><a href="" rel="nofollow"><img src="https://images2.imgbox.com/a5/42/tOF3w5dR_o.png" alt="2a9916cd1bbdfcfd8449db3955db2ddc.png"></a></p> 
+ 骚操作，K8s 集群外的 Endpoint 也能动态变化 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/57/be/wUv1UOwj_o.gif" alt="3e264e0decc85f014ea187d9249ba1e2.gif"></p> 
+ <p style="text-align:center;"><strong>云原生是一种信仰 🤘</strong></p> 
+ <p style="text-align:center;"><strong>关注公众号</strong></p> 
+ <p style="text-align:center;"><strong>后台回复◉k8s◉获取史上最方便快捷的 Kubernetes 高可用部署工具，只需一条命令，连 ssh 都不需要！</strong></p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/47/5a/MgztM316_o.gif" alt="0c46e20c0091065cb6ace2573cee84fa.gif"></p> 
+ <p style="text-align:left;"><img src="https://images2.imgbox.com/11/36/xAhVqImW_o.gif" alt="bbdd80bca908cb690b175768037dd106.gif"></p> 
+ <p>点击 "阅读原文" 获取<strong>更好的阅读体验！</strong></p> 
+ <p style="text-align:right;"><strong>发现朋友圈变“安静”了吗？</strong></p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/62/72/njC7WZYj_o.gif" alt="6b8b8a46c5afec9cb592777c6e2d272b.gif"></p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/7d8ad8bb93b3f80e31733bb9f297cb80/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">华为云Centos7搭建hadoop集群三：jdk，hadoop安装</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f55fc1b51d56702e785ad369028d3b26/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">服务器安装 Ubuntu 系统完成重启后花屏、紫屏解决办法</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

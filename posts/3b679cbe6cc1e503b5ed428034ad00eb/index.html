@@ -1,0 +1,1280 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【嵌入式学习-STM32F103-USART串口通信】 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【嵌入式学习-STM32F103-USART串口通信】" />
+<meta property="og:description" content="目录 1、串口通信协议（简介&#43;软硬件规则） 2、STM32内部的USART外设 3、USART基本结构（江科大简化） 4、串口发送代码 4-1 基本流程 4-2 整体代码 4-2-1 main.c 4-2-2 Serial.c 4-2-3 Serial.h 5、串口接收代码 5-1 查询 5-2 中断 5-3 整体代码 5-3-1 main.c 5-3-2 Serial.c 5-3-3 Serial.h 6、USART串口数据包 6-1 使用状态机接收数据包的思路 6-2 串口收发HEX数据包 6-2-1 main.c 6-2-2 Serial.c 6-2-3 Serial.h 6-3串口收发文本数据包 6-3-1 main.c 6-3-2 Serial.c 6-3-3 Serial.h 补充 1、串口通信协议（简介&#43;软硬件规则） 全双工：打电话。半双工：对讲机。单工：广播
+时钟：I2C和SPI有单独的时钟线，所以它们是同步的，接收方可以在时钟信号的指引下进行采样。串口、CAN和USB没有时钟线，需要双方约定一个采样频率，它们是异步的，并且需要加一些帧头帧尾等进行采样位置的对齐。
+电平：1、单端-&gt;引脚的高低电平都是对GND的电压差，所以单端信号通信的双方必须要共地，就是把GND接在一起。2、
+差分-&gt;它是靠两个差分引脚的电压差来传输信号的，在通讯的时候，可以不需要共地，可极大提高抗干扰特性，所以差分信号一般传输速度和距离都会非常高。
+设备：点对点-&gt;老师单独找一位学生谈话；多设备-&gt;老师在教室里面对所有同学谈话，需要有一个寻址的过程，以确定通信的对象。寻址：给不同的设备编号，对应不同的学生的名字 波特率：如果双方规定波特率为1000bps，表示1s要发送1000位，每一位的时间就是1ms。 发送方每隔1ms发送1位，接收方每隔1ms接收1位。波特率，它决定了每隔多久发送一位。
+起始位：首先，串口的空闲状态是高电平，也就是没有数据传输的时候，引脚必须要置高电平，作为空闲状态，然后需要传输的时候，必须要先发送一个起始位，这个起始位必须是低电平，来打破空闲状态的高电平，产生一个下降沿，该下降沿就告诉设备这一帧数据要开始了。如果没有起始位，数据线就一直都是高电平，没有任何波动，这样接收方怎么知道要接收数据呢。
+停止位：为下一个起始位做准备。如果没有停止位，那当我数据最后一位是0的时候，下次再发送新的一帧，就没有办法产生下降沿了。
+例子，连续发送两个0x55，1个停止位和2个停止位
+校验位：串口使用的是一种叫奇偶校验的数据验证方法。奇偶校验可以判断数据传输是否出错。如果数据出错了，可以选择丢弃或者要求重传。
+’
+串口通信总结：TX引脚输出定时翻转的高低电平，RX引脚定时读取引脚的高低电平。每个字节的数据加上起始位，停止位，可选的校验位（无，奇，偶），打包成数据帧，一次输出在TX引脚，另一端RX引脚依次接收，这样就完成了字节数据的传递。
+’
+2、STM32内部的USART外设 USART外设就是串口通信的硬件支持电路。
+常用配置：波特率9600或者115200，数据位8位，停止位1位，无校验
+USART1:APB2总线的设备
+USART2、USART3：APB1总线的设备
+’
+USART功能框图 TX和RX走线" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/3b679cbe6cc1e503b5ed428034ad00eb/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-07-30T20:00:07+08:00" />
+<meta property="article:modified_time" content="2023-07-30T20:00:07+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【嵌入式学习-STM32F103-USART串口通信】</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a>目录</h2> 
+<h3><a id="1_1"></a>1、串口通信协议（简介+软硬件规则）</h3> 
+<h3><a id="2STM32USART_2"></a>2、STM32内部的USART外设</h3> 
+<h3><a id="3USART_3"></a>3、USART基本结构（江科大简化）</h3> 
+<h3><a id="4_4"></a>4、串口发送代码</h3> 
+<h4><a id="41__5"></a>4-1 基本流程</h4> 
+<h4><a id="42__6"></a>4-2 整体代码</h4> 
+<h5><a id="421_mainc_7"></a>4-2-1 main.c</h5> 
+<h5><a id="422_Serialc_8"></a>4-2-2 Serial.c</h5> 
+<h5><a id="423_Serialh_9"></a>4-2-3 Serial.h</h5> 
+<h3><a id="5_10"></a>5、串口接收代码</h3> 
+<h4><a id="51__11"></a>5-1 查询</h4> 
+<h4><a id="52__12"></a>5-2 中断</h4> 
+<h4><a id="53__13"></a>5-3 整体代码</h4> 
+<h5><a id="531_mainc_14"></a>5-3-1 main.c</h5> 
+<h5><a id="532_Serialc_15"></a>5-3-2 Serial.c</h5> 
+<h5><a id="533_Serialh_16"></a>5-3-3 Serial.h</h5> 
+<h3><a id="6USART_17"></a>6、USART串口数据包</h3> 
+<h4><a id="61__18"></a>6-1 使用状态机接收数据包的思路</h4> 
+<h4><a id="62_HEX_19"></a>6-2 串口收发HEX数据包</h4> 
+<h5><a id="621_mainc_20"></a>6-2-1 main.c</h5> 
+<h5><a id="622_Serialc_21"></a>6-2-2 Serial.c</h5> 
+<h5><a id="623_Serialh_22"></a>6-2-3 Serial.h</h5> 
+<h4><a id="63_23"></a>6-3串口收发文本数据包</h4> 
+<h5><a id="631_mainc_24"></a>6-3-1 main.c</h5> 
+<h5><a id="632_Serialc_25"></a>6-3-2 Serial.c</h5> 
+<h5><a id="633_Serialh_26"></a>6-3-3 Serial.h</h5> 
+<h3><a id="_27"></a>补充</h3> 
+<h3><a id="1_32"></a>1、串口通信协议（简介+软硬件规则）</h3> 
+<h3><a id="httpsimgblogcsdnimgcnf51f2333440b4466b36e5e377955a398png_33"></a><img src="https://images2.imgbox.com/19/21/hPuBx2Ys_o.png" alt="在这里插入图片描述"></h3> 
+<p><mark>全双工：打电话。半双工：对讲机。单工：广播</mark></p> 
+<p>时钟：I2C和SPI有单独的时钟线，所以它们是同步的，接收方可以在时钟信号的指引下进行采样。串口、CAN和USB没有时钟线，需要双方约定一个采样频率，它们是异步的，并且需要加一些帧头帧尾等进行采样位置的对齐。</p> 
+<p>电平：1、单端-&gt;引脚的高低电平都是对GND的电压差，所以单端信号通信的双方必须要共地，就是把GND接在一起。2、</p> 
+<p>差分-&gt;它是靠两个差分引脚的电压差来传输信号的，在通讯的时候，可以不需要共地，可极大提高抗干扰特性，所以差分信号一般传输速度和距离都会非常高。</p> 
+<h3><a id="_43"></a>设备：点对点-&gt;老师单独找一位学生谈话；多设备-&gt;老师在教室里面对所有同学谈话，需要有一个寻址的过程，以确定通信的对象。寻址：给不同的设备编号，对应不同的学生的名字</h3> 
+<h3><a id="httpsimgblogcsdnimgcn1fca7b5c6f1842cda4378222846f6615png_45"></a><img src="https://images2.imgbox.com/af/92/zY1kKL8D_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="httpsimgblogcsdnimgcn09b94a5e76554decb557f144f0c243ffpng_47"></a><img src="https://images2.imgbox.com/e4/0d/gigNW7Tw_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="httpsimgblogcsdnimgcnd369177287544dcea03ec1153594ea58png_49"></a><img src="https://images2.imgbox.com/fc/dc/YZGlRyuy_o.png" alt="在这里插入图片描述"></h3> 
+<p>波特率：如果双方规定波特率为1000bps，表示1s要发送1000位，每一位的时间就是1ms。 发送方每隔1ms发送1位，接收方每隔1ms接收1位。波特率，它决定了每隔多久发送一位。</p> 
+<p>起始位：首先，串口的空闲状态是高电平，也就是没有数据传输的时候，引脚必须要置高电平，作为空闲状态，然后需要传输的时候，必须要先发送一个起始位，这个起始位必须是低电平，来打破空闲状态的高电平，产生一个<mark>下降沿</mark>，该下降沿就告诉设备这一帧数据要开始了。如果没有起始位，数据线就一直都是高电平，没有任何波动，这样接收方怎么知道要接收数据呢。</p> 
+<p>停止位：为下一个起始位做准备。如果没有停止位，那当我数据最后一位是0的时候，下次再发送新的一帧，就没有办法产生下降沿了。<br> 例子，连续发送两个0x55，1个停止位和2个停止位</p> 
+<ul><li></ul> 
+<h3><a id="httpsimgblogcsdnimgcnd149c777c6874a5ab55fb4b693a90ba9png_59"></a><img src="https://images2.imgbox.com/f1/2a/DIbwg5mC_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="%0A%0Ahttpsimgblogcsdnimgcnb27b6d2e1da94f4e9c2f9497ba6a5456png_61"></a>校验位：串口使用的是一种叫奇偶校验的数据验证方法。奇偶校验可以判断数据传输是否出错。如果数据出错了，可以选择丢弃或者要求重传。<br> ’<br> <img src="https://images2.imgbox.com/58/03/QMzdPo2S_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="TXRXTXRX%0A%0Ahttpsimgblogcsdnimgcn56625bfdd5ce4da08a29545395490e68png_65"></a>串口通信总结：TX引脚输出定时翻转的高低电平，RX引脚定时读取引脚的高低电平。每个字节的数据加上起始位，停止位，可选的校验位（无，奇，偶），打包成数据帧，一次输出在TX引脚，另一端RX引脚依次接收，这样就完成了字节数据的传递。<br> ’<br> <img src="https://images2.imgbox.com/36/5d/cxVxUMEP_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="2STM32USART_69"></a>2、STM32内部的USART外设</h3> 
+<h3><a id="USART%0A960011520081%0AUSART1APB2%0AUSART2USART3APB1%0A%0Ahttpsimgblogcsdnimgcnf31ce94fe7b047a181fbaa95376d49fdpng_70"></a>USART外设就是串口通信的硬件支持电路。<br> 常用配置：波特率9600或者115200，数据位8位，停止位1位，无校验<br> USART1:APB2总线的设备<br> USART2、USART3：APB1总线的设备<br> ’<br> <img src="https://images2.imgbox.com/4d/c6/eRG0DKOB_o.png" alt="在这里插入图片描述"></h3> 
+<h4><a id="USART_77"></a>USART功能框图</h4> 
+<h3><a id="httpsimgblogcsdnimgcn3b39b4f4619e4ea2bec1f8a4cf458e20png_78"></a><img src="https://images2.imgbox.com/95/42/TkqzY2jW_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="TXRX%0Ahttpsimgblogcsdnimgcn64e014ad60c1402eb0a405c2be0b0cf5png_80"></a>TX和RX走线<br> <img src="https://images2.imgbox.com/6c/f9/3M1phXqE_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="%0ATDR0x55%0Ahttpsimgblogcsdnimgcne26d5a0d5c2a478ab47757a754fa411apngpic_center_83"></a>发送数据寄存器和发送移位寄存器怎么工作的呢？<br> 比如在某一时刻给TDR写入0x55数据<br> <img src="https://images2.imgbox.com/d1/87/kCJXe3tb_o.png" alt="在这里插入图片描述"></h3> 
+<h4><a id="_87"></a>发送端</h4> 
+<h3><a id="01010101TDRTXETX_Empty1TDRTXE1TDRTXE1TXTDRTDRTDRTDRTDR%0A%0Ahttpsimgblogcsdnimgcndb6b66feb00d4d269d84f05ced96edd2png_88"></a>此时，硬件检测到你写入数据，它就会检查当前一位寄存器是不是有数据正在移位，如果没有，这个01010101就会立刻全部移动到发送移位寄存器，准备发送。当数据从TDR移动到移位寄存器时，会置一个标志位，叫<mark>TXE（TX Empty）</mark>，发送寄存器空。如果该标志位置1，可在TDR写入下一个数据。注意，当TXE标志位置1时，数据还没有发送出去，只要数据从TDR转移到移位寄存器，TXE就会置1，此时可写入新的数据。然后发送移位寄存器就会在发生器控制的驱动下，向右移位，然后一位一位地把数据输出到TX引脚，正好与串口协议规定的<mark>低位先行</mark>一致。当数据移位完成时，新的数据就会再次自动地从TDR转移到发送移位寄存器里来。如果当前移位寄存器移位还没有完成，TDR的数据就会进行<mark>等待</mark>，一旦移位完成，就会立刻转移过来。有了TDR和移位寄存器的双重缓存，可以保证连续发送数据的时候，数据帧之间不会有空闲。简单来说，<mark>数据一旦从TDR转移到移位寄存器，管你有没有移位完成，就会把下一个数据放在TDR等待。一旦移位寄存器移动完成，新的数据就会立刻跟上。</mark><br> ‘<br> <img src="https://images2.imgbox.com/84/53/uZtfNjsY_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="httpsimgblogcsdnimgcnf4d27a2126764346ae75c4f243d5f667png_92"></a><img src="https://images2.imgbox.com/cb/01/Qx0LEhhT_o.png" alt="在这里插入图片描述"></h3> 
+<h4><a id="_94"></a>接收端</h4> 
+<h3><a id="RXRX8%0Ahttpsimgblogcsdnimgcnac399aa0b4044e12852efc1057d88a9dpng_95"></a>数据从RX引脚通向接受移位寄存器，在接收器控制的驱动下，一位一位地读取RX电平，先放在最高位，然后向右移动，移位8次后就可以接受一个字节。<br> <img src="https://images2.imgbox.com/bb/37/ocKpmKdj_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="RDRRXNERX_Not_EmptyRXNE1%0A%0Ahttpsimgblogcsdnimgcnc6fd00f53580425a960f5861ab367fb2png_98"></a>同样，<code>因为串口协议规定是低位先行</code>，所以接受移位寄存器是从高位往低位这个方向移动，当一个字节移位完成后，这一个字节的数据就会整体地转移到接收数据寄存器RDR里，在转移的过程中会置一个标志位，叫<mark>RXNE（RX Not Empty）</mark>，接收数据寄存器非空。当我们检测到RXNE置1之后，就可以把数据读走。同时，这个标志位可以去申请中断，在收到数据时，直接进入中断函数。<br> ’<br> <img src="https://images2.imgbox.com/ab/99/VGLlGyjE_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="RDR%0A%0Ahttpsimgblogcsdnimgcn519e8600d51b42b883b9a7b465c8e1ddpngpic_center%0A%0A%0Ahttpsimgblogcsdnimgcn3597b3e0b7874f208f7099653dd2fffapng_102"></a>这里也是两个寄存器进行缓存，当数据从移位寄存器转移到RDR时，就可以直接移位接受下一帧数据。<br> ‘<br> <img src="https://images2.imgbox.com/18/79/orFLgaoA_o.png" alt="在这里插入图片描述"><br> 发送器控制：用来控制发送移位寄存器的工作<br> 接受器控制：用来控制接收移位寄存器的工作<br> <img src="https://images2.imgbox.com/ed/33/IRjpF7nJ_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="_USART%0A%0A1SPISPI%0A2%0Ahttpsimgblogcsdnimgcn749a42dc8ca34555bee7e5ac7ad021dapngpic_center_109"></a>以下模块用于产生同步时钟信号，它是配合发送移位寄存器输出的，发送寄存器每移位一次，同步时钟电平就跳变一个周期，时钟告诉对方我移出去移位数据了 。该时钟只支持输出，不支持输入，因此两个USART之间不能实现同步的串口通信。<br> <mark>时钟作用</mark><br> 1、兼容别的协议，比如串口加时钟，与SPI协议相似，因此可兼容SPI<br> 2、自适应波特率，如接收设备不确定发送设备给的是什么波特率，可通过测量时钟周期，再计算得到波特率。<br> <img src="https://images2.imgbox.com/49/4b/q08NRx5E_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="%0A%0Ahttpsimgblogcsdnimgcn44dfa79bb37e444da2cfafad1c227c66png_115"></a>以下是<mark>判断发送状态和接收状态的必要标志位</mark>。<br> ’<br> <img src="https://images2.imgbox.com/25/a7/YkOykLJn_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="APB%0A%0Ahttpsimgblogcsdnimgcn773fb70cc21740119a3800cc31e234bdpng_119"></a>波特率发生器就是分频器，APB时钟进行分频，得到发送和接收移位的时钟。<br> ’<br> <img src="https://images2.imgbox.com/e6/db/qT8nLM6Q_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="%0Ahttpsimgblogcsdnimgcnca2d4efeb2ce41dc92a4872336d4116dpng_123"></a>串口的引脚<br> <img src="https://images2.imgbox.com/80/6f/DVwJgrpi_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="3USART_126"></a>3、USART基本结构（江科大简化）</h3> 
+<h3><a id="%0AcmdUSART%0Ahttpsimgblogcsdnimgcna68bc75a15934269ae9da04d1e445d7fpng_127"></a>‘&gt;&gt;’右移，表示数据低位先行<br> 开关控制-&gt;配置完成时，用cmd开启USART外设<br> <img src="https://images2.imgbox.com/c7/03/nsYjCvsG_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="%0A%0Ahttpsimgblogcsdnimgcn1297a604638a46848e3e0abf105b2496png_131"></a>输入的采样频率和波特率一致，还要保证每次输入采样的位置，要正好处于每一位的正中间，只有在每一位的正中间采样，这样的高低电平读进来，才是最可靠的。如果采样点过于靠前或靠后，那有可能高低电平还正在翻转，电平不稳定或者稍有误差，数据就采样出错了。<br> ’<br> <img src="https://images2.imgbox.com/8a/5e/pL9Bqf8v_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="%0ANE%0A%0Ahttpsimgblogcsdnimgcn3b02a19df70a436eac54b5d102d5f71dpng_135"></a>起始位侦测和采样位置对齐的策略<br> 噪声标志位：NE<br> ’<br> <img src="https://images2.imgbox.com/78/7f/GgbyRNpS_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="httpsimgblogcsdnimgcnf632b89ce6e048ae926dfb72534d72adpng_140"></a><img src="https://images2.imgbox.com/c6/e5/Tz7ETyzl_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="%0A1616%0A%0Ahttpsimgblogcsdnimgcnec62d03ab34845a4997f1b177de0bf02png_142"></a>波特率发生器<br> 为什么要除以16，因为它内部还有一个16倍频波特率的采样时钟<br> ’<br> <img src="https://images2.imgbox.com/cc/21/uwlVxNib_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="USART19600BRR%0A%0Ahttpsimgblogcsdnimgcn0028686d7f6b430e9e0079101c9094a4png_147"></a>比如我要配置USART1为9600波特率，那如何配置BRR寄存器呢。<br> ’<br> <img src="https://images2.imgbox.com/cd/50/MiqtfbPi_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="httpsimgblogcsdnimgcndac3165433fc459bbe587bc1007fa85bpng_151"></a><img src="https://images2.imgbox.com/ac/8e/ytQwUHzI_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="httpsimgblogcsdnimgcne7a0e165fe4d45688fb56c888c970869png_153"></a><img src="https://images2.imgbox.com/47/96/zdA4tOIc_o.png" alt="在这里插入图片描述"></h3> 
+<h3><a id="4_155"></a>4、串口发送代码</h3> 
+<h4><a id="41__156"></a>4-1 基本流程</h4> 
+<p>1、第一步开启时钟，把需要用到的USART和GPIO的时钟打开<br> 2、第二步，GPIO初始化，把Tx配置成复用输出，Rx配置成输入<br> 3、第三步，配置USART，直接使用一个结构体<br> 4、如果你只需要发送的功能，就直接开启USART，初始化就结束了；如果你需要接收的功能，可能还需要配置中断，那就在开启USART之前，再加上ITConfig和NVIC的代码</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">NVIC_Configuration</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+  NVIC_InitTypeDef NVIC_InitStructure<span class="token punctuation">;</span>
+  
+  <span class="token comment">/* 嵌套向量中断控制器组选择 */</span>
+	<span class="token comment">/* 提示 NVIC_PriorityGroupConfig() 在整个工程只需要调用一次来配置优先级分组*/</span>
+  <span class="token function">NVIC_PriorityGroupConfig</span><span class="token punctuation">(</span>NVIC_PriorityGroup_2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  
+  <span class="token comment">/* 配置USART为中断源 ，默认使用串口1作为中断源*/</span>
+  NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannel <span class="token operator">=</span> DEBUG_USART_IRQ<span class="token punctuation">;</span>
+  <span class="token comment">/* 抢断优先级*/</span>
+  NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelPreemptionPriority <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+  <span class="token comment">/* 子优先级 */</span>
+  NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelSubPriority <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+  <span class="token comment">/* 使能中断 */</span>
+  NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelCmd <span class="token operator">=</span> ENABLE<span class="token punctuation">;</span>
+  <span class="token comment">/* 初始化配置NVIC */</span>
+  <span class="token function">NVIC_Init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>NVIC_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">// 串口中断优先级配置</span>
+	<span class="token function">NVIC_Configuration</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// 使能串口接收中断，接收数据寄存器非空，表示接收到数据就产生中断</span>
+	<span class="token function">USART_ITConfig</span><span class="token punctuation">(</span>DEBUG_USARTx<span class="token punctuation">,</span> USART_IT_RXNE<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>5、初始化完成后，如果要发送数据，调用一个发送函数即可；如果要接收数据，就调用接收的函数。如果要获取发送和接收的状态，就调用获取位的函数</p> 
+<h4><a id="42__190"></a>4-2 整体代码</h4> 
+<h5><a id="421_mainc_191"></a>4-2-1 main.c</h5> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span>                  <span class="token comment">// Device header</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Delay.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"OLED.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Serial.h"</span></span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">OLED_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//初始化串口</span>
+	<span class="token function">Serial_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//发送数据，调用该函数后，TX引脚就会产生一个0x41对应的波形，</span>
+	<span class="token comment">//可将该波形发送给其他支持串口的模块，也可以通过USB转串口的模块发送到电脑端</span>
+	<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span><span class="token number">0x41</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token class-name">uint8_t</span> MyArray<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">0x42</span><span class="token punctuation">,</span> <span class="token number">0x43</span><span class="token punctuation">,</span> <span class="token number">0x44</span><span class="token punctuation">,</span> <span class="token number">0x45</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+	<span class="token function">Serial_SendArray</span><span class="token punctuation">(</span>MyArray<span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//传入数组的首地址，指定传输4个字节  </span>
+	
+	<span class="token function">Serial_SendString</span><span class="token punctuation">(</span><span class="token string">"\r\nNum1="</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">Serial_SendNumber</span><span class="token punctuation">(</span><span class="token number">111</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"\r\nNum2=%d"</span><span class="token punctuation">,</span> <span class="token number">222</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token keyword">char</span> String<span class="token punctuation">[</span><span class="token number">100</span><span class="token punctuation">]</span><span class="token punctuation">;</span>  <span class="token comment">//定义字符串</span>
+	<span class="token function">sprintf</span><span class="token punctuation">(</span>String<span class="token punctuation">,</span> <span class="token string">"\r\nNum3=%d"</span><span class="token punctuation">,</span> <span class="token number">333</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">//打印字符串</span>
+	<span class="token function">Serial_SendString</span><span class="token punctuation">(</span>String<span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">//发送字符串</span>
+	
+	<span class="token function">Serial_Printf</span><span class="token punctuation">(</span><span class="token string">"\r\nNum4=%d"</span><span class="token punctuation">,</span> <span class="token number">444</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">Serial_Printf</span><span class="token punctuation">(</span><span class="token string">"\r\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="422_Serialc_231"></a>4-2-2 Serial.c</h5> 
+<p>取某一位就是–&gt;数字 / 10^x % 10<br> / 10^x 去掉右边<br> % 10 去掉左边<br> <img src="https://images2.imgbox.com/51/fd/4lJQC9K3_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/f0/c1/nJU98TN8_o.png" alt="在这里插入图片描述"><br> 重定向fputc跟printf有什么关系呢？<br> 这是因为fputc是printf函数的底层实现，printf函数在打印的时候就是不断调用fputc函数一个个打印的，我们把fputc函数重定向到串口，那printf自然久输出到串口。</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">fputc</span><span class="token punctuation">(</span><span class="token keyword">int</span> ch<span class="token punctuation">,</span> FILE <span class="token operator">*</span>f<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>ch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span> ch<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code>
+</code></pre> 
+<pre><code class="prism language-c"> <span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span>                  <span class="token comment">// Device header</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdarg.h&gt;</span></span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_Init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">RCC_APB2PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB2Periph_USART1<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">//USART1的外设时钟时APB2</span>
+	<span class="token function">RCC_APB2PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB2Periph_GPIOA<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>   <span class="token comment">//开启GPIO时钟</span>
+	<span class="token comment">//初始G化PIO</span>
+	GPIO_InitTypeDef GPIO_InitStructure<span class="token punctuation">;</span>
+	
+	<span class="token comment">/* 将PA9配置为复用推挽输出，供USART的Tx使用 */</span>
+	<span class="token comment">//TX引脚是USART外设控制的输出脚，所以要选复用推挽输出，RX引脚是USART外设数据输入脚，</span>
+	<span class="token comment">//所以要选择输入模式，一根线只能有一个输出，但可以有多个输入</span>
+	<span class="token comment">//因为串口波形空闲状态是高电平，所以不使用下拉输入</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Mode <span class="token operator">=</span> GPIO_Mode_AF_PP<span class="token punctuation">;</span>   <span class="token comment">//复用推挽输出 </span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Pin <span class="token operator">=</span> GPIO_Pin_9<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Speed <span class="token operator">=</span> GPIO_Speed_50MHz<span class="token punctuation">;</span>
+	<span class="token function">GPIO_Init</span><span class="token punctuation">(</span>GPIOA<span class="token punctuation">,</span> <span class="token operator">&amp;</span>GPIO_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">//初始化USART</span>
+	USART_InitTypeDef USART_InitStructure<span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_BaudRate <span class="token operator">=</span> <span class="token number">9600</span><span class="token punctuation">;</span>  <span class="token comment">//Init函数内部会自动算好9600对应的分频系数，然后写到BRR寄存器</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_HardwareFlowControl <span class="token operator">=</span> USART_HardwareFlowControl_None<span class="token punctuation">;</span>  <span class="token comment">//不用流控</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_Mode <span class="token operator">=</span> USART_Mode_Tx<span class="token punctuation">;</span>    <span class="token comment">//只有发送模式</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_Parity <span class="token operator">=</span> USART_Parity_No<span class="token punctuation">;</span>  <span class="token comment">//无校验</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_StopBits <span class="token operator">=</span> USART_StopBits_1<span class="token punctuation">;</span>  <span class="token comment">//1位停止位</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_WordLength <span class="token operator">=</span> USART_WordLength_8b<span class="token punctuation">;</span>  <span class="token comment">//字长8位</span>
+	<span class="token function">USART_Init</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> <span class="token operator">&amp;</span>USART_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//使能USART</span>
+	<span class="token function">USART_Cmd</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_SendByte</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> Byte<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span> 
+	<span class="token comment">//将Byte变量写入到TDR</span>
+	<span class="token function">USART_SendData</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> Byte<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//等待TXE置1，表明TDR数据已经转移到移位数据寄存器，要不然如果数据</span>
+	<span class="token comment">//还在TDR进行等待，我们再写入数据就会产生数据覆盖，所以在数据发送之后，还需要等待以下标志位</span>
+	<span class="token comment">//如果TXE标志位==RESET，就一直循环，直到SET，结束等待，标志位置1后，不需要手动清零，</span>
+	<span class="token comment">//当下一次SendData时，该标志位自动清零</span>
+	<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token function">USART_GetFlagStatus</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_FLAG_TXE<span class="token punctuation">)</span> <span class="token operator">==</span> RESET<span class="token punctuation">)</span><span class="token punctuation">;</span> 
+<span class="token punctuation">}</span>
+
+<span class="token comment">//uint8_t *Array这是一个uint8_t 的指针类型，指向待发送数组的首地址，传递数组需要使用指针</span>
+<span class="token comment">//length由于数组无法判断是否结束，所以需要再传递一个length进来</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendArray</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> <span class="token operator">*</span>Array<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> Length<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">uint16_t</span> i<span class="token punctuation">;</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> Length<span class="token punctuation">;</span> i <span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>Array<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_SendString</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>String<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">uint8_t</span> i<span class="token punctuation">;</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> String<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">!=</span> <span class="token char">'\0'</span><span class="token punctuation">;</span> i <span class="token operator">++</span><span class="token punctuation">)</span>  <span class="token comment">//数据0，对应空字符，是字符串结束标志位，如果不等于0，就是还没有结束，进行循环，如果等于0，就是结束，停止循环</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>String<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+<span class="token comment">//返回值为 x的y次方</span>
+<span class="token class-name">uint32_t</span> <span class="token function">Serial_Pow</span><span class="token punctuation">(</span><span class="token class-name">uint32_t</span> X<span class="token punctuation">,</span> <span class="token class-name">uint32_t</span> Y<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">uint32_t</span> Result <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token keyword">while</span> <span class="token punctuation">(</span>Y <span class="token operator">--</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		Result <span class="token operator">*=</span> X<span class="token punctuation">;</span>  <span class="token comment">//X的Y次方</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> Result<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token comment">//发送一个数字，最终能在电脑显示字符串形式的数字</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendNumber</span><span class="token punctuation">(</span><span class="token class-name">uint32_t</span> Number<span class="token punctuation">,</span> <span class="token class-name">uint8_t</span> Length<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">uint8_t</span> i<span class="token punctuation">;</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> Length<span class="token punctuation">;</span> i <span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>Number <span class="token operator">/</span> <span class="token function">Serial_Pow</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">,</span> Length <span class="token operator">-</span> i <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">%</span> <span class="token number">10</span> <span class="token operator">+</span> <span class="token char">'0'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">//目前循环，参数会以10进制从高位到低位依次发送，再加上偏移量</span>
+		<span class="token comment">//假设length为2，当i=0时，发送的是10位，当i=1时，发送的是个位</span>
+		<span class="token comment">//从高位到低位依次发送</span>
+		
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+<span class="token comment">//</span>
+<span class="token comment">//单个串口重定向，只能有一个串口用来打印</span>
+<span class="token comment">//printf重定向，fputc是printf的底层，将fputc函数重定向到了串口，那printf自然就输出到串口</span>
+<span class="token keyword">int</span> <span class="token function">fputc</span><span class="token punctuation">(</span><span class="token keyword">int</span> ch<span class="token punctuation">,</span> FILE <span class="token operator">*</span>f<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>ch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span> ch<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//多个串口重定向，可多个串口用来打印</span>
+<span class="token comment">//封装sprintf</span>
+<span class="token keyword">void</span> <span class="token function">Serial_Printf</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>format<span class="token punctuation">,</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">char</span> String<span class="token punctuation">[</span><span class="token number">100</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+	va_list arg<span class="token punctuation">;</span>
+	<span class="token function">va_start</span><span class="token punctuation">(</span>arg<span class="token punctuation">,</span> format<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">vsprintf</span><span class="token punctuation">(</span>String<span class="token punctuation">,</span> format<span class="token punctuation">,</span> arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">va_end</span><span class="token punctuation">(</span>arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">Serial_SendString</span><span class="token punctuation">(</span>String<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="423_Serialh_362"></a>4-2-3 Serial.h</h5> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">__SERIAL_H</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">__SERIAL_H</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_Init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendByte</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> Byte<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendArray</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> <span class="token operator">*</span>Array<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> Length<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendString</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>String<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendNumber</span><span class="token punctuation">(</span><span class="token class-name">uint32_t</span> Number<span class="token punctuation">,</span> <span class="token class-name">uint8_t</span> Length<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_Printf</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>format<span class="token punctuation">,</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+</code></pre> 
+<p>若需要输出中文，则<br> <img src="https://images2.imgbox.com/70/a1/8HFEeJ6J_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_381"></a>程序现象及注意事项</h3> 
+<p>串口助手的发送和接收都需要选择HEX模式，若不同，则OLED和电脑界面会显示不同。<br> <img src="https://images2.imgbox.com/da/27/jdDRhBNd_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/07/37/n7uMbMQD_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/cb/c6/c7GoXc4d_o.jpg" alt="在这里插入图片描述"></p> 
+<h3><a id="5_388"></a>5、串口接收代码</h3> 
+<h4><a id="51__389"></a>5-1 查询</h4> 
+<p>在主函数里不断判断RXNE标志位，如果置1，表明收到数据，再调用ReceiveData，读取DR寄存器即可</p> 
+<pre><code class="prism language-c"><span class="token comment">//查询</span>
+	<span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">USART_GetFlagStatus</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span>USART_FLAG_RXNE<span class="token punctuation">)</span> <span class="token operator">==</span> SET<span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			RxData <span class="token operator">=</span> <span class="token function">USART_ReceiveData</span><span class="token punctuation">(</span>USART1<span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">//读完DR寄存器，该标志位自动清除</span>
+			<span class="token function">OLED_ShowHexNum</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">,</span>RxData<span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="52__404"></a>5-2 中断</h4> 
+<pre><code class="prism language-c"><span class="token comment">/*===================================================*/</span>
+	<span class="token comment">/* 串口接收 可使用 查询和中断两种方法 以下是中断*/</span>
+	<span class="token comment">//开启中断，选择RXNE，表示这一个字节的数据就会整体地转移到接收数据寄存器RDR里</span>
+	<span class="token function">USART_ITConfig</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_IT_RXNE<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">//中断优先级分组</span>
+	<span class="token function">NVIC_PriorityGroupConfig</span><span class="token punctuation">(</span>NVIC_PriorityGroup_2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">//配置NVIC</span>
+	NVIC_InitTypeDef NVIC_InitStructure<span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannel <span class="token operator">=</span> USART1_IRQn<span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelCmd <span class="token operator">=</span> ENABLE<span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelPreemptionPriority <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelSubPriority <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token function">NVIC_Init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>NVIC_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">/*===================================================*/</span>
+
+<span class="token comment">/*==============中断接收和变量的封装====================*/</span>
+<span class="token class-name">uint8_t</span> <span class="token function">Serial_GetRxFlag</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>Serial_RxFlag <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		Serial_RxFlag <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token class-name">uint8_t</span> <span class="token function">Serial_GetRxData</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> Serial_RxData<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token comment">//中断函数的名字在启动文件里面（startup_stm32f10x_md.s）</span>
+<span class="token keyword">void</span> <span class="token function">USART1_IRQHandler</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//先判断标志位</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">USART_GetITStatus</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_IT_RXNE<span class="token punctuation">)</span> <span class="token operator">==</span> SET<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//将接收寄存器里的数据放到自定义变量里</span>
+		Serial_RxData <span class="token operator">=</span> <span class="token function">USART_ReceiveData</span><span class="token punctuation">(</span>USART1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//读完数据后置标志位1</span>
+		Serial_RxFlag <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+		<span class="token comment">//如果读取DR，则自动清除标志位，否则，手动清除标志位</span>
+		<span class="token function">USART_ClearITPendingBit</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_IT_RXNE<span class="token punctuation">)</span><span class="token punctuation">;</span>  
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="53__455"></a>5-3 整体代码</h4> 
+<h5><a id="531_mainc_456"></a>5-3-1 main.c</h5> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span>                  <span class="token comment">// Device header</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Delay.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"OLED.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Serial.h"</span></span>
+
+<span class="token class-name">uint8_t</span> RxData<span class="token punctuation">;</span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">OLED_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"RxData:"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">Serial_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">Serial_GetRxFlag</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			RxData <span class="token operator">=</span> <span class="token function">Serial_GetRxData</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token comment">//把接收到的数据回传（到电脑）功能</span>
+			<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>RxData<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">OLED_ShowHexNum</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">8</span><span class="token punctuation">,</span> RxData<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+	
+<span class="token comment">//	//查询</span>
+<span class="token comment">//	while(1)</span>
+<span class="token comment">//	{<!-- --></span>
+<span class="token comment">//		if(USART_GetFlagStatus(USART1,USART_FLAG_RXNE) == SET)</span>
+<span class="token comment">//		{<!-- --></span>
+<span class="token comment">//			RxData = USART_ReceiveData(USART1);  //读完DR寄存器，该标志位自动清除</span>
+<span class="token comment">//			OLED_ShowHexNum(1,1,RxData,2);</span>
+<span class="token comment">//		}</span>
+<span class="token comment">//	}</span>
+	
+<span class="token punctuation">}</span>
+
+
+
+</code></pre> 
+<h5><a id="532_Serialc_500"></a>5-3-2 Serial.c</h5> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span>                  <span class="token comment">// Device header</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdarg.h&gt;</span></span>
+
+<span class="token class-name">uint8_t</span> Serial_RxData<span class="token punctuation">;</span>
+<span class="token class-name">uint8_t</span> Serial_RxFlag<span class="token punctuation">;</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_Init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">RCC_APB2PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB2Periph_USART1<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">RCC_APB2PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB2Periph_GPIOA<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	GPIO_InitTypeDef GPIO_InitStructure<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Mode <span class="token operator">=</span> GPIO_Mode_AF_PP<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Pin <span class="token operator">=</span> GPIO_Pin_9<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Speed <span class="token operator">=</span> GPIO_Speed_50MHz<span class="token punctuation">;</span>
+	<span class="token function">GPIO_Init</span><span class="token punctuation">(</span>GPIOA<span class="token punctuation">,</span> <span class="token operator">&amp;</span>GPIO_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Mode <span class="token operator">=</span> GPIO_Mode_IPU<span class="token punctuation">;</span>  <span class="token comment">//引脚模式为上拉输入</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Pin <span class="token operator">=</span> GPIO_Pin_10<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Speed <span class="token operator">=</span> GPIO_Speed_50MHz<span class="token punctuation">;</span>
+	<span class="token function">GPIO_Init</span><span class="token punctuation">(</span>GPIOA<span class="token punctuation">,</span> <span class="token operator">&amp;</span>GPIO_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	USART_InitTypeDef USART_InitStructure<span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_BaudRate <span class="token operator">=</span> <span class="token number">9600</span><span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_HardwareFlowControl <span class="token operator">=</span> USART_HardwareFlowControl_None<span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_Mode <span class="token operator">=</span> USART_Mode_Tx <span class="token operator">|</span> USART_Mode_Rx<span class="token punctuation">;</span>  <span class="token comment">//或，同时开启发送和接收部分</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_Parity <span class="token operator">=</span> USART_Parity_No<span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_StopBits <span class="token operator">=</span> USART_StopBits_1<span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_WordLength <span class="token operator">=</span> USART_WordLength_8b<span class="token punctuation">;</span>
+	<span class="token function">USART_Init</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> <span class="token operator">&amp;</span>USART_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">/*===================================================*/</span>
+	<span class="token comment">/* 串口接收 可使用 查询和中断两种方法 以下是中断*/</span>
+	<span class="token comment">//开启中断，选择RXNE，表示这一个字节的数据就会整体地转移到接收数据寄存器RDR里</span>
+	<span class="token function">USART_ITConfig</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_IT_RXNE<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">//中断优先级分组</span>
+	<span class="token function">NVIC_PriorityGroupConfig</span><span class="token punctuation">(</span>NVIC_PriorityGroup_2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">//配置NVIC</span>
+	NVIC_InitTypeDef NVIC_InitStructure<span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannel <span class="token operator">=</span> USART1_IRQn<span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelCmd <span class="token operator">=</span> ENABLE<span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelPreemptionPriority <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelSubPriority <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token function">NVIC_Init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>NVIC_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">/*===================================================*/</span>
+	<span class="token function">USART_Cmd</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_SendByte</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> Byte<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">USART_SendData</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> Byte<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token function">USART_GetFlagStatus</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_FLAG_TXE<span class="token punctuation">)</span> <span class="token operator">==</span> RESET<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_SendArray</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> <span class="token operator">*</span>Array<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> Length<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">uint16_t</span> i<span class="token punctuation">;</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> Length<span class="token punctuation">;</span> i <span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>Array<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_SendString</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>String<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">uint8_t</span> i<span class="token punctuation">;</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> String<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">!=</span> <span class="token char">'\0'</span><span class="token punctuation">;</span> i <span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>String<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token class-name">uint32_t</span> <span class="token function">Serial_Pow</span><span class="token punctuation">(</span><span class="token class-name">uint32_t</span> X<span class="token punctuation">,</span> <span class="token class-name">uint32_t</span> Y<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">uint32_t</span> Result <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token keyword">while</span> <span class="token punctuation">(</span>Y <span class="token operator">--</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		Result <span class="token operator">*=</span> X<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> Result<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_SendNumber</span><span class="token punctuation">(</span><span class="token class-name">uint32_t</span> Number<span class="token punctuation">,</span> <span class="token class-name">uint8_t</span> Length<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">uint8_t</span> i<span class="token punctuation">;</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> Length<span class="token punctuation">;</span> i <span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>Number <span class="token operator">/</span> <span class="token function">Serial_Pow</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">,</span> Length <span class="token operator">-</span> i <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">%</span> <span class="token number">10</span> <span class="token operator">+</span> <span class="token char">'0'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">int</span> <span class="token function">fputc</span><span class="token punctuation">(</span><span class="token keyword">int</span> ch<span class="token punctuation">,</span> FILE <span class="token operator">*</span>f<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>ch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span> ch<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_Printf</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>format<span class="token punctuation">,</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">char</span> String<span class="token punctuation">[</span><span class="token number">100</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+	va_list arg<span class="token punctuation">;</span>
+	<span class="token function">va_start</span><span class="token punctuation">(</span>arg<span class="token punctuation">,</span> format<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">vsprintf</span><span class="token punctuation">(</span>String<span class="token punctuation">,</span> format<span class="token punctuation">,</span> arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">va_end</span><span class="token punctuation">(</span>arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">Serial_SendString</span><span class="token punctuation">(</span>String<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/*==============中断接收和变量的封装====================*/</span>
+<span class="token comment">//对Serial_RxFlag变量封装get函数，实现读后自动清除的作用</span>
+<span class="token class-name">uint8_t</span> <span class="token function">Serial_GetRxFlag</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>Serial_RxFlag <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		Serial_RxFlag <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token comment">//对Serial_RxData变量封装get函数</span>
+<span class="token class-name">uint8_t</span> <span class="token function">Serial_GetRxData</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> Serial_RxData<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token comment">//中断函数的名字在启动文件里面（startup_stm32f10x_md.s）</span>
+<span class="token keyword">void</span> <span class="token function">USART1_IRQHandler</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//先判断标志位</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">USART_GetITStatus</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_IT_RXNE<span class="token punctuation">)</span> <span class="token operator">==</span> SET<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//将接收寄存器里的数据放到自定义变量里</span>
+		Serial_RxData <span class="token operator">=</span> <span class="token function">USART_ReceiveData</span><span class="token punctuation">(</span>USART1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//读完数据后置标志位1</span>
+		Serial_RxFlag <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+		<span class="token comment">//如果读取DR，则自动清除标志位，否则，手动清除标志位，此处手动清除没影响</span>
+		<span class="token function">USART_ClearITPendingBit</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_IT_RXNE<span class="token punctuation">)</span><span class="token punctuation">;</span>  
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+<span class="token comment">/*==========================================================*/</span>
+</code></pre> 
+<h5><a id="533_Serialh_646"></a>5-3-3 Serial.h</h5> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">__SERIAL_H</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">__SERIAL_H</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_Init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendByte</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> Byte<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendArray</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> <span class="token operator">*</span>Array<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> Length<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendString</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>String<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendNumber</span><span class="token punctuation">(</span><span class="token class-name">uint32_t</span> Number<span class="token punctuation">,</span> <span class="token class-name">uint8_t</span> Length<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_Printf</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>format<span class="token punctuation">,</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token class-name">uint8_t</span> <span class="token function">Serial_GetRxFlag</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token class-name">uint8_t</span> <span class="token function">Serial_GetRxData</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span>                  <span class="token comment">// Device header</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Delay.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"OLED.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Serial.h"</span></span>
+
+<span class="token class-name">uint8_t</span> RxData<span class="token punctuation">;</span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">OLED_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"RxData:"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">Serial_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+  <span class="token comment">//中断</span>
+	<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">Serial_GetRxFlag</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			RxData <span class="token operator">=</span> <span class="token function">Serial_GetRxData</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token comment">//把接收到的数据回传（到电脑）功能</span>
+			<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>RxData<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">OLED_ShowHexNum</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">8</span><span class="token punctuation">,</span> RxData<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+	
+<span class="token comment">//	//查询</span>
+<span class="token comment">//	while(1)</span>
+<span class="token comment">//	{<!-- --></span>
+<span class="token comment">//		if(USART_GetFlagStatus(USART1,USART_FLAG_RXNE) == SET)</span>
+<span class="token comment">//		{<!-- --></span>
+<span class="token comment">//			RxData = USART_ReceiveData(USART1);  //读完DR寄存器，该标志位自动清除</span>
+<span class="token comment">//			OLED_ShowHexNum(1,1,RxData,2);</span>
+<span class="token comment">//		}</span>
+<span class="token comment">//	}</span>
+	
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="_703"></a>程序现象</h3> 
+<h4><a id="HEX_704"></a>串口收发HEX数据</h4> 
+<p>数据包有规定的格式，以FF为包头，FE为包尾，中间固定4个字节为数据。每按一次按键，发送一个数据包，中间的数据会呈现递增显示。<br> <img src="https://images2.imgbox.com/56/1f/RU9OETYj_o.jpg" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/e7/10/4mcyHtbc_o.png" alt="在这里插入图片描述"><br> 包头FF和包尾FE用于控制接收，接收时不显示。<br> <img src="https://images2.imgbox.com/f1/e0/ABu6lDsq_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/b6/0e/GZMfikhS_o.jpg" alt="在这里插入图片描述"></p> 
+<h4><a id="_711"></a>串口收发文本数据</h4> 
+<p>发送模式和接收模式都选择文本模式<br> 以@为包头<br> 以换行符为包尾<br> <img src="https://images2.imgbox.com/8b/6d/yBizLEoX_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/2a/05/GXsMQLyL_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/a1/7e/Gmv6HBsV_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/80/d0/RAfAp9PI_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="6USART_719"></a>6、USART串口数据包</h3> 
+<p>数据包的任务，通过<strong>额外</strong>添加包头包尾实现数据分割打包的思路，方便接收方识别。</p> 
+<p>问题：</p> 
+<p>1、包头包尾和数据载荷重复的问题，<mark>如果数据和包头包尾重复</mark>，可能会引起误判</p> 
+<p>解决方法：</p> 
+<p>1、限制载荷数据的范围，如果可以的话，我们在发送的时候，对数据进行限幅</p> 
+<p>2、如果无法避免载荷数据和包头包尾重复，我们就尽量使用固定长度的数据包，由于载荷数据是固定的，只要我们通过包头包尾对齐了数据，就可以严格知道哪个数据是包头包尾，哪个数据应该是载荷数据。在接收载荷数据的时候，我们并不会判断他是否是包头包尾，而在接收包头包尾的时候，我们会判断它是不是确实是包头包尾，用于数据对齐</p> 
+<p>3、增加包头包尾的数量，并且让它尽量呈现出载荷数据出现不了的状态。</p> 
+<h4><a id="HEX_733"></a>HEX数据包</h4> 
+<p>在HEX数据包里面，数据都是以原始的字节数据本身呈现的</p> 
+<h4><a id="_735"></a>文本数据包</h4> 
+<p>在文本数据包里面，每个字节经过一层编码和译码，最终以文本格式表现出来。<br> <img src="https://images2.imgbox.com/e8/eb/HEk8dGo5_o.png" alt=" "><br> 可变包长，各种字母、符号、数字都可以随意使用。<br> 当我们接收到载荷数据后，得到的就是一个字符串，<mark>在软件中再对字符串进行操作和判断，就可以实现各种指令控制的功能，而且字符串数据包表达意义明显，可以把字符串数据包直接打印到串口助手上</mark></p> 
+<p>HEX优点：传输直接，解析数据非常简单，比较适合一些模块发送原始的数据，比如一些使用串口通信的陀螺仪、温湿度传感器；缺点是灵活性不足，载荷容易和包头包尾重复。</p> 
+<p>文本优点：数据直观易理解，非常灵活，<mark>比较适合一些输入指令进行人机交互的场合，蓝牙模块的AT指令，CNC和3D打印机常用的G代码</mark>，缺点解析效率低</p> 
+<h4><a id="61__746"></a>6-1 使用状态机接收数据包的思路</h4> 
+<p><strong>标志位只有0和1，而状态机是多标志位状态的一种方式</strong>。最开始，S=0，收到一个数据，进入中断，根据S=0,进入第一个状态的程序，判断数据是不是包头FF，如果是FF，则代表收到包头，之后置S=1，退出中断，结束，下次再进中断，根据S=1，就可以进行接受数据的程序。如果在第一个状态，如果收到的不是FF，证明数据没有对齐，我们应该等待读数据包包头的出现。这时S=0.下次进中断，就还是判断包头的逻辑，知道出现FF，才能转到下一个状态，来到接收数据状态，此时收到数据，我们就直接把他存在数组中，另外再用一个变量记录接受了多少个数据，如果没有收购4个数据，就一直是接收状态，如果收够了，就置S=2.下次进入中断时，就可以进入下一个状态了。最后的状态就是等待包尾，判断数据是否是FE，这样就可以置S=0，回到最初的状态，开始下一个轮回。如果包尾位置不是·FE，此时可以进入<mark>重复等待包尾的状态</mark>，直到接收到真正的包尾。这样加入包尾的判断，更加能够预防因数据和包头重复造成的错误。</p> 
+<p><img src="https://images2.imgbox.com/39/55/XO2EGxOe_o.png" alt="在这里插入图片描述"><br> 状态机：比如设计菜单，按什么键，切换什么菜单，执行什么程序</p> 
+<h4><a id="62_HEX_751"></a>6-2 串口收发HEX数据包</h4> 
+<h5><a id="621_mainc_752"></a>6-2-1 main.c</h5> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span>                  <span class="token comment">// Device header</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Delay.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"OLED.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Serial.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Key.h"</span></span>
+
+<span class="token class-name">uint8_t</span> KeyNum<span class="token punctuation">;</span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">OLED_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">Key_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">Serial_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"TxPacket"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"RxPacket"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">//填充缓冲区数组（发送缓存赋初始值）</span>
+	Serial_TxPacket<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token number">0x01</span><span class="token punctuation">;</span>
+	Serial_TxPacket<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token number">0x02</span><span class="token punctuation">;</span>
+	Serial_TxPacket<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token number">0x03</span><span class="token punctuation">;</span>
+	Serial_TxPacket<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token number">0x04</span><span class="token punctuation">;</span>
+	
+	<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		KeyNum <span class="token operator">=</span> <span class="token function">Key_GetNum</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//按键按下，则执行发送数据</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>KeyNum <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token comment">//变换数据</span>
+			Serial_TxPacket<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token operator">++</span><span class="token punctuation">;</span>
+			Serial_TxPacket<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token operator">++</span><span class="token punctuation">;</span>
+			Serial_TxPacket<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span> <span class="token operator">++</span><span class="token punctuation">;</span>
+			Serial_TxPacket<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span> <span class="token operator">++</span><span class="token punctuation">;</span>
+			<span class="token comment">//发送数据包</span>
+			<span class="token function">Serial_SendPacket</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token comment">//OLED显示数据</span>
+			<span class="token function">OLED_ShowHexNum</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> Serial_TxPacket<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">OLED_ShowHexNum</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">,</span> Serial_TxPacket<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">OLED_ShowHexNum</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">7</span><span class="token punctuation">,</span> Serial_TxPacket<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">OLED_ShowHexNum</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">,</span> Serial_TxPacket<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">Serial_GetRxFlag</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token function">OLED_ShowHexNum</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> Serial_RxPacket<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">OLED_ShowHexNum</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">,</span> Serial_RxPacket<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">OLED_ShowHexNum</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">,</span> <span class="token number">7</span><span class="token punctuation">,</span> Serial_RxPacket<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token function">OLED_ShowHexNum</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">,</span> Serial_RxPacket<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h5><a id="622_Serialc_810"></a>6-2-2 Serial.c</h5> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span>                  <span class="token comment">// Device header</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdarg.h&gt;</span></span>
+
+<span class="token comment">//为了收发数据包，定义两个缓冲区的数组</span>
+<span class="token class-name">uint8_t</span> Serial_TxPacket<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span><span class="token punctuation">;</span>				<span class="token comment">//FF 01 02 03 04 FE</span>
+<span class="token class-name">uint8_t</span> Serial_RxPacket<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token comment">//如果收到一个数据包，就置RxFlag（标志位）</span>
+<span class="token class-name">uint8_t</span> Serial_RxFlag<span class="token punctuation">;</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_Init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">RCC_APB2PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB2Periph_USART1<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">RCC_APB2PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB2Periph_GPIOA<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	GPIO_InitTypeDef GPIO_InitStructure<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Mode <span class="token operator">=</span> GPIO_Mode_AF_PP<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Pin <span class="token operator">=</span> GPIO_Pin_9<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Speed <span class="token operator">=</span> GPIO_Speed_50MHz<span class="token punctuation">;</span>
+	<span class="token function">GPIO_Init</span><span class="token punctuation">(</span>GPIOA<span class="token punctuation">,</span> <span class="token operator">&amp;</span>GPIO_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Mode <span class="token operator">=</span> GPIO_Mode_IPU<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Pin <span class="token operator">=</span> GPIO_Pin_10<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Speed <span class="token operator">=</span> GPIO_Speed_50MHz<span class="token punctuation">;</span>
+	<span class="token function">GPIO_Init</span><span class="token punctuation">(</span>GPIOA<span class="token punctuation">,</span> <span class="token operator">&amp;</span>GPIO_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	USART_InitTypeDef USART_InitStructure<span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_BaudRate <span class="token operator">=</span> <span class="token number">9600</span><span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_HardwareFlowControl <span class="token operator">=</span> USART_HardwareFlowControl_None<span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_Mode <span class="token operator">=</span> USART_Mode_Tx <span class="token operator">|</span> USART_Mode_Rx<span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_Parity <span class="token operator">=</span> USART_Parity_No<span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_StopBits <span class="token operator">=</span> USART_StopBits_1<span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_WordLength <span class="token operator">=</span> USART_WordLength_8b<span class="token punctuation">;</span>
+	<span class="token function">USART_Init</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> <span class="token operator">&amp;</span>USART_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">USART_ITConfig</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_IT_RXNE<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">NVIC_PriorityGroupConfig</span><span class="token punctuation">(</span>NVIC_PriorityGroup_2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	NVIC_InitTypeDef NVIC_InitStructure<span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannel <span class="token operator">=</span> USART1_IRQn<span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelCmd <span class="token operator">=</span> ENABLE<span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelPreemptionPriority <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelSubPriority <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token function">NVIC_Init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>NVIC_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">USART_Cmd</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_SendByte</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> Byte<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">USART_SendData</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> Byte<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token function">USART_GetFlagStatus</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_FLAG_TXE<span class="token punctuation">)</span> <span class="token operator">==</span> RESET<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_SendArray</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> <span class="token operator">*</span>Array<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> Length<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">uint16_t</span> i<span class="token punctuation">;</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> Length<span class="token punctuation">;</span> i <span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>Array<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_SendString</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>String<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">uint8_t</span> i<span class="token punctuation">;</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> String<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">!=</span> <span class="token char">'\0'</span><span class="token punctuation">;</span> i <span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>String<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token class-name">uint32_t</span> <span class="token function">Serial_Pow</span><span class="token punctuation">(</span><span class="token class-name">uint32_t</span> X<span class="token punctuation">,</span> <span class="token class-name">uint32_t</span> Y<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">uint32_t</span> Result <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token keyword">while</span> <span class="token punctuation">(</span>Y <span class="token operator">--</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		Result <span class="token operator">*=</span> X<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> Result<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_SendNumber</span><span class="token punctuation">(</span><span class="token class-name">uint32_t</span> Number<span class="token punctuation">,</span> <span class="token class-name">uint8_t</span> Length<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">uint8_t</span> i<span class="token punctuation">;</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> Length<span class="token punctuation">;</span> i <span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>Number <span class="token operator">/</span> <span class="token function">Serial_Pow</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">,</span> Length <span class="token operator">-</span> i <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">%</span> <span class="token number">10</span> <span class="token operator">+</span> <span class="token char">'0'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">int</span> <span class="token function">fputc</span><span class="token punctuation">(</span><span class="token keyword">int</span> ch<span class="token punctuation">,</span> FILE <span class="token operator">*</span>f<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>ch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span> ch<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_Printf</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>format<span class="token punctuation">,</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">char</span> String<span class="token punctuation">[</span><span class="token number">100</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+	va_list arg<span class="token punctuation">;</span>
+	<span class="token function">va_start</span><span class="token punctuation">(</span>arg<span class="token punctuation">,</span> format<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">vsprintf</span><span class="token punctuation">(</span>String<span class="token punctuation">,</span> format<span class="token punctuation">,</span> arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">va_end</span><span class="token punctuation">(</span>arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">Serial_SendString</span><span class="token punctuation">(</span>String<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//发送数据包，调用该函数，TxPacket数组的4个数据就会自动加上包头包尾发送出去</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendPacket</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//发送包头</span>
+	<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span><span class="token number">0xFF</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//发送四个载荷数据</span>
+	<span class="token function">Serial_SendArray</span><span class="token punctuation">(</span>Serial_TxPacket<span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//发送包尾</span>
+	<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span><span class="token number">0xFE</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token class-name">uint8_t</span> <span class="token function">Serial_GetRxFlag</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>Serial_RxFlag <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		Serial_RxFlag <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//在接收中断函数里，我们需要用状态机来执行接收逻辑</span>
+<span class="token keyword">void</span> <span class="token function">USART1_IRQHandler</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//定义一个标志当前状态的变量S，静态变量（类似于全局变量，函数进入只会初始化依次0，在函数退出后，数据仍然有效，</span>
+	<span class="token comment">//与全局变量不同的是，静态变量只能在本函数使用）</span>
+	<span class="token keyword">static</span> <span class="token class-name">uint8_t</span> RxState <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	<span class="token comment">//指示接收数据到哪一个，最开始默认为0</span>
+	<span class="token keyword">static</span> <span class="token class-name">uint8_t</span> pRxPacket <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">USART_GetITStatus</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_IT_RXNE<span class="token punctuation">)</span> <span class="token operator">==</span> SET<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token class-name">uint8_t</span> RxData <span class="token operator">=</span> <span class="token function">USART_ReceiveData</span><span class="token punctuation">(</span>USART1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//状态0，进入等待包头的程序</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>RxState <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>RxData <span class="token operator">==</span> <span class="token number">0xFF</span><span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				RxState <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+				pRxPacket <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>  <span class="token comment">//状态0转移到状态1，提前清零</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		<span class="token comment">//状态1，进入接收数据的程序</span>
+		<span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>RxState <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token comment">//依次接收4个数据，存在RxPack数组里</span>
+			Serial_RxPacket<span class="token punctuation">[</span>pRxPacket<span class="token punctuation">]</span> <span class="token operator">=</span> RxData<span class="token punctuation">;</span>  <span class="token comment">//将RxData存到接收数组里</span>
+			pRxPacket <span class="token operator">++</span><span class="token punctuation">;</span>  <span class="token comment">//移动到下一个位置</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>pRxPacket <span class="token operator">&gt;=</span> <span class="token number">4</span><span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				RxState <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		<span class="token comment">//状态2，等待包尾</span>
+		<span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>RxState <span class="token operator">==</span> <span class="token number">2</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token comment">//判断是否是包尾，</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>RxData <span class="token operator">==</span> <span class="token number">0xFE</span><span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				RxState <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>  <span class="token comment">//如果是的话，回到最初的状态</span>
+				Serial_RxFlag <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>  <span class="token comment">//接收标志位置1，代表数据包接收到了</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		
+		<span class="token function">USART_ClearITPendingBit</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_IT_RXNE<span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">//手动清除中断标志位</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h6><a id="hex_988"></a>hex发送数据包</h6> 
+<pre><code class="prism language-c"><span class="token comment">//发送数据包，调用该函数，TxPacket数组的4个数据就会自动加上包头包尾发送出去</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendPacket</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//发送包头</span>
+	<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span><span class="token number">0xFF</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//发送四个载荷数据</span>
+	<span class="token function">Serial_SendArray</span><span class="token punctuation">(</span>Serial_TxPacket<span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//发送包尾</span>
+	<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span><span class="token number">0xFE</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h6><a id="hex_1002"></a>hex接收数据包(串口中断)</h6> 
+<pre><code class="prism language-c"><span class="token comment">//USART串口数据包</span>
+<span class="token comment">//串口的中断服务函数</span>
+<span class="token keyword">void</span> <span class="token function">USART1_IRQHandler</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//静态变量类似于全局变量，函数进入只初始化一次，在函数退出后，数据仍然有效，与全局变量不同的是，静态变量只能在本函数中使用。</span>
+	<span class="token keyword">static</span> <span class="token class-name">uint8_t</span> RxState <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span><span class="token comment">// 接收数据状态变量</span>
+	<span class="token keyword">static</span> <span class="token class-name">uint8_t</span> pRxPacket <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span><span class="token comment">// 数据包缓冲区指针</span>
+	<span class="token comment">// 检查USART1接收中断(USART_IT_RXNE)是否触发</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">USART_GetITStatus</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_IT_RXNE<span class="token punctuation">)</span> <span class="token operator">==</span> SET<span class="token punctuation">)</span>  <span class="token comment">//数据寄存器非空，该寄存器置1，我们就可以将数据读走</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token comment">// 从USART数据寄存器读取接收到的数据</span>
+		<span class="token class-name">uint8_t</span> RxData <span class="token operator">=</span> <span class="token function">USART_ReceiveData</span><span class="token punctuation">(</span>USART1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// 状态机处理接收到的数据包</span>
+		<span class="token comment">//等待包头</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>RxState <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>	
+			 <span class="token comment">// 检查数据包头部 (0xFF)</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>RxData <span class="token operator">==</span> <span class="token number">0xFF</span><span class="token punctuation">)</span><span class="token comment">//收到包头</span>
+			<span class="token punctuation">{<!-- --></span>
+				RxState <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span><span class="token comment">// 切换到下一个状态</span>
+				pRxPacket <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span><span class="token comment">// 重置数据包缓冲区指针</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		<span class="token comment">//接收数据</span>
+		<span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>RxState <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>	
+		<span class="token comment">//依次接收四个数据存在rxpacket数组里</span>
+	     <span class="token comment">// 将接收到的数据存储到数据包缓冲区</span>
+	     <span class="token comment">//以下为没进入一次接收状态，数据久转存一次缓存数组，同时存的位置++</span>
+			Serial_RxPacket<span class="token punctuation">[</span>pRxPacket<span class="token punctuation">]</span> <span class="token operator">=</span> RxData<span class="token punctuation">;</span>
+			pRxPacket <span class="token operator">++</span><span class="token punctuation">;</span><span class="token comment">// 移动到数据包缓冲区的下一个位置</span>
+			<span class="token comment">// 检查是否已接收到至少3个字节（包括头部）</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>pRxPacket <span class="token operator">&gt;</span> <span class="token number">2</span><span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				RxState <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		<span class="token comment">//等待包尾</span>
+		<span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>RxState <span class="token operator">==</span> <span class="token number">2</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token comment">// 检查数据包尾部 (0xFE)</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>RxData <span class="token operator">==</span> <span class="token number">0xFE</span><span class="token punctuation">)</span><span class="token comment">//包尾</span>
+			<span class="token punctuation">{<!-- --></span>			
+				RxState <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span><span class="token comment">// 重置状态以开始接收新的数据包</span>
+				Serial_RxFlag <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span><span class="token comment">// 设置标志表示已接收到完整的数据包</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		<span class="token comment">// 清除USART1接收中断标志以确认中断</span>
+		
+		<span class="token function">USART_ClearITPendingBit</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_IT_RXNE<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//清除中断标志位</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h5><a id="623_Serialh_1060"></a>6-2-3 Serial.h</h5> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">__SERIAL_H</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">__SERIAL_H</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+
+<span class="token comment">//extern 外部可调用</span>
+<span class="token keyword">extern</span> <span class="token class-name">uint8_t</span> Serial_TxPacket<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token keyword">extern</span> <span class="token class-name">uint8_t</span> Serial_RxPacket<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_Init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendByte</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> Byte<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendArray</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> <span class="token operator">*</span>Array<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> Length<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendString</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>String<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendNumber</span><span class="token punctuation">(</span><span class="token class-name">uint32_t</span> Number<span class="token punctuation">,</span> <span class="token class-name">uint8_t</span> Length<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_Printf</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>format<span class="token punctuation">,</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_SendPacket</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token class-name">uint8_t</span> <span class="token function">Serial_GetRxFlag</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//用于判断是不是接收到了数据包</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+</code></pre> 
+<h4><a id="63_1085"></a>6-3串口收发文本数据包</h4> 
+<p><img src="https://images2.imgbox.com/c9/90/4bT1CvrX_o.png" alt="在这里插入图片描述"></p> 
+<p>以@符号为包头，换行的两个符号为包尾，中间的载荷字符数量不固定。<br> 注意S=1时，判断该诗剧是否是\r，如果不是，则正常接收，如果是，则不接受收，同时跳到下一个状态，等待包尾\n</p> 
+<h5><a id="631_mainc_1090"></a>6-3-1 main.c</h5> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span>                  <span class="token comment">// Device header</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Delay.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"OLED.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Serial.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"LED.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"string.h"</span></span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">OLED_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">LED_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">Serial_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"TxPacket"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"RxPacket"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//判断是否接收到数据包</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>Serial_RxFlag <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"                "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">//相当于擦除</span>
+			<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> Serial_RxPacket<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			
+			<span class="token comment">//判断两个字符串是否相等</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strcmp</span><span class="token punctuation">(</span>Serial_RxPacket<span class="token punctuation">,</span> <span class="token string">"LED_ON"</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				<span class="token comment">//点亮LED</span>
+				<span class="token function">LED1_ON</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token comment">//向串口助手回传字符串，电脑显示</span>
+				<span class="token function">Serial_SendString</span><span class="token punctuation">(</span><span class="token string">"LED_ON_OK\r\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token comment">//OLED显示</span>
+				<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"                "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"LED_ON_OK"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+			<span class="token comment">//接收到的数据于LED_OFF相同</span>
+			<span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strcmp</span><span class="token punctuation">(</span>Serial_RxPacket<span class="token punctuation">,</span> <span class="token string">"LED_OFF"</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				<span class="token function">LED1_OFF</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token function">Serial_SendString</span><span class="token punctuation">(</span><span class="token string">"LED_OFF_OK\r\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"                "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"LED_OFF_OK"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+			<span class="token comment">//错误指令</span>
+			<span class="token keyword">else</span>
+			<span class="token punctuation">{<!-- --></span>
+				<span class="token function">Serial_SendString</span><span class="token punctuation">(</span><span class="token string">"ERROR_COMMAND-com\r\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"                "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"ERROR_COMMAND-oled"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+			
+			Serial_RxFlag <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h5><a id="632_Serialc_1151"></a>6-3-2 Serial.c</h5> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span>                  <span class="token comment">// Device header</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdarg.h&gt;</span></span>
+
+<span class="token comment">//接收的数据类型定义为char，用于接收字符，100个字符（单条置零最长不能超过100个字符），防止溢出</span>
+<span class="token keyword">char</span> Serial_RxPacket<span class="token punctuation">[</span><span class="token number">100</span><span class="token punctuation">]</span><span class="token punctuation">;</span>				<span class="token comment">//"@MSG\r\n"</span>
+<span class="token class-name">uint8_t</span> Serial_RxFlag<span class="token punctuation">;</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_Init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">RCC_APB2PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB2Periph_USART1<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">RCC_APB2PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB2Periph_GPIOA<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	GPIO_InitTypeDef GPIO_InitStructure<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Mode <span class="token operator">=</span> GPIO_Mode_AF_PP<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Pin <span class="token operator">=</span> GPIO_Pin_9<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Speed <span class="token operator">=</span> GPIO_Speed_50MHz<span class="token punctuation">;</span>
+	<span class="token function">GPIO_Init</span><span class="token punctuation">(</span>GPIOA<span class="token punctuation">,</span> <span class="token operator">&amp;</span>GPIO_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Mode <span class="token operator">=</span> GPIO_Mode_IPU<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Pin <span class="token operator">=</span> GPIO_Pin_10<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Speed <span class="token operator">=</span> GPIO_Speed_50MHz<span class="token punctuation">;</span>
+	<span class="token function">GPIO_Init</span><span class="token punctuation">(</span>GPIOA<span class="token punctuation">,</span> <span class="token operator">&amp;</span>GPIO_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	USART_InitTypeDef USART_InitStructure<span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_BaudRate <span class="token operator">=</span> <span class="token number">9600</span><span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_HardwareFlowControl <span class="token operator">=</span> USART_HardwareFlowControl_None<span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_Mode <span class="token operator">=</span> USART_Mode_Tx <span class="token operator">|</span> USART_Mode_Rx<span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_Parity <span class="token operator">=</span> USART_Parity_No<span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_StopBits <span class="token operator">=</span> USART_StopBits_1<span class="token punctuation">;</span>
+	USART_InitStructure<span class="token punctuation">.</span>USART_WordLength <span class="token operator">=</span> USART_WordLength_8b<span class="token punctuation">;</span>
+	<span class="token function">USART_Init</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> <span class="token operator">&amp;</span>USART_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">USART_ITConfig</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_IT_RXNE<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">NVIC_PriorityGroupConfig</span><span class="token punctuation">(</span>NVIC_PriorityGroup_2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	NVIC_InitTypeDef NVIC_InitStructure<span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannel <span class="token operator">=</span> USART1_IRQn<span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelCmd <span class="token operator">=</span> ENABLE<span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelPreemptionPriority <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelSubPriority <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token function">NVIC_Init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>NVIC_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">USART_Cmd</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_SendByte</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> Byte<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">USART_SendData</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> Byte<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token function">USART_GetFlagStatus</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_FLAG_TXE<span class="token punctuation">)</span> <span class="token operator">==</span> RESET<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_SendArray</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> <span class="token operator">*</span>Array<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> Length<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">uint16_t</span> i<span class="token punctuation">;</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> Length<span class="token punctuation">;</span> i <span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>Array<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_SendString</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>String<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">uint8_t</span> i<span class="token punctuation">;</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> String<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">!=</span> <span class="token char">'\0'</span><span class="token punctuation">;</span> i <span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>String<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token class-name">uint32_t</span> <span class="token function">Serial_Pow</span><span class="token punctuation">(</span><span class="token class-name">uint32_t</span> X<span class="token punctuation">,</span> <span class="token class-name">uint32_t</span> Y<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">uint32_t</span> Result <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token keyword">while</span> <span class="token punctuation">(</span>Y <span class="token operator">--</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		Result <span class="token operator">*=</span> X<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> Result<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_SendNumber</span><span class="token punctuation">(</span><span class="token class-name">uint32_t</span> Number<span class="token punctuation">,</span> <span class="token class-name">uint8_t</span> Length<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token class-name">uint8_t</span> i<span class="token punctuation">;</span>
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> Length<span class="token punctuation">;</span> i <span class="token operator">++</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>Number <span class="token operator">/</span> <span class="token function">Serial_Pow</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">,</span> Length <span class="token operator">-</span> i <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">%</span> <span class="token number">10</span> <span class="token operator">+</span> <span class="token char">'0'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">int</span> <span class="token function">fputc</span><span class="token punctuation">(</span><span class="token keyword">int</span> ch<span class="token punctuation">,</span> FILE <span class="token operator">*</span>f<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">Serial_SendByte</span><span class="token punctuation">(</span>ch<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span> ch<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_Printf</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>format<span class="token punctuation">,</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">char</span> String<span class="token punctuation">[</span><span class="token number">100</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+	va_list arg<span class="token punctuation">;</span>
+	<span class="token function">va_start</span><span class="token punctuation">(</span>arg<span class="token punctuation">,</span> format<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">vsprintf</span><span class="token punctuation">(</span>String<span class="token punctuation">,</span> format<span class="token punctuation">,</span> arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">va_end</span><span class="token punctuation">(</span>arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">Serial_SendString</span><span class="token punctuation">(</span>String<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//文本数据包的中断接收状态机</span>
+<span class="token keyword">void</span> <span class="token function">USART1_IRQHandler</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">static</span> <span class="token class-name">uint8_t</span> RxState <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	<span class="token keyword">static</span> <span class="token class-name">uint8_t</span> pRxPacket <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">USART_GetITStatus</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_IT_RXNE<span class="token punctuation">)</span> <span class="token operator">==</span> SET<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token class-name">uint8_t</span> RxData <span class="token operator">=</span> <span class="token function">USART_ReceiveData</span><span class="token punctuation">(</span>USART1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//状态0，等待包头  </span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>RxState <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token comment">//等待包头的时候，满足以下条件才执行接收，否则你发太快，我还没处理完，就跳过这个数据包，导致错位</span>
+			<span class="token comment">//只有RxFlag为0，才会继续接收下一个数据包</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>RxData <span class="token operator">==</span> <span class="token char">'@'</span> <span class="token operator">&amp;&amp;</span> Serial_RxFlag <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				<span class="token comment">//转移到状态1</span>
+				RxState <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+				<span class="token comment">//计数器清零</span>
+				pRxPacket <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		<span class="token comment">//状态1，因为载荷字符数量并不确定，所以每次接收之前，我们必须先判断是不是包尾</span>
+		<span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>RxState <span class="token operator">==</span> <span class="token number">1</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>RxData <span class="token operator">==</span> <span class="token char">'\r'</span><span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				<span class="token comment">//转到状态2</span>
+				RxState <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+			<span class="token comment">//如果不是，仍然需要接收数据</span>
+			<span class="token keyword">else</span>
+			<span class="token punctuation">{<!-- --></span>
+				Serial_RxPacket<span class="token punctuation">[</span>pRxPacket<span class="token punctuation">]</span> <span class="token operator">=</span> RxData<span class="token punctuation">;</span>
+				pRxPacket <span class="token operator">++</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		<span class="token comment">//状态2，需要检测RxData是不是'\n'，等待第二个包尾</span>
+		<span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>RxState <span class="token operator">==</span> <span class="token number">2</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token comment">//如果是的话，状态置0，接收标志位置1</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>RxData <span class="token operator">==</span> <span class="token char">'\n'</span><span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				RxState <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+				<span class="token comment">//需要给这个字符数组的最后加一个字符串结束标志位'\0',方便后续对字符串进行处理</span>
+				Serial_RxPacket<span class="token punctuation">[</span>pRxPacket<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token char">'\0'</span><span class="token punctuation">;</span>
+				Serial_RxFlag <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		
+		<span class="token function">USART_ClearITPendingBit</span><span class="token punctuation">(</span>USART1<span class="token punctuation">,</span> USART_IT_RXNE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h5><a id="633_Serialh_1315"></a>6-3-3 Serial.h</h5> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">__SERIAL_H</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">__SERIAL_H</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;stdio.h&gt;</span></span>
+
+<span class="token keyword">extern</span> <span class="token keyword">char</span> Serial_RxPacket<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token keyword">extern</span> <span class="token class-name">uint8_t</span> Serial_RxFlag<span class="token punctuation">;</span>
+
+<span class="token keyword">void</span> <span class="token function">Serial_Init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendByte</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> Byte<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendArray</span><span class="token punctuation">(</span><span class="token class-name">uint8_t</span> <span class="token operator">*</span>Array<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> Length<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendString</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>String<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_SendNumber</span><span class="token punctuation">(</span><span class="token class-name">uint32_t</span> Number<span class="token punctuation">,</span> <span class="token class-name">uint8_t</span> Length<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">Serial_Printf</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>format<span class="token punctuation">,</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+</code></pre> 
+<h3><a id="_1337"></a>补充</h3> 
+<h3><a id="httpsimgblogcsdnimgcn13657e5e7cc8446c818db5916639d2d3png_1338"></a><img src="https://images2.imgbox.com/26/25/9p3VHkeS_o.png" alt="在这里插入图片描述"></h3> 
+<p><img src="https://images2.imgbox.com/7d/ce/1g5XmOvW_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4df64fadf033a5093fceaad9de685d1a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">python中的异常和错误</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c096b9191b5bb2111645880341edf2bf/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Linux系统之静态路由配置</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

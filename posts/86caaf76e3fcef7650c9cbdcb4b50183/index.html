@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>MQTT移植笔记及源码分析（基于w601） - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="MQTT移植笔记及源码分析（基于w601）" />
+<meta property="og:description" content="一、MQTT嵌入式源码获取 MQTT官方源码地址：https://os.mbed.com/teams/mqtt/code/MQTTPacket/
+eclipse源码地址：https://github.com/eclipse/paho.mqtt.embedded-c
+eclipse源码中包含linux和freertos的移植文件，使用起来比较方便。
+二、mqtt源码移植需要实现的函数接口 mqtt移植需要实现的函数接口主要有两类，一类是倒计时相关的接口函数，一类是网络连接相关的函数。
+typedef struct Timer_{ struct timeval end_time; }Timer; void TimerInit(Timer*); //初始化时间 char TimerIsExpired(Timer*);//判断时间是否用尽 void TimerCountdownMS(Timer*, unsigned int);//以ms为单位进行倒计时 void TimerCountdown(Timer*, unsigned int);//以秒为单位进行倒计时 int TimerLeftMS(Timer*);//查看倒计时剩余时间 网络相关的接口函数
+int linux_read(Network*, unsigned char*, int, int);//读socket数据 int linux_write(Network*, unsigned char*, int, int);//向socket写数据 void NetworkInit(Network*);//网络初始化 int NetworkConnect(Network*, char*, int);//连接mqtt服务器 void NetworkDisconnect(Network*);//断开socket连接 三、移植踩过的坑 3.1、tcp recv返回ENOTCONN和EAGAIN错误 初次移植好mqtt之后，mqtt连接上服务器大约20s左右，recv函数就会报ENOTCONN，后来才发现mqtt心跳开关c-&gt;keepAliveInterval为0。在keepalive函数中，如果这个值为0，系统是不会向服务器发送心跳包的。修改c-&gt;keepAliveInterval的值即可；EAGAIN是因为recv超时，属于正常情况，这时linux_read需要返回0； 3.2、mqtt订阅消息回调打印消息内容时间太长 出现这个问题的主要原因是w601的printf函数在mqtt的回调函数中使用有问题，导致系统在topic的回调函数中停留了5s左右的时间，使用rtthread内容的rt_kprintf函数可以避免这个问题。 3.3、发布qos大于0的消息时，publish函数经常返回-1 这时因为我在主函数中有如下代码：
+while (!toStop) { MQTTYield(&amp;c, 1000);//轮训接收和处理mqtt消息	} MQTTYield会不停的调用lwip的recv函数读取网络中的消息，,如果qos大于0，publish函数会调用waitfor等待服务器的回复，而waitfor中也会调用lwip的recv函数等待网络消息，这就会产生两个线程同时访问同一个socket的问题。这个问题的解决方法有很多，比如可以使用mqtt源码本身提供的加锁功能，也可以修改源码，使用队列或邮箱的方式通知publish的结果。
+3.4、源码本身存在一些bug 源码在处理mqtt的ping消息回复时，每一次调用MQTTYield都会检查服务器是否回复了ping消息。有时候因为网络不好等因素，服务器回复ping包的时间会大于一次MQTTYield的时间，这时代码中会认为ping失败，而实际上这种情况属于正常现象。解决办法是对源代码的几处代码进行简单的修改即可。 四、MQTT源代码分析 首先我们看下官方提供的基于linux的例程，此处省略了部分无关代码： Network n; MQTTClient c; NetworkInit(&amp;n);//初始化mqtt客户端的网络参数 NetworkConnect(&amp;n, opts." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/86caaf76e3fcef7650c9cbdcb4b50183/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-12-14T20:18:36+08:00" />
+<meta property="article:modified_time" content="2020-12-14T20:18:36+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">MQTT移植笔记及源码分析（基于w601）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="MQTT_1"></a>一、MQTT嵌入式源码获取</h2> 
+<p>MQTT官方源码地址：https://os.mbed.com/teams/mqtt/code/MQTTPacket/</p> 
+<p>eclipse源码地址：https://github.com/eclipse/paho.mqtt.embedded-c</p> 
+<p>eclipse源码中包含linux和freertos的移植文件，使用起来比较方便。</p> 
+<h2><a id="mqtt_8"></a>二、mqtt源码移植需要实现的函数接口</h2> 
+<p>mqtt移植需要实现的函数接口主要有两类，一类是倒计时相关的接口函数，一类是网络连接相关的函数。</p> 
+<pre><code class="prism language-c"><span class="token keyword">typedef</span> <span class="token keyword">struct</span> Timer_<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">struct</span> timeval end_time<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>Timer<span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">TimerInit</span><span class="token punctuation">(</span>Timer<span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//初始化时间</span>
+<span class="token keyword">char</span> <span class="token function">TimerIsExpired</span><span class="token punctuation">(</span>Timer<span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//判断时间是否用尽</span>
+<span class="token keyword">void</span> <span class="token function">TimerCountdownMS</span><span class="token punctuation">(</span>Timer<span class="token operator">*</span><span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">int</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//以ms为单位进行倒计时</span>
+<span class="token keyword">void</span> <span class="token function">TimerCountdown</span><span class="token punctuation">(</span>Timer<span class="token operator">*</span><span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">int</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//以秒为单位进行倒计时</span>
+<span class="token keyword">int</span> <span class="token function">TimerLeftMS</span><span class="token punctuation">(</span>Timer<span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//查看倒计时剩余时间</span>
+</code></pre> 
+<p>网络相关的接口函数</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">linux_read</span><span class="token punctuation">(</span>Network<span class="token operator">*</span><span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">char</span><span class="token operator">*</span><span class="token punctuation">,</span> <span class="token keyword">int</span><span class="token punctuation">,</span> <span class="token keyword">int</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//读socket数据</span>
+<span class="token keyword">int</span> <span class="token function">linux_write</span><span class="token punctuation">(</span>Network<span class="token operator">*</span><span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">char</span><span class="token operator">*</span><span class="token punctuation">,</span> <span class="token keyword">int</span><span class="token punctuation">,</span> <span class="token keyword">int</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//向socket写数据</span>
+
+ <span class="token keyword">void</span> <span class="token function">NetworkInit</span><span class="token punctuation">(</span>Network<span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//网络初始化</span>
+ <span class="token keyword">int</span> <span class="token function">NetworkConnect</span><span class="token punctuation">(</span>Network<span class="token operator">*</span><span class="token punctuation">,</span> <span class="token keyword">char</span><span class="token operator">*</span><span class="token punctuation">,</span> <span class="token keyword">int</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//连接mqtt服务器</span>
+ <span class="token keyword">void</span> <span class="token function">NetworkDisconnect</span><span class="token punctuation">(</span>Network<span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//断开socket连接</span>
+</code></pre> 
+<h2><a id="_31"></a>三、移植踩过的坑</h2> 
+<h3><a id="31tcp_recvENOTCONNEAGAIN_32"></a>3.1、tcp recv返回ENOTCONN和EAGAIN错误</h3> 
+<ol><li>初次移植好mqtt之后，mqtt连接上服务器大约20s左右，recv函数就会报ENOTCONN，后来才发现mqtt心跳开关c-&gt;keepAliveInterval为0。在keepalive函数中，如果这个值为0，系统是不会向服务器发送心跳包的。修改c-&gt;keepAliveInterval的值即可；</li><li>EAGAIN是因为recv超时，属于正常情况，这时linux_read需要返回0；</li></ol> 
+<h3><a id="32mqtt_35"></a>3.2、mqtt订阅消息回调打印消息内容时间太长</h3> 
+<ol><li>出现这个问题的主要原因是w601的printf函数在mqtt的回调函数中使用有问题，导致系统在topic的回调函数中停留了5s左右的时间，使用rtthread内容的rt_kprintf函数可以避免这个问题。</li></ol> 
+<h3><a id="33qos0publish1_37"></a>3.3、发布qos大于0的消息时，publish函数经常返回-1</h3> 
+<p>这时因为我在主函数中有如下代码：</p> 
+<pre><code class="prism language-c">	<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token operator">!</span>toStop<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">MQTTYield</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">,</span> <span class="token number">1000</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//轮训接收和处理mqtt消息	</span>
+	<span class="token punctuation">}</span>
+</code></pre> 
+<p>MQTTYield会不停的调用lwip的recv函数读取网络中的消息，,如果qos大于0，publish函数会调用waitfor等待服务器的回复，而waitfor中也会调用lwip的recv函数等待网络消息，这就会产生两个线程同时访问同一个socket的问题。这个问题的解决方法有很多，比如可以使用mqtt源码本身提供的加锁功能，也可以修改源码，使用队列或邮箱的方式通知publish的结果。</p> 
+<h3><a id="34bug_47"></a>3.4、源码本身存在一些bug</h3> 
+<ol><li>源码在处理mqtt的ping消息回复时，每一次调用MQTTYield都会检查服务器是否回复了ping消息。有时候因为网络不好等因素，服务器回复ping包的时间会大于一次MQTTYield的时间，这时代码中会认为ping失败，而实际上这种情况属于正常现象。解决办法是对源代码的几处代码进行简单的修改即可。</li></ol> 
+<h2><a id="MQTT_49"></a>四、MQTT源代码分析</h2> 
+<ol><li>首先我们看下官方提供的基于linux的例程，此处省略了部分无关代码：</li></ol> 
+<pre><code class="prism language-c">    Network n<span class="token punctuation">;</span>
+	MQTTClient c<span class="token punctuation">;</span>
+
+	<span class="token function">NetworkInit</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>n<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//初始化mqtt客户端的网络参数</span>
+	<span class="token function">NetworkConnect</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>n<span class="token punctuation">,</span> opts<span class="token punctuation">.</span>host<span class="token punctuation">,</span> opts<span class="token punctuation">.</span>port<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//连接mqtt服务器</span>
+	<span class="token function">MQTTClientInit</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">,</span> <span class="token operator">&amp;</span>n<span class="token punctuation">,</span> <span class="token number">1000</span><span class="token punctuation">,</span> buf<span class="token punctuation">,</span> <span class="token number">100</span><span class="token punctuation">,</span> readbuf<span class="token punctuation">,</span> <span class="token number">100</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//初始化mqtt的MQTTClient结构体，以及接收发送数据的buffer</span>
+ 
+	MQTTPacket_connectData data <span class="token operator">=</span> MQTTPacket_connectData_initializer<span class="token punctuation">;</span>       
+	data<span class="token punctuation">.</span>willFlag <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span><span class="token comment">//是否使用遗嘱消息</span>
+	data<span class="token punctuation">.</span>MQTTVersion <span class="token operator">=</span> <span class="token number">3</span><span class="token punctuation">;</span><span class="token comment">//mqtt版本号</span>
+	data<span class="token punctuation">.</span>clientID<span class="token punctuation">.</span>cstring <span class="token operator">=</span> opts<span class="token punctuation">.</span>clientid<span class="token punctuation">;</span><span class="token comment">//客户端ID</span>
+	data<span class="token punctuation">.</span>username<span class="token punctuation">.</span>cstring <span class="token operator">=</span> opts<span class="token punctuation">.</span>username<span class="token punctuation">;</span><span class="token comment">//用户名</span>
+	data<span class="token punctuation">.</span>password<span class="token punctuation">.</span>cstring <span class="token operator">=</span> opts<span class="token punctuation">.</span>password<span class="token punctuation">;</span><span class="token comment">//密码</span>
+
+	data<span class="token punctuation">.</span>keepAliveInterval <span class="token operator">=</span> <span class="token number">10</span><span class="token punctuation">;</span><span class="token comment">//mqtt心跳时间间隔</span>
+	data<span class="token punctuation">.</span>cleansession <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	
+	rc <span class="token operator">=</span> <span class="token function">MQTTConnect</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">,</span> <span class="token operator">&amp;</span>data<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//发送mqtt的CONNECT数据包到服务器</span>
+    
+	rc <span class="token operator">=</span> <span class="token function">MQTTSubscribe</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">,</span> topic<span class="token punctuation">,</span> opts<span class="token punctuation">.</span>qos<span class="token punctuation">,</span> messageArrived<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//订阅mqtt消息</span>
+
+	<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token operator">!</span>toStop<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">MQTTYield</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">,</span> <span class="token number">1000</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//轮训接收和处理mqtt消息	</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token function">MQTTDisconnect</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>c<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//断开mqtt连接</span>
+	<span class="token function">NetworkDisconnect</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>n<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//断开tcp连接</span>
+</code></pre> 
+<ol start="2"><li>MQTTPacket_connectData结构体</li></ol> 
+<pre><code class="prism language-c"><span class="token keyword">typedef</span> <span class="token keyword">struct</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">/** The eyecatcher for this structure.  must be MQTC. */</span>
+	<span class="token keyword">char</span> struct_id<span class="token punctuation">[</span><span class="token number">4</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+	<span class="token comment">/** The version number of this structure.  Must be 0 */</span>
+	<span class="token keyword">int</span> struct_version<span class="token punctuation">;</span>
+	<span class="token comment">/** Version of MQTT to be used.  3 = 3.1 4 = 3.1.1
+	  */</span>
+	<span class="token keyword">unsigned</span> <span class="token keyword">char</span> MQTTVersion<span class="token punctuation">;</span>
+	MQTTString clientID<span class="token punctuation">;</span>
+	<span class="token keyword">unsigned</span> <span class="token keyword">short</span> keepAliveInterval<span class="token punctuation">;</span>
+	<span class="token keyword">unsigned</span> <span class="token keyword">char</span> cleansession<span class="token punctuation">;</span>
+	<span class="token keyword">unsigned</span> <span class="token keyword">char</span> willFlag<span class="token punctuation">;</span>
+	MQTTPacket_willOptions will<span class="token punctuation">;</span>
+	MQTTString username<span class="token punctuation">;</span>
+	MQTTString password<span class="token punctuation">;</span>
+<span class="token punctuation">}</span> MQTTPacket_connectData<span class="token punctuation">;</span>
+</code></pre> 
+<ul><li><strong>clientID 客户端ID，唯一标识一个客户端，每一台设备的clientID必须不同，这个ID通常可以用设备的mac地址组合得到；</strong></li><li><strong>keepAliveInterval心跳间隔，表示每隔多长时间向服务器发送一次心跳包，单位是s</strong>；</li><li>cleansession客户端连接断开是否清除服务器端关于客户端的连接信息；</li><li>willFlag 遗嘱消息</li><li>MQTTPacket_willOptions遗嘱消息的内容</li><li>username和password用户名和密码</li></ul> 
+<ol start="3"><li>订阅和发布消息<br> mqtt订阅和发布消息主要有三个函数：</li></ol> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">MQTTSubscribe</span><span class="token punctuation">(</span>MQTTClient<span class="token operator">*</span> client<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> topicFilter<span class="token punctuation">,</span> <span class="token keyword">enum</span> QoS<span class="token punctuation">,</span> messageHandler<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">int</span> <span class="token function">MQTTUnsubscribe</span><span class="token punctuation">(</span>MQTTClient<span class="token operator">*</span> client<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> topicFilter<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">int</span> <span class="token function">MQTTPublish</span><span class="token punctuation">(</span>MQTTClient<span class="token operator">*</span> client<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span><span class="token punctuation">,</span> MQTTMessage<span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<ul><li>MQTTSubscribe用来订阅名为topicFilter的主题，指定Qos等级，服务器发布的消息会在messageHandler函数中得到处理；</li><li>MQTTUnsubscribe取消订阅</li><li>MQTTPublish发布mqtt消息</li></ul> 
+<ol start="5"><li>MQTTYield函数分析</li></ol> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">MQTTYield</span><span class="token punctuation">(</span>MQTTClient<span class="token operator">*</span> c<span class="token punctuation">,</span> <span class="token keyword">int</span> timeout_ms<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> rc <span class="token operator">=</span> SUCCESS<span class="token punctuation">;</span>
+    Timer timer<span class="token punctuation">;</span>
+
+    <span class="token function">TimerInit</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>timer<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//初始化定时器</span>
+    <span class="token function">TimerCountdownMS</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>timer<span class="token punctuation">,</span> timeout_ms<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//给定时器的计数器赋初始值</span>
+    
+    <span class="token keyword">do</span><span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">cycle</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> <span class="token operator">&amp;</span>timer<span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            rc <span class="token operator">=</span> FAILURE<span class="token punctuation">;</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span> <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">TimerIsExpired</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>timer<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> rc<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token keyword">int</span> <span class="token function">cycle</span><span class="token punctuation">(</span>MQTTClient<span class="token operator">*</span> c<span class="token punctuation">,</span> Timer<span class="token operator">*</span> timer<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> len <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">,</span>
+        rc <span class="token operator">=</span> SUCCESS<span class="token punctuation">;</span>
+
+    <span class="token keyword">int</span> packet_type <span class="token operator">=</span> <span class="token function">readPacket</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> timer<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">//调用tcp-ip的recv函数从服务器读取数据，阻塞接收    /* read the socket, see what work is due */</span>
+    <span class="token keyword">switch</span> <span class="token punctuation">(</span>packet_type<span class="token punctuation">)</span><span class="token comment">//判断数据包的类型</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">default</span><span class="token punctuation">:</span>
+            <span class="token comment">/* no more data to read, unrecoverable. Or read packet fails due to unexpected network error */</span>
+            packet_type <span class="token operator">=</span> SUCCESS<span class="token punctuation">;</span>
+            <span class="token keyword">goto</span> exit<span class="token punctuation">;</span>
+        <span class="token keyword">case</span> <span class="token number">0</span><span class="token punctuation">:</span> <span class="token comment">/* timed out reading packet */</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token keyword">case</span> CONNACK<span class="token punctuation">:</span><span class="token operator">/</span><span class="token operator">/</span>服务器响应连接请求
+        <span class="token keyword">case</span> PUBACK<span class="token punctuation">:</span><span class="token operator">/</span><span class="token operator">/</span>服务器响应客户端发布的消息
+        <span class="token keyword">case</span> SUBACK<span class="token punctuation">:</span><span class="token operator">/</span><span class="token operator">/</span>服务器响应客户端订阅的消息
+        <span class="token keyword">case</span> UNSUBACK<span class="token punctuation">:</span><span class="token operator">/</span><span class="token operator">/</span>服务器响应客户端取消订阅的消息
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token keyword">case</span> PUBLISH<span class="token punctuation">:</span><span class="token operator">/</span><span class="token operator">/</span>客户端收到其他客户端或服务器发布的消息
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"packet type:%d\r\n"</span><span class="token punctuation">,</span>packet_type<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            MQTTString topicName<span class="token punctuation">;</span>
+            MQTTMessage msg<span class="token punctuation">;</span>
+            <span class="token keyword">int</span> intQoS<span class="token punctuation">;</span>
+            msg<span class="token punctuation">.</span>payloadlen <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> <span class="token comment">/* this is a size_t, but deserialize publish sets this as int */</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">MQTTDeserialize_publish</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>msg<span class="token punctuation">.</span>dup<span class="token punctuation">,</span> <span class="token operator">&amp;</span>intQoS<span class="token punctuation">,</span> <span class="token operator">&amp;</span>msg<span class="token punctuation">.</span>retained<span class="token punctuation">,</span> <span class="token operator">&amp;</span>msg<span class="token punctuation">.</span>id<span class="token punctuation">,</span> <span class="token operator">&amp;</span>topicName<span class="token punctuation">,</span>
+               <span class="token punctuation">(</span><span class="token keyword">unsigned</span> <span class="token keyword">char</span><span class="token operator">*</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>msg<span class="token punctuation">.</span>payload<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">int</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token operator">&amp;</span>msg<span class="token punctuation">.</span>payloadlen<span class="token punctuation">,</span> c<span class="token operator">-&gt;</span>readbuf<span class="token punctuation">,</span> c<span class="token operator">-&gt;</span>readbuf_size<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">1</span><span class="token punctuation">)</span>
+                <span class="token keyword">goto</span> exit<span class="token punctuation">;</span>
+            msg<span class="token punctuation">.</span>qos <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">enum</span> QoS<span class="token punctuation">)</span>intQoS<span class="token punctuation">;</span>
+            <span class="token function">deliverMessage</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> <span class="token operator">&amp;</span>topicName<span class="token punctuation">,</span> <span class="token operator">&amp;</span>msg<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//查询是否有符合的topic</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>msg<span class="token punctuation">.</span>qos <span class="token operator">!=</span> QOS0<span class="token punctuation">)</span>
+            <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>msg<span class="token punctuation">.</span>qos <span class="token operator">==</span> QOS1<span class="token punctuation">)</span>
+                    len <span class="token operator">=</span> <span class="token function">MQTTSerialize_ack</span><span class="token punctuation">(</span>c<span class="token operator">-&gt;</span>buf<span class="token punctuation">,</span> c<span class="token operator">-&gt;</span>buf_size<span class="token punctuation">,</span> PUBACK<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> msg<span class="token punctuation">.</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>msg<span class="token punctuation">.</span>qos <span class="token operator">==</span> QOS2<span class="token punctuation">)</span>
+                    len <span class="token operator">=</span> <span class="token function">MQTTSerialize_ack</span><span class="token punctuation">(</span>c<span class="token operator">-&gt;</span>buf<span class="token punctuation">,</span> c<span class="token operator">-&gt;</span>buf_size<span class="token punctuation">,</span> PUBREC<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> msg<span class="token punctuation">.</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>len <span class="token operator">&lt;=</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                    rc <span class="token operator">=</span> FAILURE<span class="token punctuation">;</span>
+                <span class="token keyword">else</span>
+                    rc <span class="token operator">=</span> <span class="token function">sendPacket</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> len<span class="token punctuation">,</span> timer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>rc <span class="token operator">==</span> FAILURE<span class="token punctuation">)</span>
+                    <span class="token keyword">goto</span> exit<span class="token punctuation">;</span> <span class="token comment">// there was a problem</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">case</span> PUBREC<span class="token punctuation">:</span>
+        <span class="token keyword">case</span> PUBREL<span class="token punctuation">:</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">unsigned</span> <span class="token keyword">short</span> mypacketid<span class="token punctuation">;</span>
+            <span class="token keyword">unsigned</span> <span class="token keyword">char</span> dup<span class="token punctuation">,</span> type<span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">MQTTDeserialize_ack</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>type<span class="token punctuation">,</span> <span class="token operator">&amp;</span>dup<span class="token punctuation">,</span> <span class="token operator">&amp;</span>mypacketid<span class="token punctuation">,</span> c<span class="token operator">-&gt;</span>readbuf<span class="token punctuation">,</span> c<span class="token operator">-&gt;</span>readbuf_size<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">1</span><span class="token punctuation">)</span>
+                rc <span class="token operator">=</span> FAILURE<span class="token punctuation">;</span>
+            <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>len <span class="token operator">=</span> <span class="token function">MQTTSerialize_ack</span><span class="token punctuation">(</span>c<span class="token operator">-&gt;</span>buf<span class="token punctuation">,</span> c<span class="token operator">-&gt;</span>buf_size<span class="token punctuation">,</span>
+                <span class="token punctuation">(</span>packet_type <span class="token operator">==</span> PUBREC<span class="token punctuation">)</span> <span class="token operator">?</span> PUBREL <span class="token punctuation">:</span> PUBCOMP<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> mypacketid<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&lt;=</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                rc <span class="token operator">=</span> FAILURE<span class="token punctuation">;</span>
+            <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>rc <span class="token operator">=</span> <span class="token function">sendPacket</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> len<span class="token punctuation">,</span> timer<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">!=</span> SUCCESS<span class="token punctuation">)</span> <span class="token comment">// send the PUBREL packet</span>
+                rc <span class="token operator">=</span> FAILURE<span class="token punctuation">;</span> <span class="token comment">// there was a problem</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>rc <span class="token operator">==</span> FAILURE<span class="token punctuation">)</span>
+                <span class="token keyword">goto</span> exit<span class="token punctuation">;</span> <span class="token comment">// there was a problem</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">case</span> PUBCOMP<span class="token punctuation">:</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token keyword">case</span> PINGRESP<span class="token punctuation">:</span><span class="token operator">/</span><span class="token operator">/</span>收到服务器回复的ping数据包，对应下面的keepalive
+            <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"recv mqtt ping response!\r\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            c<span class="token operator">-&gt;</span>ping_outstanding <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">//心跳处理函数</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">keepalive</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span> <span class="token operator">!=</span> SUCCESS<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">//check only keepalive FAILURE status so that previous FAILURE status can be considered as FAULT</span>
+        rc <span class="token operator">=</span> FAILURE<span class="token punctuation">;</span>
+        <span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"keep alive fail\r\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+exit<span class="token punctuation">:</span><span class="token operator">/</span><span class="token operator">/</span>这里我做了修改
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>rc <span class="token operator">==</span> SUCCESS<span class="token punctuation">)</span>
+        rc <span class="token operator">=</span> packet_type<span class="token punctuation">;</span>
+    <span class="token comment">//else if (c-&gt;isconnected)</span>
+    <span class="token comment">//    MQTTCloseSession(c);</span>
+    <span class="token keyword">return</span> rc<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4c453f07801f1e94649f0d84828947fc/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">如何通过Anaconda创建虚拟环境</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d6a3a1d4d7dc4cee9cd6db194cc8a67e/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">element——弹窗</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

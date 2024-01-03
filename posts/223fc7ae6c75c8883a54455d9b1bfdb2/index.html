@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Unity3D 异步Socket 网络编程 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Unity3D 异步Socket 网络编程" />
+<meta property="og:description" content="简单的异步socket示例
+简单过一下主要使用到的相关API:
+public class Socket : IDisposable { public Socket(AddressFamily addressFamily, SocketType socketType, ProtocolType protocolType); // 连接指定地址&amp;端口 public void Connect(EndPoint remoteEP); // 异步接收， 指定callback函数处理到来的函数(自动创建线程去跑callback函数) public IAsyncResult BeginReceive(byte[] buffer, int offset, int size, SocketFlags socketFlags, AsyncCallback callback, object state); // 异步发送, 类似BeginReceive public IAsyncResult BeginSend(byte[] buffer, int offset, int size, SocketFlags socketFlags, AsyncCallback callback, object state); //.... } Unity3D新建脚本文件：ClientSocket.cs
+using UnityEngine; using System; using System.Net; using System.Net.Sockets; using System.Text; using UnityEngine." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/223fc7ae6c75c8883a54455d9b1bfdb2/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-11-01T20:47:15+08:00" />
+<meta property="article:modified_time" content="2021-11-01T20:47:15+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Unity3D 异步Socket 网络编程</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>简单的异步socket示例</p> 
+<p><strong>简单过一下主要使用到的相关API:</strong></p> 
+<pre><code class="language-cs">public class Socket : IDisposable
+{
+public Socket(AddressFamily addressFamily, SocketType socketType, ProtocolType protocolType);
+// 连接指定地址&amp;端口
+public void Connect(EndPoint remoteEP);
+// 异步接收， 指定callback函数处理到来的函数(自动创建线程去跑callback函数)
+public IAsyncResult BeginReceive(byte[] buffer, int offset, int size, SocketFlags socketFlags, AsyncCallback callback, object state);
+// 异步发送, 类似BeginReceive
+public IAsyncResult BeginSend(byte[] buffer, int offset, int size, SocketFlags socketFlags, AsyncCallback callback, object state);         
+//....
+}
+</code></pre> 
+<p><strong>Unity3D新建脚本文件：ClientSocket.cs</strong></p> 
+<pre><code>using UnityEngine;
+using System;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using UnityEngine.Assertions;
+using System.Threading;
+
+public class ClientSocketD
+{
+    //每个数据包都有一个2byte表示长度的头部
+    const int PACKAGE_LEN_BYTE = 2;
+
+    Socket m_socket = null;
+    byte[] m_receiveBuffer = new byte[1 &lt;&lt; (PACKAGE_LEN_BYTE * 2) + 2];
+    int m_receiveBufUsed = 0;
+
+    //这里定义数据包的分发函数, 如解密、拆箱成对象、分发对应处理函数
+    public delegate void Dispatch(byte[] szData);
+    Dispatch m_dispatch = null;
+
+    static private ClientSocketD m_instance;
+
+    private ClientSocketD()
+    {
+    }
+
+    static public ClientSocketD GetInstance()
+    {
+        if(m_instance == null)
+        {
+            m_instance = new ClientSocketD();
+        }
+        return m_instance;
+    }
+    public bool IsConnect()
+    {
+        return m_socket == null;
+    }
+
+    public void Init(string server, int port, Dispatch handler = null)
+    {
+        m_dispatch = handler;
+        IPHostEntry hostEntry = null;
+        hostEntry = Dns.GetHostEntry(server);
+
+
+        foreach (IPAddress address in hostEntry.AddressList)
+        {
+            IPEndPoint ipe = new IPEndPoint(address, port);
+            Socket tempSocket =
+                new Socket(ipe.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+
+            tempSocket.Connect(ipe);
+
+            if (tempSocket.Connected)
+            {
+                m_socket = tempSocket;
+                Debug.Log("connect success");
+                break;
+            }
+            else
+            {
+                continue;
+            }
+        }
+        return;
+    }
+
+    static int GetPackLen(byte[] szData)
+    {
+        return ((int)szData[0] &lt;&lt; 4) + szData[1];
+    }
+    //打包，在数据包开头用两字节记录包的大小。
+    static byte[] PackBig2(byte[] data)
+    {
+        int iLen = data.Length;
+        Assert.IsFalse(iLen &lt;= 0 || iLen &gt; (1 &lt;&lt; PACKAGE_LEN_BYTE * 8), "C pack too big");
+
+        byte[] szPackage = new byte[PACKAGE_LEN_BYTE + iLen];
+        szPackage[0] = (byte)((iLen &amp; 0xf0) &gt;&gt; 4);
+        szPackage[1] = (byte)((iLen &amp; 0x0f));
+        Array.Copy(data, 0, szPackage, PACKAGE_LEN_BYTE, iLen);
+
+        return szPackage;
+    }
+
+    //解包
+    public void UnPackDispatch()
+    {
+        if (m_receiveBufUsed &gt; PACKAGE_LEN_BYTE)
+        {
+            int len = GetPackLen(m_receiveBuffer);
+            int start = 0;
+            while (len + PACKAGE_LEN_BYTE &lt;= m_receiveBufUsed - start)
+            {
+                byte[] onePackage = new byte[len];
+                Array.Copy(m_receiveBuffer, start + PACKAGE_LEN_BYTE, onePackage, 0, len);
+
+                {
+                    Debug.Log("Client: recv DATA=======================");
+                    Debug.Log(Encoding.UTF8.GetString(onePackage));
+                    Debug.Log("Client: recv END=======================");
+                    if (m_dispatch != null)
+                    {
+                        m_dispatch(onePackage);
+                    }
+                }
+
+                start = start + PACKAGE_LEN_BYTE + len;
+            }
+            if (start &gt; 0)
+            {
+                Assert.IsTrue(m_receiveBufUsed - start &gt;= 0, "client unknow error");
+                if (m_receiveBufUsed - start != 0)
+                {
+                    Array.Copy(m_receiveBuffer, start, m_receiveBuffer, 0, m_receiveBufUsed - start);
+                }
+                m_receiveBufUsed -= start;
+            }
+
+        }
+    }
+
+    //异步发送
+    public int SendAsync(byte[] data)
+    {
+        byte[] package = PackBig2(data);
+        m_socket.BeginSend(package, 0, package.Length, SocketFlags.None, OnSend, package);
+        return 0;
+    }
+
+    //异步接收
+    public int ReceiveAsync()
+    {
+        if (null == m_socket)
+        {
+            Debug.LogError("C no init");
+        }
+        // 这个回调参数可定义成任意对象，例子用不到, 随便用个string演示下怎么用。
+        string strData = "receiveRecall";
+        m_socket.BeginReceive(m_receiveBuffer, m_receiveBufUsed, m_receiveBuffer.Length - m_receiveBufUsed, SocketFlags.None, OnReceive, strData);
+        return 0;
+    }
+
+    // 发送完成recall
+    private void OnSend(IAsyncResult data)
+    {
+        byte[] bytesSend = (byte[])data.AsyncState;
+        //获取得发送成功的字节数
+        int iSendLen = m_socket.EndSend(data);
+        Debug.Log(string.Format( "C OnSend: sendLen {0:d},{1:d}", iSendLen, bytesSend.Length));
+        Assert.IsTrue(bytesSend.Length == iSendLen, "net busy");
+    }
+    // 接收到缓存后recall
+    private void OnReceive(IAsyncResult data)
+    {
+        // 可以看到每次线程id和主线程不同
+        Debug.Log("C threadId:" + Thread.CurrentThread.ManagedThreadId.ToString());
+
+        try
+        {
+            string msg = (string)data.AsyncState;
+            //获取新接收数据的字节数, 小于等于BeginReceive指定的字节数
+            int iReceiveLen = m_socket.EndReceive(data);
+
+            if (iReceiveLen &gt; 0)
+            {
+
+                m_receiveBufUsed += iReceiveLen;
+                Debug.Log(string.Format("C recall {0:d},{1:d}", msg, iReceiveLen));
+                UnPackDispatch();
+            }
+            else
+            {
+
+                Debug.Log("C wait================\n");
+            }
+
+            //缓冲区接收不了比他大的数据包，这个包指的是自己写的PackBig2打的包(服务器那边的)
+            int LeftBuffLen = m_receiveBuffer.Length - m_receiveBufUsed;
+            Assert.IsTrue(LeftBuffLen &gt; 0, "C package too large" + LeftBuffLen);
+            m_socket.BeginReceive(m_receiveBuffer, m_receiveBufUsed, LeftBuffLen, SocketFlags.None, OnReceive, "receiveRecall");
+        }
+        catch (Exception e)
+        {
+            Debug.Log(e.ToString());
+        }
+    }
+}
+
+public class ClientSocket : MonoBehaviour
+{
+    private ClientSocketD m_clientSocketD = null;
+    public int port = 11000;
+
+    private float m_fPassTime = 0;
+    public float m_fInterval = 3;
+
+    // Start is called before the first frame update
+    void Start()
+    {
+        m_clientSocketD = ClientSocketD.GetInstance();
+        m_clientSocketD.Init(Dns.GetHostName(), port);
+        
+        m_clientSocketD.ReceiveAsync();
+    }
+
+    // Update is called once per frame
+    void Update()
+    {
+        if(m_fPassTime &gt; m_fInterval)
+        {
+            Debug.Log("C main threadId:" + Thread.CurrentThread.ManagedThreadId.ToString());
+
+            m_fPassTime = 0;
+            //每个几秒向服务端发送一条消息
+            m_clientSocketD.SendAsync(Encoding.UTF8.GetBytes("msg from client"+ DateTime.Now.ToString()));
+        }
+        m_fPassTime += Time.deltaTime;
+    }
+}</code></pre> 
+<p><strong>随便搞一个服务器Socket，也跑在Unity3D测试下</strong></p> 
+<pre><code class="language-cs">using System.Collections;
+using System.Collections.Generic;
+
+using System;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using UnityEngine;
+using UnityEngine.Assertions;
+
+// 因为博主主要是测试下Unity下的网络通信，所以服务器的案例就 取官方文档的例子简单改下配合客户端用的，原理和客户端大致一样。
+// State object for reading client data asynchronously  
+public class StateObject
+{
+    const int PACKAGE_LEN_BYTE = 2;
+    public byte[] buffer = new byte[(1 &lt;&lt; PACKAGE_LEN_BYTE * 8) + PACKAGE_LEN_BYTE];
+    public int bufferUsed = 0;
+
+    public Socket workSocket = null;
+
+    //1坨屎
+    static int GetPackLen(byte[] szData)
+    {
+        return ((int)szData[0] &lt;&lt; 4) + szData[1];
+    }
+
+    //2坨屎 这两坨屎不应该放这个类里, 贪方便就随便写了
+    public void UnPackDispatch()
+    {
+        if (bufferUsed &gt; PACKAGE_LEN_BYTE)
+        {
+            int len = GetPackLen(buffer);
+            int start = 0;
+            while (len + PACKAGE_LEN_BYTE &lt;= bufferUsed - start)
+            {
+                byte[] onePackage = new byte[len];
+                Array.Copy(buffer, start + PACKAGE_LEN_BYTE, onePackage, 0, len);
+                start = start + PACKAGE_LEN_BYTE + len;
+
+                {
+                    Debug.Log("S server recv data=======================");
+                    Debug.Log(Encoding.UTF8.GetString(onePackage));
+                    Debug.Log("S server recv End=======================");
+                }
+            }
+            if(start &gt; 0 )
+            {
+                Assert.IsTrue(bufferUsed - start &gt;= 0, "unknow error");
+                if (bufferUsed - start != 0)
+                {
+                    Array.Copy(buffer, start, buffer, 0, bufferUsed - start);
+                }
+                bufferUsed -= start;
+            }
+            
+        }
+    }
+}
+
+public class AsynchronousSocketListener
+{
+    static List&lt;Socket&gt; clientList = new List&lt;Socket&gt;();
+    // Thread signal.  
+    public static ManualResetEvent allDone = new ManualResetEvent(false);
+
+    public AsynchronousSocketListener()
+    {
+    }
+
+    public static void StartListening(object port)
+    {
+        // Establish the local endpoint for the socket.  
+        // The DNS name of the computer  
+        // running the listener is "host.contoso.com".  
+        Debug.Log(Dns.GetHostName()); // 本机名
+        IPHostEntry ipHostInfo = Dns.GetHostEntry(Dns.GetHostName());
+        IPAddress ipAddress = ipHostInfo.AddressList[0];
+        IPEndPoint localEndPoint = new IPEndPoint(ipAddress, (int)port);
+
+        // Create a TCP/IP socket.  
+        Socket listener = new Socket(ipAddress.AddressFamily,
+            SocketType.Stream, ProtocolType.Tcp);
+
+        try
+        {
+            // Bind the socket to the local endpoint and listen for incoming connections.  
+            listener.Bind(localEndPoint);
+            listener.Listen(100);
+
+            while (true)
+            {
+                // Set the event to nonsignaled state.  
+                allDone.Reset();
+
+                // Start an asynchronous socket to listen for connections.  
+                Debug.Log("S Waiting for a connection...");
+                listener.BeginAccept(
+                    new AsyncCallback(AcceptCallback),
+                    listener);
+
+                //阻塞再这里，等有客户端连接后
+                // Wait until a connection is made before continuing.  
+                allDone.WaitOne();
+            }
+
+        }
+        catch (Exception e)
+        {
+            Debug.Log(e.ToString());
+        }
+    }
+
+    public static void AcceptCallback(IAsyncResult ar)
+    {
+        // Signal the main thread to continue.  
+        allDone.Set();
+
+        // Get the socket that handles the client request.  
+        Socket listener = (Socket)ar.AsyncState;
+        Socket handler = listener.EndAccept(ar);
+
+        Debug.LogWarning("S AcceptCallback: " + handler.ToString());
+        clientList.Add(handler);
+
+        // Create the state object.  
+        StateObject state = new StateObject();
+        state.workSocket = handler;
+        handler.BeginReceive(state.buffer, 0, state.buffer.Length, 0,
+            new AsyncCallback(ReadCallback), state);
+    }
+
+    public static void ReadCallback(IAsyncResult ar)
+    {
+        String content = String.Empty;
+
+        // Retrieve the state object and the handler socket  
+        // from the asynchronous state object.  
+        StateObject state = (StateObject)ar.AsyncState;
+        Socket handler = state.workSocket;
+
+        // Read data from the client socket.
+        int bytesRead = handler.EndReceive(ar);
+
+        if (bytesRead &gt; 0)
+        {
+            state.bufferUsed += bytesRead;
+            state.UnPackDispatch();//上面说的一坨屎尽量写成这种 UnPackDispatch(state)
+
+            Assert.IsTrue(state.buffer.Length - state.bufferUsed &gt; 0, "package too large(S)");
+
+            handler.BeginReceive(state.buffer, state.bufferUsed, state.buffer.Length - state.bufferUsed, 
+                SocketFlags.None, new AsyncCallback(ReadCallback), state);
+        }
+    }
+
+    static byte[] PackBig2(byte[] data)
+    {
+        int iLen = data.Length;
+        if (iLen &lt;= 0 || iLen &gt; (1 &lt;&lt; 2 * 8) - 1)
+        {
+            Debug.LogError("S pack too big :" + iLen);
+            return new byte[2];
+        }
+        byte[] szPackage = new byte[2 + iLen];
+        szPackage[0] = (byte)((iLen &amp; 0xf0) &gt;&gt; 4);
+        szPackage[1] = (byte)((iLen &amp; 0x0f));
+        Array.Copy(data, 0, szPackage, 2, iLen);
+        return szPackage;
+    }
+
+    private static void Send(Socket handler, String data)
+    {
+        // Convert the string data to byte data using ASCII encoding.  
+        byte[] byteData = PackBig2(Encoding.ASCII.GetBytes(data));
+        // Begin sending the data to the remote device.  
+        handler.BeginSend(byteData, 0, byteData.Length, 0,
+            new AsyncCallback(SendCallback), handler);
+    }
+
+    public static void Broadcast()
+    {
+        foreach (Socket handler in clientList)
+        {
+            Send(handler,"serverTime:"+ DateTime.Now.ToString());
+        }
+    }
+
+    private static void SendCallback(IAsyncResult ar)
+    {
+        try
+        {
+            // Retrieve the socket from the state object.  
+            Socket handler = (Socket)ar.AsyncState;
+
+            // Complete sending the data to the remote device.  
+            int bytesSent = handler.EndSend(ar);
+            Debug.LogFormat("S Sent {0} bytes to client.", bytesSent);
+
+            //handler.Shutdown(SocketShutdown.Both);
+            //handler.Close();
+
+        }
+        catch (Exception e)
+        {
+            Debug.LogError(e.ToString());
+        }
+    }
+}
+public class ServerSocketTest : MonoBehaviour
+{
+    float m_fPassTime = 0;
+    public float m_fInterval = 3;
+    public int port = 11000;
+    // Start is called before the first frame update
+    void Start()
+    {
+        //开个线程去监听客户端连接
+        Thread t = new Thread(AsynchronousSocketListener.StartListening);
+        t.Start(port);
+    }
+
+    // Update is called once per frame
+    void Update()
+    {
+        if (m_fPassTime &gt; m_fInterval)
+        {
+            m_fPassTime = 0;
+            //每隔几秒广播简单的消息给客户端。
+            AsynchronousSocketListener.Broadcast();
+        }
+        m_fPassTime += Time.deltaTime;
+    }
+}
+</code></pre> 
+<p><strong>接下来是 Unity3D 操作和结果了</strong></p> 
+<p>1. 随便在场景新建一个空对象CreateEmpty: 如GloabalObject(下面还有一个是用来模拟2个客户端的，这里就不展示了)，然后挂载客户端脚本和服务端脚本的socket(我们可以先只勾选服务端脚本，运行之后再勾选客户端脚本)；</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/a1/e7/UDwIAubU_o.png"></p> 
+<p> 2.看到Console窗口。服务端正在监听客户端的连接。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/10/ce/RjqRPXUn_o.png"></p> 
+<p> 3.把我们的客户端脚本勾上，每隔几秒就输出了很多信息。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/70/ce/oxebiw5y_o.png"></p> 
+<p> 我们只看其中45秒的那几条，这一组就是服务端发给客户端的消息了，S开头指服务端打印的消息，C开头则是客户端打印的消息。</p> 
+<p>4.刚刚我们还打印了线程id可以看看</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/e9/b5/VpG9GiWQ_o.png"></p> 
+<p>主线程id一直为1，而我们回调的线程则是有上有下。这是API为我们创建了一个线程池，专门执行回调函数。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/7c5cb58e5e30e681148d13b93c65bae6/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Pytorch遇到报错Expected more than 1 value per channel when training, got input size torch.Size</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8ab5176fe6968aa4541fd9bb84d5ae5d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">VS断点调试技巧</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

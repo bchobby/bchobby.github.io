@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>JVM——深入理解JMM(Java内存模型)与线程 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="JVM——深入理解JMM(Java内存模型)与线程" />
+<meta property="og:description" content="硬件的效率和一致性 让计算机并发执行若干个运算任务，其中一个比较重要的复杂性就在于，许多运算不是只依靠处理器就能实现的，另外还有如读取运算数据、存储运算结果，这种IO操作也都是运算的重要步骤。但是，由于处理器的运算速度和存储设备的IO速度有几个数量级的差距，所以现代计算机不得不在其之间加入一层或多层读写速度尽量接近处理器运算速度的高速缓存。将运算需要用到的数据和运算产生的结果同步到缓存中，这样处理器就无需等待缓慢的内存读写了。
+但这样会在有着多路处理器的计算机中产生缓存一致性的问题，每个处理器都有自己的高速缓存，却又共享同一主内存。当多个处理器的运算结果都涉及同一块内存时，可能导致各自的缓存数据不一致。由此就诞生了一些，保证缓存一致性的协议
+Java内存模型（JMM） Java虚拟机规范曾视图定义一种java内存模型，用来屏蔽掉各种硬件和操作系统的内存访问差异，以实现让java程序在各种平台下都能达到一致的内存访问效果
+java内存模型定义的得足够严谨，才能让java的并发访问操作不会产生歧义，但是也必须定义的足够宽松，使得虚拟机的实现能够又足够的自由空间去发挥硬件的性能和特性获取更好的执行速度。经过长时间的验证和修补，直到JDK5发布后，Java内存模型才终于成熟、完善起来了
+主内存和工作内存 java内存模型的主要目的时定义程序中各种变量的访问规则，即关注虚拟机中把变量值储存到内存或从内存中去除变量值这样的细节。此处的变量值只括存储在jvm的虚拟机栈以外的元素。内为栈内的元素是线程私有的，不会被共享。
+JMM规定了所有变量都存储在主内存中，每条线程还有自己的工作内存，线程的工作内存中保存了该线程使用的变量的主内存副本。主内存、线程、工作内存三者的交互关系如下
+内存间的交互操作 关于主内存和工作内存的交互协议，即一个变量如何从主内存拷贝到工作内存、如何从工作内存同步回主内存这一类的实现细节，JMM定义了以下8中操作来完成。java虚拟机是现实必须保证下面提及的每一种操作都是原子的、不可再分的。
+lock：作用于主内存的变量，把一个变量标识为一条线程独占的状态unlock：作用域主内存的变量，他把一个处于锁定状态的变量释放出来，释放后的变量才可以被其他线程锁定read：作用于主内存的变量，它把一个变量的值从主内存输送到线程的工作内存中，以便随后的load动作使用load：作用域工作内存的变量，它把read操作从中内存中得到的变量值放入工作内存的变量副本中use：作用域工作内存的变量，它把工作内存中一个变量的值传递给执行引擎，每当虚拟机遇到一个需要使用变量的值的字节码指令时会执行这个操作assign(赋值)：作用域工作内存的变量，它把一个从执行引擎中接收到的值赋给工作内存的变量，每当虚拟机遇到一个给变量赋值的字节码指令时执行这个操作store：作用于工作内存的变量，它把工作内存中一个变量的值送入到主内存中，以便随后的write操作使用write：作用域主内存的变量，它把store操作中从工作内存中得到的变量放入主内存的变量中。 如果要把一个变量从主内存拷贝到工作内存，那就要按顺序执行read和load操作，如果要把变量从工作内存同步到主内存，就要按顺序执行store和write操作。注意，java内存模型只要求上述两个操作必须按顺序执行，但不要求连续执行。中间是可以插入其他指令的。java内存模型还规定了执行上述8中基本操作时必须满足如下规则：
+不允许read、load、store和write操作之一单独出现。即不允许一个变量从主内存读取了但工作内存不接受，或者从工作内存发起回写了主内存不接受的情况出现。不允许一个线程丢弃它的assign操作，即变量在工作内存中改变了之后必须把该变化同步回主内存不允许一个线程无原因的把数据从工作内存中同步回中内存一个新的变量只能在主内存中“诞生”，不允许在工作内存中直接使用一个未被初始化的变量，换句话说对一个变量实施use、store操作之前，必须先执行assign和load操作。一个变量在同一时刻只能允许一条线程对其进行lock操作，但lock操作可以被同一条线程执行多次，多次执行lock后，只有执行相同次数的unlock才能解锁。如果对一个变量进行lock操作，那将会清空工作内存中此变量的值，在执行引擎使用这个变量前，需要重新执行load或assign操作以初始化变量的值如果对一个变量事先没有被lock操作锁定，那么就不允许对它执行unlock操作，也不允许去unlock一个被其他线程锁定的变量对一个变量执行unlock操作之前，必须先把此变量同步回主内存中 对于volatile的型变量的特殊规则 关键字volatile可以说是java虚拟机最轻量级的同步机制
+当一个变量被定义成volatile之后，他将具备两种特性
+volatile一般也只用来修饰共享变量
+保证此变量对所有线程的可见性，这里的可见性是指，当一条线程修改了这个变量的值，新值对于其他线程来说可以立即得知的，而普通变量并不能做到这一点，普通变量的值在线程间传递需要同故宫主内存来完成。比如线程A修改一个变量的值，然后向主内存进行回写，另一条线程B在线程A回写完成了之后再对主内存进行读取操作，新变量值才会对B可见 使用volatile变量禁止指令重排序优化的，由于JVM的JIT编译器会对很多代码进行优化，以提高执行效率，其中就包括指令重排序，而volatile依靠内存屏障，屏蔽这种可能会在程序运行过程中产生错误的优化。产生错误的原因一般都是由于变量的逃逸，加上指令重排序产生的，产生错误的机率并不高但也存在。 volatile变量读操作的性能消耗与普通变量几乎没有什么差别，但是写操作则可能会慢上一些，因为它需要在本地代码中插入许多内存屏障指令来保证处理器不发生乱序执行。不过绝大多数场景下volatile总开销仍然要比锁来的更低。
+指令重排序 指令重排序是指处理器采用了允许将多条指令不按程序规定的顺序分开发送给各个相应的电路单元进行处理。但不是说指令任意重排，处理器必须能正确处理指令的依赖情况保证程序能得出正确的执行结果
+针对于long和double型变量的特殊规则 JMM要求lock、unlock、read、load、assign、use、store、write这八种操作都具有原子性。但是对于64位的操作类型，在JMM中却有一条宽松的规定，允许虚拟机将没有被volatile修饰的64位数据的读写操作划分为两次32位的操作来进行。即允许虚拟机实现自行选择是否要保证64位数据类型的load、store、read和write这四个操作的原子性这就是所谓的“long和double的非原子性规定”。
+如果又多个线程共享一个并未声明位volatile的long或double变量，并且同时对他们进行读取和修改操作，那么某些线程可能会读取到一个既不是原值，也不是其他线程修改值的代表了“半个变量”的数值。但是这种情况是非常罕见的，在实际开发中，除非该数据有明确可知的线程竞争，否则我们在编写时一般不需要因为这个原因把用到的long和double变量专门声明为volatile
+原子性、可见性和有序性 原子性 由JMM直接来保证的原子性变量操作包括read、load、assign、use、store和write这六个
+如果应用场景需要一个更大范围的原子性保证，JMM还提供了lock和unlock操作来满足这种需求，尽管虚拟机未把lock和unlock操作直接开放给用户使用，但却提供了更高层次的monitorenter和monitorexit两个字节码指令来隐式的使用这两个操作。这两个字节码反映到Java代码中就是synchronized关键字
+可见性 除了volatile之外，Java还有两个关键字能实现可见性，分别是synchronized和final。
+synchronized的可见性是由“对一个变量执行unlock操作之气那，必须先把此变量同步回主内存中”这条规则获得的 final的可见性是基于不变性成立的，一般在实际开发中，只会用final修饰一些基本变量，并不会修饰对象、数组之类的元素，因为不变性而导致的可见性只在基本变量上可以发生，对于对象、数组，final只能保证他们的地址不发生改变，但对于对象的属性值、数组的元素值的改变，final是控制不了的 有序性 Java语言提供了volatile和synchronized这两个关键字来保证线程之间操作的有序性，volatile关键字本身就包含了禁止指令重排序的语义，而synchronized则是由“一个变量在同一时刻只允许一条线程对其进行lock操作”这条规则获得的，这个规则决定了持有同一个锁的两个同步块只能串行的进入
+先行发生原则 如果JMM中所有有序性都仅靠volatile和synchronized来完成，那么有很多操作都将会变得非常繁琐。但是我们在编写代码时并没有察觉到，这是因为java语言中有一个“先行发生原则”，这个原则时判断数据是否存在竞争，线程是否安全的非常有用的手段。
+下面时JMM下一些“天然的”先行发生关系，这些先行发生关系无需任何同步器协助就已经存在，可以在代码中直接使用。
+程序次序规则：在一个线程内，按照控制流顺序，书写在前面的操作先行发生于书写在后面的操作。这里说的是控制流顺序而不是程序代码的循序，因为需要考虑分支、循环等结构。 管程锁定规则：一个unlock操作先行发生于后面对同一个锁的lock操作。 volatile变量规则：对一个volatile变量的写操作先行发生于后面对这个变量的读操作 线程启动规则：Thread对象的start（）方法先行发生于此线程的每一个操作 线程中止规则：线程中所有操作都先行发生于对此线程的终止检测 线程中断规则：对先册灰姑娘interrupt()方法的调用先线性发生于被中断线程的代码检测到中断事件的发生 对象终结原则：一个对象的初始化完成先行发生于它的finalize（）方法的开始 传递性：如果操作A先行发生于操作B，操作B先行发生于操作C，那就可以得出操作A先行发生于操作C的结论。 Java的线程 线程的实现 线程是比进程更轻量级的调度执行单位，目前线程是Java里面进行处理器资源调度的最基本单位。可以注意到Thread类的所有关键方法都被声明为Native，一个Native方法往往意味着这个方法没有使用或无法使用平台无关的手段来实现。
+实现线程主要有三种方式：使用内核线程实现（1：1实现），使用用户线程实现（1：N实现），使用用户线程加轻量级进程混合实现（N:M实现）
+内核实现 内核线程就是直接由操作系统内核支持的线程，这种线程由内核来完成线程切换，内核通过操作任务调度器对线程进行调度，并负责将线程的任务映射到各个处理器上。
+程序一般不会直接使用内核线程，而是使用内核线程的一种高级接口——轻量级进程，轻量级进程就是我们通常意义上所讲的线程（注意线程和内核线程的区别），
+由于内核线程的支持，每个轻量级进程都成为一个独立的调度单元，由于是基于内核线程实现的，所以各种线程操作，都需要系统调用，而系统调用的代价相对较高，需要在用户态和核心态中来回切换。其次，每个轻量级进程都需要一个内核线程的支持，因此轻量级进程需要消耗一定的内核资源，因此一个系统支持轻量级进程的数量是有限的。
+用户线程实现 一般来说，一个线程只要不是内核线程都可以视为用户线程的一种，从这个定义来看，轻量级线程也属于用户线程，但是轻量级线程的实现始终是建立在内核之上的，许多操作都要系统调用，因此并不具备通常意义上用户线程的优点
+而普通的用户线程是指完全建立在用户空间的线程库上，系统内核不能感知到用户线程的存在以及如何实现的。用户线程的建立、同步、销毁和调度完全在用户态中完成，不需要内核的帮助。如果程序实现的当，这种线程不需要切换到用户态，因此能够支持规模跟大的线程数量
+混合实现 还有一种将内核线程与用户线程一起使用的实现方式，被称为N：M实现，在这种混合实现下，即存在用户线程，也存在轻量级进程，操作系统支持的轻量级线程作为用户线程和内核线程的桥梁。
+Java线程的实现 以HotSpot为例，他的每一个Java线程都是直接映射到一个操作系统原生线程来实现的，而且中间没有二外的内存结构，所以HotSpot自己是不会去干涉线程调度的，线程调度完全是由任务调度器决定的。
+Java线程调度 线程调度是指系统为线程分配处理器使用权的过程，调度主要方式有两种，抢占式调度和协同式调度。
+协同式调度 线程的执行时间由线程本身来控制，线程把自己的工作执行完了之后，要主动通知系统切换到另外一个线程上去。协同式多线程的好处是实现简单，而且由于线程要把自己的事情干完后才会进行线程切换，一般没有什么同步问题。但是它的坏处也很明显，线程执行时间不可控制，如果线程陷入阻塞，就会导致程序一直阻塞在哪里
+抢占式调度 每个线程将由系统来分配执行时间，线程的切换不由线程本身来决定。当一个线程出现了问题，我们还可以使用任务管理器把这个进程杀掉，而不至于导致系统崩溃。
+虽然Java的线程调度是由系统完成的，但我们仍然可以“建议”操作系统给某些线程多分配一些执行时间，这项操作是通过设置线程优先级来完成的。但是，线程优先级并不是一项稳定的调节手段，因为最终的线程调度还是由操作系统说了算。Windows中有一个“优先级推进器”的功能目的是当系统发现一个线程被执行的特别频繁时，可能会越过线程优先级为它分配执行时间，以便减少因为线程频繁切换导致的性能损耗" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/0a43336a164479c45b0dec0e9ab908c8/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-03-15T15:51:59+08:00" />
+<meta property="article:modified_time" content="2023-03-15T15:51:59+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">JVM——深入理解JMM(Java内存模型)与线程</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h4 id="_mL54VLiz"></h4> 
+<h2>硬件的效率和一致性</h2> 
+<p>让计算机并发执行若干个运算任务，其中一个比较重要的复杂性就在于，许多运算不是只依靠处理器就能实现的，另外还有如读取运算数据、存储运算结果，这种IO操作也都是运算的重要步骤。但是，由于处理器的运算速度和存储设备的IO速度有几个数量级的差距，所以现代计算机不得不在其之间加入一层或多层读写速度尽量接近处理器运算速度的高速缓存。将运算需要用到的数据和运算产生的结果同步到缓存中，这样处理器就无需等待缓慢的内存读写了。</p> 
+<p>但这样会在有着多路处理器的计算机中产生缓存一致性的问题，每个处理器都有自己的高速缓存，却又共享同一主内存。当多个处理器的运算结果都涉及同一块内存时，可能导致各自的缓存数据不一致。由此就诞生了一些，保证缓存一致性的协议</p> 
+<p><img alt="" height="312" src="https://images2.imgbox.com/3a/cd/SNB1FsI4_o.png" width="779"></p> 
+<p> </p> 
+<h4 id="_nUiFRK6D"></h4> 
+<h2>Java内存模型（JMM）</h2> 
+<p>Java虚拟机规范曾视图定义一种java内存模型，用来屏蔽掉各种硬件和操作系统的内存访问差异，以实现让java程序在各种平台下都能达到一致的内存访问效果</p> 
+<p>java内存模型定义的得足够严谨，才能让java的并发访问操作不会产生歧义，但是也必须定义的足够宽松，使得虚拟机的实现能够又足够的自由空间去发挥硬件的性能和特性获取更好的执行速度。经过长时间的验证和修补，直到JDK5发布后，Java内存模型才终于成熟、完善起来了</p> 
+<h4 id="_wFF0phoH"></h4> 
+<h2>主内存和工作内存</h2> 
+<p>java内存模型的主要目的时定义程序中各种变量的访问规则，即关注虚拟机中把变量值储存到内存或从内存中去除变量值这样的细节。此处的变量值只括存储在jvm的虚拟机栈以外的元素。内为栈内的元素是线程私有的，不会被共享。</p> 
+<p>JMM规定了所有变量都存储在主内存中，每条线程还有自己的工作内存，线程的工作内存中保存了该线程使用的变量的主内存副本。主内存、线程、工作内存三者的交互关系如下</p> 
+<h4 id="_JtLwVeK1"></h4> 
+<h2>内存间的交互操作</h2> 
+<p>关于主内存和工作内存的交互协议，即一个变量如何从主内存拷贝到工作内存、如何从工作内存同步回主内存这一类的实现细节，JMM定义了以下8中操作来完成。java虚拟机是现实必须保证下面提及的每一种操作都是原子的、不可再分的。</p> 
+<ul><li>lock：作用于主内存的变量，把一个变量标识为一条线程独占的状态</li><li>unlock：作用域主内存的变量，他把一个处于锁定状态的变量释放出来，释放后的变量才可以被其他线程锁定</li><li>read：作用于主内存的变量，它把一个变量的值从主内存输送到线程的工作内存中，以便随后的load动作使用</li><li>load：作用域工作内存的变量，它把read操作从中内存中得到的变量值放入工作内存的变量副本中</li><li>use：作用域工作内存的变量，它把工作内存中一个变量的值传递给执行引擎，每当虚拟机遇到一个需要使用变量的值的字节码指令时会执行这个操作</li><li>assign(赋值)：作用域工作内存的变量，它把一个从执行引擎中接收到的值赋给工作内存的变量，每当虚拟机遇到一个给变量赋值的字节码指令时执行这个操作</li><li>store：作用于工作内存的变量，它把工作内存中一个变量的值送入到主内存中，以便随后的write操作使用</li><li>write：作用域主内存的变量，它把store操作中从工作内存中得到的变量放入主内存的变量中。</li></ul> 
+<p>如果要把一个变量从主内存拷贝到工作内存，那就要按顺序执行read和load操作，如果要把变量从工作内存同步到主内存，就要按顺序执行store和write操作。注意，java内存模型只要求上述两个操作必须按顺序执行，但不要求连续执行。中间是可以插入其他指令的。java内存模型还规定了执行上述8中基本操作时必须满足如下规则：</p> 
+<ul><li>不允许read、load、store和write操作之一单独出现。即不允许一个变量从主内存读取了但工作内存不接受，或者从工作内存发起回写了主内存不接受的情况出现。</li><li>不允许一个线程丢弃它的assign操作，即变量在工作内存中改变了之后必须把该变化同步回主内存</li><li>不允许一个线程无原因的把数据从工作内存中同步回中内存</li><li>一个新的变量只能在主内存中“诞生”，不允许在工作内存中直接使用一个未被初始化的变量，换句话说对一个变量实施use、store操作之前，必须先执行assign和load操作。</li><li>一个变量在同一时刻只能允许一条线程对其进行lock操作，但lock操作可以被同一条线程执行多次，多次执行lock后，只有执行相同次数的unlock才能解锁。</li><li>如果对一个变量进行lock操作，那将会清空工作内存中此变量的值，在执行引擎使用这个变量前，需要重新执行load或assign操作以初始化变量的值</li><li>如果对一个变量事先没有被lock操作锁定，那么就不允许对它执行unlock操作，也不允许去unlock一个被其他线程锁定的变量</li><li>对一个变量执行unlock操作之前，必须先把此变量同步回主内存中</li></ul> 
+<h4 id="_ghnp5PVL"></h4> 
+<h2>对于volatile的型变量的特殊规则</h2> 
+<p>关键字volatile可以说是java虚拟机最轻量级的同步机制</p> 
+<p>当一个变量被定义成volatile之后，他将具备两种特性</p> 
+<p>volatile一般也只用来修饰共享变量</p> 
+<ol><li>保证此变量对所有线程的可见性，这里的可见性是指，当一条线程修改了这个变量的值，新值对于其他线程来说可以立即得知的，而普通变量并不能做到这一点，普通变量的值在线程间传递需要同故宫主内存来完成。比如线程A修改一个变量的值，然后向主内存进行回写，另一条线程B在线程A回写完成了之后再对主内存进行读取操作，新变量值才会对B可见</li></ol> 
+<ol><li>使用volatile变量禁止指令重排序优化的，由于JVM的JIT编译器会对很多代码进行优化，以提高执行效率，其中就包括指令重排序，而volatile依靠内存屏障，屏蔽这种可能会在程序运行过程中产生错误的优化。产生错误的原因一般都是由于变量的逃逸，加上指令重排序产生的，产生错误的机率并不高但也存在。</li></ol> 
+<p>volatile变量读操作的性能消耗与普通变量几乎没有什么差别，但是写操作则可能会慢上一些，因为它需要在本地代码中插入许多内存屏障指令来保证处理器不发生乱序执行。不过绝大多数场景下volatile总开销仍然要比锁来的更低。</p> 
+<h2>指令重排序</h2> 
+<p>指令重排序是指处理器采用了允许将多条指令不按程序规定的顺序分开发送给各个相应的电路单元进行处理。但不是说指令任意重排，处理器必须能正确处理指令的依赖情况保证程序能得出正确的执行结果</p> 
+<p></p> 
+<h2>针对于long和double型变量的特殊规则</h2> 
+<p>JMM要求lock、unlock、read、load、assign、use、store、write这八种操作都具有原子性。但是对于64位的操作类型，在JMM中却有一条宽松的规定，允许虚拟机将没有被volatile修饰的64位数据的读写操作划分为两次32位的操作来进行。即允许虚拟机实现自行选择是否要保证64位数据类型的load、store、read和write这四个操作的原子性这就是所谓的“long和double的非原子性规定”。</p> 
+<p>如果又多个线程共享一个并未声明位volatile的long或double变量，并且同时对他们进行读取和修改操作，那么某些线程可能会读取到一个既不是原值，也不是其他线程修改值的代表了“半个变量”的数值。但是这种情况是非常罕见的，在实际开发中，除非该数据有明确可知的线程竞争，否则我们在编写时一般不需要因为这个原因把用到的long和double变量专门声明为volatile</p> 
+<p></p> 
+<h4 id="_WMvridaR"></h4> 
+<h2>原子性、可见性和有序性</h2> 
+<h4>原子性</h4> 
+<p>由JMM直接来保证的原子性变量操作包括read、load、assign、use、store和write这六个</p> 
+<p>如果应用场景需要一个更大范围的原子性保证，JMM还提供了lock和unlock操作来满足这种需求，尽管虚拟机未把lock和unlock操作直接开放给用户使用，但却提供了更高层次的monitorenter和monitorexit两个字节码指令来隐式的使用这两个操作。这两个字节码反映到Java代码中就是synchronized关键字</p> 
+<h4>可见性</h4> 
+<p>除了volatile之外，Java还有两个关键字能实现可见性，分别是synchronized和final。</p> 
+<ul><li>synchronized的可见性是由“对一个变量执行unlock操作之气那，必须先把此变量同步回主内存中”这条规则获得的</li></ul> 
+<ul><li>final的可见性是基于不变性成立的，一般在实际开发中，只会用final修饰一些基本变量，并不会修饰对象、数组之类的元素，因为不变性而导致的可见性只在基本变量上可以发生，对于对象、数组，final只能保证他们的地址不发生改变，但对于对象的属性值、数组的元素值的改变，final是控制不了的</li></ul> 
+<h4>有序性</h4> 
+<p>Java语言提供了volatile和synchronized这两个关键字来保证线程之间操作的有序性，volatile关键字本身就包含了禁止指令重排序的语义，而synchronized则是由“一个变量在同一时刻只允许一条线程对其进行lock操作”这条规则获得的，这个规则决定了持有同一个锁的两个同步块只能串行的进入</p> 
+<p></p> 
+<h2>先行发生原则</h2> 
+<p>如果JMM中所有有序性都仅靠volatile和synchronized来完成，那么有很多操作都将会变得非常繁琐。但是我们在编写代码时并没有察觉到，这是因为java语言中有一个“先行发生原则”，这个原则时判断数据是否存在竞争，线程是否安全的非常有用的手段。</p> 
+<p>下面时JMM下一些“天然的”先行发生关系，这些先行发生关系无需任何同步器协助就已经存在，可以在代码中直接使用。</p> 
+<ul><li>程序次序规则：在一个线程内，按照控制流顺序，书写在前面的操作先行发生于书写在后面的操作。这里说的是控制流顺序而不是程序代码的循序，因为需要考虑分支、循环等结构。</li></ul> 
+<ul><li>管程锁定规则：一个unlock操作先行发生于后面对同一个锁的lock操作。</li></ul> 
+<ul><li>volatile变量规则：对一个volatile变量的写操作先行发生于后面对这个变量的读操作</li></ul> 
+<ul><li>线程启动规则：Thread对象的start（）方法先行发生于此线程的每一个操作</li></ul> 
+<ul><li>线程中止规则：线程中所有操作都先行发生于对此线程的终止检测</li></ul> 
+<ul><li>线程中断规则：对先册灰姑娘interrupt()方法的调用先线性发生于被中断线程的代码检测到中断事件的发生</li></ul> 
+<ul><li>对象终结原则：一个对象的初始化完成先行发生于它的finalize（）方法的开始</li></ul> 
+<ul><li>传递性：如果操作A先行发生于操作B，操作B先行发生于操作C，那就可以得出操作A先行发生于操作C的结论。</li></ul> 
+<p></p> 
+<h4 id="_koeusFCq"></h4> 
+<h2>Java的线程</h2> 
+<h4>线程的实现</h4> 
+<p>线程是比进程更轻量级的调度执行单位，目前线程是Java里面进行处理器资源调度的最基本单位。可以注意到Thread类的所有关键方法都被声明为Native，一个Native方法往往意味着这个方法没有使用或无法使用平台无关的手段来实现。</p> 
+<p>实现线程主要有三种方式：使用内核线程实现（1：1实现），使用用户线程实现（1：N实现），使用用户线程加轻量级进程混合实现（N:M实现）</p> 
+<h4>内核实现</h4> 
+<p>内核线程就是直接由操作系统内核支持的线程，这种线程由内核来完成线程切换，内核通过操作任务调度器对线程进行调度，并负责将线程的任务映射到各个处理器上。</p> 
+<p>程序一般不会直接使用内核线程，而是使用内核线程的一种高级接口——轻量级进程，轻量级进程就是我们通常意义上所讲的线程（注意线程和内核线程的区别），</p> 
+<p>由于内核线程的支持，每个轻量级进程都成为一个独立的调度单元，由于是基于内核线程实现的，所以各种线程操作，都需要系统调用，而系统调用的代价相对较高，需要在用户态和核心态中来回切换。其次，每个轻量级进程都需要一个内核线程的支持，因此轻量级进程需要消耗一定的内核资源，因此一个系统支持轻量级进程的数量是有限的。</p> 
+<h4>用户线程实现</h4> 
+<p>一般来说，一个线程只要不是内核线程都可以视为用户线程的一种，从这个定义来看，轻量级线程也属于用户线程，但是轻量级线程的实现始终是建立在内核之上的，许多操作都要系统调用，因此并不具备通常意义上用户线程的优点</p> 
+<p>而普通的用户线程是指完全建立在用户空间的线程库上，系统内核不能感知到用户线程的存在以及如何实现的。用户线程的建立、同步、销毁和调度完全在用户态中完成，不需要内核的帮助。如果程序实现的当，这种线程不需要切换到用户态，因此能够支持规模跟大的线程数量</p> 
+<h4>混合实现</h4> 
+<p>还有一种将内核线程与用户线程一起使用的实现方式，被称为N：M实现，在这种混合实现下，即存在用户线程，也存在轻量级进程，操作系统支持的轻量级线程作为用户线程和内核线程的桥梁。</p> 
+<p></p> 
+<h3>Java线程的实现</h3> 
+<p>以HotSpot为例，他的每一个Java线程都是直接映射到一个操作系统原生线程来实现的，而且中间没有二外的内存结构，所以HotSpot自己是不会去干涉线程调度的，线程调度完全是由任务调度器决定的。</p> 
+<p></p> 
+<h3>Java线程调度</h3> 
+<p>线程调度是指系统为线程分配处理器使用权的过程，调度主要方式有两种，抢占式调度和协同式调度。</p> 
+<h3>协同式调度</h3> 
+<p>线程的执行时间由线程本身来控制，线程把自己的工作执行完了之后，要主动通知系统切换到另外一个线程上去。协同式多线程的好处是实现简单，而且由于线程要把自己的事情干完后才会进行线程切换，一般没有什么同步问题。但是它的坏处也很明显，线程执行时间不可控制，如果线程陷入阻塞，就会导致程序一直阻塞在哪里</p> 
+<h3>抢占式调度</h3> 
+<p>每个线程将由系统来分配执行时间，线程的切换不由线程本身来决定。当一个线程出现了问题，我们还可以使用任务管理器把这个进程杀掉，而不至于导致系统崩溃。</p> 
+<p>虽然Java的线程调度是由系统完成的，但我们仍然可以“建议”操作系统给某些线程多分配一些执行时间，这项操作是通过设置线程优先级来完成的。但是，线程优先级并不是一项稳定的调节手段，因为最终的线程调度还是由操作系统说了算。Windows中有一个“优先级推进器”的功能目的是当系统发现一个线程被执行的特别频繁时，可能会越过线程优先级为它分配执行时间，以便减少因为线程频繁切换导致的性能损耗</p> 
+<p></p> 
+<h3>状态转换</h3> 
+<p>Java语言定义了6钟线程状态，分别是</p> 
+<ul><li>New</li></ul> 
+<ul><li>Runnable</li></ul> 
+<ul><li>Waiting（无限期等待）</li></ul> 
+<ul><li>Timed Waiting</li></ul> 
+<ul><li>Blocked：等待状态和阻塞状态的区别是，阻塞状态在等待着获取到一个排他锁，这个事件将会在另一个线程放弃了这个锁的时候发生。</li></ul> 
+<ul><li>Terminated</li></ul> 
+<p></p> 
+<h4 id="_pbFeEeTJ"></h4> 
+<h2>Java与协程</h2> 
+<h4>内核线程的局限</h4> 
+<p>1：1的内核模型是如今Java虚拟机线程实现的主流选择，但是这种映射到操作系统上的线程天然的缺陷是切换、调度成本高昂，系统能容纳的线程数量也有限。当每个请求的执行时间变得很短、数量很多的前提下，用户线程切换的开销甚至可能会接近于用于计算本身的开销，这就会造成严重的浪费</p> 
+<p></p> 
+<h4>协程的复苏</h4> 
+<p>内核线程的调度成本主要来自于用户态和核心态之间的状态转换，而这两种状态的转换的开销主要来自于响应中断、保护和恢复执行现场的成本。</p> 
+<p>上下文切换中的上下文是指方法调用过程中的各种局部的变量和资源，以线程的角度来看，是方法的调用栈中存储的各类信息。如果要从线程A切换到线程B，操作系统首先要把线程A的上下文数据妥善保存好，然后把寄存器、内存分页等恢复到线程B挂起时候的状态。</p> 
+<p>过去有让用户可以由自己模拟多线程、自己恢复现场的工作模式，其大致的原理是通过在内存里划分出一篇额外的空间来模拟调用栈。到后来，操作系统开始提供多线程支持，但这种模拟多线程的做法自然是变少了许多，但也没有完全消失，而是演化为用户线程继续存在。由于最初多数的用户线程是被设计成协同式调度的，所以它又被称为——“协程”，协程的主要优势是轻量，无论是有栈协程还是无栈协程，都比传统内核线程要轻量的多。</p> 
+<p>另外对于有栈协程，有一种特例实现名为纤程。</p> 
+<p>在并发模型下，一段使用纤程并发的代码会被分为两部分——执行过程和调度器。执行过程主要用于维护执行现场，保护、恢复上下文状态，而调度器则负责编排所有要执行的代码的顺序。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/37f1920e13eef99f20cd951ca8300c6a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">python: np.random.rand()； random.randn()； random.randint()</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/9c77542c7d32fb0dabd84116acf576fb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">如何将Sql查询出的结果导出成csv文件</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

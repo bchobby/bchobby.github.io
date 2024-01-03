@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>spring-security-oauth2-authorization-server（二）Token生成分析之JWT Token和Opaque Token - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="spring-security-oauth2-authorization-server（二）Token生成分析之JWT Token和Opaque Token" />
+<meta property="og:description" content="文章目录 写在前面的话Token的生成的官方描述1. JWT Token（透明Token）2. Opaque Token（不透明Token）2.1 默认128位字符的Opaque Token2.2 自定义Token生成器，生成一个UUID类型的OpaqueToken 写在前面的话 因为SpringBoot3.x是目前最新的版本，整合spring-security-oauth2-authorization-server的资料很少，所以产生了这篇文章，主要为想尝试SpringBoot高版本，想整合最新的spring-security-oauth2-authorization-server的初学者，旨在为大家提供一个简单上手的参考，如果哪里写得不对或可以优化的还请大家踊跃评论指正。
+前面一篇文章《spring-security-oauth2-authorization-server（一）SpringBoot3.1.3整合》主要介绍了如何简单搭建一个认证服务器，这一篇算番外篇主要结合官网的描述简单分析一下Token的几种生成策略，以及如何自定义Token生成器来生成我们在OAuth2.0中常见的形如这样：Bearer 237d224d-1bdc-4d48-855a-f6abb37e378f的不透明OpaqueToken。
+整个项目的配置还是复用的上一篇。
+Token的生成的官方描述 取自官方文档：
+OAuth2TokenGenerator负责从所提供的OAuth2TokenContext中的信息生成 OAuth2Token，生成的 OAuth2Token 主要取决于在 OAuth2TokenContext 中指定的 OAuth2TokenType。
+当 OAuth2TokenType的value 为：
+code，则生成 OAuth2AuthorizationCode。access_token，则生成 OAuth2AccessToken。refresh_token，则生成 OAuth2RefreshToken。id_token，则生成 OidcIdToken。 所以我们用到的授权码，access-token，refresh-token，设备码等都是由OAuth2TokenGenerator的子类实现的。
+1. JWT Token（透明Token） spring-security-oauth2-authorization-server默认生成的Token是JWT类型的，生成的 OAuth2AccessToken 的格式是不同的，取决于为 RegisteredClient 配置的TokenSettings.getAccessTokenFormat()。如果格式是 OAuth2TokenFormat.SELF_CONTAINED（默认），那么就会生成一个 JWT。如果格式是 OAuth2TokenFormat.REFERENCE，那么就会生成一个 &#34;opaque&#34;不透明Token。
+官网上还有这么一句话：
+OAuth2TokenGenerator 是一个可选的组件，默认为由 OAuth2AccessTokenGenerator 和 OAuth2RefreshTokenGenerator 组成的 DelegatingOAuth2TokenGenerator。
+如果注册了 JwtEncoder @Bean 或 JWKSource @Bean，那么在 DelegatingOAuth2TokenGenerator 中还会额外组成一个 JwtGenerator。
+可以在源码找到出处。
+DelegatingOAuth2TokenGenerator实例化的时候将tokenGenerators塞进去的，那么再往上找何处实例化的
+因为我们注册了相应的JWKSource、JwtEncoder的Bean，所以Token的生成会实现在JwtGenerator上。
+如果我们不注册JWT相关的Bean就是将上一篇文章中的3.3.5节的JWT相关Bean全部去掉，debug会发现还是默认加进来了JwtGenerator。
+原因应该是在我们在注册RegisteredClientRepository Bean时默认为我们指定了tokenSettings。
+所以oauth2_registered_client表的token_settings也会看到org.springframework.security.oauth2.server.authorization.settings.OAuth2TokenFormat类型为self-contained
+2. Opaque Token（不透明Token） 2." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/564f05e2e87ec20b8e17c2dd2c587cee/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-09-17T23:40:40+08:00" />
+<meta property="article:modified_time" content="2023-09-17T23:40:40+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">spring-security-oauth2-authorization-server（二）Token生成分析之JWT Token和Opaque Token</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">写在前面的话</a></li><li><a href="#Token_7" rel="nofollow">Token的生成的官方描述</a></li><li><ul><li><a href="#1_JWT_TokenToken_18" rel="nofollow">1. JWT Token（透明Token）</a></li><li><a href="#2_Opaque_TokenToken_41" rel="nofollow">2. Opaque Token（不透明Token）</a></li><li><ul><li><a href="#21_128Opaque_Token_42" rel="nofollow">2.1 默认128位字符的Opaque Token</a></li><li><a href="#22_TokenUUIDOpaqueToken_83" rel="nofollow">2.2 自定义Token生成器，生成一个UUID类型的OpaqueToken</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>写在前面的话</h2> 
+<blockquote> 
+ <p>因为SpringBoot3.x是目前最新的版本，整合spring-security-oauth2-authorization-server的资料很少，所以产生了这篇文章，主要为想尝试SpringBoot高版本，想整合最新的spring-security-oauth2-authorization-server的初学者，旨在为大家提供一个简单上手的参考，如果哪里写得不对或可以优化的还请大家踊跃评论指正。</p> 
+</blockquote> 
+<p>前面一篇文章<a href="https://blog.csdn.net/weixin_42229668/article/details/132912917?spm=1001.2014.3001.5501">《spring-security-oauth2-authorization-server（一）SpringBoot3.1.3整合》</a>主要介绍了如何简单搭建一个认证服务器，这一篇算番外篇主要结合官网的描述简单分析一下Token的几种生成策略，以及如何自定义Token生成器来生成我们在OAuth2.0中常见的形如这样：Bearer 237d224d-1bdc-4d48-855a-f6abb37e378f的不透明OpaqueToken。<br> <code>整个项目的配置还是复用的上一篇。</code></p> 
+<h2><a id="Token_7"></a>Token的生成的官方描述</h2> 
+<p>取自官方文档：</p> 
+<blockquote> 
+ <p>OAuth2TokenGenerator负责从所提供的OAuth2TokenContext中的信息生成 OAuth2Token，生成的 OAuth2Token 主要取决于在 OAuth2TokenContext 中指定的 OAuth2TokenType。</p> 
+</blockquote> 
+<p>当 OAuth2TokenType的value 为：</p> 
+<ul><li>code，则生成 OAuth2AuthorizationCode。</li><li>access_token，则生成 OAuth2AccessToken。</li><li>refresh_token，则生成 OAuth2RefreshToken。</li><li>id_token，则生成 OidcIdToken。</li></ul> 
+<p>所以我们用到的授权码，access-token，refresh-token，设备码等都是由OAuth2TokenGenerator的子类实现的。</p> 
+<h3><a id="1_JWT_TokenToken_18"></a>1. JWT Token（透明Token）</h3> 
+<p>spring-security-oauth2-authorization-server默认生成的Token是JWT类型的，生成的 OAuth2AccessToken 的格式是不同的，取决于为 RegisteredClient 配置的TokenSettings.getAccessTokenFormat()。如果格式是 OAuth2TokenFormat.SELF_CONTAINED（默认），那么就会生成一个 JWT。如果格式是 OAuth2TokenFormat.REFERENCE，那么就会生成一个 "opaque"不透明Token。</p> 
+<p>官网上还有这么一句话：</p> 
+<blockquote> 
+ <p>OAuth2TokenGenerator 是一个可选的组件，默认为由 OAuth2AccessTokenGenerator 和 OAuth2RefreshTokenGenerator 组成的 DelegatingOAuth2TokenGenerator。</p> 
+</blockquote> 
+<blockquote> 
+ <p>如果注册了 JwtEncoder @Bean 或 JWKSource @Bean，那么在 DelegatingOAuth2TokenGenerator 中还会额外组成一个 JwtGenerator。</p> 
+</blockquote> 
+<p>可以在源码找到出处。<br> DelegatingOAuth2TokenGenerator实例化的时候将tokenGenerators塞进去的，那么再往上找何处实例化的<br> <img src="https://images2.imgbox.com/44/5c/fPds18s6_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/55/a6/tL88yuMm_o.png" alt="在这里插入图片描述"></p> 
+<p>因为我们注册了相应的JWKSource、JwtEncoder的Bean，所以Token的生成会实现在JwtGenerator上。<br> 如果我们不注册JWT相关的Bean就是将上一篇文章中的3.3.5节的JWT相关Bean全部去掉，debug会发现还是默认加进来了JwtGenerator。<br> <img src="https://images2.imgbox.com/2a/fe/QDHk3fuc_o.png" alt="在这里插入图片描述"><br> 原因应该是在我们在注册RegisteredClientRepository Bean时默认为我们指定了tokenSettings。<br> <img src="https://images2.imgbox.com/35/1a/lMne5LJA_o.png" alt="在这里插入图片描述"></p> 
+<p>所以oauth2_registered_client表的token_settings也会看到org.springframework.security.oauth2.server.authorization.settings.OAuth2TokenFormat类型为self-contained<br> <img src="https://images2.imgbox.com/f8/3b/MGu0nNuA_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="2_Opaque_TokenToken_41"></a>2. Opaque Token（不透明Token）</h3> 
+<h4><a id="21_128Opaque_Token_42"></a>2.1 默认128位字符的Opaque Token</h4> 
+<p>既然官网都告诉我们Token的形式是取决于为 RegisteredClient 配置的 TokenSettings.getAccessTokenFormat()，那我们改成OAuth2TokenFormat.REFERENCE就好了。</p> 
+<p><code>先把上一篇文章中3.3.5节与JWT相关的Bean删掉</code>，而后添加如下代码</p> 
+<blockquote> 
+ <p>.tokenSettings(TokenSettings.builder().accessTokenFormat(OAuth2TokenFormat.REFERENCE).build())</p> 
+</blockquote> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Bean</span>
+<span class="token keyword">public</span> <span class="token class-name">RegisteredClientRepository</span> <span class="token function">registeredClientRepository</span><span class="token punctuation">(</span><span class="token class-name">JdbcTemplate</span> jdbcTemplate<span class="token punctuation">,</span> <span class="token class-name">PasswordEncoder</span> passwordEncoder<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">RegisteredClient</span> registeredClient <span class="token operator">=</span> <span class="token class-name">RegisteredClient</span><span class="token punctuation">.</span><span class="token function">withId</span><span class="token punctuation">(</span><span class="token constant">UUID</span><span class="token punctuation">.</span><span class="token function">randomUUID</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token punctuation">.</span><span class="token function">clientId</span><span class="token punctuation">(</span><span class="token string">"oauth2-client"</span><span class="token punctuation">)</span>
+            <span class="token punctuation">.</span><span class="token function">clientSecret</span><span class="token punctuation">(</span>passwordEncoder<span class="token punctuation">.</span><span class="token function">encode</span><span class="token punctuation">(</span><span class="token string">"123456"</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token comment">// 客户端认证基于请求头</span>
+            <span class="token punctuation">.</span><span class="token function">clientAuthenticationMethod</span><span class="token punctuation">(</span><span class="token class-name">ClientAuthenticationMethod</span><span class="token punctuation">.</span><span class="token constant">CLIENT_SECRET_BASIC</span><span class="token punctuation">)</span>
+            <span class="token comment">// 配置授权的支持方式</span>
+            <span class="token punctuation">.</span><span class="token function">authorizationGrantType</span><span class="token punctuation">(</span><span class="token class-name">AuthorizationGrantType</span><span class="token punctuation">.</span><span class="token constant">AUTHORIZATION_CODE</span><span class="token punctuation">)</span>
+            <span class="token punctuation">.</span><span class="token function">authorizationGrantType</span><span class="token punctuation">(</span><span class="token class-name">AuthorizationGrantType</span><span class="token punctuation">.</span><span class="token constant">REFRESH_TOKEN</span><span class="token punctuation">)</span>
+            <span class="token punctuation">.</span><span class="token function">authorizationGrantType</span><span class="token punctuation">(</span><span class="token class-name">AuthorizationGrantType</span><span class="token punctuation">.</span><span class="token constant">CLIENT_CREDENTIALS</span><span class="token punctuation">)</span>
+            <span class="token punctuation">.</span><span class="token function">redirectUri</span><span class="token punctuation">(</span><span class="token string">"https://www.baidu.com"</span><span class="token punctuation">)</span>
+            <span class="token punctuation">.</span><span class="token function">scope</span><span class="token punctuation">(</span><span class="token string">"user"</span><span class="token punctuation">)</span>
+            <span class="token punctuation">.</span><span class="token function">scope</span><span class="token punctuation">(</span><span class="token string">"admin"</span><span class="token punctuation">)</span>
+            <span class="token comment">// 客户端设置，设置用户需要确认授权</span>
+            <span class="token punctuation">.</span><span class="token function">clientSettings</span><span class="token punctuation">(</span><span class="token class-name">ClientSettings</span><span class="token punctuation">.</span><span class="token function">builder</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">requireAuthorizationConsent</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token comment">// 添加tokenSettings，将accessTokenFormat改为REFERENCE即可获取Opaque Token</span>
+            <span class="token punctuation">.</span><span class="token function">tokenSettings</span><span class="token punctuation">(</span><span class="token class-name">TokenSettings</span><span class="token punctuation">.</span><span class="token function">builder</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">accessTokenFormat</span><span class="token punctuation">(</span><span class="token class-name">OAuth2TokenFormat</span><span class="token punctuation">.</span><span class="token constant">REFERENCE</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token class-name">JdbcRegisteredClientRepository</span> registeredClientRepository <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">JdbcRegisteredClientRepository</span><span class="token punctuation">(</span>jdbcTemplate<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token class-name">RegisteredClient</span> repositoryByClientId <span class="token operator">=</span> registeredClientRepository<span class="token punctuation">.</span><span class="token function">findByClientId</span><span class="token punctuation">(</span>registeredClient<span class="token punctuation">.</span><span class="token function">getClientId</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>repositoryByClientId <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        registeredClientRepository<span class="token punctuation">.</span><span class="token function">save</span><span class="token punctuation">(</span>registeredClient<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">return</span> registeredClientRepository<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/d7/52/HtsQneG6_o.png" alt="在这里插入图片描述"><br> 生成Token的全类名如下：<br> org.springframework.security.oauth2.server.authorization.token.OAuth2AccessTokenGenerator#generate<br> <img src="https://images2.imgbox.com/74/06/NsoFu3v7_o.png" alt="在这里插入图片描述"><br> 默认是Base64将一个96位长度的随机串编码后生成的128位字符串<br> <img src="https://images2.imgbox.com/fe/cd/fD7nMWCZ_o.png" alt="在这里插入图片描述"><br> 我们发现此时的Token是一个极长的字符串，与我们在OAuth2.0生成Bearer 237d224d-1bdc-4d48-855a-f6abb37e378f相差甚远。<br> 我们又发现accessTokenGenerator的设置是写死的，没有提供一个方法让我们重新设置，那么只能重写一个实现。</p> 
+<h4><a id="22_TokenUUIDOpaqueToken_83"></a>2.2 自定义Token生成器，生成一个UUID类型的OpaqueToken</h4> 
+<p>官方文档说：</p> 
+<blockquote> 
+ <p>OAuth2TokenGenerator 提供了极大的灵活性，因为它可以为 access_token 和 refresh_token 支持任何自定义的 token 格式。</p> 
+</blockquote> 
+<p>那我们就自定义一个UUIDOAuth2TokenGenerator，用UUID生成一个OpaqueToken。在此之前需要先定义一个StringKeyGenerator的实现，因为Token生成器需要用到this.accessTokenGenerator.generateKey()来生成串。</p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * @author roshine
+ * @version 1.0.0
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">UUIDKeyGenerator</span> <span class="token keyword">implements</span> <span class="token class-name">StringKeyGenerator</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">generateKey</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token constant">UUID</span><span class="token punctuation">.</span><span class="token function">randomUUID</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">toLowerCase</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>由于我们只需要将Token的生成改为UUID其他逻辑不变，所以将org.springframework.security.oauth2.server.authorization.token.OAuth2AccessTokenGenerator#generate<br> 复刻一份，把多余的部分去掉，比如定制化器accessTokenCustomizer，如下所示：</p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * @author roshine
+ * @version 1.0.0
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">UUIDOAuth2TokenGenerator</span> <span class="token keyword">implements</span> <span class="token class-name">OAuth2TokenGenerator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">OAuth2AccessToken</span><span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">StringKeyGenerator</span> accessTokenGenerator <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">UUIDKeyGenerator</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token class-name">OAuth2AccessToken</span> <span class="token function">generate</span><span class="token punctuation">(</span><span class="token class-name">OAuth2TokenContext</span> context<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token class-name">OAuth2TokenType</span><span class="token punctuation">.</span><span class="token constant">ACCESS_TOKEN</span><span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>context<span class="token punctuation">.</span><span class="token function">getTokenType</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">||</span>
+                <span class="token operator">!</span><span class="token class-name">OAuth2TokenFormat</span><span class="token punctuation">.</span><span class="token constant">REFERENCE</span><span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>context<span class="token punctuation">.</span><span class="token function">getRegisteredClient</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getTokenSettings</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getAccessTokenFormat</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token class-name">String</span> issuer <span class="token operator">=</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>context<span class="token punctuation">.</span><span class="token function">getAuthorizationServerContext</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            issuer <span class="token operator">=</span> context<span class="token punctuation">.</span><span class="token function">getAuthorizationServerContext</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getIssuer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token class-name">RegisteredClient</span> registeredClient <span class="token operator">=</span> context<span class="token punctuation">.</span><span class="token function">getRegisteredClient</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">Instant</span> issuedAt <span class="token operator">=</span> <span class="token class-name">Instant</span><span class="token punctuation">.</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">Instant</span> expiresAt <span class="token operator">=</span> issuedAt<span class="token punctuation">.</span><span class="token function">plus</span><span class="token punctuation">(</span>registeredClient<span class="token punctuation">.</span><span class="token function">getTokenSettings</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getAccessTokenTimeToLive</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// @formatter:off</span>
+        <span class="token class-name">OAuth2TokenClaimsSet<span class="token punctuation">.</span>Builder</span> claimsBuilder <span class="token operator">=</span> <span class="token class-name">OAuth2TokenClaimsSet</span><span class="token punctuation">.</span><span class="token function">builder</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">StringUtils</span><span class="token punctuation">.</span><span class="token function">hasText</span><span class="token punctuation">(</span>issuer<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            claimsBuilder<span class="token punctuation">.</span><span class="token function">issuer</span><span class="token punctuation">(</span>issuer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        claimsBuilder
+                <span class="token punctuation">.</span><span class="token function">subject</span><span class="token punctuation">(</span>context<span class="token punctuation">.</span><span class="token function">getPrincipal</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">audience</span><span class="token punctuation">(</span><span class="token class-name">Collections</span><span class="token punctuation">.</span><span class="token function">singletonList</span><span class="token punctuation">(</span>registeredClient<span class="token punctuation">.</span><span class="token function">getClientId</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">issuedAt</span><span class="token punctuation">(</span>issuedAt<span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">expiresAt</span><span class="token punctuation">(</span>expiresAt<span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">notBefore</span><span class="token punctuation">(</span>issuedAt<span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">id</span><span class="token punctuation">(</span><span class="token constant">UUID</span><span class="token punctuation">.</span><span class="token function">randomUUID</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token class-name">CollectionUtils</span><span class="token punctuation">.</span><span class="token function">isEmpty</span><span class="token punctuation">(</span>context<span class="token punctuation">.</span><span class="token function">getAuthorizedScopes</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            claimsBuilder<span class="token punctuation">.</span><span class="token function">claim</span><span class="token punctuation">(</span><span class="token class-name">OAuth2ParameterNames</span><span class="token punctuation">.</span><span class="token constant">SCOPE</span><span class="token punctuation">,</span> context<span class="token punctuation">.</span><span class="token function">getAuthorizedScopes</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token class-name">OAuth2TokenClaimsSet</span> accessTokenClaimsSet <span class="token operator">=</span> claimsBuilder<span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">OAuth2AccessTokenClaims</span><span class="token punctuation">(</span><span class="token class-name">OAuth2AccessToken<span class="token punctuation">.</span>TokenType</span><span class="token punctuation">.</span><span class="token constant">BEARER</span><span class="token punctuation">,</span>
+                <span class="token keyword">this</span><span class="token punctuation">.</span>accessTokenGenerator<span class="token punctuation">.</span><span class="token function">generateKey</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> accessTokenClaimsSet<span class="token punctuation">.</span><span class="token function">getIssuedAt</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> accessTokenClaimsSet<span class="token punctuation">.</span><span class="token function">getExpiresAt</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                context<span class="token punctuation">.</span><span class="token function">getAuthorizedScopes</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> accessTokenClaimsSet<span class="token punctuation">.</span><span class="token function">getClaims</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">private</span> <span class="token keyword">static</span> <span class="token keyword">final</span> <span class="token keyword">class</span> <span class="token class-name">OAuth2AccessTokenClaims</span> <span class="token keyword">extends</span> <span class="token class-name">OAuth2AccessToken</span> <span class="token keyword">implements</span> <span class="token class-name">ClaimAccessor</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Object</span><span class="token punctuation">&gt;</span></span> claims<span class="token punctuation">;</span>
+
+        <span class="token keyword">private</span> <span class="token class-name">OAuth2AccessTokenClaims</span><span class="token punctuation">(</span><span class="token class-name">TokenType</span> tokenType<span class="token punctuation">,</span> <span class="token class-name">String</span> tokenValue<span class="token punctuation">,</span>
+                                        <span class="token class-name">Instant</span> issuedAt<span class="token punctuation">,</span> <span class="token class-name">Instant</span> expiresAt<span class="token punctuation">,</span> <span class="token class-name">Set</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> scopes<span class="token punctuation">,</span> <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Object</span><span class="token punctuation">&gt;</span></span> claims<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">super</span><span class="token punctuation">(</span>tokenType<span class="token punctuation">,</span> tokenValue<span class="token punctuation">,</span> issuedAt<span class="token punctuation">,</span> expiresAt<span class="token punctuation">,</span> scopes<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>claims <span class="token operator">=</span> claims<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">public</span> <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Object</span><span class="token punctuation">&gt;</span></span> <span class="token function">getClaims</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">.</span>claims<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>然后在我们的AuthorizationServerConfig添加</p> 
+<pre><code class="prism language-java">    <span class="token comment">/**
+     * 自定义Token生成器
+     *
+     * @return OAuth2TokenGenerator
+     */</span>
+    <span class="token annotation punctuation">@Bean</span>
+    <span class="token keyword">public</span> <span class="token class-name">OAuth2TokenGenerator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span></span> <span class="token function">tokenGenerator</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">UUIDOAuth2TokenGenerator</span> uuidoAuth2TokenGenerator <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">UUIDOAuth2TokenGenerator</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">DelegatingOAuth2TokenGenerator</span><span class="token punctuation">(</span>uuidoAuth2TokenGenerator<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>获取token时报错：</p> 
+<blockquote> 
+ <p>{<!-- --><br> “error_description”: “The token generator failed to generate the refresh token.”,<br> “error”: “server_error”,<br> “error_uri”: “https://datatracker.ietf.org/doc/html/rfc6749#section-5.2”<br> }</p> 
+</blockquote> 
+<p>那我们就再定义一个UUIDOAuth2RefreshTokenGenerator来生成 refresh-token。</p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+ * @author roshine
+ * @version 1.0.0
+ * @date 2023-09-15 23:16
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">UUIDOAuth2RefreshTokenGenerator</span> <span class="token keyword">implements</span> <span class="token class-name">OAuth2TokenGenerator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">OAuth2RefreshToken</span><span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">StringKeyGenerator</span> refreshTokenGenerator <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">UUIDKeyGenerator</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token annotation punctuation">@Nullable</span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token class-name">OAuth2RefreshToken</span> <span class="token function">generate</span><span class="token punctuation">(</span><span class="token class-name">OAuth2TokenContext</span> context<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token class-name">OAuth2TokenType</span><span class="token punctuation">.</span><span class="token constant">REFRESH_TOKEN</span><span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>context<span class="token punctuation">.</span><span class="token function">getTokenType</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token class-name">Instant</span> issuedAt <span class="token operator">=</span> <span class="token class-name">Instant</span><span class="token punctuation">.</span><span class="token function">now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">Instant</span> expiresAt <span class="token operator">=</span> issuedAt<span class="token punctuation">.</span><span class="token function">plus</span><span class="token punctuation">(</span>context<span class="token punctuation">.</span><span class="token function">getRegisteredClient</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getTokenSettings</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getRefreshTokenTimeToLive</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">OAuth2RefreshToken</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>refreshTokenGenerator<span class="token punctuation">.</span><span class="token function">generateKey</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> issuedAt<span class="token punctuation">,</span> expiresAt<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>在tokenGenerator()里添加上UUIDOAuth2RefreshTokenGenerator</p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+     * 自定义Token生成器
+     *
+     * @return OAuth2TokenGenerator
+     */</span>
+    <span class="token annotation punctuation">@Bean</span>
+    <span class="token keyword">public</span> <span class="token class-name">OAuth2TokenGenerator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span></span> <span class="token function">tokenGenerator</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">UUIDOAuth2TokenGenerator</span> uuidoAuth2TokenGenerator <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">UUIDOAuth2TokenGenerator</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">UUIDOAuth2RefreshTokenGenerator</span> refreshTokenGenerator <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">UUIDOAuth2RefreshTokenGenerator</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">DelegatingOAuth2TokenGenerator</span><span class="token punctuation">(</span>uuidoAuth2TokenGenerator<span class="token punctuation">,</span> refreshTokenGenerator<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/69/cf/YkJvycEm_o.png" alt="在这里插入图片描述"><br> 终于对味儿了。</p> 
+<p>以上就是简单的分析了一下spring-security-oauth2-authorization-server生成Token的策略以及如何自定义Token生成器来生成我们在OAuth2.0中熟悉的形如：8f9e0b4b-6696-4424-aa2a-550398a0a685这样的Token。</p> 
+<p><strong>遗留思考的问题：</strong></p> 
+<ul><li>生成了三张表，另外两张oauth2_authorization、oauth2_authorization_consent一直没有数据什么原因？</li><li>为什么每次调用/oauth2/authorize接口都需要重新授权？</li><li>如何自定义登录页面，自定义表单提交请求、自定义回调地址等。</li></ul> 
+<p>下一篇文章会一一解答。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a667480d2fa974cea4935e7d2aea56b5/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">一文教你在 centos7 下安装 Oracle19 C(完整版)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e1042e38cc9c0279bd8ccbd4c49c023e/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">keithley2400数字源表（吉时利）2400</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

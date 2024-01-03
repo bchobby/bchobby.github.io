@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>select、poll、epoll之间的区别 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="select、poll、epoll之间的区别" />
+<meta property="og:description" content="select、poll、epoll之间的区别:
+(1)、select==&gt;时间复杂度O(n)
+select仅仅知道了，有I/O时间发生了，却并不知道是哪几个流（可能一个、多个、甚至全部）,我们只能无差别的轮询所有的流，找出能读出数据，或者写入数据的流，对他们进行操作。所以select具有O(n)的无差别的轮询复杂度，同时处理的流越多，无差别轮询时间越长。
+(2)、poll==&gt;时间复杂度O(n)
+poll本质上和select没有区别，它将用户传入的数组拷贝到内核空间，然后查询每个fd对应的设备状态，但是它没有最大连接数的限制，原因是它是基于链表来存储的。
+(3)、epoll==&gt;时间复杂度O(1)
+epoll可以理解为event poll，不同于忙轮询和无差别轮询，epoll会把哪个流发生了怎样的I/O事件通知我们。所以我们说epoll实际上是事件驱动（每个事件关联上fd）的，此时我们操作这些流都是有意义的。（复杂度降低到了O(1)）
+select、poll、epoll都是I/O多路复用的机制。I/O多路复用就通过一种机制，可以监视多个描述符，一旦某个描述符就绪（一般就是读就绪或者写就绪），能够通知程序进行相应的读写操作。但select，poll,epoll本质上都是同步I/O,因为他们都需要在读写事件就绪后自己负责进行读写，也就是说这个读写过程是阻塞的，而异步I/O则无需自己负责进行读写，异步I/O的实现会负责把数据从内核拷贝到用户空间。
+epoll和select都能够提供多路I/O复用的解决方案。在现在的linux内核里都能够支持，其中epoll是linux所特有的，而select则在一般的操作系统中都有实现，是POSIX所规定。
+select:
+select本质上是通过设置或者检查存放fd标志位的数据结构来进行下一步处理。这样所带来的缺点是：
+（1）、单个进程可监视的fd的数量被限制，即能监听的端口的大小有限。这个数字和系统内存关系很大，可以在cat /proc/sys/fs/file-max查看。32位机器默认是1024个。64位机器默认是2048个。
+（2）、对socket进行扫描时是线性扫描，即采用轮询的方法，效率较低：
+当套接字比较多的时候，每次select（）都要通过遍历FD_SETSIZE个socket来完成调度，不管哪个socket是活跃的，都遍历一遍。这浪费了很多cpu的时间。如果能给套接字注册某个回调函数，当他们活跃时，自动完成相关操作，那就避免了轮询，这正是epoll和kqueue做的。
+（3）、需要维护一个用来存放大量fd的数据结构，这样会使得用户空间、内核空间在传递该结构时复制开销大。
+poll：
+poll本质上和select没有区别，它将用户传入的数组拷贝到内核空间，然后查询每个fd对应的设备状态，如果设备就绪则在设备等待队列中加入一项并继续遍历，如果遍历完所有的fd后没有发现就绪设备，则挂起当前进程，直到设备就绪或者主动超时，被唤醒后它又要再次遍历fd。这个过程经历了多次无谓的遍历。
+poll是基于链表来存储的，所以它没有最大连接数的限制，但同样有一个缺点：
+（1）、大量的fd的数组被整体复制于用户态和内核地址空间之间，而不管这样的复制是不是有意义。
+（2）、poll还有一个特点是“水平触发”,如果报告了fd后，没有被处理，那么下次poll时会再次报告该fd。
+epoll
+epoll有epolllt和epollet两种触发模式，lt是默认的模式，et是高速模式。lt模式下，只要这个fd还有数据可读，每次epoll_wait都会返回它的事件，提醒用户程序去操作，而在et（边缘触发）模式中，它只会提示一次，直到下次再有数据流入之前都不会再提示了，无论fd中是否还有数据可读。所以在et模式下，read一个fd的时候一定要把它的buffer读光，也就是说一直读到read的返回值小于请求值，或者遇到eagain错误。还有一个特点，epoll使用事件的就绪通知方式，通过epoll_ctl注册fd，一旦该fd就绪，内核就会采用callback的回调机制来激活该fd,epoll_wait便可以收到通知。
+epoll为什么要有epollet触发模式？
+如果采用epolllt模式的话，系统中一旦有大量你不需要读写的就绪文件描述符，它们每次调用epoll_wait都会返回，这样会大大降低处理程序检索自己关心的就绪文件描述符的效率。
+而采用epollet这种边沿触发模式的话，当被监控的文件描述符上有读写事件发生时，epoll_wait（）会通知处理程序去读写。
+如果这次没有把数据全部读写完成（如读写缓冲区太小）,那么下次调用epoll_wait（）时，它不会通知你，也就是只会通知你一次，直到该文件描述符上出现第二次可读写事件才会通知你！！！这种模式比水品触发效率高，系统不会充斥大量你不关心的就绪文件描述符。
+epoll的优点：
+1、没有最大并发连接的限制，能打开的fd的上限远大于1024（1G的内存上能监听10万个端口）;
+2、效率提升，不是轮询的方式，不会随着fd数目的增加效率下降，只有活跃可用的fd才会调用callback函数;即epoll最大的优点是它只管活跃的连接，而与总链接数无关，因此在实际的网络环境中，epoll的效率就会远高于select和poll。
+3、内存拷贝，利用mmap()文件映射内存加速于内核空间的消息传递；即epoll使用mmap减少复制开销。
+select、poll、epoll的区别总结：
+1、支持一个进程所能打开的最大连接数
+select 是 32位机默认是1024个，64位机默认是2048。
+poll 本质上于select没有区别，但是它没有最大连接数的限制，原因是它是基于链表来存储的。
+epoll 虽然有连接数上限，但是很大，1G内存的机器上可以打开10万左右的连接，2G内存的可以打开20万左右的连接。
+2、fd剧增后带来的I/O效率问题
+select 每次调用事都会对连接进行线性遍历，所以随着fd的增加会造成遍历速度慢，呈线性下降性能问题。
+poll 同上
+epoll epoll内核中实现是根据每个fd的callback函数来实现的，只有活跃的socket才会主动调用callback，所以在活跃的socket较少的情况下，使用epoll没有前面两者的线性下降的性能问题，但是所有的socket都很活跃的情况下，可能会有性能问题。
+3、消息传递方式
+select 内核需要将消息传递到用户空间，都需要内核拷贝动作
+poll 同上
+epoll 通过内核和用户空间共享一块内存来实现的。
+总结：
+综上，在选择select，poll，epoll时要根据具体的使用场合以及这三种方式的自身特点。
+1、表面上看epoll的性能最好，但是在连接数少并且连接都十分活跃的情况下，select和poll的性能可能比epoll好，毕竟epoll的通知机制需要很多函数回调。
+2、select低效是因为每次它都需要轮询。但低效也是相对的，视情况而定，也可通过良好的设计改善。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/6796468342f856917bec66ac020239d8/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-10-10T15:51:17+08:00" />
+<meta property="article:modified_time" content="2019-10-10T15:51:17+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">select、poll、epoll之间的区别</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><br><strong>select、poll、epoll之间的区别:</strong><br>     (1)、select==&gt;时间复杂度O(n)<br>          select仅仅知道了，有I/O时间发生了，却并不知道是哪几个流（可能一个、多个、甚至全部）,我们只能无差别的轮询所有的流，找出能读出数据，或者写入数据的流，对他们进行操作。所以select具有O(n)的无差别的轮询复杂度，同时处理的流越多，无差别轮询时间越长。<br>     (2)、poll==&gt;时间复杂度O(n)<br>         poll本质上和select没有区别，它将用户传入的数组拷贝到内核空间，然后查询每个fd对应的设备状态，但是它没有最大连接数的限制，原因是它是基于链表来存储的。<br>     (3)、epoll==&gt;时间复杂度O(1)<br>         epoll可以理解为event poll，不同于忙轮询和无差别轮询，epoll会把哪个流发生了怎样的I/O事件通知我们。所以我们说epoll实际上是事件驱动（每个事件关联上fd）的，此时我们操作这些流都是有意义的。（复杂度降低到了O(1)）<br>     select、poll、epoll都是I/O多路复用的机制。I/O多路复用就通过一种机制，可以监视多个描述符，一旦某个描述符就绪（一般就是读就绪或者写就绪），能够通知程序进行相应的读写操作。但select，poll,epoll本质上都是同步I/O,因为他们都需要在读写事件就绪后自己负责进行读写，也就是说这个读写过程是阻塞的，而异步I/O则无需自己负责进行读写，异步I/O的实现会负责把数据从内核拷贝到用户空间。<br>     epoll和select都能够提供多路I/O复用的解决方案。在现在的linux内核里都能够支持，其中epoll是linux所特有的，而select则在一般的操作系统中都有实现，是POSIX所规定。<br>     <br>     select:<br>         select本质上是通过设置或者检查存放fd标志位的数据结构来进行下一步处理。这样所带来的缺点是：<br>             （1）、单个进程可监视的fd的数量被限制，即能监听的端口的大小有限。这个数字和系统内存关系很大，可以在cat /proc/sys/fs/file-max查看。32位机器默认是1024个。64位机器默认是2048个。<br>             （2）、对socket进行扫描时是线性扫描，即采用轮询的方法，效率较低：<br>                   当套接字比较多的时候，每次select（）都要通过遍历FD_SETSIZE个socket来完成调度，不管哪个socket是活跃的，都遍历一遍。这浪费了很多cpu的时间。如果能给套接字注册某个回调函数，当他们活跃时，自动完成相关操作，那就避免了轮询，这正是epoll和kqueue做的。<br>             （3）、需要维护一个用来存放大量fd的数据结构，这样会使得用户空间、内核空间在传递该结构时复制开销大。<br>     <br>     poll：<br>          poll本质上和select没有区别，它将用户传入的数组拷贝到内核空间，然后查询每个fd对应的设备状态，如果设备就绪则在设备等待队列中加入一项并继续遍历，如果遍历完所有的fd后没有发现就绪设备，则挂起当前进程，直到设备就绪或者主动超时，被唤醒后它又要再次遍历fd。这个过程经历了多次无谓的遍历。<br>         poll是基于链表来存储的，所以它没有最大连接数的限制，但同样有一个缺点：<br>             （1）、大量的fd的数组被整体复制于用户态和内核地址空间之间，而不管这样的复制是不是有意义。<br>             （2）、poll还有一个特点是“水平触发”,如果报告了fd后，没有被处理，那么下次poll时会再次报告该fd。<br>     <br>     epoll<br>          <br>         epoll有epolllt和epollet两种触发模式，lt是默认的模式，et是高速模式。lt模式下，只要这个fd还有数据可读，每次epoll_wait都会返回它的事件，提醒用户程序去操作，而在et（边缘触发）模式中，它只会提示一次，直到下次再有数据流入之前都不会再提示了，无论fd中是否还有数据可读。所以在et模式下，read一个fd的时候一定要把它的buffer读光，也就是说一直读到read的返回值小于请求值，或者遇到eagain错误。还有一个特点，epoll使用事件的就绪通知方式，通过epoll_ctl注册fd，一旦该fd就绪，内核就会采用callback的回调机制来激活该fd,epoll_wait便可以收到通知。<br>     <br>     epoll为什么要有epollet触发模式？<br>     如果采用epolllt模式的话，系统中一旦有大量你不需要读写的就绪文件描述符，它们每次调用epoll_wait都会返回，这样会大大降低处理程序检索自己关心的就绪文件描述符的效率。<br>     而采用epollet这种边沿触发模式的话，当被监控的文件描述符上有读写事件发生时，epoll_wait（）会通知处理程序去读写。<br>     如果这次没有把数据全部读写完成（如读写缓冲区太小）,那么下次调用epoll_wait（）时，它不会通知你，也就是只会通知你一次，直到该文件描述符上出现第二次可读写事件才会通知你！！！这种模式比水品触发效率高，系统不会充斥大量你不关心的就绪文件描述符。<br>     <br>     epoll的优点：<br>     1、没有最大并发连接的限制，能打开的fd的上限远大于1024（1G的内存上能监听10万个端口）;<br>     2、效率提升，不是轮询的方式，不会随着fd数目的增加效率下降，只有活跃可用的fd才会调用callback函数;即epoll最大的优点是它只管活跃的连接，而与总链接数无关，因此在实际的网络环境中，epoll的效率就会远高于select和poll。<br>     3、内存拷贝，利用mmap()文件映射内存加速于内核空间的消息传递；即epoll使用mmap减少复制开销。<br>     <br>     select、poll、epoll的区别总结：<br>     1、支持一个进程所能打开的最大连接数<br>       select 是  32位机默认是1024个，64位机默认是2048。<br>       poll 本质上于select没有区别，但是它没有最大连接数的限制，原因是它是基于链表来存储的。<br>       epoll  虽然有连接数上限，但是很大，1G内存的机器上可以打开10万左右的连接，2G内存的可以打开20万左右的连接。<br>     2、fd剧增后带来的I/O效率问题<br>       select  每次调用事都会对连接进行线性遍历，所以随着fd的增加会造成遍历速度慢，呈线性下降性能问题。<br>       poll    同上<br>       epoll   epoll内核中实现是根据每个fd的callback函数来实现的，只有活跃的socket才会主动调用callback，所以在活跃的socket较少的情况下，使用epoll没有前面两者的线性下降的性能问题，但是所有的socket都很活跃的情况下，可能会有性能问题。<br>     <br>     3、消息传递方式<br>     select  内核需要将消息传递到用户空间，都需要内核拷贝动作<br>     poll  同上<br>     epoll 通过内核和用户空间共享一块内存来实现的。<br>     <br>     总结：<br>       <br>       综上，在选择select，poll，epoll时要根据具体的使用场合以及这三种方式的自身特点。<br>           <br>           1、表面上看epoll的性能最好，但是在连接数少并且连接都十分活跃的情况下，select和poll的性能可能比epoll好，毕竟epoll的通知机制需要很多函数回调。<br>           2、select低效是因为每次它都需要轮询。但低效也是相对的，视情况而定，也可通过良好的设计改善。<br>  </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2cc9441914b5a6d357cde6d945785f4b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">上传图片到OSS-browser</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4996c8101170b6d44c07809716b865ce/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">spark提交任务详解</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

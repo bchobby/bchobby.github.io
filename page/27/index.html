@@ -1,0 +1,1474 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta name="generator" content="Hugo 0.121.1">
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="编程爱好者博客">
+		<meta property="og:title" content="编程爱好者博客" />
+<meta property="og:description" content="编程爱好者博客" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://bchobby.github.io/" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+	<link rel="alternate" type="application/rss+xml" href="/index.xml" title="编程爱好者博客">
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main list" role="main">
+	<article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/329cb543a1b846cf0b972795534d0552/" rel="bookmark">
+			etcd集群部署、备份还原、etcdctl命令行工具
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		目录 前言什么是etcdetcd名词raft协议-摘抄自《etcd技术内幕》etcd的部署要求二进制部署etcd查看etcd命令帮助创建etcd集群，使用systemd管理，http协议创建etcd集群，使用systemd管理，https协议etcdctl客户端工具的使用为etcdctl创建别名alarm 告警管理key的增删改查put 添加或修改keyget 查询或获取keydel 删除keywatch 监听key lease租约endpoint 操作member 操作leader角色转换给指定节点用户、角色、认证管理user用户管理role 角色管理auth认证 备份、还原 etcd 集群etcdutl 备份、快照管理命令etcd崩毁恢复有3种方法恢复损坏的member1、清除成员持久状态2、替换member3、恢复整个集群-使用快照恢复 前言 k8s集群中使用etcd数据库作为数据后端存储，所以本篇来学习etcd。
+截止目前2023-11月，官网最新版是etcd v3.6，但是3.6版本处于草稿状态，所以官网目前推荐使用最新稳定版本是etcd-v3.5，本篇来学习etcd v3.5版本。
+什么是etcd 官网：https://etcd.io/
+官网介绍：A distributed, reliable key-value store for the most critical data of a distributed system 分布式、可靠的键值存储，用于存储分布式系统中最关键的数据。
+etcd名词 Raft：etcd所采用的保证分布式系统强一致性的算法。 Node：一个Raft状态机实例。 Member： 一个etcd实例。它管理着一个Node，并且可以为客户端请求提供服务。 Cluster：由多个Member构成可以协同工作的etcd集群。 Peer：对同一个etcd集群中另外一个Member的称呼。 Client： 向etcd集群发送HTTP请求的客户端。 WAL：预写式日志，etcd用于持久化存储的日志格式。 snapshot：etcd防止WAL文件过多而设置的快照，存储etcd数据状态。 Proxy：etcd的一种模式，为etcd集群提供反向代理服务。 Leader(领导者)：Raft算法中通过竞选而产生的处理所有数据提交的领导节点。 Follower(跟随者)：竞选失败的节点作为Raft中的从属节点，为算法提供强一致性保证。 Candidate：候选节点，当Follower超过一定时间接收不到Leader的心跳时转变为Candidate开始Leader竞选。 Term：任期，某个节点成为Leader到下一次竞选开始的时间周期，称为一个Term任期。 Index：数据项编号。Raft中通过Term和Index来定位数据。 raft协议-摘抄自《etcd技术内幕》 Raft 协议的工作模式是一个 Leader 节点和多个 Follower 节点的模式，也就是常说的Leader-Follower 模式。在 Raft 协议中，每个节点都维护了一个状态机，该状态机有三种状态，分别是Leader状态、Follower状态和Candidate状态，在任意时刻，集群中的任意一个节点都处于这三个状态之一。各个状态和转换条件如图2-1所示：
+在多数情况下，集群中有一个Leader节点，其他节点都处于Follower状态，下面简单介绍一下每个状态的节点负责的主要工作。
+1、Leader节点负责处理所有客户端的请求，当接收到客户端的写入请求时，Leader节点会在本地追加一条相应的日志，然后将其封装
+成消息发送到集群中其他的Follower节点。当Follower节点收到该消息时会对其进行响应。如果集群中多数（超过半数）节点都已收到该
+请求对应的日志记录时，则 Leader 节点认为该条日志记录已提交（committed），可以向客户端返回响应。Leader 还会处理客户端的
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/329cb543a1b846cf0b972795534d0552/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/f83d872612da7149fc813b0540ae9e83/" rel="bookmark">
+			Zotero安装教程（非常详细）从零基础入门到精通，看完这一篇就够了
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		Zotero安装及简单配置 1 引言 Zotero是目前最符合我对文献管理软件需求的一款，在这里简单介绍下其安装教程及我在使用的插件。
+2 安装及同步设置 2.1 下载 前往官网https://www.zotero.org/点击Download按钮跳转至下载界面。此处，以Mac版为例。截图如下
+右侧为浏览器插件，用于Zotero直接从支持的网页中抓去文献元数据，可根据需求自行选择是否安装。
+2.2 安装 双击下载好的Zotero-6.0.14.dmg文件，将Zotero拖拽至Drag Here to Install，如下图所示
+打开启动台，当出现Zotero图标时，即为安装完成，此时可关闭安装界面。安装完成后，界面如下
+2.3 同步设置 点击菜单栏Zotero-首选项-同步输入账号密码（第一次使用先创建账号）
+成功登录后如下图所示，取消勾选红框部分
+每个账号官方仅提供了100M的云存储空间，在不额外购买的情况下，同步PDF附件显然是不够用的。我采用的方式是Zotero云同步项目信息，OneDrive同步附件（也可以使用其他的网盘），再通过相对位置链接到附件。
+点击菜单栏Zotero-首选项-高级-文件和文件夹，更改根目录为网盘文件夹下附件PDF的存储位置
+2.4 个人偏好设置 介绍下我喜欢使用的设置，仅供参考
+点击菜单栏Zotero-首选项-常规，取消勾选红框部分
+3 常用插件 仅供参考，可根据需求自行选择是否安装
+3.1 ZotFile 简介：用于管理附件，自动将PDF（或其他文件）重命名，移动和附加到Zotero项目。链接：http://zotfile.com/安装：菜单栏Zotero-工具-插件，点击右上角设置符号Insatll Add-on from File，选择刚下载好的.xpi文件，然后重启即可。 配置：菜单栏Zotero-工具-ZotFile Preference-General Settings，更改源文件夹为zotero的storage，文件位置为2.3节根目录位置 其它设置可根据个人喜好更改，或使用默认设置。
+3.2 Jasminum（茉莉花） 简介：用于管理中文文献。
+链接：https://github.com/l0o0/jasminum/releases
+安装：菜单栏Zotero-工具-插件，点击右上角设置符号Insatll Add-on from File，选择刚下载好的.xpi文件，然后重启即可。
+配置：菜单栏Zotero-首选项-茉莉花，可根据个人需求进行设置，我的设置习惯如下
+题外话 初入计算机行业的人或者大学计算机相关专业毕业生，很多因缺少实战经验，就业处处碰壁。下面我们来看两组数据：
+2023届全国高校毕业生预计达到1158万人，就业形势严峻；
+国家网络安全宣传周公布的数据显示，到2027年我国网络安全人员缺口将达327万。
+一方面是每年应届毕业生就业形势严峻，一方面是网络安全人才百万缺口。
+6月9日，麦可思研究2023年版就业蓝皮书（包括《2023年中国本科生就业报告》《2023年中国高职生就业报告》）正式发布。
+2022届大学毕业生月收入较高的前10个专业
+本科计算机类、高职自动化类专业月收入较高。2022届本科计算机类、高职自动化类专业月收入分别为6863元、5339元。其中，本科计算机类专业起薪与2021届基本持平，高职自动化类月收入增长明显，2022届反超铁道运输类专业（5295元）排在第一位。
+具体看专业，2022届本科月收入较高的专业是信息安全（7579元）。对比2018届，电子科学与技术、自动化等与人工智能相关的本科专业表现不俗，较五年前起薪涨幅均达到了19%。数据科学与大数据技术虽是近年新增专业但表现亮眼，已跻身2022届本科毕业生毕业半年后月收入较高专业前三。五年前唯一进入本科高薪榜前10的人文社科类专业——法语已退出前10之列。
+“没有网络安全就没有国家安全”。当前，网络安全已被提升到国家战略的高度，成为影响国家安全、社会稳定至关重要的因素之一。
+网络安全行业特点 1、就业薪资非常高，涨薪快 2021年猎聘网发布网络安全行业就业薪资行业最高人均33.77万！
+2、人才缺口大，就业机会多
+2019年9月18日《中华人民共和国中央人民政府》官方网站发表：我国网络空间安全人才 需求140万人，而全国各大学校每年培养的人员不到1.5W人。猎聘网《2021年上半年网络安全报告》预测2027年网安人才需求300W，现在从事网络安全行业的从业人员只有10W人。
+行业发展空间大，岗位非常多
+网络安全行业产业以来，随即新增加了几十个网络安全行业岗位︰网络安全专家、网络安全分析师、安全咨询师、网络安全工程师、安全架构师、安全运维工程师、渗透工程师、信息安全管理员、数据安全工程师、网络安全运营工程师、网络安全应急响应工程师、数据鉴定师、网络安全产品经理、网络安全服务工程师、网络安全培训师、网络安全审计员、威胁情报分析工程师、灾难恢复专业人员、实战攻防专业人员…
+职业增值潜力大
+网络安全专业具有很强的技术特性，尤其是掌握工作中的核心网络架构、安全技术，在职业发展上具有不可替代的竞争优势。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/f83d872612da7149fc813b0540ae9e83/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/d0c6774211c70e7c3fa405c2612d66aa/" rel="bookmark">
+			js 时间字符串截掉微秒后面的内容及加1秒
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		 老规矩先上效果图: 一、js 时间字符串截掉微秒后面的内容，保留前面的 let str = '2023-11-27 19:08:34.733'; let index = str.lastIndexOf(".") str = str.substring(0, index); console.log(str) // 2023-11-27 19:08:34 二、转成时间戳，加1秒的方法： var date = "2023-11-08 20:57:58" var timeStamp = Date.parse(date) console.log(timeStamp) // 1699448278000 var date = "2023-11-08 20:57:58" var timeStamp = Date.parse(date) + 1000 console.log(timeStamp) // 1699448279000 三、再把时间戳转成 ’yyyy-MM-dd hh:mm:ss’格式 function getDate(n){ n=new Date(n); return n.toLocaleDateString().replace(/\//g, "-") + " " + n.toTimeString().substr(0, 8); } getDate(1699448279000) // '2023-11-8 20:57:59' 
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/974befaff59edd4366e479fca908bcb2/" rel="bookmark">
+			如何防止chrome自动升级 chrome浏览器禁止自动升级设置方法
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		由于谷歌chrome浏览器功能强大，许多用户都会使用chrome来浏览网页，但是chrome浏览器的升级频率比较高，经常会弹出自动升级的提示，严重影响正常操作，那么如何防止chrome自动升级呢？我们可以通过禁用chrome升级服务的方式来实现，下面就来学习下chrome浏览器禁止自动升级设置方法。
+方法一、关闭计划任务
+1、首先我们需要右键点击我的电脑，在打开的选项里选择管理。
+2、在打开的对话框中选择任务计划程序。
+3、在任务计划程序库中找到两个和chrome自动更新相关的任务计划GoogleUpdateTaskMachineCore与GoogleUpdateTaskMachineUA。
+4、单个选中计划任务，右键在弹出的选项中选择禁用。
+方法二、关闭后台服务
+1、再开始打开的管理对话框中，找到下方的服务选项。找到两个和chrome更新相关的服务Google更新服务(gupdate)、Google更新服务(gupdatem)
+2、双击选中该服务后，在启动类型中选择禁用。
+如何防止chrome自动升级 chrome浏览器禁止自动升级设置方法
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/896f79b4158ce8e1f572d19b848c8d5e/" rel="bookmark">
+			Vim 搜索多个关键字并高亮
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		在查看代码或日志的时候，经常会需要搜索某个关键字。VIM搜索时，会把关键字高亮显示，还是比较方便的。
+可是，一个关键字往往是不够的，能否支持多个关键字查找呢？答案是肯定的。应该怎么操作呢？
+其实很简单：
+步骤如下：
+首先键入搜索模式，即在正常模式下键入“/”在搜索模式下键入“\v”把你要搜索的多个关键字用“|”相连，比如"open|close|channel"，回车 上面命令同时查找三个关键字,open、close和channel，效果如何，看一下：
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/5ea7d97a9776ccbe69e70e24ca0fc20b/" rel="bookmark">
+			Java8——Lambda 表达式
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		Lambda 表达式，也可称为闭包，它是推动 Java 8 发布的最重要新特性。使用 Lambda 表达式可以将代码块作为方法参数，使代码变的更加简洁紧凑。坦白的说，初次看见Lambda表达式瞬间头就大了，为了更好的理解，我们可以把Lambda 表达式当作是一种匿名函数(对 Java 而言这并不完全正确，但现在姑且这么认为)，简单地说，就是没有声明的方法，即没有访问修饰符、返回值声明和名字。
+Lambda 表达式的结构 Java 中的 Lambda 表达式通常使用 (argument) -&gt; (body) 语法书写，例如：
+(arg1, arg2...) -&gt; expression
+(arg1, arg2...) -&gt; { body }
+(type1 arg1, type2 arg2...) -&gt; { body }
+Lambda 表达式的结构说明：
+一个 Lambda 表达式可以有零个或多个参数参数的类型既可以明确声明，也可以根据上下文来推断。例如：(int a)与(a)效果相同所有参数需包含在圆括号内，参数之间用逗号相隔。例如：(a, b) 或 (int a, int b) 或 (String a, int b, float c)空圆括号代表参数集为空。例如：() -&gt; 42当只有一个参数，且其类型可推导时，圆括号（）可省略。例如：a -&gt; return a*aLambda 表达式的主体可包含零条或多条语句如果 Lambda 表达式的主体只有一条语句，花括号{}可省略。匿名函数的返回类型与该主体表达式一致如果 Lambda 表达式的主体包含一条以上语句，则表达式必须包含在花括号{}中（形成代码块）。匿名函数的返回类型与代码块的返回类型一致，若没有返回则为空 列举几个 Lambda 表达式的例子：
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/5ea7d97a9776ccbe69e70e24ca0fc20b/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/9471433fce6edd1b2794bd2081f84e1e/" rel="bookmark">
+			选择建模工具时，这几个因素非常关键
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		在选择最适合自己的3D建模工具时，以下几个关键因素不容忽视：
+需求定位：首先明确自己使用3D建模软件的具体需求。不同行业和应用领域对软件功能的需求各不相同。例如，建筑师可能更注重精确的绘图和建模功能，而动画或游戏开发者则更需要丰富的动画工具和角色建模能力。
+技能水平：评估自己的技能水平，选择适合自己的软件。对于初学者来说，选择界面直观、操作简单的软件如SketchUp Pro或Cinema 4D可能更为合适。随着技能的提升，可以尝试使用更复杂的软件，如ZBrush或Rhinoceros 3D。
+预算考虑：在选择软件时，要考虑软件的价格和自己的预算。有些软件是免费的，适合初学者或业余爱好者使用，例如Blender。而一些专业的付费软件价格可能从几百到数千元不等。因此，要根据自己的需求和经济状况做出明智的选择。
+硬件要求：确保自己的计算机硬件能够满足所选软件的运行要求。某些软件可能需要更高的处理能力和显卡性能，因此在选择软件时要考虑自己的硬件配置。
+支持与社区：选择拥有强大用户社区的软件可以在遇到问题时获得帮助和支持。一些软件提供广泛的在线资源、教程和论坛，这对于学习和解决问题非常有帮助。
+以下是一些备受好评的3D建模软件：
+欧特克AutoCAD：适用于土木工程师、建筑师和图形设计师等，具备精确的绘图和建模功能。
+SketchUp专业版：拥有直观界面和强大功能，适合建筑师和室内设计师使用。
+Blender：免费的开源软件，功能强大，适用于产品渲染、动画、运动跟踪和游戏创建等。
+Rhino3D：采用NURBS数学建模，提供高精度和灵活性，适用于工业设计领域。
+ZBrush：数字雕塑工具，适用于角色艺术家和雕塑家使用。
+Cinema 4D：用于运动图形的创建、建模和渲染，具备直观界面和强大功能。
+创造家（chuangzaojia.com）是一个便捷的资源平台，满足用户在AR和3D建模方面的需求。无论您是学习者、专业人士还是爱好者，创造家都能为您提供丰富的资源和工具。快来访问创造家平台，探索更多精彩的AR内容和3D模型吧！根据个人需求、技能和预算做出明智的决策，选择最适合您的3D建模软件工具。
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/b2bb6dc397529ad4a5e138995ccfdcb0/" rel="bookmark">
+			Mapreduce小试牛刀(1)
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		1.与hdfs一样，mapreduce基于hadoop框架，所以我们首先要启动hadoop服务器
+---------------------------------------------------------------------------------------------------------------------------------
+2.修改hadoop-env.sh位置JAVA_HOME配置，在JAVA_HOME前面加上export，重启主虚拟机，最好也把另外两个节点同位置的该配置文件改了
+如果这里不配置好JAVA_HOME变量，那么在后续运行时会出现127号报错，显示未找到JAVA_HOME
+---------------------------------------------------------------------------------------------------------------------------------
+3.修改内存
+修改yarn-site.xml文件中的内存大小。一般来说，第一次都分配的1024mb，但是在进行mapreduce运算时，会要求至少1536mb内存。但是不要直接设置为1536mb,不要忘记操作系统也会占用内存！但是也不要设置的太大，以免把本机下爆
+---------------------------------------------------------------------------------------------------------------------------------
+4.示例1
+本地文档单词统计
+1.在某一文件夹下，编辑一个txt文件
+vi wdtest.txt 2.上传到某一hdfs的目录下
+hdfs dfs -put wdtest.txt /input 3.利用hadoop自带的包，进行单词统计
+hadoop jar /home/hadoop/hadoop-3.3.4/share/hadoop/mapreduce/hadoop-mapreduce-examples-3.3.4.jar wordcount /input /output 系统会新建一个叫做ouput的目录收录统计结果（part-r-00000文件）
+4.利用cat命令查看统计结果
+hadoop fs -cat /output/part-r-00000 ---------------------------------------------------------------------------------------------------------------------------------
+5.示例2（Hadoop Streaming统计总的字节数）
+输入如下代码，结果会在output2目录下显示
+mapred streaming \ -input /input \ -output /output2 \ -mapper /bin/cat \ -reducer /usr/bin/wc 注意：要连续、完整输入这段代码，输完后会自动开始计算作业！
+输入代码，查看统计结果：
+hadoop fs -cat /output2/part-00000 分别为行数、单词数、字节数
+这里采用了Hadoop Streaming工具集。Hadoop Streaming是Hadoop新推出的一个工具集。这个工具集并不是提供流式计算的功能，而是允许以命令行的方式代替千篇一律的Driver代码。但是与第一种方法相比，它并不能统计出各个单词出现的次数
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/524da984b6d271ced6b6d3f513f375a9/" rel="bookmark">
+			学习建模，首先选择适合自己的3D建模软件
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		选择适合自己的3D建模软件是一个至关重要的决策，因为每个软件都有其独特的功能和特性，适用于不同的领域和项目类型。在本文中，我们将深入探讨几种常见的3D建模软件，帮助您更好地了解它们的特点和适用范围。
+首先，让我们来看看Maya。作为行业标准之一，Maya在电影、动画和特效制作方面表现出色。它拥有广泛的工具和功能，适用于复杂的建模、纹理、灯光和动画任务。然而，Maya的学习曲线较陡峭，更适合专业的3D艺术家和电影制作人。
+接下来是Cinema 4D。C4D以其易学易用而闻名，适合初学者和中级艺术家。它具有强大的渲染能力和丰富的预设库，还可以与后期制作软件如Adobe After Effects无缝集成。在广告、动态图形和运动图形设计领域，C4D得到了广泛应用。
+3ds Max在建筑和机械设计领域具有强大的功能。它适用于CAD制图和建模，具有强大的建模工具和动画功能，支持流体模拟和复杂的角色操纵。在建筑可视化、产品设计和游戏开发等领域，3ds Max得到了广泛应用。
+ZBrush是一款专注于3D雕刻的软件，广泛应用于数字艺术、影视特效和游戏角色设计。它模仿传统雕塑技术，可以雕刻高分辨率模型，为艺术家提供了巨大的创作自由度。在人体模型和3D打印方面，ZBrush表现出色。
+Blender是一款免费的开源软件，提供了一套完整的3D艺术工具。它具有强大的建模、动画、渲染和后期制作功能，适用于各种项目类型。Blender的社区活跃，不断更新和改进，是一个受欢迎的选择。
+最后是Rhino，一款基于NURBS的三维建模软件，广泛应用于工业设计和产品设计。它的建模思路自由，易于学习和使用，对计算机操作系统和硬件配置要求不高。然而，在需要精确结构和实体模具的行业，Rhino可能不太适用。
+此外，创造家（chuangzaojia.com）是国内最大的AR资源平台之一，为用户提供丰富的3D模型库、免费下载、VisionPro、3D模型查看器和3D格式转换等功能。该平台已发布了1540个模型，涵盖了各个领域的内容。
+创造家平台提供了丰富的AR资源，无论是进行AR项目开发还是进行AR内容制作，用户都可以在创造家找到所需的模型和工具。平台上的模型数量众多，用户可以通过搜索功能快速找到符合自己需求的模型。对于设计师和创作者来说，创造家是一个极具价值的资源平台。它提供了免费下载的模型，方便用户在项目中使用。此外，创造家还提供了VisionPro和3D模型查看器等工具，帮助用户更好地展示和编辑模型。
+在选择适合自己的3D建模软件时，需要考虑自身技能水平、项目需求和预算。同时，掌握多个软件也有助于扩展技能和适应不同的项目要求。最重要的是不断练习和探索培养自己的技术和创作能力祝您在3D建模的旅程中取得成功！
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/a603b312fede0997315fc858ca4447ff/" rel="bookmark">
+			Mysql in FIND_IN_SET(‘123‘, 数据库字段) 的使用场景
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		-- in后面的参数是我传入的List
+SELECT * from user where 数据库字段 in('123', '456');
+-- 第一个参数是常量, 第二个参数是 数据库字段(逗号隔开的字符串)
+SELECT * from user where FIND_IN_SET('123', 数据库字段);
+用find_in_set 和 like, SELECT * FROM user WHERE id REGEXP '03'; 都可以查到 数据库包含某个字段;
+使用find_in_set的性能更好, 因为find_in_set是针对逗号分隔的字符串进行查找
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/a152ec05e775f4b9e549cbdf41abfd1c/" rel="bookmark">
+			springboot jpa sql查询条件空值判断
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		String、Byte、Date、List 类型空值判断
+@Query(value = "select new com.test.Student(s.id,s.name,s.status,s.type,s.gmtCreate) " + " from Student s " + " where s.isDeleted = 0 " + " and (s.name like concat('%',:name,'%') or :name is null) " + " and (s.type = :type or :type is null)" + " and (s.gmtCreate &gt;= :startTime or :startTime is null) " + " and (s.gmtCreate &lt;= :endTime or :endTime is null)" + " and (COALESCE(:status,null) is null or (s.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/a152ec05e775f4b9e549cbdf41abfd1c/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/1f2969a1f5c03d1fcb3e2e932de9aec0/" rel="bookmark">
+			设计模式之开篇
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		在软件开发的世界里，设计模式有如一本精妙的工程艺术指导准则，为我们提供了解决常见问题的优雅实现方案。然而，有些程序员可能会认为设计模式太过繁琐，一个简单的 if/else 语句就能解决问题，何必费心去学习这些看似复杂的概念呢？在这个系列的文章里，我和大家一起探讨为什么设计模式是值得的，以及如何在实际开发中去融入设计模式的思想。
+一、为什么学设计模式 1、代码质量和可维护性 拥有设计模式的思维方式，意味着你不仅仅是在写能够工作的代码，更是在构建具有良好结构的、易于理解和维护的代码。设计模式是过去经验的总结，它们提供了在各种场景下验证过的最佳实践，有助于避免常见的陷阱和错误。
+2、可扩展性和灵活性 需求总是在变化的，永远不可能存在一层不变的需求，而设计模式可以为你的代码提供更好的扩展性。通过采用开放封闭等设计原则，你的代码可以更容易地适应新的功能需求，而不需要对原有的代码进行大规模修改。
+3、团队协作 设计模式是一种通用的编程语言，它提供了一种共享的术语和理解方式，有助于团队成员更容易理解和协作。当所有人都熟悉常见的设计模式时，交流就会变得更加高效，合作更加顺畅。
+二、怎么样学设计模式 1、刻意实践 在日常编码中刻意使用设计模式是学习的最佳途径。不要觉得使用设计模式会让代码变得复杂和难以理解，相反，它会使你的代码更加清晰、模块化，易于维护。逐渐将设计模式的思想融入到自己的编程风格中，形成个性化的代码风格。
+2、实战演练 学以致用是掌握设计模式的关键。在实际项目中应用设计模式，从而更好地理解其实际应用场景。实战中的经验往往比理论知识更加深刻和有说服力。
+3、逐步演进 不要急于一时，逐步演进是掌握设计模式的关键。从一段已有的代码开始，尝试用设计模式和SOLID原则进行重构。通过对比前后的代码，你将会发现自己在设计和编写代码方面的进步。
+4、重点理解设计原则 设计模式的基石是设计原则，例如开放封闭原则、单一职责原则等。深入理解这些原则，能够更好地指导你在实际项目中的设计和编码过程。设计原则是设计模式的根基，也是培养良好代码习惯的关键。
+三、设计原则的补充说明 一般的书籍和文章讲到设计原则，都讲的是 SOLID 原则，而我这里要说的是七原则：SOLID + CARP + LoD
+1 、SRP（Single responsibility Principle）单一职责原则 SRP 是一项简单易懂且重要的原则，但是在实际过程中往往最容易忽略的，它强调在应用中，一个类应该只有一个引起变化的原因，只有一个职责。
+SRP 是基于康威定律的推导结论：软件系统的最佳结构高度依赖于开发这个系统的组织的内部结构，每个软件模块都有且只有一个需要被改变的理由。
+优点 降低类之间的耦合：将不同职责分解为不同的类，降低类之间的依赖关系，提高系统的灵活性和可维护性提升类的可维护性和可重用性：当一个类只有一个职责时，修改该职责不会影响到其他职责，使得类更加稳定，易于维护和重用简化设计过程：SRP 原则使得类的设计更加清晰，每个类都专注于解决一个问题，降低了设计的复杂性 示例代码 多职责的类设计
+public class UserService { /*** 运营部员工绩效计算 */ public BigDecimal calculateKPIResultForOperation() { } /*** 商务员工绩效计算 */ public BigDecimal calculateKPIResultForBusiness() { } /*** 产品部员工绩效计算 */ public BigDecimal calculateKPIResultForProduct() { } /*** 技术部员工绩效计算 */ public BigDecimal calculateKPIResultForTechnology() { } } SRP 后的类设计
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/1f2969a1f5c03d1fcb3e2e932de9aec0/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/0c3a243deb82a9aef828e83034fa8c7b/" rel="bookmark">
+			Centos7安装nacos教程
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		Centos7安装nacos教程 1. 下载jdk tar.gz格式压缩包，放入linux的目录 下载地址：https://github.com/alibaba/nacos/releases
+找到2.0.3版本的nacos：nacos-server-2.0.3.tar.gz
+2. 上传到服务器并解压压缩包 tar -zxvf nacos-server-2.0.3.tar.gz
+3. 移动压缩包至/usr/local下 mv nacos/ /usr/local/nacos
+4. 修改配置文件 执行命令：
+vim /usr/local/nacos/conf/application.properties
+看着修改连接信息，启动mysql管理
+spring.datasource.platform=mysql db.num=1 #5.x的连接 #db.url.0=jdbc:mysql://127.0.0.1:3306/nacos?characterEncoding=utf8&amp;connectTimeout=1000&amp;socketTimeout=3000&amp;autoReconnect=true&amp;useUnicode=true&amp;useSSL=false&amp;serverTimezone=UTC #8.x的连接 db.url.0=jdbc:mysql://127.0.0.1:3306/nacos?useUnicode=true&amp;characterEncoding=utf8&amp;serverTimezone=Asia/Shanghai&amp;useSSL=false&amp;allowPublicKeyRetrieval=true #mysql的用户名 db.user=nacos #mysql的密码 db.password=nacos 只单机部署的话，可以修改一下startup.sh
+配置了这个下面的启动就不需要加 -m standalone了
+vim /usr/local/nacos/bin/startup.sh
+修改 export MODE="cluster" 为 export MODE="standalone" 5.初始化数据库脚本 #先连接mysql mysql -u root p #创建nacos数据库 create database nacos; #exit退出 exit #脚本文件位置为：/usr/local/nacos/conf/nacos-mysql.sql #导入脚本sql： mysql -uroot -proot -Dnacos &lt;/usr/local/nacos/conf/nacos-mysql.sql 6.启动nacos 启动关闭脚本都在这里：/usr/local/nacos/bin/ -m为指定模式standalone单机
+./usr/local/nacos/bin/startup.sh -m standalone
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/0c3a243deb82a9aef828e83034fa8c7b/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/15e1838ed37a9732fbe2c822c60e9d97/" rel="bookmark">
+			深度强化学习记录
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		增强学习是什么 增强学习
+与环境交互获取反馈 agent 目标是最大化累积奖励，称为期望值回馈
+增强学习框架 RL Process RL process叫做Markov Decision Process (MDP)
+The reward hypothesis RL基于奖励假设，目标函数是最大化期望回归，maximize the expected cumulative reward
+the Markov Property the Markov Property 暗示agent只需要最近的状态去学习下一步采取什么动作，不考虑历史状态和行为
+Observations/States Space agent从环境中学到的信息，
+State s
+一个完整的这个世界状态的描述Observation o
+一个部分的这个世界状态的描述 Action Space 环境中所有可能动作的集合
+环境来自离散或者连续空间
+Rewards and the discounting agent知道采取行动是否是好的
+累积奖励：
+即时奖励更有可能发生，因为比起长期奖励他们更容易预测
+定义一个discount rate叫gamma,0-1之间。大多时候是0.99-0.95（gamma越大，discount越小，agent更在乎长期回归。gamma越小，discount越大，agent更关系短期回报）每一个奖励会被gamma计算到时间指数步骤，未来期望奖励发生概率降低 任务类型 两种任务： episodic ，continuing
+Episodic task：
+有一个开始点和结束点（终止状态），an episode: a list of States, Actions, Rewards, and new States ，比如超级玛丽
+Continuing tasks：
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/15e1838ed37a9732fbe2c822c60e9d97/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/bfa395f494634c07129aaa6c6aefae99/" rel="bookmark">
+			互联网加竞赛 python opencv 深度学习 指纹识别算法实现
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		1 前言 🔥 优质竞赛项目系列，今天要分享的是
+🚩 python opencv 深度学习 指纹识别算法实现
+🥇学长这里给一个题目综合评分(每项满分5分)
+难度系数：3分工作量：4分创新点：4分 该项目较为新颖，适合作为竞赛课题方向，学长非常推荐！
+🧿 更多资料, 项目分享：
+https://gitee.com/dancheng-senior/postgraduate
+2 指纹识别方式 目前市面上有两种指纹识别，分别是光学式和电容式指纹识别。
+2.1 电容式指纹识别 电容式指纹识别要比光学式的复杂得多，其原理是将压力感测、电容感测、热感测等感测器整合于一块芯片中，当指纹按压芯片表面时，内部电容感测器会根据指纹波峰与波谷而产生的电荷差（或是温差），形成指纹影像，再通过与算法内部的指纹库进行匹配，从而完成指纹识别。
+电容式指纹识别技术较为复杂，对技术研发和积累有较高要求，并且涉及大量专利，算法得实现也相对困难，所以目前全球只有少数公司能在这方面提供领先的技术产品。
+2.2 光学式指纹识别 然后是光学式指纹识别，大家常见的指纹考勤机就是光学式指纹识别。
+这类光学式指纹识别主要包括4个方面功能
+1.指纹模块负责采集指纹图像。2.数字信号处理器主要把采集到的指纹图像转化为数字信号。3.微控制器是整个系统的控制单元，在这里将进行指纹的验证以及输出指令。4.液晶显示器将输出指纹验证结果。 当我们把手指放在指纹考勤机上时，通过镜面反射原理，指纹模块就会采集指纹图像
+接着指纹图像就会被数字信号处理器转换成数字信号
+然后通过微控制器将数字信号与指纹库里的指纹进行匹配，匹配结果将通过液晶显示器显示出来。这就是光学式指纹识别的工作原理。
+电容式与光学式指纹识别主要在指纹的采集方式上拥有较大差异，而在指纹的验证过程中则基本类似。然而因为电容式指纹识别拥有体积小、适用性广的优点，已经有越来越多的设备采用电容式指纹识别，未来的主流将是电容式指纹识别。
+3 指纹识别算法实现 3.1 指纹识别算法流程 3.2 指纹图像预处理 1.图像归一化2.图像分割3.图像二值化4.细化 几个步骤 当然有一些算法为了追求极致，中间还利用了增强、多重滤波等方式，但最根本的目的都是为了在细化之后保留指纹信息并且方便后续处理。
+预处理之后是特征点的提取，也就是找到指纹图像当中有价值，具有唯一性和不变性的信息。主要特征点有端点、分叉点几类，在提取部分除了简单的遍历检索确认之外，还有比较重要的一步是伪特征点的去除，主要是针对图像不清晰、不完整导致的断点和边缘端点等。
+最后一步是特征点的匹配，将指纹库中的指纹信息与提取的目标图像特征点进行对比。主流算法是以指纹中心点为依据，根据特征点所在的角度及距离，确认其所在位置，根据匹配度计算是否是同一手指的指纹。
+3.3 指纹图像目标提取 指纹图像目标提取主要是将指纹图片中提取出来，也叫做指纹图像分割。
+图片的前景通过观察可知是由条状或者圆形的一些组成，而底图其他部分只是一个均匀的底色而已。
+我们使用非常简单的手段，基于局部梯度就可以很容易实现我们的目标。
+方差梯度法提取指纹:
+指纹图像通常由前景区域（包含有指纹的脊线和谷线）和背景区域这两部分组成。一般来说，在指纹图像的前景区域中，指纹的脊线和谷线的灰度差是较大的，因而其灰度统计特性局部灰度方差很大；而在指纹图像的背景区域中，两者的方差是很小的。基于这一特性，可以利用指纹图像的局部方差来进行分割。因此，这种方法也被称为方差梯度法。
+的灰度平均值 M和方差 Var计算方法：
+提取前的指纹图像：
+提取后的指纹图像：
+可以看到，学长做的还有些噪点，但是也很好解决，做一次形态学操作即可：
+这样噪点就去除了。
+3.4 指纹图像增强 3.5 指纹特征提取 人体指纹的特征可以反映在给定的人类群体里来自不同手指的指纹之间相似的程度。
+指纹的特征信息很多，所有的这些指纹特征信息构成了庞大的指纹特征集合。
+指纹的细节特征主要指的是纹线端点（RidgeEnding）和纹线分叉点（RidgeBifurcation）。
+纹线端点指的是纹线突然结束的位置，而纹线分叉点则是指纹线一分为二的位置。
+大量的统计结果表明，使用这两类特征点就足以描述指纹的唯一性。
+Minutia Cylinder-Code (MCC) ，该算法是非常著名的指纹特征识提取算法，
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/bfa395f494634c07129aaa6c6aefae99/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/a8c30203512b695b175d79df66db439f/" rel="bookmark">
+			Java8——函数式接口
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		函数式接口也称 SAM 接口，即 Single Abstract Method interfaces，有且只有一个抽象方法，但可以有多个非抽象方法的接口。
+为了让现有的功能和lambda表达式友好兼容，于是就有了函数接口这个概念。函数式接口是只包含一个抽象方法声明的接口。像这样地，函数接口可以隐式地转换成lambda表达式。
+java.lang.Runnable 和java.util.concurrent.Callable是函数接口两个最好的例子。在 Runnable 接口中只声明了一个方法 void run()，我们使用匿名内部类来实例化函数式接口的对象，有了 Lambda 表达式，这一方式可以得到简化。看一下Java 8之前的runnable实现方法，需要4行代码，而使用lambda表达式只需要一行代码。
+// Java 8之前：
+new Thread(new Runnable() { @Override public void run() { System.out.println("Before Java8, too much code for too little to do"); } }).start(); //Java 8方式：
+new Thread( () -&gt; System.out.println("In Java8, Lambda expression rocks !!") ).start(); 但是在实践中，函数接口是非常脆弱的，只要有人在接口里添加多一个方法，那么这个接口就不是函数接口了，就会导致编译失败。Java 8提供了一个特殊的注解@FunctionalInterface来克服上面提到的脆弱性并且显示地表明函数接口的目的（java里所有现存的接口都已经加上了@FunctionalInterface）。让我们看看一个简单的函数接口定义：
+@FunctionalInterface public interface Functional { void method(); } 我们要记住默认的方法和静态方法不会违反函数接口的约定，例子如下：
+@FunctionalInterface public interface FunctionalDefaultMethods { void method(); default void defaultMethod() { } } 在 java 8 中专门有一个包放函数式接口java.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/a8c30203512b695b175d79df66db439f/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/7b1166b78a0d570f157fcde742897af8/" rel="bookmark">
+			【论文解读】System 2 Attention提高大语言模型客观性和事实性
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		一、简要介绍
+本文简要介绍了论文“System 2 Attention (is something you might need too) ”的相关工作。基于transformer的大语言模型（LLM）中的软注意很容易将上下文中的不相关信息合并到其潜在的表征中，这将对下一token的生成产生不利影响。为了帮助纠正这些问题，论文引入了System 2 Attention（S2A），它利用LLM的能力，用自然语言进行推理，并遵循指示，以决定要处理什么。S2A重新生成输入上下文以使输入上下文只包含相关部分，然后再处理重新生成的上下文以引出最终响应。在实验中，S2A在包含意见或不相关信息的三个任务：QA、数学单词问题和长形生成上优于标准的基于注意力的LLM，其中S2A增加了事实性和客观性，减少了虚假性。
+二、研究背景
+大型语言模型（LLM）具有很强的能力，但它们仍然容易犯简单的错误，这些错误似乎显示出较弱的推理能力。例如，他们可能会被不相关的上下文做出错误判断，或输入提示固有的偏好或意见，在后一种情况下表现出一个称为追随性的问题，即模型与输入一致。
+虽然一些方法试图通过添加更多的监督训练数据或强化学习策略来缓解这些问题，但论文假设潜在的问题是transformer本身的构建方式所固有的，特别是它的注意机制。也就是说，软注意倾向于将概率分配给大部分上下文，包括不相关的部分，倾向于过度关注重复的标记，部分原因是其训练方式，部分原因是位置编码机制也倾向于将上下文视为词袋。
+在这项工作中，论文因此研究了一种完全不同的处理注意机制的方法：通过使用LLM作为自然语言推理器来执行注意。具体来说，论文利用LLM遵循指令的能力，并提示它们生成它们应该注意的上下文，这样它就只包含不会扭曲其推理的相关材料。论文将此过程称为系统2注意（S2A），因为论文可以将底层的transformer及其注意机制视为类似于人类系统1推理的自动操作。系统2，分配注意力活动，在需要刻意注意一个任务的时候接管人类活动，特别是在系统1很可能犯错误的情况下。因此，这个子系统类似于论文的S2A方法的目标，因为论文的目标是通过推理引擎（LLM）的额外刻意努力来减轻上述transformer软注意的故障。
+论文描述了系统2的注意机制的类，提供了进一步的动机，并在下文中详细介绍了几个具体的实现。在下文中，论文通过实验表明，与标准的基于注意力的LLM相比，S2A可以产生更真实、更少固执己见或谄媚的生成。特别是在修改后的TriviQA数据集上，包括问题中的干扰物意见，与LLaMa-2-70b聊天相比，S2A将事实性从62.8%增加到80.3%，而对于包含干扰物输入情绪的长期生成的论证，客观性增加了57.4%，并且在很大程度上不受插入意见的影响。最后，对于GSM-IC中包含主题无关句子的数学词汇问题，S2A将准确率从51.7%提高到61.3%。
+三、System 2 Attention
+3.1 Motivation
+大型语言模型通过预训练的过程获得了优秀的推理能力和大量的知识。他们的下一个词的预测目标要求他们密切关注当前的上下文。例如，如果在一个上下文中提到了某个实体，那么同一实体很可能稍后会在同一上下文中再次出现。基于transformer的LLM能够学习这些统计相关性，因为软注意机制允许它们在他们的上下文中找到相似的单词和概念。虽然这可能会提高下一个单词的预测精度，但它也使LLM容易受到其上下文中的虚假相关性的不利影响。例如，众所周知，重复短语的概率随着每次重复而增加，从而产生一个正反馈循环。将这个问题推广到所谓的非平凡重复，模型也倾向于在上下文中重复相关主题，而不仅仅是特定的标记，因为潜在表示可能预测来自相同主题空间的更多标记。当上下文包含模型复制的观点时，这被称为追随性，但一般来说，论文认为这个问题与上面讨论的任何一种上下文有关，而不仅仅是与意见一致的问题。
+图1显示了一个伪相关的示例。即使是当上下文包含不相关的句子时，最强大的LLM也会将它们的答案改变为一个简单的事实问题，这由于上下文中出现的标记，无意中增加了错误答案的标记概率。在这个例子中，添加的上下文似乎与这个问题相关，因为两者都是关于一个城市和一个出生地的。但随着更深入的理解，很明显，所添加的文本是无关紧要的，因此应该被忽略。
+这促使人们需要一个更慎重的注意机制，它依赖于更深入的理解。为了区别于更低的层次的注意机制，论文称之为系统2注意（S2A）。在本文中，论文探索了一种利用LLM本身来构建这种注意机制的方法。特别是，论文使用指令调优的LLM，通过删除不相关的文本来重写上下文。通过这种方式，LLM可以在输出响应之前，对输入的哪些部分做出慎重的推理决策。使用指令调优的LLM的另一个优点是可以控制注意力焦点，这可能类似于人类控制注意力的方式。
+3.2 Implementation
+论文考虑一个典型的场景，即一个大语言模型（LLM）给定一个上下文，记为x，其目标是生成一个高质量的序列，记为y。这个过程用y∼LLM (x)表示。
+系统2注意（S2A）是一个简单的两步过程：
+给定上下文x，S2A首先重新生成上下文x'，这样上下文中将对输出产生不利影响的无关部分将被删除。论文表示这个x'∼S2A (x)。
+给定x'，然后论文使用重新生成的上下文而不是原始的上下文来生成来自LLM的最终响应：y∼LLM（x′）。
+S2A可以被看作是一类技术，有各种方法来实现步骤1。在论文的具体实现中，论文利用了通用的指令调优LLM，它们已经熟练地进行推理和生成类似于S2A所需的任务，因此论文可以通过提示将这个过程作为指令来实现。
+具体来说，S2A (x) = LLM（PS2A(x)），其中PS2A是一个函数，向LLM生zero-shot提示，指示它执行所需的系统2注意任务。
+图2给出了论文在实验中使用的提示PS2A。这个S2A指令要求LLM重新生成上下文，提取助于为给定查询提供相关上下文的部分。在这个实现中，它特别要求生成一个x'，将有用的上下文与查询本身分开，以便澄清模型的这些推理步骤。
+通常情况下，一些后处理也可以应用于步骤1的输出，以构造步骤2的提示，因为LLM之后的指令除了请求的字段外，还会产生额外的思维链推理和注释。论文从图2中删除了括号中请求的文本，并添加了图13中给出的附加说明。在下面的小节中，论文将考虑S2A的各种其他可能的实现。
+3.3 Alternative Implementations and Variations
+论文考虑了S2A方法的几个变体。
+没有上下文/问题分离（No context/question separation） 在图2中的实现中，论文选择重新生成分解为两部分的上下文（上下文和问题）。这是专门为了鼓励模型复制需要关注的所有上下文，同时不忽略提示符本身的目标（问题/查询）。论文观察到，一些模型在复制所有必要的上下文时可能会遇到困难，但对于短上下文（或强LLM），这可能是不必要的，而一个简单地要求非分区重写的S2A提示就足够了。这个提示变体如图12所示。
+保留原始上下文 （Keep original context）在S2A中，在上下文重新生成之后，包含了所有必要的元素，然后模型只给出重新生成的上下文x'，因此原始上下文x被丢弃。如果S2A表现不佳，并且一些被认为无关并被删除的原始上下文实际上是重要的，那么信息就丢失了。在“保持原文”变体中，在运行S2A提示后，会将x'添加到原始提示符x上，以便原始上下文和重新解释都可以供模型访问。这种方法的一个问题是，现在原始的无关信息仍然存在，并且仍然可能影响最终生成。这个提示变体如图14所示。
+指示提示（Instructed prompting） 图2中给出的S2A提示鼓励从上下文中删除被意见影响的文本，并使用步骤2（图13）中的说明来要求不被影响的响应。论文可以删除后者，并在S2A第2步的提示模板中删除此指令。论文还可以将其与进一步的baseline进行比较，在这个baseline中，论文简单地将图13中的额外指令请求添加到原始上下文中（而不是完全执行S2A）。
+强调相关性/不相关性（Emphasize Relevance/Irrelevance） 到目前为止描述的S2A实现强调重新生成上下文以增加客观性和减少追随性。但是，还有其他方法可以强调应处理具体的情况。例如，人们可以强调相关性而非无关性。图15的提示变体中给出了这种方法的实例，论文也将在论文的实验中使用。
+四、实验
+论文在三种情况下进行实验来评估S2A：Factual QA Evaluation和 Longform Generation Evaluation，以及math word problem解决。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/7b1166b78a0d570f157fcde742897af8/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/cd43e4d66d44ba5c6b72d7967c94e6d3/" rel="bookmark">
+			## 还记得当初自己为什么选择计算机？
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		还记得当初自己为什么选择计算机？ 方向一：为什么当初选择计算机行业
+那个……我的理由是这样的。
+小时候家人说我喜欢打游戏机，然后就说长大了去学电脑吧，然后我就入行了……哈哈哈哈
+方向二：现在还从事计算机相关行业吗
+是的是的，目前依然在这个行业拼搏，虽然是个运维，但是我骄傲。
+看了流浪地球，你会发现一个靠谱的运维对于一个重要的系统有多重要，哈哈哈
+方向三：计算机对自己的人生道路有帮助吗
+必须有啊，更好的了解前沿技术，始终保持对新世界的认知。
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/45a5bd66940315356a19ffdca4a16e8c/" rel="bookmark">
+			RRC下的NAS层
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		无线资源控制（Radio Resource Control，RRC），又称为无线资源管理（RRM）或者无线资源分配（RRA），是指通过一定的策略和手段进行无线资源管理、控制和调度，在满足服务质量的要求下，尽可能地充分利用有限的无线网络资源，确保到达规划的覆盖区域，尽可能地提高业务容量和资源利用率。
+Nas,非接入层(原名NAS,Non-access stratum)存在于UMTS的无线通信协议栈中,作为核心网与用户设备之间的功能层。该层支持在这两者之间的信令和数据传输。
+RRC，RRC主要处理UE与基站之间的信令交互NAS，NAS主要处理基站与MME之间的信令交互 蓝线：信令流（控制面）//红线：数据流（用户面） 一、RRC协议功能 为NAS层提供连接管理，消息传递等服务；对接入网的底层协议实体提供参数配置的功能；负责UE移动性管理相关的测量、控制等功能 二、RRC状态 1.RRC_IDLE PLMN选择；
+NAS配置的DRX过程；
+系统信息广播和寻呼；
+邻小区测量；
+小区重选的移动性；
+UE获取一个TA区内的唯一标识；
+eNB内无终端上下文
+2.RRC_CONNECTION 网络侧有UE的上下文信息；
+网络侧知道UE所处小区；
+网络和终端可以传输数据；
+网络控制终端的移动性；
+邻小区测量；
+存在RRC连接：
+UE可以从网络侧收发数据，监听共享信道上指示控制授权的控制信令；
+UE可以上报信道质量给网络侧；
+UE可以根据网络配置进行DRX
+三、RRC协议承载——SRB（signaling radio bearers—信令无线承载） 四、RRC连接建立过程 连接建立原因：处于IDLE状态下的UE需转变为连接状态时发起该过程，如：呼叫、响应寻呼、TAU、Attach等。
+Step1：RRC连接请求：UE通过UL_CCCH在SRB0上发起，携带UE的初始（NAS）标识和建立原因等，该消息对应于随机接入过的Msg3；
+Step2：RRC连接建立：eNB通过DL_CCCH在SRB0上发送，携带SRB1的完整配置信息，该消息对应随机接入过程的Msg4；
+Step3：RRC连接建立完成：UE通过UL_DCCH在SRB1上发送，携带上行方向NAS消息，如Attach Request、TAU Request、Service Request、Detach Request等，eNB根据这些消息进行S1口建立。
+五、RRC连接建立失败过程 上述四中，Step2中，如果eNB拒绝为UE建立RRC连接，则通过DL_CCCH在SRB0上回复一条RRC连接拒绝消息。
+六、RRC连接重建过程 当处于RRC连接状态但出现切换失败、无线链路失败、完整性保护失败、RRC重配置失败等情况时，触发重连过程。
+Step1：RRC连接重建请求：UE通过UL_CCCH在SRB0上发起，携带UE的初始AS层初始标识信息和重建立原因，该消息对应随机接入过程的Msg3；
+Step2：RRC连接重建：eNB通过DL_CCCH在SRB0上回复，携带SRB1的完整配置信息，该消息对应随机接入过程的Msg4；
+Step3：RRC连接重建立完成：UE通过UL_DCCH在SRB1上发送，不携带任何实际信息，只起到RRC层确认的功能。
+七、RRC连接重建拒绝过程 上述Step2中，如果eNB中没有UE的上下文信息，则拒绝为UE重建RRC连接，则通过DL_CCCH在SRB0上回复一条RRC连接重建立拒绝消息。
+八、RRC连接重配置过程 当需要发起对SRB和DRB的管理、低层参数配置、切换执行和测量控制时，触发连接重配置过程。
+Step1：RRC连接重配置：eNB通过DL_CCCH在SRB1上发送，根据功能的不同携带不同的配置信息内容，一条消息中可以携带体现多个功能的信息单元；
+Step2：RRC连接重配置完成：UE通过UL_DCCH在SRB1上发送，不携带任何实际信息，只起到RRC层确认的功能。
+九、RRC连接重配置异常过程 若UE无法执行RRC连接重配置消息中的内容，则UE回退到收到该消息前的配置，并发起RRC连接重建立过程。
+十、 RRC连接释放过程 当网络希望解除于UE的RRC连接时，触发RRC连接释放过程。
+RRC连接释放：eNB通过DL_DCCH在SRB1上发送，可选择携带重定位信息和专用优先级分配信息（用于控制UE的小区选择和小区重选）。
+本地释放：某些情况下，UE的RRC层根据NAS层的指示主动释放RRC连接，不通知网络侧而主动进入空闲状态，如NAS层鉴权过程中没有通过鉴权检查。
+十一、4/5G信令过程对比 4G5GUE/gNB/AMF状态管理注册状态均包含注册态和去注册态连接状态NAS层CM_IDLE和CM_CONNECTED连接状态AS层（RRC）IDLE和CONNECTEDIDLE、CONNECTED和INACTIVE开机注册attach过程register过程RRC连接建立、重配置、释放、修改相同，5G的RRC流程 最终在18年9月确定业务发起IDLE态发起4G service request5G service requestCONNECTED态发起新业务4G ERAB建立或修改5G PDU session建立或修改双连接（DC） 4/5G DC信令过程与4G基本相同，差别在消息信元上；
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/45a5bd66940315356a19ffdca4a16e8c/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/0ededc9ce2200c91fffc180690dae8f3/" rel="bookmark">
+			git根据commit id强制推送,撤销远程仓库代码
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		由于将把不用发版的需求合并上去了，现在想撤回，可以根据以下操作进行 注意撤回、强制推送有风险，记得强制撤回前，备份好代码 确保本地仓库中包含你想要推送的 commit： 这里你要经常使用命令进行操作的话，就用git log查看你要的 commit ID，我这里使用的vscode插件Git Graph查看commit ID的，都是一样的操作
+git log 通过 git log 命令查看本地仓库的提交历史，找到你想要推送的 commit 的 commit ID。
+git push -f origin &lt;commit-id&gt;:&lt;branch-name&gt; 这会将特定 commit 推送到远程分支，替换 为你想要推送的 commit 的 SHA-1 值， 为你的目标分支。
+如果在想撤回本地dev分支，你就按vscode的插件来撤回
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/5365b2e87532e6f6df886dd6be59efc0/" rel="bookmark">
+			c&#43;&#43;泛型示例
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		一个粗糙的c++范型示例
+#include &lt;iostream&gt; #include &lt;fstream&gt; #include &lt;sys/stat.h&gt; #include &lt;vector&gt; using namespace std; class CacheDataA { public: int aValue; }; class CacheDataB { public: int bValue1; int bValue2; }; template &lt;class T&gt; class BaseCacheEngin { public: BaseCacheEngin(int maxCacheCount); std::vector&lt;T *&gt; cacheDataList; int cacheData(T *cacheData); T *popData(); private: int mMaxCacheCount; }; template &lt;class T&gt; BaseCacheEngin&lt;T&gt;::BaseCacheEngin(int maxCacheCount) { mMaxCacheCount = maxCacheCount; } template &lt;class T&gt; int BaseCacheEngin&lt;T&gt;::cacheData(T *cacheData) { cacheDataList.push_back(cacheData); if(cacheDataList.size()&gt;mMaxCacheCount){ cacheDataList.erase(cacheDataList.end()); } return 0; } template &lt;class T&gt; T *BaseCacheEngin&lt;T&gt;::popData() { if (cacheDataList.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/5365b2e87532e6f6df886dd6be59efc0/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/5680b76574ce59e28014c6225d51df88/" rel="bookmark">
+			C&#43;&#43;对string字符串进行trim和split操作
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		c++小白的学习笔记；
+记录c++ trim和split的实现方法：
+#include &lt;iostream&gt; #include &lt;algorithm&gt; #include &lt;vector&gt; #include &lt;regex&gt; using namespace std; namespace { bool isntspace(const char &amp;ch) { return !isspace(ch); } } // end of namespace const std::string ltrim(const std::string &amp;s) { std::string::const_iterator iter = find_if(s.begin(), s.end(), isntspace); return std::string(iter, s.end()); } const std::string rtrim(const string &amp;s) { std::string::const_iterator iter = find_if(s.rbegin(), s.rend(), isntspace).base(); return std::string(s.begin(), iter); } const std::string trim(const std::string &amp;s) { std::string::const_iterator iter1 = find_if(s.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/5680b76574ce59e28014c6225d51df88/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/dae15ad79a78c0858e7c81ac0928b02e/" rel="bookmark">
+			Microsoft edge 浏览器打开是360导航页面解决方法
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		问题如下： 在win10电脑中，我们打开浏览器经常会出现以下的情况 ，每次打开默认会出现360的导航首页，这让我们对浏览器的体验感极差，并不是我们想要的，今天分享一个方法解决，适用于大部分的游览器，
+情况如下：
+解决办法如下： 1、打开游览器--》设置 2、选择--》开始、主页和新建标签页 3、点击--》... 4、选择--》删除 5、选择启动时--》打开新的标签页 最后重新启动一下游览器，就可以看到页面不会在出现360的提示了
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/8bc7a9941ce99807e49f02bb58a44f7d/" rel="bookmark">
+			利用Stable Diffusion Web UI API实现高级图像生成
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		下面代码是一个 Python 脚本，用于与 Stable Diffusion 模型的 Web UI 服务器进行交互，实现文本到图像（txt2img）和图像到图像（img2img）的转换。这个脚本展示了如何通过编程方式使用 API 来生成和修改图像，这在自动化图像生成和处理的应用中非常有价值。
+from datetime import datetime import urllib.request import base64 import json import time import os # 文档https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/API webui_server_url = '' # 输入api out_dir = 'api_out' out_dir_t2i = os.path.join(out_dir, 'txt2img') out_dir_i2i = os.path.join(out_dir, 'img2img') os.makedirs(out_dir_t2i, exist_ok=True) os.makedirs(out_dir_i2i, exist_ok=True) def timestamp(): return datetime.fromtimestamp(time.time()).strftime("%Y%m%d-%H%M%S") def encode_file_to_base64(path): with open(path, 'rb') as file: return base64.b64encode(file.read()).decode('utf-8') def decode_and_save_base64(base64_str, save_path): with open(save_path, "wb") as file: file.write(base64.b64decode(base64_str)) def call_api(api_endpoint, **payload): data = json.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/8bc7a9941ce99807e49f02bb58a44f7d/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/2af3fceaca7d55c648a19c568d7fb743/" rel="bookmark">
+			架构设计系列之基础：基础理论（一）
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		在软件开发和软件架构领域，深厚的理论基础是构建高质量、可维护、可扩展系统的关键，本部分内容将围绕这些基础理论展开。（本部分内容介绍第一部分：编程三范式、架构设计原则、软件设计七原则）
+一、编程三范式 编程范式是程序设计的基本思想和方法，对于程序员来说，他是告诉我们在实际编码和设计的过程中不能做什么，而非可以做什么。了解和灵活运用编程范式，有助于构建更加清晰、灵活、可维护的代码。
+1 、结构化编程（Structured programming） 是基于过程的一种编程范式，将问题分解为一系列的步骤，每个步骤都由一个过程或函数表示。强调程序的执行过程，是用于简单的任务和流程。
+结构化编程是对程序控制权的直接转移进行了限制和规范。
+优势 直观且易于理解和实现适用于线性、简单的任务 适用场景 独立脚本编写简单的操作和流程 2、面向对象编程（Object-oriented programming） 是一种以对象为基础的编程范式，将数据和操作封装在对象中，强调对象之间的交互和关系。
+核心思想是通过抽象、继承、封装和多态等概念，提高代码的重用性和可维护性。
+面向对象编程是对程序控制权的间接转移进行了限制和规范。
+优势 模块化，提高代码的可维护性重用性高，减少重复代码 适用场景 复杂系统设计大规模团队协作 3、函数式编程（Funtional programming） 是一种以函数为基础的编程范式，将计算视为数据函数的求值过程。强调纯函数、不可变性和无副作用，通过组合函数来构建复杂的系统。
+函数式编程是对程序中的赋值进行了限制和规范。
+优势 副作用少，易于调试和测试并行计算友好 适用场景 数据处理和转换并行和分布式系统 了解并灵活运用这三个范式，有助于根据问题的性质选择最合适的编程方式，提高代码的质量和可维护性。在实际项目中，通常会综合运用多种范式，以充分发挥他们的优势。
+4、编程范式与架构设计的关系 编程范式和架构设计是有着密切关系的：
+结构化编程是在做各个模块设计和实现时的基础要求面向对象编程中比如多态是跨越架构边界的手段函数式编程是用来规范和限制数据存放位置与访问权限的手段 基于上面的分析，你会发现，这三点和架构设计中的功能性、组件独立性、数据管理是密切相关的。
+二、架构设计原则 1 、 合适原则 架构设计应该全面考虑时间、人力、能力、效率、成本，选择当前最为合适的方案。
+合适的方案并非简单化，而是在充分考虑投资回报率（ROI）的基础上，根据项目需求和实际情况进行权衡和决策。
+在实现功能的前提下，追求高效率和降低成本是合适方案的关键。
+2 、简单原则 简单原则强调在满足功能需求的前提下，追求简洁和可读性。
+简单设计有助于提高研发效率、降低成本、减少错误率，并能够提高系统的可维护性和可扩展性。
+核心思想是简单优于复杂。在实现功能的前提下，减少代码量和复杂性，避免过度设计带来的复杂度。
+简单的设计更容易理解、测试和部署，同时也易于维护和扩展，减少未来的开发难度和成本。
+3 、演化原则 演化原则是指导设计出能够适应未来变化的重要原则，要求技术人员具备前瞻性。
+架构设计应该具备灵活性和可扩展性，以便在未来的开发过程中能轻松应对新功能的研发、适应新的需求和变化。
+核心思想是演化强于一步到位。任何一个软件产品和系统都需要不断变化和演进，因此在设计过程中要避免过于复杂、难以维护和扩展的结构。
+持续的演化有助于保持系统的健康状态，适应业务和技术的不断发展。
+三、软件设计七原则 做好一个系统，要先从写出整洁和易维护的代码开始。如果代码质量不佳，那架构能起到的作用就不会太大，多好的架构也绷不住堆砌的烂代码。反之，如果架构设计的不太理想，代码写的再好其实也无太大用处。两者之间是相辅相成，互相成就的。
+1 、SRP（Single responsibility Principle）单一职责原则 SRP 是一项简单易懂且重要的原则，但是在实际过程中往往最容易忽略的，它强调在应用中，一个类应该只有一个引起变化的原因，只有一个职责。
+SRP 是基于康威定律的推导结论：软件系统的最佳结构高度依赖于开发这个系统的组织的内部结构，每个软件模块都有且只有一个需要被改变的理由。
+优点 降低类之间的耦合：将不同职责分解为不同的类，降低类之间的依赖关系，提高系统的灵活性和可维护性提升类的可维护性和可重用性：当一个类只有一个职责时，修改该职责不会影响到其他职责，使得类更加稳定，易于维护和重用简化设计过程：SRP 原则使得类的设计更加清晰，每个类都专注于解决一个问题，降低了设计的复杂性 示例代码 多职责的类设计
+public class UserService { /*** 运营部员工绩效计算 */ public BigDecimal calculateKPIResultForOperation() { } /*** 商务员工绩效计算 */ public BigDecimal calculateKPIResultForBusiness() { } /*** 产品部员工绩效计算 */ public BigDecimal calculateKPIResultForProduct() { } /*** 技术部员工绩效计算 */ public BigDecimal calculateKPIResultForTechnology() { } } SRP 后的类设计
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/2af3fceaca7d55c648a19c568d7fb743/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/53d32edc1b63150a704889d164c91125/" rel="bookmark">
+			最新科研成果：在钻石中存储多比特数据，实现25GB数据密度
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		近日，纽约城市大学（CUNY）的研究人员已经成功地利用钻石原子结构中的小型氮缺陷作为“颜色中心”来写入数据进行存储（然后是检索）。这项发表在《自然·纳米技术》上的技术允许通过将数据编码为多个光频率（即颜色）将多个字节的数据写入相同的氮缺陷中——这可以在不混淆信息内容的情况下完成。
+该技术可以将多个数据位存储在钻石的缺陷中，通过在不同光频率上编码实现每平方英寸25GB的数据密度。这项技术利用了钻石中的氮缺陷，这些缺陷可以作为颜色中心，通过精确控制它们的电荷来存储信息。研究人员使用窄带激光和低温条件来非常精确地控制这些颜色中心的电荷，并且可以在单个原子级别进行写入和读取。
+他们展示了如何在同一氮缺陷中使用每种颜色的适当衍射限制打印多种颜色，这意味着可以根据对原子进行单独编程的颜色数量构建尽可能多的位。
+这项技术的一个独特之处在于它是可逆的，可以无限次地写入、擦除和重写。此外，它还规避了衍射限制，可以通过利用距离小于衍射极限的颜色中心之间存在的轻微颜色（波长）变化来实现这一点。
+这项研究对于提高光学数据存储容量具有重要的意义，尤其是在需要高容量存储的计算应用方面。虽然目前还需要低温冷却来操作这些颜色中心，但研究人员有信心他们的技术可以在室温下运行，并且有一天可能会导致在更低的能量成本下提高存储容量。
+如果您看完有所受益，欢迎点击文章底部左下角“关注”并点击“分享”、“在看”，非常感谢！
+精彩推荐:
+SSD在AI发展中的关键作用：从高速缓存到数据湖
+浅析不同NAND架构的差异与影响
+SSD基础架构与NAND IO并发问题探讨
+字节跳动ZNS SSD应用案例解析
+SSD数据在写入NAND之前为何要随机化？
+深度剖析：DMA对PCIe数据传输性能的影响
+深入解析SSD Wear Leveling磨损均衡技术：如何让你的硬盘更长寿？
+CXL崛起：2024启航，2025年开启新时代
+NVMe SSD：ZNS与FDP对决，你选谁？
+如何通过优化Read-Retry机制降低SSD读延迟？
+关于硬盘质量大数据分析的思考
+存储系统性能优化中IOMMU的作用是什么？
+全景解析SSD IO QoS性能优化
+NVMe IO数据传输如何选择PRP or SGL？
+浅析nvme原子写的应用场景
+多维度深入剖析QLC SSD硬件延迟的来源
+浅析PCIe链路LTSSM状态机
+浅析Relaxed Ordering对PCIe系统稳定性的影响
+实战篇｜浅析MPS对PCIe系统稳定性的影响
+浅析PCI配置空间
+浅析PCIe系统性能
+存储随笔《NVMe专题》大合集及PDF版正式发布！
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/f2260bf8f1938ce642f9ee98600aa3a8/" rel="bookmark">
+			Win系统下安装Linux双系统教程（非常详细）从零基础入门到精通，看完这一篇就够了
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		软件下载
+软件：Linux
+版本：18.0.4
+语言：简体中文
+大小：1.82G
+安装环境：Win11/Win10/Win8/Win7硬件要求：CPU@2.0GHz 内存@4G(或更高）下载通道①丨百度网盘：
+1.ubuntu18.0.4下载链接：
+https://pan.baidu.com/s/13469aDpGacReo1bFvTKmng
+提取码：7777
+2.工具下载链接：
+https://pan.baidu.com/s/17AwjX2AO7E5fHjYWQmINPQ
+提取码：7777
+软件介绍
+Linux，全称GNU/Linux，是一套免费使用和自由传播的类UNIX操作系统，是一个基于POSIX和Unix的多用户、多任务、支持多线程和多CPU的操作系统。它能运行主要的Unix工具软件、应用程序和网络协议
+安装步骤
+温馨提示：
+1.本教程分为3个部分：一、制作U盘启动二、磁盘分区三、安装Linux（ubuntu-18.04）系。。
+2.请确保已经下载了所有需要的文件（1.ubuntu镜像，2.工具-UltraISO和DiskGenius）。
+一、制作U盘启动
+1.双击打开下载后的【ubuntu-18.04】文件夹。
+2.鼠标右击【UltraISO】压缩包选择【解压到UltraISO】。
+3.打开解压文件夹，鼠标右击【UltraISO_9.7.1.3519_cn】选择【以管理员身份运行】。
+4.勾选【我接受】，点击【下一步】。
+5.点击【下一步】。
+6.点击【下一步】。
+7.点击【下一步】。
+8.点击【安装】。
+9.安装完成，点击【结束】。
+10.点击【输入注册码】。
+11.输入注册名【Guanjiu】，输入注册码【A06C-83A7-701D-6CFC】，点击【确定】。
+12.点击【确定】。
+13.插入U盘（4G以上），双击桌面【UltraISO】图标启动软件。
+14.点击【文件】选择【打开】。
+15.选择下载后【ubuntu-18.04】文件夹中的【ubuntu-18.04.1-desktop-amd64】，点击【打开】。
+16.点击【启动】选择【写入镜像】。
+17.点击【写入】。
+18.点击【是】
+19.刻录成功，点击右上角【X】退出。
+二、磁盘分区
+1.打开下载后【ubuntu-18.04】文件夹，鼠标右击【DiskGenius】压缩包选择【解压到 DiskGenius】。
+2.打开解压后的文件夹，双击运行【DiskGeniusLoad】。
+3.鼠标右击一个磁盘（可选择自己容量较大的一个磁盘）选择【新建分区】。
+4.分配新建分区的容量（不少于20G，推荐分配更多的内存到Linux系统中），点击【开始】。
+5.点击【是】。
+6.分区完成，点击【完成】。
+三、安装系统
+1.重启电脑，选择电脑从介质（U盘）启动(由于电脑型号不同同，设置方法不同，提供以下两种方法）。
+方法一、开机画面出现后，立刻按本机型的U盘启动【快捷键】（各主流机型快捷键如下图）选择自己的【U盘英文名称】即可启动。
+方法二、进入电脑Bios设置U盘为第一启动项（当方法一无法选择U盘启动时，需用此方法进行设置），不同类型的机器进入BIOS按键和设置方法均不同（建议自行搜索对应的电脑型号设置教程），总体来说就是在boot里面设置U盘为第一启动项，设置后按F10保存，重启电脑自动从U盘启动。
+3.我这里以组装的微星主板电脑为例：开机按从介质启动快捷键【F11】，在键盘上按【↑↓】选择【UEFI:……】（一般为自己U盘牌子的英文名称）后按【Enter】键。
+4.在键盘上按【↑↓】选择【RUN……】后按【Enter】键。
+5.选择【中文（简体）】按【Enter】键。
+6.双击【Ubuntu（I）】。
+7.系统安装中……
+8…选择【中文(简体)】，点击【安装Ubuntu】。
+9.点击【继续】。
+10.点击【继续】。
+11.选择【其它选项】（选择安装的磁盘位置，不要选择C盘，否则会覆盖原系统）点击【现在安装】。
+12.点击【继续】。
+13.点击【继续】。
+14.输入【姓名、密码】，点击【继续】。
+15.系统安装中……
+16.点击【现在重启】。
+17.在键盘上按【Enter】键。
+18.点击【用户名】。
+19.输入【密码】,点击【登录】。
+20.安装结束：Ubuntu系统界面图下。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/f2260bf8f1938ce642f9ee98600aa3a8/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/bee150959f9f1cd42a31edb7dcf8ea70/" rel="bookmark">
+			HNU数据库大作业-世界杯比赛系统
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		前言 之前做的那个版本bug较多，后进行了大量优化。
+此项目是一个前后端分离的项目，前端主要使用html+css+js搭建，使用的是layui框架
+后端使用php语言，仅实现了简单的查询数据库功能，无法实现多并发查询等复杂情况
+数据库使用mysql，准备了一些测试数据，同时有外键约束和存储过程和触发器等内容
+要看如何运行项目可以拉到最后一个章节
+项目链接：https://gitee.com/jzbbbb/world-cup-competition-system.git
+介绍 项目名：世界杯比赛系统
+技术栈：HTML+CSS+JS+MySQL+Axios+PHP+Layui+Echarts
+项目介绍：
+本项目以 Layui 为基础框架。使用 Echarts 图表提供了八种不同类型的图表，帮助用户更深入地理解数据。
+后台数据库为 MySQL，设有存储过程和触发器，支持表格的增删改查功能，通过外键保障了数据的完整性和一致性。
+PHP 作为后端操作数据库的工具，与 Axios 相结合，确保了数据交互的高效性和安全性。
+效果展示 1.登录页面（验证码功能未实现验证功能，其他登录方式也没实现）
+2.主页面
+3.用户表
+4.查询用户（支持模糊查询）
+5.修改用户信息
+6.添加用户
+7.查看用户分析
+8.球员表查看
+9.修改球员信息
+10.添加球员
+11.球员统计
+12.球员表
+13.修改球队信息
+14.添加球队
+15.球队统计
+16.比赛表
+17.淘汰赛（未实现，贴了张图）
+18.添加比赛
+下面记住比赛开始前两队的一些数据
+19.开始比赛，添加进球事件
+荷兰队的范戴克在某个时间进了某个球
+然后最后又进了两个球，比赛结果如下
+20.点击编辑结束比赛
+21.查看比赛信息
+可以查看具体进球的时间和进球人的信息，以及关于比赛的描述
+22.查看比赛结束后两队的数据
+可以看到，两队的数据自动变化，是由于设置了存储过程
+实际上球员表的进球数据也会自动改变，可以自行测试
+运行项目教程 1.下载phpstudy
+这个网上教程很多，随便下一个即可
+2.打开phpstudy，在软件管理页面下载最高版本的mysql
+3.看看能不能打开Apache和MySQL服务，如果有问题自行百度
+4.配置网站的一些配置项
+这里注意域名，端口号，php版本要和我配置的一样
+然后注意根目录，即项目的位置要放在phpstudy安装目录的WWW目录下
+5.下面配置数据库
+6.运行sql创建数据库
+打开数据库图形化软件如navicat或datagrip，看看刚才配置的数据库是否能连接
+然后运行项目的sql，其代码已经包括建数据库，建表，添加测试数据和外键等
+理论上运行是没有错误的
+可以看到一些新建的表已经有测试数据了
+具体的字段信息可以直接看sql文件，都有注释
+7.打开项目
+推荐使用谷歌浏览器打开刚才配置好的域名和端口号就可以打开项目了
+使用提前准备好的管理员账号和密码就可以登录了
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/bee150959f9f1cd42a31edb7dcf8ea70/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/53e6a5d71e9e9925343a2bdf4b4506b6/" rel="bookmark">
+			Redis系列之简单实现watchDog自动续期机制
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		在分布锁的实际使用中，可能会遇到一种情况，一个业务执行时间很长，已经超过redis加锁的时间，也就是锁已经释放了，但是业务还没执行完成，这时候其它线程还是可以获取锁，那就没保证线程安全
+项目环境：
+JDK 1.8
+SpringBoot 2.2.1
+Maven 3.2+
+Mysql 8.0.26
+spring-boot-starter-data-redis 2.2.1
+jedis3.1.0
+开发工具
+IntelliJ IDEA
+smartGit
+先搭建一个springboot集成jedis的例子工程，参考我之前的博客，
+抽象类，实现一些共用的逻辑
+package com.example.jedis.common; import lombok.extern.slf4j.Slf4j; import java.net.SocketTimeoutException; import java.util.concurrent.TimeUnit; import static com.example.jedis.common.RedisConstant.DEFAULT_EXPIRE; import static com.example.jedis.common.RedisConstant.DEFAULT_TIMEOUT; @Slf4j public abstract class AbstractDistributedLock implements DistributedLock { @Override public boolean acquire(String lockKey, String requestId, int expireTime, int timeout) { expireTime = expireTime &lt;= 0 ? DEFAULT_EXPIRE : expireTime; timeout = timeout &lt; 0 ? DEFAULT_TIMEOUT : timeout * 1000; long start = System.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/53e6a5d71e9e9925343a2bdf4b4506b6/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/c5f4e4a070e75d6bb0ab5d91b9ace011/" rel="bookmark">
+			macOS虚拟机安装全过程（VMware）（非常详细）从零基础入门到精通，看完这一篇就够了
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		作为一名忠实果粉，我最大的愿望就是能够拥有一台Macbook，体验macOS，但是作为学生党，这价钱，贵到离谱啊~~~
+不过，VMware这个神器，可以解决一切问题：既然macOS可以在Macbook上运行，为什么就不能在VMware虚拟机上运行呢？我立马打开VMware，行动了起来~
+----------------------------------------正文------------------------------------------
+目录
+1. 安装前的准备
+2. 下载macOS镜像
+3. 让VMware支持macOS虚拟机
+4. 创建虚拟机
+5. 分配内存空间，配置vmx文件
+6. 安装macOS
+7. 配置macOS
+8. 安装VMware Tools
+9. 初体验
+1. 安装前的准备 VMware Workspace 16 Pro要准备好，如果没有见我之前写的博客的前半部分；
+还有百度网盘，链接： 百度网盘下载链接。
+2. 下载macOS镜像 这里提供3个版本的macOS镜像，越往下版本越新，下文以macOS Big Sur 11举例
+macOS EI Captian 10.11：https://pan.baidu.com/s/1fagJkrFqq4FKA_HSB9Xhcgpwd=rvwz
+此系统适合配置较低的Windows XP、Windows 7老电脑，Intel测试通过；
+macOS Sierra 10.12：https://pan.baidu.com/s/19P4h9wb3gQSSLnu8h9HWGQ?pwd=rybb
+此系统适合配置中等的Windows 7、Windows 8.1电脑，AMD亲测不通过；
+macOS Big Sur 11：https://pan.baidu.com/s/1mBgmzE3I7-X9p8G9Iiqk4A?pwd=a5jc
+此系统适合配置较高的Windows 10、Windows 11电脑，AMD亲测通过；
+mac****OS Monterey 12链接往下翻到评论区（☟）但新手不建议尝试，开机无限重启，Ctrl+R出现禁止标志
+如果镜像文件格式是.iso或.cdr的，不用管它，如果格式是.dmg的，需要用UltraISO（软碟通）把格式转为iso。ultraiso下载链接：下载链接；转格式教程链接：教程链接；
+附1：如果打开分享链接是一个文件夹，请整个文件夹下载，解压解文件夹里后缀名为.zip或者.7z.001的文件，就会得到镜像文件。这是因为百度网盘上传限制4GB，只能通过分卷的形式上传（百度网盘就是限制地辣么s）
+附2：百度网盘官方提速小技巧：教程链接，亲测100KB/s飙到5MB/s，不用SVIP！！！
+3. 让VMware支持macOS虚拟机 不要一得到镜像就高高兴兴地去VMware里建虚拟机（比如我），要不然你会傻眼：VMware虚拟机系统选项里怎么没有macOS？
+这是因为VMware原生不支持macOS，我们需要用工具来让VMware支持macOS虚拟机
+工具链接：https://pan.baidu.com/s/10PiyzgphQ3xLuXKK5RvSYg?pwd=ilip，下载时请整个文件夹下载；
+工具使用之前要先关掉VMware，后台的VMware进程也要清理一空。右键开始键，选择“任务管理器”，然后往下滑，找到名字带有VMware的进程（下图圈起来的），全部都右键——结束进程。等一会儿，如果有“死而复生”的，也干掉它们，直到没有一个VMware进程为止；
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/c5f4e4a070e75d6bb0ab5d91b9ace011/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/1738131e54379e8de945fd05b9bb2cd0/" rel="bookmark">
+			mybatis-plus使用达梦数据库处理枚举类型报错的问题
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		使用mybatis-plus连接达梦数据库，枚举类型无法读取
+枚举类：
+实体：
+数据库字段：
+mybatis-plus枚举包配置：
+调用查询方法：
+List&lt;QualityRuleTemplate&gt; qualityRuleTemplates = ruleTemplateService.list(new QueryWrapper&lt;QualityRuleTemplate&gt;().lambda() .eq(QualityRuleTemplate::getRuleType, QualityRuleTypeEnum.DATASOURCE)); 报错：
+Caused by: dm.jdbc.driver.DMException: 不支持的接口或功能 at dm.jdbc.driver.DBError.throwException(DBError.java:710) ~[DmJdbcDriver18-8.1.1.193.jar:- 8.1.1.193 - Production] at dm.jdbc.driver.DmdbResultSet.do_getObject(DmdbResultSet.java:1972) ~[DmJdbcDriver18-8.1.1.193.jar:- 8.1.1.193 - Production] at dm.jdbc.driver.DmdbResultSet.do_getObject(DmdbResultSet.java:1978) ~[DmJdbcDriver18-8.1.1.193.jar:- 8.1.1.193 - Production] at dm.jdbc.driver.DmdbResultSet.getObject(DmdbResultSet.java:5335) ~[DmJdbcDriver18-8.1.1.193.jar:- 8.1.1.193 - Production] at com.alibaba.druid.filter.FilterChainImpl.resultSet_getObject(FilterChainImpl.java:1395) ~[druid-1.2.18.jar:?] at com.alibaba.druid.filter.FilterAdapter.resultSet_getObject(FilterAdapter.java:1712) ~[druid-1.2.18.jar:?] at com.alibaba.druid.filter.FilterChainImpl.resultSet_getObject(FilterChainImpl.java:1391) ~[druid-1.2.18.jar:?] at com.alibaba.druid.filter.stat.StatFilter.resultSet_getObject(StatFilter.java:878) ~[druid-1.2.18.jar:?] at com.alibaba.druid.filter.FilterChainImpl.resultSet_getObject(FilterChainImpl.java:1391) ~[druid-1.2.18.jar:?] at com.alibaba.druid.proxy.jdbc.ResultSetProxyImpl.getObject(ResultSetProxyImpl.java:1546) ~[druid-1.2.18.jar:?] at com.alibaba.druid.pool.DruidPooledResultSet.getObject(DruidPooledResultSet.java:1765) ~[druid-1.2.18.jar:?] at jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method) ~[?:?] at jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62) ~[?
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/1738131e54379e8de945fd05b9bb2cd0/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/a249108cbe74be2cd86710b1b31f6bf6/" rel="bookmark">
+			docker安装redis并挂载配置文件
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		https://blog.csdn.net/2301_76357803/article/details/131688214
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/a6fc310e45a6a5d7b9a799269bac23a9/" rel="bookmark">
+			Java日期时间使用总结
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		Java日期、时间的使用总结 一、Java中的日期概述1、java.util.Date2、java.text.DateFormat (抽象类)3、java.text.SimpleDateFormat (DateFormat 的直接子类)4、java.util.Calendar（抽象类）5、java.util.GregorianCalendar （Calendar 的直接子类） 二、Java中的日期使用1、java.util.Date2、java.text.DateFormat 抽象类的使用3、java.text.SimpleDateFormat（DateFormat 的直接子类）的使用4、java.util.Calendar（抽象类）5、java.util.GregorianCalendar（Calendar 的直接子类）6、Date/Time API7、Java 中 Date 日期格式的各种转换8、LocalDate 日期比较大小9、Date 日期比较大小 三、时间日期计算1、LocalDate、LocalDateTime 计算时间差2、LocalDate、LocalTime、LocalDateTime 类的使用LocalDate 的方法LocalTime 的方法LocalDateTime 的方法DateTimeFormatterDuration 一、Java中的日期概述 日期在Java中是一块非常复杂的内容，对于一个日期在不同的语言、国别环境中，日期的国际化、日期和时间之间转换、日期的加减运算、日期的展示格式都是非常复杂的问题。
+在Java中，操作日期主要涉及到以下几个类：
+1、java.util.Date Date 类表示特定的瞬间，精确到毫秒。从 JDK 1.1 开始，应该使用 Calendar 类实现日期和时间字段之间转换，使用 DateFormat 类来格式化和分析日期字符串。Date 中的把日期解释为年、月、日、时、分、秒的方法已经废弃了。
+2、java.text.DateFormat (抽象类) DateFormat 是日期 / 时间格式化子类的抽象类，它以与语言无关的方式格式化并分析日期或时间。日期 / 时间格式化子类（如SimpleDateFormat ）允许进行格式化（也就是日期 -&gt; 文本）、分析（文本 -&gt; 日期）、和标准化。将日期表示为 Date 对象，或者表示为从 GMT（格林尼治标准时间）1970 年 01 月 01 日 00:00:00 这一刻开始的毫秒数。
+3、java.text.SimpleDateFormat (DateFormat 的直接子类) SimpleDateFormat 是一个以语言环境相关的方式来格式化和分析日期的具体类。它允许进行格式化（日期 -&gt; 文本）、分析（文本 -&gt; 日期）、和规范化。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/a6fc310e45a6a5d7b9a799269bac23a9/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/1228e80c39d77866d62597ab1b046b4a/" rel="bookmark">
+			Xshell常用命令
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		Xshell 一、常用命令1.查询cd - 更改目录ls - 列出文件ps - 查看进程top - 查看cpu，内存find - 查找文件more,less - 查看文件内容pwd - 查看当前路径grep - 搜索文件内容tail - 查看文件详情head - 查看文件的名字和后缀cat - 显示文件内容diff - 比较文件内容 2.创建mkdir - 建立目录touch - 创建一个空文件cp - 复制文件 3.编辑mv - 移动和重命名文件vi - 编辑文件 4.删除rm - 删除文件和目录rmdir - 删除空目录 5.其他kill - 杀掉进程ln - 建立连接tar - 打包/解包rz,sz - 文件上传下载stop,start - 重启tomcat 二、基本系统命令ping - 测试网络连通性ifconfig - 查看网络设置信息clear - 清屏chown - 变更使用者clock - 时钟设置date - 系统日期设置last - 查看最近哪些用户登录系统man - 查看某个命令的帮助reboot,shutdown - 关闭和重启计算机uptime - 现在的时间iostat - 磁盘吞吐量vmstat - 监视虚拟内存使用情况w - 显示登录用户的详细信息su - 切换用户 三、常用实例查看端口号占用情况根目录编辑 一、常用命令 1.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/1228e80c39d77866d62597ab1b046b4a/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/e7645719b65c736863cd9e92f879a8b4/" rel="bookmark">
+			vscode怎么使用git
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		0 配置：多项目 多git账号密码，无需每个项目每次设置（以vscode为例） 配置：多项目 多git账号密码，无需每个项目每次设置（以vscode为例）_git配置多个用户名和密码-CSDN博客
+git config --global user.name "用户名" git config --global user.email "用户邮箱" vsCode git 修改、清空、重置、保存账号名密码 1、保存账号名密码，之后拉取代码都不用重新输入：
+git config --global credential.helper store 2、查看git用户名：
+git config user.name 3、清空所有的用户名和密码：
+git config --system --unset credential.helper 4、清楚缓存的用户名和密码：
+git credential-manager uninstall 5、更改全局的用户名：
+git config --global user.name "username" 6、更改全局的邮箱：
+git config --global user.email "eamil@qq.com" 1、clone代码库 在vscode中输入快捷键“Ctrl + Shift + P”打开vscode的命令框，在框中输入“git clone”并回车，然后在文本框中输入git代码库的地址
+(mac 是shift+ command+p)
+2、修改clone下来的代码文件，并查看更改的文件列表 代码文件有任意修改后，在vscode左边git图标会显示有多少个文件的改动，点击git图标后，进入到git功能区，会显示改动文件的列表
+u是新增，m是修改
+3、查看和比较修改和前一版本有什么不同 双击文件
+在上一步改动文件列表中，双击改动过的文件，然后会显示diff视图，显示有哪些改动，会把有不同的部分高亮显示
+4、添加文件到暂存区获取取消更改 存放到暂存区
+在改动文件列表中，鼠标悬停在某个文件上，右边会出现“discard change”（撤销更改）和“Stage Change”（暂存更改）的图标，我们可以根据需要选择
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/e7645719b65c736863cd9e92f879a8b4/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/cd49b8026fe941979184ff84ee4d87ab/" rel="bookmark">
+			PSM和HTE的异同：以感冒场景为例
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		笔者在刚开始接触PSM和HTE时，对这两个方法算出来的结果十分困惑：既然这两个方法都是计算实验处理效应，那么选择PSM还是HTE又有什么不同呢？随着笔者对这两个方法的深入研究，发现这两个方法的本质不同在于：
+PSM的计算结果是ATT，HTE的计算结果是CATE；
+要理解这个差异，首先要理解什么是ATT和CATE。我们以平时常见的感冒场景为例：当我们感冒时，我们可以选择吃感冒药；也可以不吃感冒药，多喝热水自己抗过去。这里我们想探究的是吃感冒药对健康有多大影响，那么我们定义T1代表吃感冒药，T0代表不吃感冒药，Y为健康评分。协变量X可能有很多，比如年龄、性别、近1年就医次数等等。
+缩写英文中文数学表达例子估计方法ATEAverage Treatment Effect平均处理效应E[Y1-Y0]感冒药对所有人群的效果 ATT
+Average Treatment Effect on the Treated受处理人群（实验组）平均处理效果E[Y1-Y0|T=1]感冒药对所有吃感冒药人群的效果PSMCATEConditional Average Treatment Effect条件平均处理效应E[Y1-Y0|X=x]感冒药对所有吃感冒药的年老、男性人群的效果HTE 那么，以上统计量之间应如何相互转化呢？
+为了简化问题，我们假设协变量X只有年龄（年轻、年老）和性别（男、女），所以人群可以划分为以下四组，四组人群HTE的估计结果如下：
+组别年龄性别CATE总样本中Gn的占比吃感冒药（T=1）样本中Gn的占比G1年轻男性CATE125%15%G2年轻女性CATE225%30%G3年老男性CATE325%20%G4年老女性CATE425%35% 那么，对于ATE和ATT我们有：
+我们该怎么理解上面的公式呢：
+如果我们知道某特定X群体在总样本中占比，我们可以利用CATE加权计算得到ATE；
+如果我们知道某特定X群体在实验组（T=1）中的占比，我们可以利用CATE加权计算得到ATT。
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/aad0abf761e7835a9396ace3200f0930/" rel="bookmark">
+			Java练习-设计并实现一个字典功能模块
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		文章目录 前言正文一、maven依赖二、SQL脚本三、树形结构查寻3.1 调用时3.2 DictUtil.convertToTree(...) 四、导出和导入 前言 很多Java开发的系统中，可能都需要做一些配置呀，字典之类的设计。
+这里我提供一个思路，以及针对这个思路做了具体的实现，以供大家参考学习。
+代码仓库：https://gitee.com/fengsoshuai/custom-dict
+采用java8，springboot2.7.7，mysql 进行实现。
+正文 因为代码文件较多，就不粘贴全部了，这里粘贴部分重要文件。
+基本的查询（树形结构），插入，导入，导出等也都是实现了。
+一、maven依赖 &lt;dependencies&gt; &lt;dependency&gt; &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt; &lt;artifactId&gt;spring-boot-starter-web&lt;/artifactId&gt; &lt;version&gt;2.7.7&lt;/version&gt; &lt;/dependency&gt; &lt;dependency&gt; &lt;groupId&gt;mysql&lt;/groupId&gt; &lt;artifactId&gt;mysql-connector-java&lt;/artifactId&gt; &lt;version&gt;8.0.18&lt;/version&gt; &lt;scope&gt;runtime&lt;/scope&gt; &lt;/dependency&gt; &lt;dependency&gt; &lt;groupId&gt;com.baomidou&lt;/groupId&gt; &lt;artifactId&gt;mybatis-plus-boot-starter&lt;/artifactId&gt; &lt;version&gt;3.5.3.2&lt;/version&gt; &lt;/dependency&gt; &lt;dependency&gt; &lt;groupId&gt;org.feng&lt;/groupId&gt; &lt;artifactId&gt;custom-dict-client&lt;/artifactId&gt; &lt;version&gt;1.0-SNAPSHOT&lt;/version&gt; &lt;/dependency&gt; &lt;dependency&gt; &lt;groupId&gt;cn.hutool&lt;/groupId&gt; &lt;artifactId&gt;hutool-core&lt;/artifactId&gt; &lt;version&gt;5.8.19&lt;/version&gt; &lt;/dependency&gt; &lt;dependency&gt; &lt;groupId&gt;com.alibaba&lt;/groupId&gt; &lt;artifactId&gt;druid-spring-boot-starter&lt;/artifactId&gt; &lt;version&gt;1.2.16&lt;/version&gt; &lt;/dependency&gt; &lt;dependency&gt; &lt;groupId&gt;org.projectlombok&lt;/groupId&gt; &lt;artifactId&gt;lombok&lt;/artifactId&gt; &lt;version&gt;1.18.16&lt;/version&gt; &lt;optional&gt;true&lt;/optional&gt; &lt;/dependency&gt; &lt;dependency&gt; &lt;groupId&gt;com.alibaba&lt;/groupId&gt; &lt;artifactId&gt;easyexcel&lt;/artifactId&gt; &lt;version&gt;2.2.11&lt;/version&gt; &lt;/dependency&gt; &lt;/dependencies&gt; 二、SQL脚本 /* Navicat Premium Data Transfer Source Server : localhost Source Server Type : MySQL Source Server Version : 80100 Source Host : localhost:3306 Source Schema : test_custom_dict Target Server Type : MySQL Target Server Version : 80100 File Encoding : 65001 Date: 06/12/2023 11:15:58 */ SET NAMES utf8mb4; SET FOREIGN_KEY_CHECKS = 0; -- ---------------------------- -- Table structure for custom_dict -- ---------------------------- DROP TABLE IF EXISTS `custom_dict`; CREATE TABLE `custom_dict` ( `id` bigint NOT NULL AUTO_INCREMENT COMMENT 'id', `parent_id` bigint NOT NULL DEFAULT '0' COMMENT '父id', `name` varchar(100) NOT NULL DEFAULT '' COMMENT '含义', `dict_val` varchar(100) NOT NULL DEFAULT '' COMMENT '字典val', `dict_key` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '字典key', `weight` int NOT NULL DEFAULT '0' COMMENT '权重', `status` tinyint NOT NULL DEFAULT '1' COMMENT '状态（1 启用；0禁用）', `create_user` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT '' COMMENT '创建用户', `create_username` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT '' COMMENT '创建用户名', `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间', `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间', PRIMARY KEY (`id`) ) ENGINE = InnoDB AUTO_INCREMENT = 4 DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci; ALTER TABLE `custom_dict` ADD UNIQUE INDEX `uk_dict_key` (`dict_key`) USING HASH COMMENT '唯一索引，dict_key'; SET FOREIGN_KEY_CHECKS = 1; 三、树形结构查寻 这里的功能，借助hutool里的TreeUtil工具类。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/aad0abf761e7835a9396ace3200f0930/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/6e2d49ac54b1a6fad3940487c2cd0263/" rel="bookmark">
+			webpack dev-server 配置
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		1. output的path和publicPath output中的path的作用是告知webpack打包构建后的输出目录： 比如静态资源的js、css等输出到哪里，常见的会设置为dist、build文件夹等; output中还有一个publicPath属性，该属性是指定index.html文件打包引用的一个基本路径： 它的默认值是一个空字符串，所以我们打包后引入js文件时，路径是 bundle.js;在开发中，我们常常将其设置为 /，路径是 /bundle.js，那么浏览器会根据所在的域名+路径去请求对应的资源;如果我们希望在本地直接打开html文件来运行，会将其设置为 ./，路径时 ./bundle.js，可以根据相对路径去查找资源; 2. devServer的publicPath devServer中也有一个publicPath的属性，该属性是指定本地服务所在的文件夹:
+它的默认值是 /，也就是我们直接访问端口即可访问其中的资源 http://localhost:8080;如果我们将其设置为了 /abc，那么我们需要通过 http://localhost:8080/abc才能访问到对应的打包后的资源;并且这个时候，我们其中的bundle.js通过 http://localhost:8080/bundle.js也是无法访问的:
+所以必须将output.publicPath也设置为 /abc;
+官方其实有提到，建议 devServer.publicPath 与 output.publicPath相同; 3. devServer的contentBase devServer中contentBase对于我们直接访问打包后的资源其实并没有太大的作用，它的主要作用是如果我们打包后的资源，又依赖于其他的一些资源，那么就需要指定从哪里来查找这个内容:
+比如在入口文件index.html中，我们需要依赖一个 abc.js 文件；如果不设置contentBase，那么contentBase的默认值为publicPath如果设置contentBase，则需要去设置的这个contentBase路径上去找资源； 当然在devServer中还有一个可以监听contentBase发生变化后重新编译的一个属性: watchContentBase，将其设置为true即可。
+4. hotOnly、host配置 hotOnly是当代码编译失败时，是否刷新整个页面：
+默认情况下当代码编译失败修复后，我们会重新刷新整个页面；如果不希望重新刷新整个页面，可以设置hotOnly为true； host设置主机地址：
+默认值是localhost；如果希望其他地方也可以访问，可以设置为 0.0.0.0； localhost 和 0.0.0.0 的区别：
+localhost：本质上是一个域名，通常情况下会被解析成127.0.0.1;127.0.0.1：回环地址(Loop Back Address)，表达的意思其实是我们主机自己发出去的包，直接被自己接收; 正常的数据包经常 应用层 - 传输层 - 网络层 - 数据链路层 - 物理层 ;而回环地址，是在网络层直接就被获取到了，是不会经常数据链路层和物理层的;比如我们监听 127.0.0.1时，在同一个网段下的主机中，通过ip地址是不能访问的; 0.0.0.0：监听IPV4上所有的地址，再根据端口找到不同的应用程序; 比如我们监听 0.0.0.0时，在同一个网段下的主机中，通过ip地址是可以访问的; 5. port、open、compress port设置监听的端口，默认情况下是8080open是否打开浏览器：默认值是false，设置为true会打开浏览器；也可以设置为类似于 Google Chrome等值；compress是否为静态文件开启gzip compression： 默认值是false，可以设置为true；
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/6e2d49ac54b1a6fad3940487c2cd0263/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/d82dc17fe5abf1c1bd49bb877e2554bc/" rel="bookmark">
+			即拍即改！合合信息旗下扫描全能王推出首个移动端图片文字编辑功能
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		图片文档是承载信息的重要载体。由于格式原因，修改图片上的文字内容非常不便，例如商务人士携带合同去外地出差，发现文件上有错别字，但无法及时找到源文件来调整；同事发过来一张产品介绍截图，部分数字需要更新，接收者却无法在图片上进行修改。这些“强迫症不友好”的难题，如今被AI解决了。
+近期，合合信息旗下扫描全能王APP“编辑文字”新功能正式上线。在AI智能扫描引擎的支持下，该功能可自动识别、修改图片中的文本，为使用者提供更便捷、更高效的文字处理体验，用户只需打开手机，便可轻松完成指尖上的编辑"，无需因为细微的调整而耽误项目的进度。
+图说：使用扫描全能王“编辑文字”功能，对图片中的标题进行修改
+“编辑文字”功能主要从“增、改、删”三个方面解决用户的痛点。例如合同、报告、作业等文档图片中存在被遗漏的信息，可以使用“编辑文字”功能定位需要增加内容的地方，输入文字进行补充，若原图片上存在错误的信息，也能一键修改。如果文档中有冗余的文字内容，例如试卷上多出来的手写笔记，点击相关模块即可删除。
+图说：“编辑文字”通过“增、改、删”形式助力用户快速修改图片文字内容
+此前，用户想要修改文档图片上的文字，需要使用电脑进行操作。“编辑文字”功能的上线，系业内首次在移动端实现图片上的文字修改。
+据扫描全能王团队成员介绍，扫描全能王自研的智能扫描引擎AI-SCAN支持对文字的高精度识别和图像的智能化处理，为“编辑文字”功能提供了技术保障。据权威实验室出具的报告显示，扫描全能王 APP 针对常规的印刷体文档字符平均识别率可达 99.77%， 手写体文档字符平均识别率为 97.00%。文字识别之外，AI-SCAN还需要对图片内容进行精准的分割、分层，将图片上的文字准确定位，与背景完整分离，减少对背景上的颜色、纹理因素的修改，让修改后的图片跟原图保持基本一致。
+该功能也体现了AI-SCAN优秀的“版面还原”能力。文档图片上通常存在文本、表格、图片、印章等多种元素，如何精准地辨别各类元素，并在文档电子化过程中，让这些元素回归到对应的位置，系统需要对版面结构进行“分析”和“还原”。扫描全能王可高精度还原文字，保留原始排版，实现“即拍即改”的效果。
+高质量的图片是实现精准版面分析、还原的基础。扫描全能王在业内率先推出了“智能高清滤镜”功能，可自动检测图像中存在的问题并判定图像的优化方式，实现模糊、阴影、手指、屏幕纹等干扰因素一键全处理。使用者无需思考拍摄角度、光源、背景，只要点击扫描拍摄按钮，即可得到一张如原稿打印般清晰、平整的图片。未来，扫描全能王也将不断拓展智能扫描的应用范围，通过智能文字识别、图像处理技术，帮助用户高效便捷地管理文档资产。
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/0339f4014851592e569ce417432bdcc7/" rel="bookmark">
+			vue代碼片段
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		{ "vue-template": {//模板名称 "prefix": "vue",//触发条件 "body": [//内容 "&lt;!--", "* @description ", "* @fileName ${TM_FILENAME_BASE}", "* @author aaaa", "* @date ${CURRENT_YEAR}-${CURRENT_MONTH}-${CURRENT_DATE} ${CURRENT_HOUR}:${CURRENT_MINUTE}:${CURRENT_SECOND}", "!--&gt;", "&lt;template&gt;", " &lt;div class='${TM_FILENAME_BASE}'&gt;", " &lt;/div&gt;", "&lt;/template&gt;", "", "&lt;script&gt;", "export default {", " props: { ", " },", " name: '${TM_FILENAME_BASE}',", " data () {", " return {", "", " }", " },", " methods: {" "", "\t},", " mounted () { " "", "\t}," "}", "&lt;/script&gt;", "
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/0339f4014851592e569ce417432bdcc7/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/d2896a11e6215199f4815500d796a173/" rel="bookmark">
+			五：爬虫-数据解析之xpath解析
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		五：数据解析之xpath解析 1.xpath介绍： ​ xpath是XML路径语言，它可以用来确定xml文档中的元素位置，通过元素路径来完成对元素的查找，HTML就是XML的一种实现方式，所以xpath是一种非常强大的定位方式​ XPath（XML Path Language）是一种XML的查询语言，它能在XML树状图中寻找节点。XPath用于在XML文档中通过元素和属性进行导航​ xml是一种标记语法的文本格式，xpath可以方便的定位xml中的元素和其中的属性值。lxml是Python中的一个第三方模块，它包含了将html文本转成xml对象，和对对象执行xpath的功能 lxml的安装：
+#在终端输入 pip install lxml xpath的弊端：
+​ 当我们在批量获取数据的时候，如果存在的特别数据比较多，这个时候只用xpath的话，会无法满足用户的需求，所以针对于不同的网页，我们要灵活的去运用我们的数据解析方式
+（1）HTML树状结构图：
+​ HTML 的结构就是树形结构，HTML 是根节点，所有的其它元素节点都是从根节点发出的，其它的元素都是这棵树上的节点，每个节点还可能有属性和文本值，而路径就是指某个节点到另一个节点的路线
+（2）节点之间的关系：
+​ 父节点：HTML 是 body 和 head 节点的父节点​ 子节点：head 和 body 是 HTML 的子节点​ 兄弟节点：拥有相同的父节点，head 和 body 就是兄弟节点，title 和 div 不是兄弟，因为他们不是同一个父节点​ 祖先节点：body 是 form 的祖先节点，爷爷辈及以上​ 后代节点：form 是 HTML 的后代节点，孙子辈及以下 2.Xpath中的绝对路径与相对路径 ： ​ Xpath中的绝对路径是从HTML根节点开始算的；而相对路径（使用的更多）则是从任意节点开始的。通过开发者工具，我们可以拷贝到Xpath的绝对路径和相对路径代码：
+​ 注意： 绝对路径是以 Elements 为基准去寻找的，我们爬虫获取的是右键的网页源代码；右键的网页源代码 ！= Elements，Elements 是前端页面最终渲染的结果，它与网页源代码是有属性上的差异的；但右键的网页源代码与Elements是非常相似的，但是在某些元素或者元素属性上会存在不同。这就会导致我们直接右键复制的xpath获取不到真正的数据；所以说只能手写，不能复制（把数据解析全部学会之后，可以复制，因为到那个时候就有能力对复制到的内容进行微调了）
+（1）绝对路径（了解即可）：
+​ 在Xpath中最直观的定位策略就是绝对路径，绝对路径是从根节点/html开始往下一层层的表示，直到出来需要的节点为止
+（2）相对路径（常用）：
+​ 在Xpath中相对路径方法以 “//” 开头，相对路径可以从任意的节点开始，一般会选取一个可以唯一定位到的元素开始写，这样可以增加查找的准确性
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/d2896a11e6215199f4815500d796a173/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/ec941e984cd8089788f436566363d64e/" rel="bookmark">
+			生产环境去除console.log打印的两种方式
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		通过环境变量控制console.log的打印，具体操作如下：
+第一种 1、根目录 .env.xxx文件中写入NODE_ENV参数
+2、在main.js里面加上下列语句：
+if (process.env.NODE_ENV === 'production') { console.log = () =&gt; {} console.warn = () =&gt; {} } 以上完成了配置
+第二种 在babel.config.js 文件中进行修改
+1、需下载这个包transform-remove-console
+npm install babel-plugin-transform-remove-console --save-dev 2、在babel.config.js可如下写
+// babel.config.js // 生产环境移除console const remPlugins = [] if (process.env.NODE_ENV === 'production') { remPlugins.push('transform-remove-console') } module.exports = { "plugins":[ ...remPlugins ] }; 原文链接：生产环境去除console.log打印的两种方式-CSDN博客
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/82b40acd16da7dd09101d9c633ac2791/" rel="bookmark">
+			常用单片机编程思想及例程3——延时篇
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		目录
+延时应用
+阻塞型延时
+非阻塞型延时
+嵌入式编程中，很多地方都要用到延时程序，常用的单片机延时有很多种，大概分为两种类型：阻塞型延时非阻塞型延时，今天将就以下几种常见的延时函数使用进行说明。
+延时应用 阻塞型延时 顾名思义，这种延时是通过程序“死等”来完成延时操作的，一般在时效性要求不高的场合下使用，但不宜延时太长时间，过长的阻塞延时会极大的影响CPU的效率。实现这种延时的方法有很多，如利用空指令、循环空跑等封装出的延时函数，这类延时大都做粗延时（不太精确）使用，如果想要做到精确的延时，还可以配合定时器使用，以下以华大单片机为例说明这些延时的具体实现方法。
+///*空指令实现延时（在stm32环境中，一般多少M的主频就放多少个空指令，就能实现1us的延时，但是华大单片机上好像不行，可以做粗延时使用）*/// void delay(void) { _NOP();_NOP();_NOP();_NOP();_NOP();_NOP();_NOP();_NOP(); _NOP();_NOP();_NOP();_NOP();_NOP();_NOP();_NOP();_NOP(); } //循环空跑 void delay_nms(unsigned short time) { unsigned short i = 0, j = 0; for(i = 0;i &lt; time;i++) { for(j = 0;j &lt; 925;j++) //mcu环境不同，j的阈值也不同，需要多次尝试 { } } } //利用定时器实现延时 #include "timer4.h" static uint16_t timer_timeout = 0; void Timer4_Init(void) { stc_adt_basecnt_cfg_t stcAdtBaseCntCfg; DDL_ZERO_STRUCT(stcAdtBaseCntCfg); Sysctrl_SetPeripheralGate(SysctrlPeripheralAdvTim, TRUE);	///&lt; ADT外设时钟使能 stcAdtBaseCntCfg.enCntMode = AdtSawtoothMode;	///&lt; 锯齿波模式 stcAdtBaseCntCfg.enCntDir = AdtCntUp;	///&lt; 递加计数 stcAdtBaseCntCfg.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/82b40acd16da7dd09101d9c633ac2791/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/40a954f78c336d61c5811ca851c964b0/" rel="bookmark">
+			mockjs 导致cesium地图无法加载
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		1.报错信息 Uncaught (in promise) TypeError: Failed to execute 'createImageBitmap' on 'Window': The provided value is not of type '(Blob or HTMLCanvasElement or HTMLImageElement or HTMLVideoElement or ImageBitmap or ImageData or OffscreenCanvas or SVGImageElement or VideoFrame)'. 3.问题分析 搜索一番，没有发现类似问题 开始以为是cesium的key有问题，更换key，更换成高德的图层都无效 于是仔细研究报错信息，发现它说的是提供的数据格式不对，开F12查看请求数据
+发现请求数据http状态是304，而且是由mock.js发起的请求
+3.问题解决 查了一下mock.js的工作原理，它直接替换了xhr请求，改成了自己的实现，如果路由没有匹配到，就进行跳转。这种实现方式对二进制流有较大的影响。 解决方案有两个，一个是去掉mock.js, 目前我们的项目阶段不允许。二是修改mock.js的源码。 代码路径：项目//node_modules/mockjs/dist/mock.js 大约在8360行：
+// 原生 XHR if (!this.match) { this.custom.xhr.send(data) return } 修改为
+// 原生 XHR if (!this.match) { this.custom.xhr.responseType = this.responseType this.custom.xhr.send(data) return } 当然这是一种比较偷懒的方式。修改完了以后要保存重新运行项目刷新。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/40a954f78c336d61c5811ca851c964b0/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/c29f1f506212d02042df789fae767898/" rel="bookmark">
+			m_map绘制多波束数据
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		之前，分享了m_map如何绘制本地高程数据：m_map导入本地地形数据。
+其实，m_map还可以绘制多波束测深数据。
+1. 多波束网站 多波束测深数据可以从https://www.ncei.noaa.gov/maps/grid-extract/或者https://www.ncei.noaa.gov/maps/bathymetry/下载。
+多波束测深数据的分辨率为3秒，约为90 m 。
+2. 绘图 以纽约以东的一片海域为例。
+这是原始的多波束数据，里面无有效数据处，被填充为0值，显示如下： 将0值替换为NaN值，即显示为空白，显示如下： 将m_map自带的1分的分辨率地形图，融合到多波束数据中，显示如下： 显示带有海山的区域：
+注：绘图色标参考自：https://blog.csdn.net/slandarer/article/details/127719784
+3. 代码 mat_name='newyork'; fignum=1 load([mat_name,'_elevation.mat']) elev=flipud(elev); % 将0值替换为NaN % elev(find(elev==0))=nan; lonlim=[extent(1:2)] latlim=[extent(3:4)] [nlat,nlon]=size(elev); Lon=[linspace(lonlim(1),lonlim(2),nlon)]; Lat=[linspace(latlim(1),latlim(2),nlat)]'; %% 高程数据融合 % 在多波束数据无数据（标志为0处，替换为自带的1分高程数据） % 首先提取1分的高程数据 [ELEV,LON,LAT]=m_etopo2([lonlim(1)-1 lonlim(2)+1 latlim(1)-1,latlim(2)+1]); [Lon,Lat]=meshgrid(Lon,Lat); % 将1分数据插值为和多波束数据同样的大小 ELEV_p=interp2(LON,LAT,ELEV,Lon,Lat); for i=1:nlat for j=1:nlon if elev(i,j)==0 elev(i,j)=ELEV_p(i,j); end end end %% 绘图 m_proj('mercator','long',[-67 lonlim(2) ],'lat',[38.5,latlim(2)]); caxis([-5000 0]) colormap(slanCM('rainbow')) hc=colorbar; set(get(hc,'title'),'string','Elevation(m)') set(hc,'tickdir','out') m_shadedrelief(Lon(1,:),Lat(:,1),elev,'lightangle',45,'gradient',10) m_gshhs('ic','color','k') m_grid('box','on','tickdir','out','gridlines','no') set(gcf,'position',[10 10 400 400]) figname=[mat_name,num2str(fignum)]; print('-dpng','-r500',[figname,'.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/c29f1f506212d02042df789fae767898/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/89c3bcc0966cb1bc9054790362d907e0/" rel="bookmark">
+			SpringBoot系列之集成Jedis教程
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		SpringBoot系列之集成Jedis教程，Jedis是老牌的redis客户端框架，提供了比较齐全的redis使用命令，是一款开源的Java 客户端框架，本文使用Jedis3.1.0加上Springboot2.0，配合spring-boot-starter-data-redis使用，只给出简单的使用demo
+软件环境： JDK 1.8
+SpringBoot 2.2.1
+Maven 3.2+
+Mysql 8.0.26
+spring-boot-starter-data-redis 2.2.1
+jedis3.1.0
+开发工具
+IntelliJ IDEA
+smartGit
+项目搭建 使用Spring官网的https://start.spring.io快速创建Spring Initializr项目
+选择maven、jdk版本
+选择需要的Dependencies，选择一下Spring Data Redis
+点击next就可以生成一个Springboot项目，不过jedis客户端配置还是要自己加的，所以对pom文件做简单的修改，spring-boot-starter-data-redis默认使用lettuce，所以不用的可以exclusion，然后再加上jedis的配置
+&lt;dependency&gt; &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt; &lt;artifactId&gt;spring-boot-starter-data-redis&lt;/artifactId&gt; &lt;exclusions&gt; &lt;exclusion&gt; &lt;groupId&gt;io.lettuce&lt;/groupId&gt; &lt;artifactId&gt;lettuce-core&lt;/artifactId&gt; &lt;/exclusion&gt; &lt;/exclusions&gt; &lt;/dependency&gt; &lt;dependency&gt; &lt;groupId&gt;redis.clients&lt;/groupId&gt; &lt;artifactId&gt;jedis&lt;/artifactId&gt; &lt;/dependency&gt; 新建一个application.yml配置文件，加上redis一些配置
+spring: redis: port: 6379 host: 127.0.0.1 password: timeout: 180000ms database: 1 jedis: pool: min-idle: 0 max-idle: 100 max-active: 100 max-wait: -1ms 新增Redis配置，配置RedisConnectionFactory 为JedisConnectionFactory，JedisPool，RedisTemplate需要用到也可以配置一下
+package com.example.jedis.configuration; import cn.hutool.core.convert.Convert; import lombok.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/89c3bcc0966cb1bc9054790362d907e0/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/95c51c72de5a70e2808f65654db82f85/" rel="bookmark">
+			差生文具多系列之最好看的编程字体
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		📢 声明：
+🍄 大家好，我是风筝
+🌍 作者主页：【古时的风筝CSDN主页】。
+⚠️ 本文目的为个人学习记录及知识分享。如果有什么不正确、不严谨的地方请及时指正，不胜感激。
+直达博主：「古时的风筝」 。（搜索或点击扫码）
+————————————————
+对于我们程序员而言，每天面对时间最长的就是各种 IDE 了。选择一款好看的编程字体就变得很重要了，赏心悦目，对身心健康还是很有帮助的，可能吧。
+如果你现在还在使用默认的字体，或者随便用的，那可以考虑一下下面这三款字体。没准换上之后，心情一好，还能少写俩 bug 呢。
+JetBrains Mono 大家都知道，我们平时开发用的 IDEA 就是JetBrains 家开发的，除了 IDEA 外， 还有其他为各种语言开发的对应工具，比如为 Python 提供的 PyCharm 等。作为专业的 IDE 开发商，对用户诉求那肯定是非常清楚的，所以专门设计了自家的编程字体 JetBrains Mono 。
+我目前用的就是这一款字体。JetBrains Mono 是一种等宽无衬线字体。
+等宽 Mono 的就是等宽意思，我们从小学写字的时候，老师告诉我们：写的字要方方正正才好看。那时候的本子是田字格的，每一个汉字摆在一个格子里，不大不小的，这样整整齐齐的一篇写下来才好看，要不说我们的文化博大精深呢。
+下面的字体中，上面的是非等宽，下面的就是等宽字体，还是等宽的更好看一些。
+无衬线 我们有时候在页面上会看到这样的样式定义，后面有个 sans-serif，这就是无衬线的意思。
+body { font-family:Helvetica Neue"，Helvetica,Arial,sans-serif; } 无衬线只是针对西方语言的，比如英语，东方文字大部分都没这个特性，除非故意设计的字体。而编程语言绝大部分都是英语的，所以有无衬线在视觉体验上很明显。
+下图是衬线字体和无衬线字体的区别，视觉感官上区别非常大。
+下图是 JetBrains Mono 字体在 IDEA 中的效果。
+下图是 JetBrains Mono 字体在 VSCode 中的效果。
+可以到官网下载 https://www.jetbrains.com/lp/mono/
+Consolas 这个字体使用的人数应该是最多的了。我刚开始用 Visual Studio 做 C# 开发的时候一直用这款字体，后来转到 Java 之后也用了一款时间，直到 JetBrains Mono 字体出来之前，我一直用它。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/95c51c72de5a70e2808f65654db82f85/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/1de92965886931085c8381b27421d83e/" rel="bookmark">
+			「差生文具多系列」推荐两个好看的 Redis 客户端
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		📢 声明：
+🍄 大家好，我是风筝
+🌍 作者主页：【古时的风筝CSDN主页】。
+⚠️ 本文目的为个人学习记录及知识分享。如果有什么不正确、不严谨的地方请及时指正，不胜感激。
+直达博主：「古时的风筝」 。（搜索或点击扫码）
+————————————————
+大家好，我是风筝
+软件推荐时间到，推荐两款我常用的 Redis 客户端，都是免费的，且支持Mac、Windows，如果你之前的 Redis 客户端用的不顺手，可以试试下面这两个。
+RedisInsight 与其他 Redis 客户端不同，RedisInsight 是 Reids 官方出品，地主家的亲儿子。在 Redis 官网上给它的介绍是 「The best Redis GUI」。
+首先颜值还是比较高的，尤其配置成 Dark 模式，马上格调就上来了。
+一般管理页面，上面还有当前实例的基本监控指标，内存使用量、连接数等等。
+还可以查看数据库分析报告以及慢查询日志。
+有一个缺点就是没办法将一个实例的所有 database 都列出来，假设你现在用 db0，想要看db3的话， 要手动在上方输入。不过也不算什么大问题。
+下载地址：
+直接到官网下载即可，下载时会要求用邮箱注册一个账号，注册上就行，下载和使用都是免费的。
+https://redis.com/redis-enterprise/redis-insight/
+Tiny RDM 如果你之前用过 Redis Desktop Manager 的话，可以直接切换到Tiny RDM。布局以及操作方式都很一致。最近 Redis Desktop Manager 的官网好像挂了，不知道是不是不维护了。
+这是 Redis Desktop Manager 布局。
+这是 Tiny RDM 的布局。支持暗黑模式，可以查看状态信息，包括运行时间、连接数、内存等等。
+可以查看慢日志，执行命令行等。
+下载地址：
+到GitHub 仓库上下载即可，目前有2.4K star 了，是国产的开源项目哦。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/1de92965886931085c8381b27421d83e/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/fe2d3cb21dff77b14dc8548e03122022/" rel="bookmark">
+			12月11日作业
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		完善对话框，点击登录对话框，如果账号和密码匹配，则弹出信息对话框，给出提示”登录成功“，提供一个Ok按钮，用户点击Ok后，关闭登录界面，跳转到其他界面
+如果账号和密码不匹配，弹出错误对话框，给出信息”账号和密码不匹配，是否重新登录“,并提供两个按钮Yes|No，用户点击Yes后，清除密码框中的内容，继续让用户进行登录，如果用户点击No按钮，则直接关闭登录界面
+如果用户点击取消按钮，则弹出一个问题对话框，给出信息”您是否确定要退出登录？“，并给出两个按钮Yes|No，用户迪纳基Yes后，关闭登录界面，用户点击No后，关闭对话框，继续执行登录功能
+要求：基于属性版和基于静态成员函数版至少各用一个
+第一个头文件
+#ifndef WIDGET_H #define WIDGET_H #include &lt;QWidget&gt; #include &lt;QMessageBox&gt; QT_BEGIN_NAMESPACE namespace Ui { class Widget; } QT_END_NAMESPACE class Widget : public QWidget { Q_OBJECT public: Widget(QWidget *parent = nullptr); ~Widget(); private slots: void on_btn_log_clicked(); void on_btn_cancle_clicked(); private: Ui::Widget *ui; signals: void my_jump(); //第一个界面的自定义信号 }; #endif // WIDGET_H 第一个源文件
+#include "widget.h" #include "ui_widget.h" Widget::Widget(QWidget *parent) : QWidget(parent) , ui(new Ui::Widget) { ui-&gt;setupUi(this); this-&gt;setWindowFlags(Qt::FramelessWindowHint); this-&gt;setAttribute(Qt::WA_TranslucentBackground); this-&gt;setWindowIcon(QIcon(":/pictrue/kunkun.webp")); } Widget::~Widget() { delete ui; } void Widget::on_btn_log_clicked() //登录按钮槽函数 { //静态成员函数版本 if(ui-&gt;edit_id-&gt;text() == "
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/fe2d3cb21dff77b14dc8548e03122022/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/b1845bc69f4b2b2c2cd370c0b4378d5a/" rel="bookmark">
+			windows下mysql8修改my.ini设置datadir后无法启动问题
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		mysql默认数据库文件在安装目录下。创建数据库的时候，并不能指定数据文件存放位置。这就很扯。它只能通过修改mysql.ini来更改数据文件存放目录，而且是一刀切的，没有办法做到数据文件和日志文件分开存放。假如服务器有多个盘，就不能利用磁盘不同IO的优势。但是，既然是服务器，通常会做阵列的吧，做了阵列，就无所谓哪个盘了。
+我这次要说的，是修改mysql.ini后，mysql无法启动的问题。我遇到的是2个原因：一个是mysql.ini修改后字符编码被改变，导致mysql无法识别；另一个是存放mysql数据文件的新路径没有足够权限。
+1、字符编码问题 一般来说，mysql.ini位于mysql安装目录下。但其实并不准确，像我的操作系统是win10，mysql默认安装在c:\program files，但mysql.ini位于C:\ProgramData\MySQL\MySQL Server 8.0。
+那么要改变数据文件的存储路径，就要修改mysql.ini。然而保存后，就有可能会改变其字符编码，导致mysql无法识别，从而无法启动mysql。
+正确做法是：
+1）首先备份一个mysql.ini。切记！！！
+2）用记事本打开mysql.ini，修改mysql.ini里的datadir，如
+# Path to the database root datadir=e:\mysql\Data 3）mysql.ini默认字符编码是ANSI。所以修改后，用记事本另存为，记得选字符编码为ANSI。
+2、新路径权限问题 如上所述，我将datadir修改成新的路径e:\mysql\Data。但要注意，这个文件夹必须要有足够的权限，mysql才能使用。其中，关键的权限是SYSTEM要有全部权限。
+	</div>
+</article>
+</main>
+
+<div class="pagination">
+	<a class="pagination__item pagination__item--prev btn" href="/page/26/">«</a>
+	<span class="pagination__item pagination__item--current">27/306</span>
+	<a class="pagination__item pagination__item--next btn" href="/page/28/">»</a>
+</div>
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

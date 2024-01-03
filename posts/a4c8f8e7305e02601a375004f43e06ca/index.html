@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>深入理解Mysql MHA高可用集群搭建：从实验到实战 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="深入理解Mysql MHA高可用集群搭建：从实验到实战" />
+<meta property="og:description" content="1. 简介 MHA（Master High Availability）是一个高效的开源MySQL高可用性解决方案。由日本开发者yoshinorim（前DeNA员工，现在Facebook）创建，MHA支持MySQL的主从复制架构，自动化主节点故障转移。当主节点发生故障，MHA能迅速将最新数据的从节点升级为新主节点。这个过程中，MHA从其他从节点获取额外信息，确保数据一致性。MHA还能在线切换主节点，按需调整主从节点关系。它已被证明是一个成熟的MySQL高可用方案，能在30秒内完成故障切换，并最大限度地保证数据一致性。值得一提的是，淘宝也在开发一个类似的产品TMHA，目前支持一主一从架构。
+2. MHA服务 MHA服务包括两种角色：MHA Manager（管理节点）和MHA Node（数据节点）。
+MHA Manager：通常部署在一台独立的机器上，管理多个master/slave集群，每个集群称为一个application。它负责整个集群的管理和协调。MHA Node：安装在每台MySQL服务器（无论是master、slave还是manager）上。它负责监控、解析日志和加快故障恢复的过程。 工具与功能 MHA提供了一系列工具，分布在Manager节点和Node节点上：
+Manager节点工具： masterha_check_ssh：检测SSH环境。masterha_check_repl：检测MySQL复制环境。masterha_manager：MHA的主服务程序。masterha_check_status：探测MHA运行状态。masterha_master_monitor：监测MySQL主节点可用性。masterha_master_switch：切换主节点的工具。masterha_conf_host：添加或删除配置节点。masterha_stop：关闭MHA服务的工具。Node节点工具：（这些通常由Manager的脚本触发，无需手动操作） save_binary_logs：保存并复制主节点的二进制日志。apply_diff_relay_logs：识别并应用差异中继日志事件。purge_relay_logs：清除中继日志。自定义扩展： secondary_check_script：通过多网络路由检测主节点可用性。master_ip_failover_script：更新应用程序使用的master IP。report_script：发送报告。init_conf_load_script：加载初始配置参数。master_ip_online_change_script：更新主节点IP地址。 工作原理 MHA的工作原理可以概括为以下几个步骤：
+从故障的master节点保存二进制日志事件（binlog events）。识别拥有最新更新的slave节点。将差异的中继日志（relay log）应用到其他slave节点。应用从master节点保存的二进制日志事件。提升一个slave节点为新master。使其他slave节点开始复制新master的数据。 3.MySQL Replication 环境的实验配置 3.1 准备实验 MySQL Replication 环境 3.1.1 相关配置 在本实验中，我们将设置一个包含四个节点的 MySQL Replication 环境，运行于 CentOS 7.3 系统。MHA (Master High Availability) 对 MySQL 复制环境有特定的配置需求，例如：
+所有节点必须开启二进制日志（bin-log）和中继日志（relay-log）。从节点（Slave）需设置为只读模式（read-only）。关闭中继日志自动清理功能（relay_log_purge）。 节点配置如下：
+Manager (192.168.37.111): 作为控制器，负责监控和管理。Master (192.168.37.122): 数据库主服务器。配置了 bin-log 和 relay-log，关闭了 relay_log_purge。Slave1 和 Slave2 (192.168.37.133 和 192.168.37.144): 数据库从服务器。与 Master 相同的日志配置。 为方便操作，我们在所有节点的 /etc/hosts 文件中添加了对应的域名解析配置。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/a4c8f8e7305e02601a375004f43e06ca/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-28T19:49:19+08:00" />
+<meta property="article:modified_time" content="2023-12-28T19:49:19+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">深入理解Mysql MHA高可用集群搭建：从实验到实战</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h3><strong>1. 简介</strong></h3> 
+<p>MHA（Master High Availability）是一个高效的开源MySQL高可用性解决方案。由日本开发者yoshinorim（前DeNA员工，现在Facebook）创建，MHA支持MySQL的主从复制架构，自动化主节点故障转移。当主节点发生故障，MHA能迅速将最新数据的从节点升级为新主节点。这个过程中，MHA从其他从节点获取额外信息，确保数据一致性。MHA还能在线切换主节点，按需调整主从节点关系。它已被证明是一个成熟的MySQL高可用方案，能在30秒内完成故障切换，并最大限度地保证数据一致性。值得一提的是，淘宝也在开发一个类似的产品TMHA，目前支持一主一从架构。</p> 
+<h3><strong>2. MHA服务</strong></h3> 
+<p>MHA服务包括两种角色：MHA Manager（管理节点）和MHA Node（数据节点）。</p> 
+<ul><li><strong>MHA Manager</strong>：通常部署在一台独立的机器上，管理多个master/slave集群，每个集群称为一个application。它负责整个集群的管理和协调。</li><li><strong>MHA Node</strong>：安装在每台MySQL服务器（无论是master、slave还是manager）上。它负责监控、解析日志和加快故障恢复的过程。</li></ul> 
+<p><img alt="" height="447" src="https://images2.imgbox.com/8b/5f/b7gWtweA_o.png" width="680"></p> 
+<h4><strong>工具与功能</strong></h4> 
+<p>MHA提供了一系列工具，分布在Manager节点和Node节点上：</p> 
+<ul><li><strong>Manager节点工具</strong>： 
+  <ul><li><code>masterha_check_ssh</code>：检测SSH环境。</li><li><code>masterha_check_repl</code>：检测MySQL复制环境。</li><li><code>masterha_manager</code>：MHA的主服务程序。</li><li><code>masterha_check_status</code>：探测MHA运行状态。</li><li><code>masterha_master_monitor</code>：监测MySQL主节点可用性。</li><li><code>masterha_master_switch</code>：切换主节点的工具。</li><li><code>masterha_conf_host</code>：添加或删除配置节点。</li><li><code>masterha_stop</code>：关闭MHA服务的工具。</li></ul></li><li><strong>Node节点工具</strong>：（这些通常由Manager的脚本触发，无需手动操作） 
+  <ul><li><code>save_binary_logs</code>：保存并复制主节点的二进制日志。</li><li><code>apply_diff_relay_logs</code>：识别并应用差异中继日志事件。</li><li><code>purge_relay_logs</code>：清除中继日志。</li></ul></li><li><strong>自定义扩展</strong>： 
+  <ul><li><code>secondary_check_script</code>：通过多网络路由检测主节点可用性。</li><li><code>master_ip_failover_script</code>：更新应用程序使用的master IP。</li><li><code>report_script</code>：发送报告。</li><li><code>init_conf_load_script</code>：加载初始配置参数。</li><li><code>master_ip_online_change_script</code>：更新主节点IP地址。</li></ul></li></ul> 
+<h4><strong>工作原理</strong></h4> 
+<p>MHA的工作原理可以概括为以下几个步骤：</p> 
+<ol><li>从故障的master节点保存二进制日志事件（binlog events）。</li><li>识别拥有最新更新的slave节点。</li><li>将差异的中继日志（relay log）应用到其他slave节点。</li><li>应用从master节点保存的二进制日志事件。</li><li>提升一个slave节点为新master。</li><li>使其他slave节点开始复制新master的数据。</li></ol> 
+<p><img alt="" height="347" src="https://images2.imgbox.com/93/e6/FyqqtvfS_o.png" width="536"></p> 
+<p></p> 
+<h3>3.MySQL Replication 环境的实验配置</h3> 
+<h4>3.1 准备实验 MySQL Replication 环境</h4> 
+<h5>3.1.1 相关配置</h5> 
+<p>在本实验中，我们将设置一个包含四个节点的 MySQL Replication 环境，运行于 CentOS 7.3 系统。MHA (Master High Availability) 对 MySQL 复制环境有特定的配置需求，例如：</p> 
+<ul><li>所有节点必须开启二进制日志（bin-log）和中继日志（relay-log）。</li><li>从节点（Slave）需设置为只读模式（read-only）。</li><li>关闭中继日志自动清理功能（relay_log_purge）。</li></ul> 
+<p>节点配置如下：</p> 
+<ul><li><strong>Manager</strong> (192.168.37.111): 作为控制器，负责监控和管理。</li><li><strong>Master</strong> (192.168.37.122): 数据库主服务器。配置了 bin-log 和 relay-log，关闭了 relay_log_purge。</li><li><strong>Slave1</strong> 和 <strong>Slave2</strong> (192.168.37.133 和 192.168.37.144): 数据库从服务器。与 Master 相同的日志配置。</li></ul> 
+<p>为方便操作，我们在所有节点的 <code>/etc/hosts</code> 文件中添加了对应的域名解析配置。</p> 
+<h5>3.1.2 主节点（Master）的初始配置</h5> 
+<p>对于主节点 Master 的数据库配置，我们进行以下设置：</p> 
+<ul><li>设置 <code>server-id</code> 为 1，以保证集群中节点 ID 的唯一性。</li><li>开启二进制日志（log-bin）和中继日志（relay-log）。</li><li>关闭名称解析（skip_name_resolve，非必须）。</li></ul> 
+<p>完成配置后，重启 MariaDB 服务以应用更改。</p> 
+<h5>3.1.3 从节点（Slave）的配置</h5> 
+<p>对于两个从节点 Slave，我们进行以下操作：</p> 
+<ul><li>设置唯一的 <code>server-id</code>（2 和 3）。</li><li>开启中继日志（relay-log）和二进制日志（log-bin）。</li><li>启用只读模式（read_only）和日志更新（log_slave_updates）。</li><li>根据需要设置中继日志清理（relay_log_purge）。</li><li>可选关闭名称解析（skip_name_resolve）。</li></ul> 
+<p>每次配置更改后，重启 MariaDB 服务以应用设置。</p> 
+<h5>3.1.4 配置一主多从复制架构</h5> 
+<p>在 Master 节点上，我们配置了权限以允许 Slave 连接和复制。具体命令包括授予复制权限和显示 Master 状态。</p> 
+<p>在每个 Slave 节点上，我们设置了连接到 Master 的参数，启动了复制服务，并检查了复制状态。</p> 
+<p>以上步骤完成了 MySQL Replication 环境的基本配置。</p> 
+<h4>3.2 安装配置MHA</h4> 
+<h5>3.2.1 在Master节点进行授权</h5> 
+<ul><li><strong>目标</strong>：在所有MySQL节点中授权一个具有管理权限的用户，以便在本地网络中远程访问其他节点。</li><li><strong>操作</strong>：在Master节点运行SQL语句授权。 
+  <ul><li><strong>示例命令</strong>：<code>grant all on *.* to 'mhaadmin'@'192.168.%.%' identified by 'mhapass';</code></li></ul></li></ul> 
+<h5>3.2.2 准备SSH互通环境</h5> 
+<ul><li><strong>目的</strong>：在MHA集群中，各节点需要通过SSH互信通信来实现远程控制和数据管理。</li><li><strong>步骤</strong>： 
+  <ol><li>在Manager节点生成密钥对。</li><li>设置Manager节点可以远程连接本地主机。</li><li>将私钥文件和<code>authorized_keys</code>文件复制给所有其他节点。</li><li>在所有节点上进行上述操作。</li><li>验证所有节点的SSH无密码互通。</li></ol></li></ul> 
+<h5>3.2.3 安装MHA包</h5> 
+<ul><li><strong>操作</strong>：在Manager节点和其他节点上安装MHA包。 
+  <ul><li><strong>包</strong>： 
+    <ul><li>所有节点：<code>mha4mysql-node-0.56-0.el6.norch.rpm</code></li><li>Manager节点额外安装：<code>mha4mysql-manager-0.56-0.el6.noarch.rpm</code></li></ul></li><li><strong>安装方法</strong>：使用<code>rz</code>命令上传包，然后使用<code>yum</code>进行安装。</li></ul></li></ul> 
+<h5>3.2.4 初始化MHA，进行配置</h5> 
+<ul><li><strong>配置文件</strong>：Manager节点为每个监控的master/slave集群提供专用配置文件。</li><li><strong>文件位置</strong>：全局配置文件位于<code>/etc/masterha_default.cnf</code>，或者通过application的配置提供。</li></ul> 
+<h5>3.2.5 定义MHA管理配置文件</h5> 
+<ul><li><strong>步骤</strong>：在MySQL主节点上为MHA创建管理用户，以便于后续使用。</li><li><strong>配置</strong>：创建<code>/etc/mha_master</code>目录并编写<code>mha.cnf</code>文件，配置包括管理用户、密码、工作目录等。</li></ul> 
+<h5>3.2.6 对四个节点进行检测</h5> 
+<ul><li><strong>SSH互信通信检测</strong>：在Manager机器上运行命令检测SSH连接。</li><li><strong>MySQL复制集群连接配置检测</strong>： 
+  <ul><li>使用<code>masterha_check_repl</code>命令检查。</li><li>如有错误，可能需在master节点上创建从节点账号。</li><li>再次运行检测命令以验证配置。</li></ul></li></ul> 
+<h4>总结</h4> 
+<p>此文档详细介绍了MHA的安装配置过程，包括授权、SSH互通设置、MHA包安装、配置文件定义和系统检测。这些步骤确保了MHA集群的正确安装和高效运行。</p> 
+<h3><strong>3.3 启动 MHA</strong></h3> 
+<p>在 manager 节点上执行以下命令来启动 MHA：</p> 
+<pre><code class="hljs">nohup masterha_manager -conf=/etc/mha_master/mha.cnf &amp;&gt; /etc/mha_master/manager.log &amp;
+</code></pre> 
+<p>启动成功后，检查 master 节点的状态：</p> 
+<pre><code class="hljs">masterha_check_status -conf=/etc/mha_master/mha.cnf
+</code></pre> 
+<p>如果服务正常运行，将显示 <code>mha (pid:7598) is running(0:PING_OK)</code>。要停止 MHA，使用：</p> 
+<pre><code class="hljs">masterha_stop -conf=/etc/mha_master/mha.cnf
+</code></pre> 
+<h4><strong>3.4 测试 MHA 故障转移</strong></h4> 
+<ol><li><strong>模拟主节点崩溃</strong>：在 master 节点关闭 mariadb 服务。 <p><code>killall -9 mysqld mysqld_safe rm -rf /var/lib/mysql/* </code></p> </li><li><strong>查看 manager 节点日志</strong>： <p><code>tail -200 /etc/mha_master/manager.log </code></p> 日志显示 manager 检测到节点故障，并自动将 192.168.37.133 提升为主节点。</li></ol> 
+<h4><strong>3.5 修复复制集群</strong></h4> 
+<ol><li><strong>准备新的 MySQL 节点</strong>：基于 master 节点的备份恢复数据，配置为新的 master 的从节点。</li><li><strong>备份和数据恢复</strong>：在新的 master 节点进行备份，将数据恢复到新节点。</li><li><strong>配置主从关系</strong>：设置新的主节点和从节点，检查主从状态。</li></ol> 
+<h4><strong>3.6 再次检查操作</strong></h4> 
+<ol><li>使用 <code>masterha_check_repl</code> 检查复制状态。</li><li>如果无误，重新启动 manager 并查看状态： <p><code>masterha_manager -conf=/etc/mha_master/mha.cnf &gt; /etc/mha_master/manager.log 2&gt;&amp;1 &amp; masterha_check_status -conf=/etc/mha_master/mha.cnf </code></p> </li></ol> 
+<h4><strong>3.7 故障转换恢复注意事项</strong></h4> 
+<ol><li><strong>备份和手动提升</strong>：在从节点上做备份，并将主节点手动提升为从节点。</li><li><strong>配置文件修改</strong>：自动转换后，可能需要手动修复主节点并修改配置文件。</li><li><strong>重新运行检测命令</strong>：手动修复后，再次运行检测命令以确保恢复成功。</li></ol> 
+<p>以上步骤详细介绍了如何启动和管理 MHA，以及在出现问题时的故障排查和修复流程。</p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/960883a88fb3abcebe4c3356885cb705/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">高性能计算（HPC）-一文全面理解高性能计算</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f608c904b7aacbe3c5c9fb78a6fbd6d2/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">tradingview联系代码</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>数据倾斜、数据漂移及hiveSQL优化 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="数据倾斜、数据漂移及hiveSQL优化" />
+<meta property="og:description" content="1. ODS 层采用什么压缩方式和存储格式？ 压缩采用 Snappy ，存储采用 orc ，压缩比是 100g 数据压缩完 10g 左右。
+2. DWD 层做了哪些事？ 1.、数据清洗
+空值去除过滤核心字段无意义的数据，比如订单表中订单 id 为 null，支付表中支付id 为空对手机号、身份证号等敏感数据脱敏对业务数据传过来的表进行维度退化和降维。将用户行为宽表和业务表进行数据一致性处理
+2、 清洗的手段
+Sql、mr、rdd、kettle、Python（项目中采用 sql 进行清除） 3.、DWS 层做了哪些事？ 1.、DWS 层有 3-5 张宽表（处理 100-200 个指标 70%以上的需求）
+具体宽表名称：用户行为宽表，用户购买商品明细行为宽表，商品宽表，购物车、宽表，物流宽表、登录注册、售后等。
+2.、哪个宽表最宽？大概有多少个字段？
+最宽的是用户行为宽表。大概有60-100 个字段
+4、数据漂移 4.1、什么是数据漂移及情况 通常是指ods表的同⼀个业务⽇期数据中包含了前⼀天或后⼀天凌晨附近的数据或者丢失当天变更的数据，这种现象就叫做漂移，
+4.2、解决数据漂移思路 两种方法：
+**方法一：**多获取一点后⼀天的数据，保障数据只多不少（简单粗暴）
+**方法二：**第⼀种⽅案⾥，时间戳字段分为四类：
+数据库表中⽤来标识数据记录更新时间的时间戳字段（假设这类字段叫modified time ）。数据库⽇志中⽤来标识数据记录更新时间的时间戳字段·（假设这类宇段叫 log_time）。数据库表中⽤来记录具体业务过程发⽣时间的时间戳字段 （假设这类字段叫 proc_time）。标识数据记录被抽取到时间的时间戳字段（假设这类字段 extract time）。 理论上这⼏个时间应该是⼀致的，但往往会出现差异，造成的原因可能为：
+数据抽取需要⼀定的时间，extract_time 往往晚于前三个时间。
+业务系统⼿动改动数据并未更新 modfied_time。
+⽹络或系统压⼒问题，log_time 或 modified_time 晚于 proc_time。
+通常都是根据以上的某⼏个字段来切分 ODS 表，这就产⽣了数据漂移。具体场
+景如下：
+1、根据 extract_time 进⾏同步。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/5cd50be399155d046144f87abbb80761/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-02-26T15:06:25+08:00" />
+<meta property="article:modified_time" content="2023-02-26T15:06:25+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">数据倾斜、数据漂移及hiveSQL优化</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="1_ODS__0"></a>1. ODS 层采用什么压缩方式和存储格式？</h3> 
+<p>压缩采用 Snappy ，存储采用 orc ，压缩比是 100g 数据压缩完 10g 左右。</p> 
+<h3><a id="2_DWD__2"></a>2. DWD 层做了哪些事？</h3> 
+<p>1.、数据清洗</p> 
+<ul><li>空值去除</li><li>过滤核心字段无意义的数据，比如订单表中订单 id 为 null，支付表中支付id 为空</li><li>对手机号、身份证号等敏感数据脱敏</li><li>对业务数据传过来的表进行维度退化和降维。</li><li>将用户行为宽表和业务表进行数据一致性处理<br> 2、 清洗的手段<br> Sql、mr、rdd、kettle、Python（项目中采用 sql 进行清除）</li></ul> 
+<h3><a id="3DWS__11"></a>3.、DWS 层做了哪些事？</h3> 
+<p>1.、DWS 层有 3-5 张宽表（处理 100-200 个指标 70%以上的需求）<br> 具体宽表名称：用户行为宽表，用户购买商品明细行为宽表，商品宽表，购物车、宽表，物流宽表、登录注册、售后等。<br> 2.、哪个宽表最宽？大概有多少个字段？<br> 最宽的是用户行为宽表。大概有60-100 个字段</p> 
+<h3><a id="4_17"></a>4、数据漂移</h3> 
+<h4><a id="41_18"></a>4.1、什么是数据漂移及情况</h4> 
+<p>通常是指ods表的同⼀个业务⽇期数据中包含了前⼀天或后⼀天凌晨附近的数据或者丢失当天变更的数据，这种现象就叫做漂移，</p> 
+<h4><a id="42_20"></a>4.2、解决数据漂移思路</h4> 
+<p>两种方法：<br> **方法一：**多获取一点后⼀天的数据，保障数据只多不少（简单粗暴）<br> **方法二：**第⼀种⽅案⾥，时间戳字段分为四类：</p> 
+<ol><li>数据库表中⽤来<strong>标识数据记录更新时间</strong>的时间戳字段（假设这类字段叫modified time ）。</li><li>数据库<strong>⽇志中⽤来标识数据记录更新时间</strong>的时间戳字段·（假设这类宇段叫 log_time）。</li><li>数据库表中⽤来<strong>记录具体业务过程发⽣时间</strong>的时间戳字段 （假设这类字段叫 proc_time）。</li><li><strong>标识数据记录被抽取到时间</strong>的时间戳字段（假设这类字段 extract time）。</li></ol> 
+<p>理论上这⼏个时间应该是⼀致的，但往往会出现差异，造成的原因可能为：<br> 数据抽取需要⼀定的时间，extract_time 往往晚于前三个时间。<br> 业务系统⼿动改动数据并未更新 modfied_time。<br> ⽹络或系统压⼒问题，log_time 或 modified_time 晚于 proc_time。</p> 
+<p>通常都是根据以上的某⼏个字段来切分 ODS 表，这就产⽣了数据漂移。具体场<br> 景如下：<br> 1、根据 extract_time 进⾏同步。<br> 2、根据 modified_time 进⾏限制同步，在实际⽣产中这种情况最常⻅，但是往往会发⽣不更新 modified time⽽导致的数据遗漏，或者凌晨时间产⽣的数据记录漂移到后天 。由于⽹络或者系统压⼒问题，log_time 会晚proc_time，从⽽导致凌晨时间产⽣的数据记录漂移到后⼀天。<br> 3、根据 proc_time 来限制，会违背 ods 和业务库保持⼀致的原则，因为仅仅根据proc_time 来限制，会遗漏很多其他过程的变化。</p> 
+<p>第⼆种解决⽅案：<br> 1、⾸先通过 log_time多同步前⼀天最后 15 分钟和后⼀天凌晨开始 15 分钟的数据，然后⽤modified_time 过滤⾮当天的数据，这样确保数据不会因为系统问题被遗漏。<br> 2、然后根据 log_time 获取后⼀天 15 分钟的数据，基于这部分数据，按照主键根据 log_time 做升序排序，那么第⼀条数据也就是最接近当天记录变化的。<br> 3、最后将前两步的数据做全外连接，通过限制业务时间 proc_time 来获取想要的数据。</p> 
+<h2><a id="_46"></a>数据倾斜</h2> 
+<p>一、数据倾斜表现<br> 1）hadoop中的数据倾斜表现：<br> 有一个多几个Reduce卡住，卡在99.99%，一直不能结束。<br> 各种container报错OOM<br> 异常的Reducer读写的数据量极大，至少远远超过其它正常的Reducer<br> 伴随着数据倾斜，会出现任务被kill等各种诡异的表现。<br> 2）hive中数据倾斜<br> 一般都发生在Sql中group by和join on上，而且和数据逻辑绑定比较深。<br> 3）Spark中的数据倾斜<br> Spark中的数据倾斜，包括Spark Streaming和Spark Sql，表现主要有下面几种：<br> Executor lost，OOM，Shuffle过程出错；<br> Driver OOM；<br> 单个Executor执行时间特别久，整体任务卡在某个阶段不能结束；<br> 正常运行的任务突然失败；</p> 
+<h3><a id="_62"></a>数据倾斜产生原因</h3> 
+<p>以Spark和Hive的使用场景为例。<br> 他们在做数据运算的时候会涉及到，count distinct、group by、join on等操作，这些都会触发Shuffle动作。一旦触发Shuffle，所有相同key的值就会被拉到一个或几个Reducer节点上，容易发生单点计算问题，导致数据倾斜。<br> 一般来说，数据倾斜原因有以下几方面：<br> <strong>1）key分布不均匀<br> 2）建表时考虑不周</strong><br> 举一个例子，就说数据默认值的设计吧，假设我们有两张表：<br> user（用户信息表）：userid，register_ip<br> ip（IP表）：ip，register_user_cnt<br> 这可能是两个不同的人开发的数据表。如果我们的数据规范不太完善的话，会出现一种情况：<br> user表中的register_ip字段，如果获取不到这个信息，我们默认为null；<br> 但是在ip表中，我们在统计这个值的时候，为了方便，我们把获取不到ip的用户，统一认为他们的ip为0。<br> 两边其实都没有错的，但是一旦我们做关联了，这个任务会在做关联的阶段，也就是sql的on的阶段卡死。<br> 3）业务数据激增<br> 比如订单场景，我们在某一天在北京和上海两个城市多了强力的推广，结果可能是这两个城市的订单量增长了10000%，其余城市的数据量不变。<br> 然后我们要统计不同城市的订单情况，这样，一做group操作，可能直接就数据倾斜了。</p> 
+<h3><a id="_78"></a>解决数据倾斜思路</h3> 
+<p>很多数据倾斜的问题，都可以用和平台无关的方式解决，比如更好的<strong>数据预处理</strong>，<strong>异常值的过滤</strong>等。因此，解决数据倾斜的重点在于<strong>对数据设计和业务的理解</strong>，这两个搞清楚了，数据倾斜就解决了大部分了。<br> 1）业务逻辑<br> 我们从业务逻辑的层面上来优化数据倾斜，比如上面的两个城市做推广活动导致那两个城市数据量激增的例子，我们可以单独对这两个城市来做count，单独做时可用两次MR，第一次打散计算，第二次再最终聚合计算。完成后和其它城市做整合。<br> 2）程序层面<br> 比如说在Hive中，经常遇到count(distinct)操作，这样会导致最终只有一个Reduce任务。我们可以先group by，再在外面包一层count，就可以了。比如计算按用户名去重后的总用户量：<br> （1）优化前<br> 只有一个reduce，先去重再count负担比较大： select name,count(distinct name)from user;<br> （2）优化后<br> // 设置该任务的每个job的reducer个数为3个。Hive默认-1，自动推断。<br> set mapred.reduce.tasks=3;<br> // 启动两个job，一个负责子查询(可以有多个reduce)，另一个负责count(1)：<br> select count(1) from (select name from user group by name) tmp;<br> 3）调参方面<br> Hadoop和Spark都自带了很多的参数和机制来调节数据倾斜，合理利用它们就能解决大部分问题。<br> 详见：<br> 1、hive 参数设置大全：<a href="https://blog.csdn.net/weixin_39032019/article/details/111912916">https://blog.csdn.net/weixin_39032019/article/details/111912916</a><br> 2、spark-submit 参数设置：<a href="https://blog.csdn.net/weixin_39032019/article/details/103371674">https://blog.csdn.net/weixin_39032019/article/details/103371674</a><br> 3、kudu 参数设置：<a href="https://blog.csdn.net/weixin_39032019/article/details/110534549">https://blog.csdn.net/weixin_39032019/article/details/110534549</a><br> 4）从业务和数据上解决数据倾斜<br> 很多数据倾斜都是在数据的使用上造成的。我们举几个场景，并分别给出它们的解决方案。<br> 数据有损的方法：找到异常数据，比如ip为0的数据，过滤掉<br> 数据无损的方法：对分布不均匀的数据，单独计算<br> hash法：先对key做一层hash，先将数据随机打散让它的并行度变大，再汇聚<br> 数据预处理：就是先做一层数据质量处理，类似于数据仓库维度建模时，底层先处理数据质量</p> 
+<h2><a id="_104"></a>问题二</h2> 
+<p>Hive 处理 100 亿及数据之性能优化<br> 项目背景<br> sdb项目，日增数据约6.5T，约100亿左右数据。通过清洗，输出不同5大维度，8 种粒度的依赖视图，以及相关的报表汇总统计。过程遇到了不少坑。在一些数据量大的场景下，很容易把一些潜在的问题就容易暴露出来，现总结如下<br> get_json_object()<br> 描述：get_json_object 函数第一个参数填写 json 对象变量，第二个参数使用<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         表示 
+        
+       
+         j 
+        
+       
+         s 
+        
+       
+         o 
+        
+       
+         n 
+        
+       
+         变量标识，然后用 
+        
+       
+         . 
+        
+       
+         或 
+        
+       
+         [ 
+        
+       
+         ] 
+        
+       
+         读取对象或数组；定义：该方法只能接受两个参数，如果想要查看多个值，只能多写几个示例： 
+        
+       
+         s 
+        
+       
+         e 
+        
+       
+         l 
+        
+       
+         e 
+        
+       
+         c 
+        
+       
+         t 
+        
+       
+         g 
+        
+       
+         e 
+        
+        
+        
+          t 
+         
+        
+          j 
+         
+        
+       
+         s 
+        
+       
+         o 
+        
+        
+        
+          n 
+         
+        
+          o 
+         
+        
+       
+         b 
+        
+       
+         j 
+        
+       
+         e 
+        
+       
+         c 
+        
+       
+         t 
+        
+        
+        
+          ( 
+         
+        
+          ′ 
+         
+        
+        
+         
+         
+           " 
+          
+         
+           n 
+          
+         
+           a 
+          
+         
+           m 
+          
+         
+           e 
+          
+         
+           " 
+          
+         
+           : 
+          
+         
+           " 
+          
+         
+           l 
+          
+         
+           i 
+          
+         
+           n 
+          
+         
+           d 
+          
+         
+           a 
+          
+         
+           " 
+          
+         
+           , 
+          
+         
+           " 
+          
+         
+           s 
+          
+         
+           e 
+          
+         
+           r 
+          
+         
+           v 
+          
+         
+           e 
+          
+         
+           r 
+          
+         
+           " 
+          
+         
+           : 
+          
+         
+           " 
+          
+         
+           w 
+          
+         
+           w 
+          
+         
+           w 
+          
+         
+           . 
+          
+         
+           b 
+          
+         
+           a 
+          
+         
+           i 
+          
+         
+           d 
+          
+         
+           u 
+          
+         
+           . 
+          
+         
+           c 
+          
+         
+           o 
+          
+         
+           m 
+          
+         
+           " 
+          
+         
+        
+          ′ 
+         
+        
+        
+        
+          , 
+         
+        
+          ′ 
+         
+        
+       
+      
+        表示json变量标识，然后用.或[]读取对象或数组； 定义：该方法只能接受两个参数，如果想要查看多个值，只能多写几个 示例：select get_json_object('{"name":"linda","server":"www.baidu.com"}',' 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.1223em; vertical-align: -0.2861em;"></span><span class="mord cjk_fallback">表示</span><span class="mord mathnormal" style="margin-right: 0.0572em;">j</span><span class="mord mathnormal">so</span><span class="mord mathnormal">n</span><span class="mord cjk_fallback">变量标识，然后用</span><span class="mord">.</span><span class="mord cjk_fallback">或</span><span class="mopen">[</span><span class="mclose">]</span><span class="mord cjk_fallback">读取对象或数组；定义：该方法只能接受两个参数，如果想要查看多个值，只能多写几个示例：</span><span class="mord mathnormal">se</span><span class="mord mathnormal" style="margin-right: 0.0197em;">l</span><span class="mord mathnormal">ec</span><span class="mord mathnormal">t</span><span class="mord mathnormal" style="margin-right: 0.0359em;">g</span><span class="mord mathnormal">e</span><span class="mord"><span class="mord mathnormal">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3117em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0572em;">j</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span><span class="mord mathnormal">so</span><span class="mord"><span class="mord mathnormal">n</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">o</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord mathnormal" style="margin-right: 0.0572em;">bj</span><span class="mord mathnormal">ec</span><span class="mord mathnormal">t</span><span class="mopen"><span class="mopen">(</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.7519em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span><span class="mord"><span class="mord"><span class="mord">"</span><span class="mord mathnormal">nam</span><span class="mord mathnormal">e</span><span class="mord">"</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">:</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mord">"</span><span class="mord mathnormal" style="margin-right: 0.0197em;">l</span><span class="mord mathnormal">in</span><span class="mord mathnormal">d</span><span class="mord mathnormal">a</span><span class="mord">"</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord">"</span><span class="mord mathnormal" style="margin-right: 0.0278em;">ser</span><span class="mord mathnormal" style="margin-right: 0.0359em;">v</span><span class="mord mathnormal" style="margin-right: 0.0278em;">er</span><span class="mord">"</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">:</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mord">"</span><span class="mord mathnormal" style="margin-right: 0.0269em;">www</span><span class="mord">.</span><span class="mord mathnormal">bai</span><span class="mord mathnormal">d</span><span class="mord mathnormal">u</span><span class="mord">.</span><span class="mord mathnormal">co</span><span class="mord mathnormal">m</span><span class="mord">"</span></span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8362em;"><span class="" style="top: -3.1473em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span><span class="mpunct"><span class="mpunct">,</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.7519em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span></span></span></span></span>.server’)<br> 输出结果：<br> www.baidu.com<br> json_tuple()<br> 定义：当使用 json_tuple 对象时，可以显著提高效率，一次获取多个对象并且可以被组<br> 合使用<br> 示例：</p> 
+<pre><code class="prism language-bash"><span class="token keyword">select</span> 
+	json_tuple<span class="token punctuation">(</span>’<span class="token punctuation">{<!-- --></span>“name”:“linda”,“server”:“www.baidu.com”<span class="token punctuation">}</span>’,‘server’,‘name’<span class="token punctuation">)</span>
+输出结果：
+linda www.baidu.com
+</code></pre> 
+<p>通常，通过一下两种函数进行解析 get_json_object()或 json_tuple()。假如要从一张stg层表中将json字符串解析成对相应的字符串，假设有10个字段，那么get_json_object()方法相当于一条记录使用 10 次函数，而 json_tuple()方法只是使用了一次，进行了批量解析，这种方式明显更高。另外，确认是否所有的字段都有必要解析？解析的字段越多，意味着序列化和反序列化，以及解析的工作量，这都是很消耗 CPU。而 CPU 核数越多，意味着并行处理的 task 的能力越强。通过这种优化思路，生产环境解析 json 这张表的时间从 4.5 小时缩减到 0.5 小时。</p> 
+<p>3.大表和大表 join<br> 比如单表 100 亿，设计到父子关系，需要 join 自己，尽管通过 where 语句缩小了数据量，还是将近有 50 亿之间的 join，并在此之上进行汇总计算。我这里用了 3 中解决方案。<br> （1）临时表 ：创建临时表，将 join 结果方法临时表，再从临时表取数据计算，若失败重试（默认 3 次）再从临时表取数据，跑完数据，删除临时表。<br> （2）动态分区：默认是按天分区，可以根据 join 的关键 ID hash 到不同分区中去（如10 个）按分区 join，再合并结果。<br> （3）分桶： 跟动态分区有点像，根据 cluster(xxId)</p> 
+<h2><a id="_134"></a>问题三</h2> 
+<p>基于 hive 的大数据量的优化处理实例<br> 是关于大数据量的数据，具体为一个 1000 亿的轻度汇总数据，去关联一个 7 亿左右的另一个轻度汇总数据。<br> 主要遇到的问题有：<br> 1，1000 亿的轻度汇总数据读写困难，耗费时间、资源大；<br> 2，两表进行关联处理数据计算慢。<br> 背景：<br> A 表是以用户、城市维度的出现次数数据，字段主要有 user_id、city_id、cnt<br> B 表是以用户、城市维度的出现次数标准数据，字段主要有 user_id、city_id、city_cnt</p> 
+<p>主要是求用户是否在某个省份达到出现次数标准的进度，比如说小a在石家庄出现2次，在保定出现 5 次。但是在石家庄出现的标准次数应该为 4 次，在保定出现的标准次数为 4 次。所以在河北出现的标准次数为8次，而小a达标的次数分别为2次和4次（超过标准按照标准统计），所以小a在河北出现的次数进度为67%。针对以上数据量，目前想到的方案有以下三种：<br> 方案一：拆分数据、分散资源，建立多个计算 task<br> （1）由于目的是对用户进行统计，所以对 A、B 表以及目标表根据 user_id 首位数字设置分区，将数据量拆分；首先需要对 user_id 首位数进行数据量查询，然后按照数据量的大小进行合理分配分区。<br> （2）根据分区建多个 task，跑入对应目标表的分区；对相同分区下的用户数据进行数据计算，然后建立多个 task 进行跑数，分散资源。</p> 
+<p>方案二：维度进行高粒度汇总，减小数据量<br> （1）维护一张城市和省份的维度表，在 A 表的计算过程中进行聚合，直接输出用户到省份维度，省略用户对城市的维度（A 表)。这样的话，就获取不到 A 表，得不到用户对城市维度的明细数据，对与数仓建设和后期数据维护不友好，但是对于本次项目的统计确实性能得到很好的提升。如果效果不好的话可以再重复方案一在用户对省份维度上建立分区。<br> （2）再与其用户到省份维度的表进行关联。</p> 
+<p>方案三：维度直接汇总到最高用户维度，建立数组存储省份信息，最大粒度减小数据量。<br> （1）涉及到的底层表聚合到用户维度，其余对应的城市和次数字段做成数组进行存储。建立以 user_id 作为主键，其余字段作为数据 map 的表，最大限度的满足当前需求，但是不利于数仓基础表的维护，再做新需求利用到同样数据源还需要进行同样的操作<br> （2）解析数组，再进行关联，输入到目标表。<br> 对所有汇总到用户维度的底层表进行解析数组，然后进行关联再计算。针对以上方案，如果既需要满足本需求，又有利于数仓建设的话，推荐方案一，如果是敏捷开发，满足此需求的话推荐方案三，对于数据集市建设，如果没必要细致到用户到城市维度的话，建议方案二，三种方案各有利弊，具体选择需要根据实际情况定夺。</p> 
+<h2><a id="_158"></a>问题四</h2> 
+<p>Hive 一种通用的上亿级别的去重方法<br> 背景:需要把申请人信息表中的所有渠道端用户的 user_id 进行去重的然后计数的操作。数据量去完重复大概 2 个亿，去之前大概将近 3 亿。<br> 做法一：最原始的做法使用的是 count(distinct user_id)这个需要大概跑 3 个小时的任务。<br> 做法二：使用 group by 去重，效果依然不好。<br> 做法三：使用 row_number() over(partition by user_id order by user_id desc) as rn ，然后取rn=1，这样也不行。</p> 
+<pre><code class="prism language-sql"><span class="token comment">#通用做法：将任务分成 5 份，即 user_id%5=0,1,2,3,4 这几个任务去跑，然后进行 union all和并即可。任务从三小时降到0.5小时。</span>
+<span class="token comment">#代码：开启 5 个以下任务，uid%5=0,1,2,3,4 五种情况</span>
+写到 <span class="token keyword">temp</span><span class="token punctuation">.</span>ods_lc_appl_all_1，<span class="token number">2</span>，<span class="token number">3</span>，<span class="token number">4</span>，<span class="token number">5</span>
+	<span class="token keyword">select</span> 
+		user_id<span class="token punctuation">,</span>
+		<span class="token function">sum</span><span class="token punctuation">(</span>uv<span class="token punctuation">)</span>
+	<span class="token keyword">from</span>
+	<span class="token punctuation">(</span>
+		<span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> <span class="token keyword">temp</span><span class="token punctuation">.</span>ods_lc_appl_all_1
+		<span class="token keyword">UNION</span> <span class="token keyword">ALL</span>
+		<span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> <span class="token keyword">temp</span><span class="token punctuation">.</span>ods_lc_appl_all_2
+		<span class="token keyword">UNION</span> <span class="token keyword">ALL</span>
+		<span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> <span class="token keyword">temp</span><span class="token punctuation">.</span>ods_lc_appl_all_3
+		<span class="token keyword">UNION</span> <span class="token keyword">ALL</span>
+		<span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> <span class="token keyword">temp</span><span class="token punctuation">.</span>ods_lc_appl_all_4
+		<span class="token keyword">UNION</span> <span class="token keyword">ALL</span>
+		<span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> <span class="token keyword">temp</span><span class="token punctuation">.</span>ods_lc_appl_all_5
+<span class="token punctuation">)</span>a
+<span class="token keyword">group</span> <span class="token keyword">by</span> user_id<span class="token punctuation">;</span>
+</code></pre> 
+<p>遇到的问题<br> 列裁剪<br> Hive 在读数据的时候，可以只读取查询中所需要用到的列，而忽略其它列。例如，若有以下查询：<br> select a,b from q where e&lt;10;<br> 在实施此项查询中，Q 表有 5 列（a，b，c，d，e），Hive 只读取查询逻辑中真实需要的 3 列 a、b、e，而忽略列 c，d；这样做节省了读取开销，中间表存储开销和数据整合开销。裁剪所对应的参数项为：hive.optimize.cp=true（默认值为真）</p> 
+<p>补充：在我实习的操作过程中，也有用到这个道理，也就是多次 join 的时候，考虑到只需要的指标，而不是为了省事使用 select * 作为子查询</p> 
+<p>分区裁剪<br> 可以在查询的过程中减少不必要的分区。 例如，若有以下查询：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span>
+<span class="token operator">*</span> 
+<span class="token keyword">FROM</span>
+	<span class="token punctuation">(</span>
+		SELECTT
+			a1<span class="token punctuation">,</span>
+			<span class="token function">COUNT</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span> 
+		<span class="token keyword">FROM</span> 
+			T 
+		<span class="token keyword">GROUP</span> <span class="token keyword">BY</span> a1
+	<span class="token punctuation">)</span>subq <span class="token comment"># 建议贴边写，这样容易检查是否是中文括号！WHERE subq.prtn=100; #（多余分区）</span>
+
+<span class="token keyword">SELECT</span>
+<span class="token operator">*</span> <span class="token keyword">FROM</span>
+T1 <span class="token keyword">JOIN</span>
+<span class="token punctuation">(</span>
+<span class="token keyword">SELECT</span>
+<span class="token operator">*</span>
+<span class="token keyword">FROM</span> T2
+<span class="token punctuation">)</span>subq <span class="token keyword">ON</span> <span class="token punctuation">(</span>T1<span class="token punctuation">.</span>a1<span class="token operator">=</span>subq<span class="token punctuation">.</span>a2<span class="token punctuation">)</span> <span class="token keyword">WHERE</span> subq<span class="token punctuation">.</span>prtn<span class="token operator">=</span><span class="token number">100</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>查询语句若将“subq.prtn=100”条件放入子查询中更为高效，可以减少读入的分区 数目。 Hive 自动执行这种裁剪优化。分区参数为：hive.optimize.pruner=true（默认值为真）</p> 
+<p>补充：实际集群操作过程中，加分区是重中之重，不加分区的后果非常可能把整个队列资源占满，而导致 io 读写异常，无法登陆服务器及 hive！切记切记分区操作和 limit 操作</p> 
+<p>JOIN 原则<br> 在使用写有 Join 操作的查询语句时有一条原则：应该将条目少的表/子查询放在 Join 操作符的左边。原因是在 Join 操作的 Reduce 阶段，位于Join 操作符左边的表的内容会被加载进内存，将条目少的表放在左边，可以有效减少发生 OOM 错误的几率。对于一条语句中有多个 Join的情况，如果 Join 的条件相同，一句话就是小表在左边比如查询：</p> 
+<p>MAP JOIN 操作（没有用到）<br> 如果你有一张表非常非常小，而另一张关联的表非常非常大的时候，你可以使用 mapjoin 此 Join 操作在 Map 阶段完成，不再需要 Reduce，也就不需要经过 Shuffle 过程，从而能在一定程度上节省资源提高 JOIN 效率前提条件是需要的数据在 Map 的过程中可以访问到。比如查询：</p> 
+<h4><a id="GROUP_BY__235"></a>GROUP BY 操作</h4> 
+<p>进行 GROUP BY 操作时需要注意一下几点：<br> Map 端部分聚合<br> 事实上并不是所有的聚合操作都需要在 reduce 部分进行，很多聚合操作都可以先在 Map 端进行部分聚合，然后 reduce端得出最终结果。<br> <strong>这里需要修改的参数为：</strong><br> hive.map.aggr=true（用于设定是否在 map 端进行聚合，默认值为真）<br> hive.groupby.mapaggr.checkinterval=100000（用于设定 map 端进行聚合操作的条目数）<br> <strong>有数据倾斜时进行负载均衡</strong><br> 此处需要设定 hive.groupby.skewindata，当选项设定为true 是，生成的查询计划有两个 MapReduce 任务。<br> 合并小文件<br> 我们知道文件数目小，容易在文件存储端造成瓶颈，给 HDFS 带来压力，影响处理效率。对此，可以通过合并 Map 和 Reduce 的结果文件来消除这样的影响。<br> 是否合并 Map 输出文件：hive.merge.mapfiles=true（默认值为真）<br> 是否合并 Reduce 端输出文件：hive.merge.mapredfiles=false（默认值为假）<br> 合并文件的大小：hive.merge.size.per.task=256<em>1000</em>1000（默认值为256000000）<br> <strong>实际集群操作过程中，join 时候的小表在前的原则是比较先接触到的，这点在查阅一些资料和问过同事之后觉得是最快优化 join 操作的，而mapjoin 则几乎没有用到，可能接触到的小表量级也是比较大的，而且公司的 hive 貌似是 0.12 的了，应该是自动优化的把</strong></p> 
+<h2><a id="_251"></a>问题五</h2> 
+<p>无效 ID 在关联时的数据倾斜问题<br> 问题：日志中常会出现信息丢失，比如每日约为 20 亿的全网日志，其中的 user_id 为主键，在日志收集过程中会丢失，出现主键为 null 的情况，如果取其中的user_id 和 bmw_users 关联，就会碰到数据倾斜的问题。原因是 Hive 中，主键为 null 值的项会被当做相同的Key 而分配进同一个计算 Map。<br> 解决方法 1：user_id 为空的不参与关联，子查询过滤 null</p> 
+<pre><code class="prism language-sql">	<span class="token keyword">SELECT</span>
+	<span class="token operator">*</span> 
+	<span class="token keyword">FROM</span> 
+		log a 
+		<span class="token keyword">JOIN</span> bmw_users b <span class="token keyword">ON</span> a<span class="token punctuation">.</span>user_id <span class="token operator">IS</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span> <span class="token operator">AND</span> a<span class="token punctuation">.</span>user_id<span class="token operator">=</span>b<span class="token punctuation">.</span><span class="token keyword">user</span>
+	<span class="token keyword">UNION</span> <span class="token keyword">All</span> 
+	<span class="token keyword">SELECT</span>
+		<span class="token operator">*</span> 
+	<span class="token keyword">FROM</span> 
+		log a 
+		<span class="token keyword">WHERE</span> a<span class="token punctuation">.</span>user_id <span class="token operator">IS</span> <span class="token boolean">NULL</span>
+
+
+<span class="token comment"># 解决方法 2 如下所示：函数过滤 null</span>
+<span class="token keyword">SELECT</span>
+	<span class="token operator">*</span> 
+<span class="token keyword">FROM</span> 
+	log a 
+<span class="token keyword">LEFT</span> <span class="token keyword">OUTER</span> <span class="token keyword">JOIN</span> bmw_users b <span class="token keyword">ON</span> 
+<span class="token keyword">CASE</span> <span class="token keyword">WHEN</span> a<span class="token punctuation">.</span>user_id <span class="token operator">IS</span> <span class="token boolean">NULL</span> <span class="token keyword">THEN</span> CONCAT<span class="token punctuation">(</span><span class="token string">'dp_hive'</span><span class="token punctuation">,</span>RAND<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> 
+<span class="token keyword">ELSE</span> a<span class="token punctuation">.</span>user_id <span class="token keyword">END</span> <span class="token operator">=</span>b<span class="token punctuation">.</span>user_id<span class="token punctuation">;</span> <span class="token comment">// 这句话写的好骚气啊，还有这种操作，我没有试过</span>
+</code></pre> 
+<p>调优结果：原先由于数据倾斜导致运行时长超过 1 小时，解决方法 1 运行每日平均时长 25 分钟，解决方法 2 运行的每日平均时长在 20 分钟左右。优化效果很明显。<br> 我在工作中总结出：解决方法2比解决方法1效果更好，不但IO少了，而且作业数也少了。解决方法 1 中 log 读取两次，job 数为2。解决方法 2 中 job 数是 1。这个优化适合无效 id（比如-99、‘’，null 等）产生的倾斜问题。把空值的 key 变成一个字符串加上随机数，就能把倾斜的数据分到不同的 Reduce上，从而解决数据倾斜问题。因为空值不参与关联，即使分到不同的Reduce上，也不会影响最终的结果。附上Hadoop通用关联的实现方法是：关联通过二次排序实现的，关联的列为 partion key，关联的列和表的tag组成排序的group key，根据 pariton key分配 Reduce。同一Reduce内根据group key 排序。</p> 
+<h2><a id="_284"></a>问题七</h2> 
+<p>不同数据类型关联产生的倾斜问题<br> 问题：不同数据类型 id 的关联会产生数据倾斜问题。一张表 s8 的日志，每个商品一条记录，要和商品表关联。但关联却碰到倾斜的问题。 s8 的日志中有 32 为字符串商品 id，也有数值商品 id，日志中类型是 string 的，但商品中的 数值 id 是 bigint的。猜想问题的原因是把 s8 的商品 id 转成数值 id 做 hash 来分配 Reduce， 所以字符串 id 的 s8 日志，都到一个 Reduce 上了，解决的方法验证了这个猜测。<br> 解决方法：把数据类型转换成字符串类型</p> 
+<h2><a id="_290"></a>数据质量</h2> 
+<p>事前：制定每份数据的数据质量监控规则<br> 事中：监控和影响数据生产过程，不符合质量要求的数据不算产出数据<br> 事后：数据质量情况分析和打分，推动数据质量提升；<br> 保障数据质量，可以从事前、事中、事后入手。事前，我们可以通过制定每份数据的数据质量监控规则，越重要的数据对应的监控规则应该越多；事中，通过监控和影响数据生产过程，对不符合质量要求的数据进行干预，使其不影响下流数据的质量；事后，通过对数据质量情况进行分析和打分，将一些不足和改进反馈数据监控体系，推动整体的数据质量提升。</p> 
+<h2><a id="_296"></a>数据生命周期管理</h2> 
+<p>1、出于成本等因素的考虑，在大数据平台上我们依然需要对数据生命周期进行管理。根据使用频率将数据分为冰、冷、温、热四类。一个合理的数据生命周期管理要保证温热数据占整个数据体系大部分；同时为了保障数据资产的完整性，对于重要的基础数据会长久保留。<br> 2、对于数据中间计算过程数据，在保障满足绝大部分应用访问历史数据需要的前提下，缩短数据保留周期，有助于降低存储成本；最后一点值得注意的是，冷备已经成为历史，在大数据平台下不需要单独的冷备设备。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3d36a74ee1da6dcf416feb36f6ff30cc/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">如何将CAJ文件转换成PDF格式？分享两种实用的方法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/df6ab5762b9629bc0a336f83c8a64f81/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">TensorRT安装教程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

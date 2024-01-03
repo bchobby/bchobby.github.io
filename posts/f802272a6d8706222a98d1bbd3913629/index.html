@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>flink任务优化总结 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="flink任务优化总结" />
+<meta property="og:description" content="本博客总结为B站尚硅谷大数据Flink2.0调优，Flink性能优化视频的笔记总结。
+1. 资源配置调优 Flink 性能调优的第一步，就是为任务分配合适的资源，在一定范围内，增加资源的分配与性能的提升是成正比的，实现了最优的资源配置后，在此基础上再考虑进行后面论述的性能调优策略。
+提交方式主要是 yarn-per-job ，资源的分配在使用脚本提交 Flink 任务时进行指定。
+标准的 Flink 任务提交脚本 （Generic CLI 模式）
+从 1.11 开始，增加了通用客户端模式，使用-D&lt;property=value&gt;指定其他的参数：
+bin/flink run \ -t yarn-per-job \ -d \ -p 5 \ 指定并行度 -Dyarn.application.queue=test \ 指定 yarn 队列 -Djobmanager.memory.process.size=1024mb \ 指定 JM 的总进程大小 -Dtaskmanager.memory.process.size=1024mb \ 指定每个 TM 的总进程大小 -Dtaskmanager.numberOfTaskSlots=2 \ 指定每个 TM 的 slot 数 -c com.atguigu.flink.tuning.UvDemo \ /opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar 如果是使用 -m yarn-cluster，则使用 -yD &lt;property=value&gt; 指定其他的参数：
+bin/flink run \ -m yarn-cluster \ -d \ -p 5 \ 指定并行度 -yDyarn." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/f802272a6d8706222a98d1bbd3913629/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-10-15T12:01:10+08:00" />
+<meta property="article:modified_time" content="2022-10-15T12:01:10+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">flink任务优化总结</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>本博客总结为B站尚硅谷<a href="https://www.bilibili.com/video/BV1Q5411f76P" rel="nofollow">大数据Flink2.0调优，Flink性能优化</a>视频的笔记总结。</p> 
+<h2><a id="1__2"></a>1. 资源配置调优</h2> 
+<p>Flink 性能调优的第一步，就是为任务分配合适的资源，在一定范围内，增加资源的分配与性能的提升是成正比的，实现了最优的资源配置后，在此基础上再考虑进行后面论述的性能调优策略。</p> 
+<p>提交方式主要是 <strong>yarn-per-job</strong> ，资源的分配在使用脚本提交 Flink 任务时进行指定。</p> 
+<p>标准的 Flink 任务提交脚本 （Generic CLI 模式）</p> 
+<p>从 1.11 开始，增加了通用客户端模式，使用<code>-D&lt;property=value&gt;</code>指定其他的参数：</p> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span> 									     指定并行度
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span> 			 指定 <span class="token function">yarn</span> 队列
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span> 	 指定 JM 的总进程大小
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span> 	 指定每个 TM 的总进程大小
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span> 		 指定每个 TM 的 slot 数
+-c com.atguigu.flink.tuning.UvDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> 
+<p>如果是使用 <strong>-m yarn-cluster</strong>，则使用 <code>-yD &lt;property=value&gt;</code> 指定其他的参数：</p> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-m yarn-cluster <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span> 										    指定并行度
+-yDyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span> 				指定 <span class="token function">yarn</span> 队列
+-yDjobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span> 		指定 JM 的总进程大小
+-yDtaskmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span> 	指定每个 TM 的总进程大小
+-yDtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span> 			指定每个 TM 的 slot 数
+-c com.atguigu.flink.tuning.UvDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> 
+<p><a href="https://ci.apache.org/projects/flink/flink-docs-release-1.13/deployment/config.html" rel="nofollow">官网参数列表</a></p> 
+<h3><a id="11__42"></a>1.1. 内存设置</h3> 
+<h4><a id="111_TaskManager__44"></a>1.1.1. TaskManager 内存模型</h4> 
+<p><img src="https://images2.imgbox.com/d2/fa/aTZghMlM_o.png" alt="image-20221015104836136"></p> 
+<ol><li> <p>内存模型详解</p> 
+  <ol><li> <p>JVM 特定内存：JVM 本身使用的内存，包含 JVM 的 metaspace 和 over-head</p> 
+    <ol><li> <p>JVM metaspace：JVM 元空间，<strong>taskmanager.memory.jvm-metaspace.size</strong>，默认 256mb</p> </li><li> <p>JVM over-head 执行开销：JVM 执行时自身所需要的内容，包括线程堆栈、IO、编译缓存等所使用的内存。<br> <strong>taskmanager.memory.jvm-overhead.fraction</strong>，默认 0.1<br> <strong>taskmanager.memory.jvm-overhead.min</strong>，默认 192mb<br> <strong>taskmanager.memory.jvm-overhead.max</strong>，默认 1gb<br> 总进程内存*fraction，如果小于配置的 min（或大于配置的 max） 大小， 则使用 min/max 大小</p> </li></ol> </li><li> <p>框架内存： flink 框架，即 TaskManager 本身所占用的内存，不计入 Slot 的资源中。<br> 堆内：<strong>taskmanager.memory.framework.heap.size</strong> ，默认 128MB<br> 堆外：taskmanager.memory.framework.off-heap.size，默认 128MB</p> </li><li> <p>Task 内存：Task 执行用户代码时所使用的内存<br> 堆内：<strong>taskmanager.memory.task.heap.size</strong>，默认 none，由 Flink 内存扣除掉其他部分的内存得到。<br> 堆外：<strong>taskmanager.memory.task.off-heap.size</strong>，默认 0，表示不使用堆外内存。</p> </li><li> <p>网络内存：网络数据交换所使用的堆外内存大小，如网络数据交换缓冲区<br> 堆外：<strong>taskmanager.memory.network.fraction</strong>，默认 0.1<br> <strong>taskmanager.memory.network.min</strong>，默认 64mb<br> <strong>taskmanager.memory.network.max</strong>，默认 1gb<br> Flink 内存*fraction， 如果小于配置的 min（或大于配置的 max）大小， 则使用 min/max大小</p> </li><li> <p>托管内存：用于 RocksDB State Backend 的本地内存和批的排序、哈希表、缓存中间结果。<br> 堆外：<strong>taskmanager.memory.managed.fraction</strong>，默认 0.4<br> <strong>taskmanager.memory.managed.size</strong>，默认 none，如果 size 没指定，则等于 Flink 内存*fraction</p> </li></ol> </li><li> <p>案例分析<br> 基于 Yarn 模式，一般参数指定的是总进程内存，<strong>taskmanager.memory.process.size</strong>，比如指定为 4G，每一块内存得到大小如下：</p> 
+  <ol><li> <p>计算 Flink 内存<br> JVM 元空间256m<br> JVM 执行开销：4g*0.1=409.6m，在[192m,1g]之间，最终结果409.6m<br> Flink 内存=4g-256m-409.6m=3430.4m</p> </li><li> <p>网络内存=3430.4m*0.1=343.04m，在[64m,1g]之间，最终结果 343.04m</p> </li><li> <p>托管内存=3430.4m*0.4=1372.16m</p> </li><li> <p>框架内存，堆内和堆外都是 128m</p> </li><li> <p>Task 堆内内存=3430.4m-128m-128m-343.04m-1372.16m=1459.2m<br> <img src="https://images2.imgbox.com/c7/0a/5DmogBpw_o.png" alt=""><br> <img src="https://images2.imgbox.com/3b/f4/rCD3JhHv_o.png" alt="image-20221015105336492"></p> </li></ol> </li></ol> 
+<p>所以进程内存给多大，每一部分内存需不需要调整，可以看内存的使用率来调整。</p> 
+<h4><a id="112__96"></a>1.1.2. 生产资源配置示例</h4> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span> 									    指定并行度
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span> 		    指定 <span class="token function">yarn</span> 队列
+-Djobmanager.memory.process.size<span class="token operator">=</span>2048mb <span class="token punctuation">\</span>   JM2~4G 足够
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>4096mb <span class="token punctuation">\</span>  单个 TM2~8G 足够
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>         容器核数 1core：1 slot 或 <span class="token number">2</span> core：2 slot
+-c com.atguigu.flink.tuning.UvDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> 
+<p>Flink 是实时流处理，关键在于资源能不能抗住高峰时期每秒的数据量，通常用 QPS/TPS 来描述数据情况。</p> 
+<h3><a id="12__cpu__113"></a>1.2. 合理利用 cpu 资源</h3> 
+<p>Yarn 的容量调度器默认情况下是使用 "<strong>DefaultResourceCalculator</strong>"分配策略，只根据内存调度资源，所以在 Yarn 的资源管理页面上看到每个容器的 vcore 个数永远都是 1。</p> 
+<p>可以修改策略为<strong>DominantResourceCalculator</strong>，该资源计算器在计算资源的时候会综合考虑 cpu 和内存的情况。在 <strong>capacity-scheduler.xml</strong> 中修改属性:</p> 
+<pre><code class="prism language-xml"><span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>property</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>name</span><span class="token punctuation">&gt;</span></span>yarn.scheduler.capacity.resource-calculator<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>name</span><span class="token punctuation">&gt;</span></span>
+    <span class="token comment">&lt;!-- &lt;value&gt;org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator&lt;/value&gt; --&gt;</span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>value</span><span class="token punctuation">&gt;</span></span>org.apache.hadoop.yarn.util.resource.DominantResourceCalculator<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>value</span><span class="token punctuation">&gt;</span></span>
+<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>property</span><span class="token punctuation">&gt;</span></span>
+</code></pre> 
+<h4><a id="121__DefaultResourceCalculator__127"></a>1.2.1. 使用 DefaultResourceCalculator 策略</h4> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>4096mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.UvDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> 
+<p>可以看到一个容器只有一个vcore：</p> 
+<p><img src="https://images2.imgbox.com/51/e7/l2iBrZls_o.png" alt="image-20221015105538968"></p> 
+<h4><a id="122__DominantResourceCalculator__147"></a>1.2.2. 使用 DominantResourceCalculator 策略</h4> 
+<p>修改 yarn 配置后，分发配置并重启 yarn， 再次提交 flink 作业：</p> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>4096mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.UvDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> 
+<p>看到容器的 vcore 数变了:</p> 
+<p><img src="https://images2.imgbox.com/f6/5f/NQJZaSRi_o.png" alt="image-20221015105609170"><br> JobManager1个，占用 1 个容器，vcore=1</p> 
+<p>TaskManager3 个，占用 3 个容器，每个容器 vcore=2，总 vcore=2*3=6，因为默认单个容器的 vcore 数=单 TM 的 slot 数</p> 
+<h4><a id="123__DominantResourceCalculator__vcore__172"></a>1.2.3. 使用 DominantResourceCalculator 策略并指定容器 vcore 数</h4> 
+<p>指定 yarn 容器的 vcore 数，提交：</p> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Dyarn.containers.vcores<span class="token operator">=</span><span class="token number">3</span> <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>4096mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.UvDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> 
+<p><img src="https://images2.imgbox.com/8e/8c/tmoxRJbv_o.png" alt="image-20221015105638223"></p> 
+<p>JobManager 1 个，占用 1 个容器，vcore=1</p> 
+<p>TaskManager 3 个，占用 3 个容器，每个容器vcore =3，总 vcore=3*3=9</p> 
+<h3><a id="13__197"></a>1.3. 并行度设置</h3> 
+<h4><a id="131_1_199"></a>1.3.1. 1全局并行度计算</h4> 
+<p>开发完成后，先进行压测。任务并行度给 10 以下，测试单个并行度的处理上限。然后总 QPS/单并行度的处理能力 = 并行度</p> 
+<p>开发完 Flink 作业， 压测的方式很简单， 先在 kafka 中积压数据，之后开启 Flink 任务，出现反压，就是处理瓶颈。相当于水库先积水，一下子泄洪。</p> 
+<p>不能只从 QPS 去得出并行度，因为有些字段少、逻辑简单的任务，单并行度一秒处理几万条数据。而有些数据字段多，处理逻辑复杂，单并行度一秒只能处理 1000 条数据。</p> 
+<p>最好根据高峰期的 QPS 压测，并行度*1.2 倍，富余一些资源。</p> 
+<h4><a id="132_Source__209"></a>1.3.2. Source 端并行度的配置</h4> 
+<p>数据源端是 Kafka ， Source 的并行度设置为 Kafka 对应 Topic 的分区数。</p> 
+<p>如果已经等于 Kafka 的分区数，消费速度仍跟不上数据生产速度， 考虑下 Kafka 要扩大分区，同时调大并行度等于分区数。</p> 
+<p>Flink 的一个并行度可以处理一至多个分区的数据，如果并行度多于 Kafka 的分区数，那么就会造成有的并行度空闲，浪费资源。</p> 
+<h4><a id="133_Transform__217"></a>1.3.3. Transform 端并行度的配置</h4> 
+<ol><li> <p>Keyby 之前的算子<br> 一般不会做太重的操作，都是比如 map、filter、flatmap 等处理较快的算子，并行度可以和 source 保持一致。</p> </li><li> <p>Keyby 之后的算子<br> 如果并发较大，建议设置并行度为 2 的整数次幂，例如：128、256、512；<br> 小并发任务的并行度不一定需要设置成 2 的整数次幂；<br> 大并发任务如果没有 KeyBy，并行度也无需设置为 2 的整数次幂；</p> </li></ol> 
+<h4><a id="134_Sink__227"></a>1.3.4. Sink 端并行度的配置</h4> 
+<p>Sink 端是数据流向下游的地方，可以根据 Sink 端的数据量及下游的服务抗压能力进行评估。如果 Sink 端是 Kafka，可以设为 Kafka 对应 Topic 的分区数。</p> 
+<p>Sink 端的数据量小，比较常见的就是监控告警的场景，并行度可以设置的小一些。</p> 
+<p>Source 端的数据量是最小的，拿到 Source 端流过来的数据后做了细粒度的拆分，数据量不断的增加，到 Sink 端的数据量就非常大。那么在 Sink 到下游的存储中间件的时候就需要提高并行度。</p> 
+<p>另外 Sink 端要与下游的服务进行交互，并行度还得根据下游的服务抗压能力来设置，如果在 Flink Sink 这端的数据量过大的话，且 Sink 处并行度也设置的很大，但下游的服务完全撑不住这么大的并发写入，可能会造成下游服务直接被写挂，所以最终还是要在 Sink处的并行度做一定的权衡。</p> 
+<h2><a id="2__Checkpoint__237"></a>2. 状态及 Checkpoint 调优</h2> 
+<h3><a id="21_RocksDB__239"></a>2.1. RocksDB 大状态调优</h3> 
+<p>RocksDB 是基于 LSM Tree 实现的（类似 HBase），写数据都是先缓存到内存中，所以 RocksDB 的写请求效率比较高。RocksDB 使用内存结合磁盘的方式来存储数据，每次获取数据时，先从内存中的 blockcache 中查找，如果内存中没有再去磁盘中查询。使用 RocksDB 时，状态大小仅受可用磁盘空间量的限制，性能瓶颈主要在于 RocksDB 对磁盘的读请求，每次读写操作都必须对数据进行反序列化或者序列化。当处理性能不够时，仅需要横向扩展并行度即可提高整个 Job 的吞吐量。</p> 
+<p><img src="https://images2.imgbox.com/fb/37/L2h34dT4_o.png" alt="image-20221015105931843"></p> 
+<p>从 Flink1.10 开始，Flink 默认将 RocksDB 的内存大小配置为每个 task slot 的托管内存。调试内存性能的问题主要是通过调整配置项 <strong>taskmanager.memory.managed.size</strong>，或者<br> <strong>taskmanager.memory.managed.fraction</strong> 以增加 Flink 的托管内存(即堆外的托管内存)。 进一步可以调整一些参数进行高级性能调优，这些参数也可以在应用程序中通过<br> <code>RocksDBStateBackend.setRocksDBOptions(RocksDBOptionsFactory)</code>指定。下面介绍提高资源利用率的几个重要配置。</p> 
+<h4><a id="211__State__249"></a>2.1.1. 开启 State 访问性能监控</h4> 
+<p>Flink 1.13 中引入了 State 访问的性能监控，即 latency trackig state。此功能不局限于 State Backend 的类型，自定义实现的 State Backend 也可以复用此功能。</p> 
+<p><img src="https://images2.imgbox.com/00/cb/3ahIZV6z_o.png" alt="image-20221015110021398"></p> 
+<p>State 访问的性能监控会产生一定的性能影响，所以默认每 100 次做一次取样(sample) ，对不同的 State Backend 性能损失影响不同：</p> 
+<ul><li> <p>对于 RocksDB State Backend，性能损失大概在 1% 左右</p> </li><li> <p>对于 Heap State Backend，性能损失最多可达 10%</p> <pre><code class="prism language-yaml"><span class="token comment">#启用访问状态的性能监控</span>
+<span class="token key atrule">state.backend.latency-track.keyed-state-enabled</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+<span class="token comment">#采样间隔</span>
+<span class="token key atrule">state.backend.latency-track.sample-interval</span><span class="token punctuation">:</span> <span class="token number">100</span>
+<span class="token comment">#保留的采样数据个数，越大越精确</span>
+<span class="token key atrule">state.backend.latency-track.history-size</span><span class="token punctuation">:</span> <span class="token number">128</span>
+<span class="token comment">#将状态名作为变量</span>
+<span class="token key atrule">state.backend.latency-track.state-name-as-variable</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+</code></pre> </li></ul> 
+<p>一般开启第一个参数即可。</p> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>4096mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-Dstate.backend.latency-track.keyed-state-enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.RocksdbTuning <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> 
+<p>开启之后，即可通过 prometheus + grafana 来监控。</p> 
+<h4><a id="212__290"></a>2.1.2. 开启增量检查点和本地恢复</h4> 
+<ol><li> <p>开启增量检查点<br> RocksDB 是目前唯一可用于支持有状态流处理应用程序增量检查点的状态后端，可以修改参数开启增量检查点：</p> <pre><code class="prism language-yaml"><span class="token comment">#默认 false，改为 true。</span>
+state.backend.incremental<span class="token punctuation">:</span><span class="token boolean important">true</span> 
+</code></pre> <p>或代码中指定</p> <pre><code class="prism language-java"><span class="token keyword">new</span> <span class="token class-name">EmbeddedRocksDBStateBackend</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span>
+</code></pre> </li><li> <p>开启本地恢复<br> 当 Flink 任务失败时，可以基于本地的状态信息进行恢复任务，可能不需要从 hdfs 拉取数据。本地恢复目前仅涵盖键控类型的状态后端（RocksDB），MemoryStateBackend 不支持本地恢复，可忽略此选项。</p> <pre><code class="prism language-yaml"><span class="token key atrule">state.backend.local-recovery</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+</code></pre> </li><li> <p>设置多目录<br> 如果有多块磁盘，也可以考虑指定本地多目录</p> <pre><code class="prism language-yaml">state.backend.rocksdb.localdir<span class="token punctuation">:</span>/data1/flink/rocksdb<span class="token punctuation">,</span>/data2/flink/rocksdb<span class="token punctuation">,</span>/data3/flink/rocksdb
+</code></pre> <p>注意：不要配置单块磁盘的多个目录，务必将目录配置到多块不同的磁盘上，让多块磁盘来分担压力。</p> <pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>4096mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-Dstate.backend.incremental<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dstate.backend.local-recovery<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dstate.backend.latency-track.keyed-state-enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.RocksdbTuning <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> </li></ol> 
+<h4><a id="213__337"></a>2.1.3. 调整预定义选项</h4> 
+<p>Flink 针对不同的设置为 RocksDB 提供了一些预定义的选项集合,其中包含了后续提到的一些参数，如果调整预定义选项后还达不到预期，再去调整后面的 block、writebuffer 等参数。</p> 
+<p>当 前 支 持 的 预 定 义 选 项 有 <strong>DEFAULT</strong>、<strong>SPINNING_DISK_OPTIMIZED</strong>、<strong>SPINNING_DISK_OPTIMIZED_HIGH_MEM</strong> 或<strong>FLASH_SSD_OPTIMIZED</strong>。有条件上 SSD的 ，可以指定为 <strong>FLASH_SSD_OPTIMIZED</strong></p> 
+<pre><code class="prism language-yaml"><span class="token comment">#设置为机械硬盘+内存模式</span>
+<span class="token key atrule">state.backend.rocksdb.predefined-options</span><span class="token punctuation">:</span> SPINNING_DISK_OPTIMIZED_HIGH_MEM
+</code></pre> 
+<h4><a id="214__block__348"></a>2.1.4. 增大 block 缓存</h4> 
+<p>整个 RocksDB 共享一个 block cache，读数据时内存的 cache 大小，该参数越大读数据时缓存命中率越高， 默认大小为 8 MB ，建议设置到 64 ~ 256 MB。</p> 
+<pre><code class="prism language-yaml"><span class="token comment">#默认 8m</span>
+<span class="token key atrule">state.backend.rocksdb.block.cache-size</span><span class="token punctuation">:</span> 64m
+</code></pre> 
+<h4><a id="215__write_buffer__level__357"></a>2.1.5. 增大 write buffer 和 level 阈值大小</h4> 
+<p>RocksDB 中，每个 State 使用一个 Column Family，每个 Column Family 使用独占的 write buffer ，默认 64MB ，建议调大。</p> 
+<p>调整这个参数通常要适当增加 L1 层的大小阈值 <strong>max-size-level-base</strong>，默认 256m。</p> 
+<p>该值太小会造成能存放的 SST 文件过少，层级变多造成查找困难，太大会造成文件过多，合并困难。建议设为 <strong>target_file_size_base</strong>（默认 64MB） 的倍数，且不能太小，例如 5~10倍，即<br> 320~640MB。</p> 
+<pre><code class="prism language-yaml"><span class="token key atrule">state.backend.rocksdb.writebuffer.size</span><span class="token punctuation">:</span> 128m
+<span class="token key atrule">state.backend.rocksdb.compaction.level.max-size-level-base</span><span class="token punctuation">:</span> 320m
+</code></pre> 
+<h4><a id="216__write_buffer__371"></a>2.1.6. 增大 write buffer 数量</h4> 
+<p>每个 Column Family 对应的 writebuffer 最大数量 ，这实际上是内存中"只读内存表 "的最大数量，默认值是 2。对于机械磁盘来说，如果内存足够大，可以调大到 5 左右</p> 
+<pre><code class="prism language-yaml"><span class="token key atrule">state.backend.rocksdb.writebuffer.count</span><span class="token punctuation">:</span> <span class="token number">5</span>
+</code></pre> 
+<h4><a id="217_write_buffer__379"></a>2.1.7. 增大后台线程数和write buffer 合并数</h4> 
+<ol><li> <p>增大线程数<br> 用于后台 flush 和合并 sst 文件的线程数，默认为2，建议调大，机械硬盘用户可以改为 4 等更大的值</p> <pre><code class="prism language-yaml"><span class="token key atrule">tate.backend.rocksdb.thread.num</span><span class="token punctuation">:</span> <span class="token number">4</span>
+</code></pre> </li><li> <p>增大 writebuffer 最小合并数<br> 将数据从 writebuffer 中 flush 到磁盘时，需要合并的 writebuffer 最小数量，默认值为 1，可以调成 3。</p> <pre><code class="prism language-yaml"><span class="token key atrule">state.backend.rocksdb.writebuffer.number-to-merge</span><span class="token punctuation">:</span> <span class="token number">3</span>
+</code></pre> </li></ol> 
+<h4><a id="218__395"></a>2.1.8. 开启分区索引功能</h4> 
+<p>Flink 1.13 中对 RocksDB 增加了分区索引功能 ，复用了 RocksDB 的 partitioned Index &amp; filter 功能，简单来说就是对 RocksDB 的 partitioned Index 做了多级索引。</p> 
+<p>也就是将内存中的最上层常驻，下层根据需要再 load 回来，这样就大大降低了数据 Swap 竞争。线上测试中，相对于内存比较小的场景中，性能提升 10 倍左右。如果在内存管控下 Rocksdb 性能不如预期的话，这也能成为一个性能优化点。</p> 
+<pre><code class="prism language-yaml"><span class="token comment">#默认 false</span>
+state.backend.rocksdb.memory.partitioned<span class="token punctuation">-</span>index<span class="token punctuation">-</span>filters<span class="token punctuation">:</span><span class="token boolean important">true</span>
+</code></pre> 
+<h4><a id="219__406"></a>2.1.9. 参数设定案例</h4> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>4096mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-Dstate.backend.incremental<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dstate.backend.local-recovery<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dstate.backend.rocksdb.predefined-options<span class="token operator">=</span>SPINNING_DISK_OPTIMIZED_HIGH_MEM <span class="token punctuation">\</span> -Dstate.backend.rocksdb.block.cache-size<span class="token operator">=</span>64m <span class="token punctuation">\</span>
+-Dstate.backend.rocksdb.writebuffer.size<span class="token operator">=</span>128m <span class="token punctuation">\</span>
+-Dstate.backend.rocksdb.compaction.level.max-size-level-base<span class="token operator">=</span>320m <span class="token punctuation">\</span>
+-Dstate.backend.rocksdb.writebuffer.count<span class="token operator">=</span><span class="token number">5</span> <span class="token punctuation">\</span>
+-Dstate.backend.rocksdb.thread.num<span class="token operator">=</span><span class="token number">4</span> <span class="token punctuation">\</span>
+-Dstate.backend.rocksdb.writebuffer.number-to-merge<span class="token operator">=</span><span class="token number">3</span> <span class="token punctuation">\</span>
+-Dstate.backend.rocksdb.memory.partitioned-index-filters<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dstate.backend.latency-track.keyed-state-enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.RocksdbTuning <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> 
+<h3><a id="22_Checkpoint__432"></a>2.2. Checkpoint 设置</h3> 
+<p>一般需求，我们的 Checkpoint 时间间隔可以设置为分钟级别 （1 ~5 分钟）。对于状态很大的任务，每次 Checkpoint 访问 HDFS 比较耗时，可以设置为 5~10 分钟一次 Checkpoint，并且调大两次 Checkpoint 之间的暂停间隔，例如设置两次 Checkpoint 之间至少暂停 4 或 8 分钟。同时，也需要考虑时效性的要求,需要在时效性和性能之间做一个平衡，如果时效性要求高，结合 end- to-end 时长， 设置秒级或毫秒级。如果 Checkpoint 语义配置为<strong>EXACTLY_ONCE</strong>，那么在 Checkpoint 过程中还会存在 barrier 对齐的过程，可以通过 Flink Web UI 的 Checkpoint 选项卡来查看 Checkpoint 过程中各阶段的耗时情况，从而确定到底是哪个阶段导致 Checkpoint 时间过长然后针对性的解决问题。</p> 
+<p>RocksDB 相关参数在前面已说明，可以在 flink-conf.yaml 指定，也可以在 Job 的代码中调用 API 单独指定，这里不再列出。</p> 
+<pre><code class="prism language-java"><span class="token comment">// 使⽤  RocksDBStateBackend 做为状态后端，  并开启增量 Checkpoint</span>
+<span class="token class-name">RocksDBStateBackend</span> rocksDBStateBackend <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">RocksDBStateBackend</span><span class="token punctuation">(</span><span class="token string">"hdfs://hadoop1:8020/flink/checkpoints"</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+env<span class="token punctuation">.</span><span class="token function">setStateBackend</span><span class="token punctuation">(</span>rocksDBStateBackend<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">// 开启 Checkpoint ， 间隔为 3 分钟</span>
+env<span class="token punctuation">.</span><span class="token function">enableCheckpointing</span><span class="token punctuation">(</span><span class="token class-name">TimeUnit</span><span class="token punctuation">.</span>MINUTES<span class="token punctuation">.</span><span class="token function">toMillis</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">// 配置 Checkpoint</span>
+<span class="token class-name">CheckpointConfig</span> checkpointConf <span class="token operator">=</span> env<span class="token punctuation">.</span><span class="token function">getCheckpointConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+checkpointConf<span class="token punctuation">.</span><span class="token function">setCheckpointingMode</span><span class="token punctuation">(</span><span class="token class-name">CheckpointingMode</span><span class="token punctuation">.</span>EXACTLY_ONCE<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 最小间隔 4 分钟</span>
+checkpointConf<span class="token punctuation">.</span><span class="token function">setMinPauseBetweenCheckpoints</span><span class="token punctuation">(</span><span class="token class-name">TimeUnit</span><span class="token punctuation">.</span>MINUTES<span class="token punctuation">.</span><span class="token function">toMillis</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 超时时间  10 分钟</span>
+checkpointConf<span class="token punctuation">.</span><span class="token function">setCheckpointTimeout</span><span class="token punctuation">(</span><span class="token class-name">TimeUnit</span><span class="token punctuation">.</span>MINUTES<span class="token punctuation">.</span><span class="token function">toMillis</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">// 保存 checkpoint</span>
+checkpointConf<span class="token punctuation">.</span><span class="token function">enableExternalizedCheckpoints</span><span class="token punctuation">(</span><span class="token class-name">CheckpointConfig<span class="token punctuation">.</span>ExternalizedCheckpointCleanup</span><span class="token punctuation">.</span>RETAIN_ON_CANCELLATION<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="31__453"></a>3.1. 反压</h3> 
+<p>Flink 网络流控及反压的介绍：<a href="https://flink-learning.org.cn/article/detail/138316d1556f8f9d34e517d04d670626" rel="nofollow">[https://flink-learning.org.cn/article/detail/138316d1556f8f9d34e517d04d670626]{.underline}</a></p> 
+<h4><a id="311__457"></a>3.1.1. 反压的理解</h4> 
+<p>简单来说， Flink 拓扑中每个节点（Task）间的数据都以阻塞队列的方式传输，下游来不及消费导致队列被占满后，上游的生产也会被阻塞，最终导致数据源的摄入被阻塞。</p> 
+<p>反压（BackPressure）通常产生于这样的场景：短时间的负载高峰导致系统接收数据的速率远高于它处理数据的速率。许多日常问题都会导致反压，例如，垃圾回收停顿可能会导致流入的数据快速堆积，或遇到大促、秒杀活动导致流量陡增。</p> 
+<h4><a id="312__463"></a>3.1.2. 反压的危害</h4> 
+<p>反压如果不能得到正确的处理，可能会影响到 checkpoint 时长和 state 大小，甚至可能会导致资源耗尽甚至系统崩溃。</p> 
+<ol><li> <p>影响 checkpoint 时长：barrier 不会越过普通数据，数据处理被阻塞也会导致 checkpoint barrier 流经整个数据管道的时长变长，导致 checkpoint 总体时间（End to End Duration）变长。</p> </li><li> <p>影响 state 大小： barrier 对齐时，接受到较快的输入管道的 barrier 后，它后面数据会被缓存起来但不处理，直到较慢的输入管道的 barrier 也到达，这些被缓存的数据会被放到 state 里面，导致 checkpoint 变大。</p> </li></ol> 
+<p>这两个影响对于生产环境的作业来说是十分危险的，因为 checkpoint 是保证数据一致性的关键，checkpoint 时间变长有可能导致 checkpoint 超时失败，而 state 大小同样可能拖慢 checkpoint 甚至导致 OOM （使用Heap-based StateBackend） 或者物理内存使用超出容器资源 （使用 RocksDBStateBackend）的稳定性问题。</p> 
+<p>因此，我们在生产中要尽量避免出现反压的情况。</p> 
+<h3><a id="32__475"></a>3.2. 定位反压节点</h3> 
+<p>解决反压首先要做的是定位到造成反压的节点， 排查的时候， 先把 operator chain 禁用，方便定位到具体算子。</p> 
+<p>提交 UvDemo:</p> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>2048mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.UvDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> 
+<h4><a id="321__Flink_Web_UI__495"></a>3.2.1. 利用 Flink Web UI 定位</h4> 
+<p>Flink Web UI 的反压监控提供了 SubTask 级别的反压监控，1.13 版本以前是通过周期性对 Task 线程的栈信息采样，得到线程被阻塞在请求 Buffer（意味着被下游队列阻塞）的频率来判断该节点是否处于反压状态。默认配置下，这个频率在 0.1 以下则为 OK，0.1至 0.5 为 LOW，而超过 0.5 则为 HIGH。</p> 
+<p>Flink 1.13 优化了反压检测的逻辑（使用基于任务 Mailbox 计时，而不在再于堆栈采样） ，并且重新实现了作业图的 UI 展示：Flink 现在在 UI 上通过颜色和数值来展示繁忙和反压的程度。</p> 
+<p><img src="https://images2.imgbox.com/02/36/qKSHej14_o.png" alt="image-20221015111058268"></p> 
+<p>通过 WebUI 看到 Map 算子处于反压：</p> 
+<p><img src="https://images2.imgbox.com/17/0c/ijbHuL5w_o.png" alt="image-20221015111104227"></p> 
+<p>分析瓶颈算子</p> 
+<p>如果处于反压状态，那么有两种可能性：</p> 
+<ol><li>该节点的发送速率跟不上它的产生数据速率。这一般会发生在一条输入多条输出的 Operator（比如 flatmap）。这种情况，该节点是反压的根源节点，它是从 Source Task 到 Sink Task<br> 的第一个出现反压的节点。</li><li>下游的节点接受速率较慢，通过反压机制限制了该节点的发送速率。这种情况，需要继续排查下游节点，一直找到第一个为 OK 的一般就是根源节点。</li></ol> 
+<p>总体来看，如果我们找到第一个出现反压的节点，反压根源要么是就这个节点，要么是它紧接着的下游节点。</p> 
+<p>通常来讲，第二种情况更常见。如果无法确定，还需要结合 Metrics 进一步判断。</p> 
+<h4><a id="322__Metrics__519"></a>3.2.2. 利用 Metrics 定位</h4> 
+<p>监控反压时会用到的 Metrics 主要和 Channel 接受端的 Buffer 使用率有关，最为有用的是以下几个 Metrics:</p> 
+<table><thead><tr><th>Metris</th><th>描述</th></tr></thead><tbody><tr><td>outPoolUsage</td><td>发送端 Buffer 的使用率</td></tr><tr><td>inPoolUsage</td><td>接收端 Buffer 的使用率</td></tr><tr><td>floatingBuffersUsage（1.9 以上）</td><td>接收端 Floating Buffer 的使用率</td></tr><tr><td>exclusiveBuffersUsage （1.9 以上）</td><td>接收端 Exclusive Buffer 的使用率</td></tr></tbody></table> 
+<p><strong>根据指标分析反压</strong></p> 
+<p>分析反压的大致思路是：如果一个 Subtask 的发送端 Buffer 占用率很高，则表明它被下游反压限速了；如果一个 Subtask 的接受端 Buffer 占用很高，则表明它将反压传导至上游。反压情况可以根据以下表格进行对号入座(1.9以上)</p> 
+<table><thead><tr><th></th><th>outPoolUsage 低</th><th>outPoolUsage 高</th></tr></thead><tbody><tr><td>inPoolUsage 低</td><td>正常</td><td>被下游反压，处于临时情况（还没传递到上游）</td></tr><tr><td>可能是反压的根源，一条输入，多条输出的场景</td><td></td><td></td></tr><tr><td>inPoolUsage 高</td><td>如果上游所有 outPoolUsage 都是低，有可能最终可能导致反压（还没传递到上游）</td><td>被下游反压</td></tr><tr><td>如果上游的 outPoolUsage 是高，则为反压根源</td><td></td><td></td></tr></tbody></table> 
+<p><strong>可以进一步分析数据传输</strong></p> 
+<p>Flink 1.9 及以上版本，还可以根据 <strong>floatingBuffersUsage/exclusiveBuffersUsage</strong> 以及其上游 Task 的 outPoolUsage 来进行进一步的分析一个 Subtask 和其上游 Subtask的数据传输。</p> 
+<p>在流量较大时，Channel 的 Exclusive Buffer 可能会被写满，此时 Flink 会向 BufferPool 申请剩余的 Floating Buffer。这些 Floating Buffer 属于备用 Buffer。</p> 
+<table><thead><tr><th></th><th>exclusiveBuffersUsage 低</th><th>exclusiveBuffersUsage 高</th></tr></thead><tbody><tr><td>floatingBuffersUsage 低 所有上游 outPoolUsage 低</td><td>正常</td><td></td></tr><tr><td>floatingBuffersUsage 低 上游某个 outPoolUsage 高</td><td>潜在的网络瓶颈</td><td></td></tr><tr><td>floatingBuffersUsage 高 所有上游 outPoolUsage 低</td><td>最终对部分 inputChannel 反压 （正在传递）</td><td>最终对大多数或所有 inputChannel 反压 （正在传递）</td></tr><tr><td>floatingBuffersUsage 高 上游某个 outPoolUsage 高</td><td>只对部分 inputChannel 反压</td><td>对大多数或所有 inputChannel 反压</td></tr></tbody></table> 
+<p>总结：</p> 
+<ol><li> <p>floatingBuffersUsage 为高，则表明反压正在传导至上游</p> </li><li> <p>同时 exclusiveBuffersUsage 为低 ， 则表明可能有倾斜，比如， floatingBuffersUsage 高、 exclusiveBuffersUsage 低为有倾斜，因为少数 channel 占用了大部分的 Floating Buffer。</p> </li></ol> 
+<h3><a id="33__561"></a>3.3. 反压的原因及处理</h3> 
+<p>注意：反压可能是暂时的，可能是由于负载高峰、 CheckPoint 或作业重启引起的数据积压而导致反压。如果反压是暂时的，应该忽略它。另外，请记住，断断续续的反压会影响我们分析和解决问题。</p> 
+<p>定位到反压节点后，分析造成原因的办法主要是观察 Task Thread。按照下面的顺序，一步一步去排查。</p> 
+<h4><a id="331__567"></a>3.3.1. 查看是否数据倾斜</h4> 
+<p>在实践中，很多情况下的反压是由于数据倾斜造成的，这点我们可以通过 Web UI 各个 SubTask 的 Records Sent 和 Record Received 来确认，另外 Checkpoint detail 里不同 SubTask 的 State size 也是一个分析数据倾斜的有用指标。</p> 
+<p><img src="https://images2.imgbox.com/5a/b4/v4IFM1v3_o.png" alt="image-20221015112338543"></p> 
+<p>（关于数据倾斜的详细解决方案，会在下一章节详细讨论）</p> 
+<h4><a id="332__575"></a>3.3.2. 使用火焰图分析</h4> 
+<p>如果不是数据倾斜，最常见的问题可能是用户代码的执行效率问题（频繁被阻塞或者性能问题），需要找到瓶颈算子中的哪部分计算逻辑消耗巨大。</p> 
+<p>最有用的办法就是对 TaskManager 进行 CPU profile，从中我们可以分析到 Task Thread 是否跑满一个 CPU 核：如果是的话要分析 CPU 主要花费在哪些函数里面；如果不是的话要看 Task Thread 阻塞在哪里，可能是用户函数本身有些同步的调用，可能是 checkpoint 或者 GC 等系统活动导致的暂时系统暂停。</p> 
+<ol><li> <p>开启火焰图功能<br> Flink 1.13 的 WebUI 提供 JVM 的 CPU 火焰图，这将大大简化性能瓶颈的分析，默认是不开启的，需要修改参数：</p> <pre><code class="prism language-yaml">默认 false
+rest.flamegraph.enabled<span class="token punctuation">:</span><span class="token boolean important">true</span>
+</code></pre> <p>也可以在提交时指定：</p> <pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>2048mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.UvDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> </li><li> <p>WebUI 查看火焰图<br> <img src="https://images2.imgbox.com/b6/4e/x3jcrJOJ_o.png" alt="image-20221015112530815"></p> <p>火焰图是通过对堆栈跟踪进行多次采样来构建的。每个方法调用都由一个条形表示，其中条形的长度与其在样本中出现的次数成正比。</p> 
+  <ol><li> <p>On-CPU: 处于 <strong>[RUNNABLE, NEW]</strong> 状态的线程</p> </li><li> <p>Off-CPU: 处于 <strong>[TIMED_WAITING, WAITING, BLOCKED]</strong> 的线程，用于查看在样本中发现的阻塞调用。</p> </li></ol> </li><li> <p>分析火焰图</p> <p>颜色没有特殊含义，具体查看：</p> 
+  <ol><li> <p>纵向是调用链，从下往上，顶部就是正在执行的函数</p> </li><li> <p>横向是样本出现次数，可以理解为执行时长。<br> 看顶层的哪个函数占据的宽度最大。只要有"平顶"（plateaus），就表示该函数可能存在性能问题。</p> </li></ol> </li></ol> 
+<p>如果是 Flink 1.13 以前的版本， 可以手动做火焰图：</p> 
+<p>如何生成火焰图：<a href="http://www.54tianzhisheng.cn/2020/10/05/flink-jvm-profiler/" rel="nofollow">http://www.54tianzhisheng.cn/2020/10/05/flink-jvm-profiler/</a></p> 
+<h4><a id="333__GC__627"></a>3.3.3. 分析 GC 情况</h4> 
+<p>TaskManager 的内存以及 GC 问题也可能会导致反压，包括 TaskManager JVM 各区内存不合理导致的频繁 Full GC 甚至失联。通常建议使用默认的 G1 垃圾回收器。</p> 
+<p>可以通过打印 GC 日志（-XX:+PrintGCDetails） ，使用 GC 分析器（GCViewer 工具）来验证是否处于这种情况。</p> 
+<ol><li> <p>在 Flink 提交脚本中,设置 JVM参数，打印 GC 日志：</p> <pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Denv.java.opts<span class="token operator">=</span><span class="token string">"-XX:+PrintGCDetails -XX:+PrintGCDateStamps"</span> <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>2048mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.UvDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> </li><li> <p>下载 GC 日志的方式：<br> 因为是 on yarn 模式，运行的节点一个一个找比较麻烦。 可以打开 WebUI，选择 JobManager 或者 TaskManager，点击 Stdout，即可看到 GC 日志，点击下载按钮即可将 GC 日志通过 HTTP 的方式下载下来。<br> <img src="https://images2.imgbox.com/d3/57/d3r4KteZ_o.png" alt="image-20221015112742541"></p> </li><li> <p>分析 GC 日志：<br> 通过 GC 日志分析出单个 Flink Taskmanager 堆总大小、年轻代、老年代分配的内存空间、 Full GC 后老年代剩余大小等，相关指标定义可以去 Github 具体查看。<br> GCViewer 地址： https://github.com/chewiebug/GCViewer<br> Linux 下分析：</p> <pre><code class="prism language-shell">java -jar gcviewer_1.3.4.jar gc.log
+</code></pre> <p>Windows 下分析：直接双击 gcviewer_1.3.4.jar，打开 GUI 界面， 选择 gc 的 log 打开</p> </li></ol> 
+<p>扩展：最重要的指标是 Full GC 后，老年代剩余大小这个指标， 按照《Java性能优化权威指南》这本书 Java 堆大小计算法则，设 Full GC 后老年代剩余大小空间为 M，那么堆的大小建议 3 ~ 4倍 M，新生代为 1 ~ 1.5 倍 M， 老年代应为 2 ~ 3 倍 M。</p> 
+<h4><a id="334__666"></a>3.3.4. 外部组件交互</h4> 
+<p>如果发现我们的 Source 端数据读取性能比较低或者 Sink 端写入性能较差，需要检查第三方组件是否遇到瓶颈，还有就是做维表 join 时的性能问题。</p> 
+<p>例如：</p> 
+<ul><li>Kafka 集群是否需要扩容， Kafka 连接器是否并行度较低</li><li>HBase 的 rowkey 是否遇到热点问题，是否请求处理不过来</li><li>ClickHouse 并发能力较弱，是否达到瓶颈</li><li>…</li></ul> 
+<p>关于第三方组件的性能问题，需要结合具体的组件来分析，最常用的思路：</p> 
+<ol><li> <p>异步 io+热缓存 来优化读写性能</p> </li><li> <p>先攒批再读写</p> </li></ol> 
+<p>维表 join 参考：</p> 
+<ul><li>https://flink-learning.org.cn/article/detail/b8df32fbc6542257a5b449114e137cc3</li><li>https://www.jianshu.com/p/a62fa483ff54</li></ul> 
+<h2><a id="4__688"></a>4. 数据倾斜</h2> 
+<h3><a id="41___690"></a>4.1. 判断是否存在数据倾斜</h3> 
+<p>相同 Task 的多个 Subtask 中，个别 Subtask 接收到的数据量明显大于其他 Subtask 接收到的数据量，通过 Flink Web UI 可以精确地看到每个 Subtask 处理了多少数据，即可判断出 Flink 任务是否存在数据倾斜。通常，数据倾斜也会引起反压。</p> 
+<p><img src="https://images2.imgbox.com/11/9c/8dXdOLVN_o.png" alt="image-20221015113003765"></p> 
+<p>另外，有时 Checkpoint detail 里不同 SubTask 的 State size 也是一个分析数据倾斜的有用指标。</p> 
+<h3><a id="42__698"></a>4.2. 数据倾斜的解决</h3> 
+<h4><a id="421_keyBy__700"></a>4.2.1. keyBy 后的聚合操作存在数据倾斜</h4> 
+<p>提交案例：</p> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>2048mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.SkewDemo1 <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar <span class="token punctuation">\</span>
+--local-keyby <span class="token boolean">false</span>
+</code></pre> 
+<p>查看 webui：</p> 
+<p><img src="https://images2.imgbox.com/ff/37/rKlkbHN1_o.png" alt="image-20221015113030912"></p> 
+<ol><li> <p>为什么不能直接用二次聚合来处理<br> Flink 是实时流处理，如果 keyby 之后的聚合操作存在数据倾斜，且没有开窗口（没攒批）的情况下，简单的使用两阶段聚合，是不能解决问题的。因为这个时候 Flink 是来一条处理一条，且向下游发送一条结果，对于原来 keyby 的维度（第二阶段聚合）来讲，数据量并没有减少，且结果重复计算（非 FlinkSQL，未使用回撤流），如下图所示：<br> <img src="https://images2.imgbox.com/89/c1/PALlubs1_o.png" alt="image-20221015113100574"></p> </li><li> <p>使用 LocalKeyBy 的思想<br> 在 keyBy 上游算子数据发送之前，首先在上游算子的本地对数据进行聚合后，再发送到下游，使下游接收到的数据量大大减少，从而使得 keyBy 之后的聚合操作不再是任务的瓶颈。类似 MapReduce 中 Combiner 的思想，但是这要求聚合操作必须是多条数据或者一批数据才能聚合，单条数据没有办法通过聚合来减少数据量。从 Flink LocalKeyBy 实现原理来讲，必然会存在一个积攒批次的过程，在上游算子中必须攒够一定的数据量，对这些数据聚合后再发送到下游。<br> 实现方式：</p> 
+  <ol><li> <p>DataStreamAPI 需要自己写代码实现</p> </li><li> <p>SQL 可以指定参数，开启 miniBatch 和 LocalGlobal 功能（推荐，后续介绍）</p> </li></ol> </li><li> <p>DataStream API 自定义实现的案例<br> 以计算每个 mid 出现的次数为例，keyby 之前，使用 flatMap 实现 LocalKeyby 功能</p> <pre><code class="prism language-java"><span class="token comment">/**
+ * 第一个泛型是输入值，第一个元素是单词，第二个元素是单词出现的次数&lt;br&gt;
+ * 第一个泛型是输出值，第一个元素是单词，第二个元素是单词出现的次数&lt;br&gt;
+ *
+ * @author ziqiang.wang
+ * @date 2022-04-30 15:10
+ **/</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">LocalKeyByFlatMapFunc</span> <span class="token keyword">extends</span> <span class="token class-name">RichFlatMapFunction</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Tuple2</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span><span class="token punctuation">,</span> <span class="token class-name">Tuple2</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> <span class="token keyword">implements</span> <span class="token class-name">CheckpointedFunction</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//Checkpoint 时为了保证 Exactly Once，将 buffer 中的数据保存到该 ListState 中</span>
+    <span class="token keyword">private</span> <span class="token class-name">ListState</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Tuple2</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> listState<span class="token punctuation">;</span>
+    <span class="token comment">//本地 buffer，存放 local 端缓存的 mid 的 count 信息，实现实时累加计算结果</span>
+    <span class="token keyword">private</span> <span class="token class-name">HashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span></span> localBuffer<span class="token punctuation">;</span>
+    <span class="token comment">//缓存的数据量大小，即：缓存多少数据再向下游发送</span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token keyword">int</span> batchSize<span class="token punctuation">;</span>
+    <span class="token comment">//计数器，获取当前批次接收的数据量，其实可以直接使用 integer ，因为每个子任务，都会单独 new 一个该对象，因此不会有线程问题</span>
+    <span class="token keyword">private</span> <span class="token class-name">AtomicInteger</span> currentSize<span class="token punctuation">;</span>
+
+    <span class="token comment">//构造器，批次大小传参</span>
+    <span class="token keyword">public</span> <span class="token class-name">LocalKeyByFlatMapFunc</span><span class="token punctuation">(</span><span class="token keyword">int</span> batchSize<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>batchSize <span class="token operator">=</span> batchSize<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">flatMap</span><span class="token punctuation">(</span><span class="token class-name">Tuple2</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span></span> value<span class="token punctuation">,</span> <span class="token class-name">Collector</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Tuple2</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> out<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 1、将新来的数据累加到本地 buffer 中</span>
+        <span class="token class-name">Long</span> count <span class="token operator">=</span> localBuffer<span class="token punctuation">.</span><span class="token function">getOrDefault</span><span class="token punctuation">(</span>value<span class="token punctuation">.</span>f0<span class="token punctuation">,</span> <span class="token number">0L</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        localBuffer<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span>value<span class="token punctuation">.</span>f0<span class="token punctuation">,</span> count <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 2、如果到达设定的批次，则将  buffer 中的数据发送到下游</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>currentSize<span class="token punctuation">.</span><span class="token function">incrementAndGet</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&gt;=</span> batchSize<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 2.1 遍历 Buffer 中数据，发送到下游</span>
+            <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">Map<span class="token punctuation">.</span>Entry</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span></span> midAndCount <span class="token operator">:</span> localBuffer<span class="token punctuation">.</span><span class="token function">entrySet</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                out<span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span><span class="token class-name">Tuple2</span><span class="token punctuation">.</span><span class="token function">of</span><span class="token punctuation">(</span>midAndCount<span class="token punctuation">.</span><span class="token function">getKey</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> midAndCount<span class="token punctuation">.</span><span class="token function">getValue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token comment">// 2.2 Buffer 清空，计数器清零</span>
+            localBuffer<span class="token punctuation">.</span><span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            currentSize<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">/**
+     * 触发 checkpoint 时的逻辑
+     */</span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">snapshotState</span><span class="token punctuation">(</span><span class="token class-name">FunctionSnapshotContext</span> context<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 将本地 buffer 中的数据保存到状态中，来保证  Exactly Once</span>
+        listState<span class="token punctuation">.</span><span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">Map<span class="token punctuation">.</span>Entry</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span></span> midAndCount <span class="token operator">:</span> localBuffer<span class="token punctuation">.</span><span class="token function">entrySet</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            listState<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span><span class="token class-name">Tuple2</span><span class="token punctuation">.</span><span class="token function">of</span><span class="token punctuation">(</span>midAndCount<span class="token punctuation">.</span><span class="token function">getKey</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> midAndCount<span class="token punctuation">.</span><span class="token function">getValue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">/**
+     * 初始化，或从 checkpoint 恢复时的逻辑
+     */</span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">initializeState</span><span class="token punctuation">(</span><span class="token class-name">FunctionInitializationContext</span> context<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">// 从状态中恢复  buffer 中的数据</span>
+        listState <span class="token operator">=</span> context<span class="token punctuation">.</span><span class="token function">getOperatorStateStore</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getListState</span><span class="token punctuation">(</span>
+                <span class="token keyword">new</span> <span class="token class-name">ListStateDescriptor</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token string">"localBufferState"</span><span class="token punctuation">,</span> <span class="token class-name">Types</span><span class="token punctuation">.</span><span class="token function">TUPLE</span><span class="token punctuation">(</span><span class="token class-name">Types</span><span class="token punctuation">.</span>STRING<span class="token punctuation">,</span> <span class="token class-name">Types</span><span class="token punctuation">.</span>LONG<span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token punctuation">)</span><span class="token punctuation">;</span>
+        localBuffer <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>context<span class="token punctuation">.</span><span class="token function">isRestored</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 从状态中恢复数据到本地 buffer 中</span>
+            <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">Tuple2</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span></span> midAndCount <span class="token operator">:</span> listState<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">// 如果出现次数 !=0,说明改变了并行度， ListState 中的数据会被均匀分发到新的 subtask 中</span>
+                <span class="token comment">// 单个 subtask 恢复的状态中可能包含多个相同的 mid 的 count 数据</span>
+                <span class="token comment">// 所以每次先取一下 buffer 的值，累加再 put</span>
+                <span class="token keyword">long</span> count <span class="token operator">=</span> localBuffer<span class="token punctuation">.</span><span class="token function">getOrDefault</span><span class="token punctuation">(</span>midAndCount<span class="token punctuation">.</span>f0<span class="token punctuation">,</span> <span class="token number">0L</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                localBuffer<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span>midAndCount<span class="token punctuation">.</span>f0<span class="token punctuation">,</span> count <span class="token operator">+</span> midAndCount<span class="token punctuation">.</span>f1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token comment">// 从状态恢复时，默认认为本地 buffer 中数据量达到了 batchSize， 需要向下游发送结果数据</span>
+            currentSize <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">AtomicInteger</span><span class="token punctuation">(</span>batchSize<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            currentSize <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">AtomicInteger</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> </li></ol> 
+<p>提交 localkeyby 案例：</p> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>2048mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.SkewDemo1 <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar <span class="token punctuation">\</span>
+--local-keyby <span class="token boolean">true</span>
+</code></pre> 
+<p>查看 webui：</p> 
+<p><img src="https://images2.imgbox.com/05/83/Z6KqKjZJ_o.png" alt="image-20221015113211966"></p> 
+<p>可以看到每个 subtask 处理的数据量基本均衡，另外处理的数据量相比原先少了很多。</p> 
+<h4><a id="422_keyBy__841"></a>4.2.2. keyBy 之前发生数据倾斜</h4> 
+<p>如果 keyBy 之前就存在数据倾斜，上游算子的某些实例可能处理的数据较多，某些实例可能处理的数据较少，产生该情况可能是因为数据源的数据本身就不均匀，例如由于某些原因，Kafka<br> 的 topic 中某些 partition 的数据量较大，某些 partition 的数据量较少。</p> 
+<p>对于不存在 keyBy 的 Flink 任务也会出现该情况。</p> 
+<p>这种情况，需要让 Flink 任务强制进行 shuffle。使用 <strong>shuffle</strong>、<strong>rebalance</strong> 或 <strong>rescale</strong> 算子即可将数据均匀分配，从而解决数据倾斜的问题。</p> 
+<h4><a id="423_keyBy__850"></a>4.2.3. keyBy 后的窗口聚合操作存在数据倾斜</h4> 
+<p>因为使用了窗口，变成了有界数据（攒批）的处理，窗口默认是触发时才会输出一条结果发往下游，所以可以使用两阶段聚合的方式：</p> 
+<ol><li> <p>实现思路：</p> 
+  <ol><li> <p>第一阶段聚合：key 拼接随机数前缀或后缀，进行 keyby、开窗、聚合<br> 注意：聚合完不再是 WindowedStream ，要获取 WindowEnd 作为窗口标记作为第二阶段分组依据，避免不同窗口的结果聚合到一起</p> </li><li> <p>第二阶段聚合：按照原来的 key 及 windowEnd 作 keyby 聚合</p> <pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">SkewDemo2</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">StreamExecutionEnvironment</span> env <span class="token operator">=</span> <span class="token class-name">StreamExecutionEnvironment</span><span class="token punctuation">.</span><span class="token function">getExecutionEnvironment</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        env<span class="token punctuation">.</span><span class="token function">disableOperatorChaining</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">SingleOutputStreamOperator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">JSONObject</span><span class="token punctuation">&gt;</span></span> jsonobjDS <span class="token operator">=</span> env
+                <span class="token comment">// MockSourceFunction ，该类会不断产生 json 类型的随机字符串</span>
+                <span class="token punctuation">.</span><span class="token function">addSource</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">MockSourceFunction</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span>data <span class="token operator">-&gt;</span> <span class="token class-name">JSONObject</span><span class="token punctuation">.</span><span class="token function">parseObject</span><span class="token punctuation">(</span>data<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 过滤出 页面数据,转换成 (mid,1L)</span>
+        <span class="token class-name">SingleOutputStreamOperator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Tuple2</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> pageMidTuple <span class="token operator">=</span> jsonobjDS
+                <span class="token punctuation">.</span><span class="token function">filter</span><span class="token punctuation">(</span>data <span class="token operator">-&gt;</span> <span class="token class-name">StringUtils</span><span class="token punctuation">.</span><span class="token function">isEmpty</span><span class="token punctuation">(</span>data<span class="token punctuation">.</span><span class="token function">getString</span><span class="token punctuation">(</span><span class="token string">"start"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span>r <span class="token operator">-&gt;</span> <span class="token class-name">Tuple2</span><span class="token punctuation">.</span><span class="token function">of</span><span class="token punctuation">(</span>r<span class="token punctuation">.</span><span class="token function">getJSONObject</span><span class="token punctuation">(</span><span class="token string">"common"</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getString</span><span class="token punctuation">(</span><span class="token string">"mid"</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">1L</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">returns</span><span class="token punctuation">(</span><span class="token class-name">Types</span><span class="token punctuation">.</span><span class="token function">TUPLE</span><span class="token punctuation">(</span><span class="token class-name">Types</span><span class="token punctuation">.</span>STRING<span class="token punctuation">,</span> <span class="token class-name">Types</span><span class="token punctuation">.</span>LONG<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 按照mid分组，统计每10s,各mid出现的次数</span>
+        <span class="token class-name">ParameterTool</span> parameterTool <span class="token operator">=</span> <span class="token class-name">ParameterTool</span><span class="token punctuation">.</span><span class="token function">fromArgs</span><span class="token punctuation">(</span>args<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">int</span> randomNum <span class="token operator">=</span> parameterTool<span class="token punctuation">.</span><span class="token function">getInt</span><span class="token punctuation">(</span><span class="token string">"random-num"</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+        <span class="token comment">// 拼接随机数打散，第一次聚合（窗口聚合）</span>
+        <span class="token class-name">SingleOutputStreamOperator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Tuple3</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> firstAgg <span class="token operator">=</span> pageMidTuple
+                <span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">MapFunction</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Tuple2</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span><span class="token punctuation">,</span> <span class="token class-name">Tuple2</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token class-name">Random</span> random <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Random</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                    <span class="token annotation punctuation">@Override</span>
+                    <span class="token keyword">public</span> <span class="token class-name">Tuple2</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span></span> <span class="token function">map</span><span class="token punctuation">(</span><span class="token class-name">Tuple2</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span></span> value<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token keyword">return</span> <span class="token class-name">Tuple2</span><span class="token punctuation">.</span><span class="token function">of</span><span class="token punctuation">(</span>value<span class="token punctuation">.</span>f0 <span class="token operator">+</span> <span class="token string">"-"</span> <span class="token operator">+</span> random<span class="token punctuation">.</span><span class="token function">nextInt</span><span class="token punctuation">(</span>randomNum<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">1L</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span><span class="token punctuation">)</span>
+                <span class="token comment">// mid拼接随机数</span>
+                <span class="token punctuation">.</span><span class="token function">keyBy</span><span class="token punctuation">(</span>r <span class="token operator">-&gt;</span> r<span class="token punctuation">.</span>f0<span class="token punctuation">)</span>
+                <span class="token comment">// 第一次按照 "mid|随机数" 分组</span>
+                <span class="token punctuation">.</span><span class="token function">window</span><span class="token punctuation">(</span><span class="token class-name">TumblingProcessingTimeWindows</span><span class="token punctuation">.</span><span class="token function">of</span><span class="token punctuation">(</span><span class="token class-name">Time</span><span class="token punctuation">.</span><span class="token function">seconds</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">reduce</span><span class="token punctuation">(</span>
+                        <span class="token punctuation">(</span>value1<span class="token punctuation">,</span> value2<span class="token punctuation">)</span> <span class="token operator">-&gt;</span> <span class="token class-name">Tuple2</span><span class="token punctuation">.</span><span class="token function">of</span><span class="token punctuation">(</span>value1<span class="token punctuation">.</span>f0<span class="token punctuation">,</span> value1<span class="token punctuation">.</span>f1 <span class="token operator">+</span> value2<span class="token punctuation">.</span>f1<span class="token punctuation">)</span><span class="token punctuation">,</span>
+                        <span class="token keyword">new</span> <span class="token class-name">ProcessWindowFunction</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Tuple2</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span><span class="token punctuation">,</span> <span class="token class-name">Tuple3</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">TimeWindow</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token annotation punctuation">@Override</span>
+                            <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">process</span><span class="token punctuation">(</span><span class="token class-name">String</span> s<span class="token punctuation">,</span> <span class="token class-name">Context</span> context<span class="token punctuation">,</span> <span class="token class-name">Iterable</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Tuple2</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> elements<span class="token punctuation">,</span> <span class="token class-name">Collector</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Tuple3</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> out<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+                                <span class="token class-name">Tuple2</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span></span> midAndCount <span class="token operator">=</span> elements<span class="token punctuation">.</span><span class="token function">iterator</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">next</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                                <span class="token keyword">long</span> windowEndTs <span class="token operator">=</span> context<span class="token punctuation">.</span><span class="token function">window</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getEnd</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                                out<span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span><span class="token class-name">Tuple3</span><span class="token punctuation">.</span><span class="token function">of</span><span class="token punctuation">(</span>midAndCount<span class="token punctuation">.</span>f0<span class="token punctuation">,</span> midAndCount<span class="token punctuation">.</span>f1<span class="token punctuation">,</span> windowEndTs<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token punctuation">}</span>
+                        <span class="token punctuation">}</span>
+                <span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 窗口聚合（第一次聚合），加上窗口结束时间的标记，方便第二次聚合汇总</span>
+
+        <span class="token comment">// 按照原来的 key和windowEnd分组，第二次聚合</span>
+        firstAgg
+                <span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">MapFunction</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Tuple3</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span><span class="token punctuation">,</span> <span class="token class-name">Tuple3</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token annotation punctuation">@Override</span>
+                    <span class="token keyword">public</span> <span class="token class-name">Tuple3</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span></span> <span class="token function">map</span><span class="token punctuation">(</span><span class="token class-name">Tuple3</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span></span> value<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token class-name">String</span> originKey <span class="token operator">=</span> value<span class="token punctuation">.</span>f0<span class="token punctuation">.</span><span class="token function">split</span><span class="token punctuation">(</span><span class="token string">"-"</span><span class="token punctuation">)</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+                        <span class="token keyword">return</span> <span class="token class-name">Tuple3</span><span class="token punctuation">.</span><span class="token function">of</span><span class="token punctuation">(</span>originKey<span class="token punctuation">,</span> value<span class="token punctuation">.</span>f1<span class="token punctuation">,</span> value<span class="token punctuation">.</span>f2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span><span class="token punctuation">)</span>
+                <span class="token comment">// 去掉 拼接的随机数</span>
+                <span class="token punctuation">.</span><span class="token function">keyBy</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">KeySelector</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Tuple3</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span><span class="token punctuation">,</span> <span class="token class-name">Tuple2</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token annotation punctuation">@Override</span>
+                    <span class="token keyword">public</span> <span class="token class-name">Tuple2</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span></span> <span class="token function">getKey</span><span class="token punctuation">(</span><span class="token class-name">Tuple3</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">,</span> <span class="token class-name">Long</span><span class="token punctuation">&gt;</span></span> value<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token keyword">return</span> <span class="token class-name">Tuple2</span><span class="token punctuation">.</span><span class="token function">of</span><span class="token punctuation">(</span>value<span class="token punctuation">.</span>f0<span class="token punctuation">,</span> value<span class="token punctuation">.</span>f2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span><span class="token punctuation">)</span>
+                <span class="token comment">// 按照 原来的 key和 窗口结束时间 分组</span>
+                <span class="token punctuation">.</span><span class="token function">reduce</span><span class="token punctuation">(</span><span class="token punctuation">(</span>value1<span class="token punctuation">,</span> value2<span class="token punctuation">)</span> <span class="token operator">-&gt;</span> <span class="token class-name">Tuple3</span><span class="token punctuation">.</span><span class="token function">of</span><span class="token punctuation">(</span>value1<span class="token punctuation">.</span>f0<span class="token punctuation">,</span> value1<span class="token punctuation">.</span>f1 <span class="token operator">+</span> value2<span class="token punctuation">.</span>f1<span class="token punctuation">,</span> value1<span class="token punctuation">.</span>f2<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token comment">// 第二次真正聚合</span>
+                <span class="token punctuation">.</span><span class="token function">print</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">setParallelism</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        env<span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> </li></ol> </li><li> <p>提交原始案例</p> <pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>2048mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.SkewDemo2 <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar <span class="token punctuation">\</span>
+--two-phase <span class="token boolean">false</span>
+</code></pre> <p>查看 WebUI：<br> <img src="https://images2.imgbox.com/89/b6/oZtfDZZw_o.png" alt="image-20221015113449292"></p> </li><li> <p>提交两阶段聚合的案例</p> <pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>2048mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.SkewDemo2 <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar <span class="token punctuation">\</span>
+--two-phase <span class="token boolean">true</span> <span class="token punctuation">\</span>
+--random-num <span class="token number">16</span>
+</code></pre> <p>查看 WebUI：可以看到第一次打散的窗口聚合，比较均匀<br> <img src="https://images2.imgbox.com/65/91/FCvhhGtr_o.png" alt="image-20221015113517404"><br> 第二次聚合，也比较均匀：<br> <img src="https://images2.imgbox.com/06/0e/JsYqEnUz_o.png" alt="image-20221015113531101"></p> </li></ol> 
+<p>随机数范围，需要自己去测，因为 keyby 的分区器是：两次hash*下游并行度/最大并行度</p> 
+<p>注：如果是数据中包含了事件时间，是可以不使用两次 keyBy 操作来解决数据倾斜的，直接将数据的时间归算到窗口的结束时间点，然后将时间也作为 key 的一部分，在 keyBy 之前进行 localKeyBy 聚合，也能减少窗口需要进行计算的数据量。</p> 
+<p>SQL 写法参考，Flink教程-keyby 窗口数据倾斜的优化：https://zhuanlan.zhihu.com/p/197299746</p> 
+<h2><a id="5_Job__980"></a>5. Job 优化</h2> 
+<h3><a id="51__DataGen__982"></a>5.1. 使用 DataGen 造数据</h3> 
+<p>开发完 Flink 作业，压测的方式很简单，先在 kafka 中积压数据，之后开启 Flink 任务，出现反压，就是处理瓶颈。相当于水库先积水，一下子泄洪。</p> 
+<p>数据可以是自己造的模拟数据，也可以是生产中的部分数据。造测试数据的工具：DataFactory、datafaker 、 DBMonster、 Data-Processer 、 Nexmark、 Jmeter 等。</p> 
+<p>Flink 从 1.11 开始提供了一个内置的 DataGen 连接器，主要是用于生成一些随机数，用于在没有数据源的时候，进行流任务的测试以及性能测试等。</p> 
+<h4><a id="511_DataStream__DataGenerator_990"></a>5.1.1. DataStream 的 DataGenerator</h4> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">DataStreamDataGenDemo</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+
+        <span class="token class-name">Configuration</span> conf <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Configuration</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        conf<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span><span class="token class-name">RestOptions</span><span class="token punctuation">.</span>ENABLE_FLAMEGRAPH<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">StreamExecutionEnvironment</span> env <span class="token operator">=</span> <span class="token class-name">StreamExecutionEnvironment</span><span class="token punctuation">.</span><span class="token function">createLocalEnvironmentWithWebUI</span><span class="token punctuation">(</span>conf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        env<span class="token punctuation">.</span><span class="token function">setParallelism</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        env<span class="token punctuation">.</span><span class="token function">disableOperatorChaining</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">SingleOutputStreamOperator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">OrderInfo</span><span class="token punctuation">&gt;</span></span> orderInfoDS <span class="token operator">=</span> env
+                <span class="token punctuation">.</span><span class="token function">addSource</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">DataGeneratorSource</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>
+                        <span class="token keyword">new</span> <span class="token class-name">RandomGenerator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">OrderInfo</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token annotation punctuation">@Override</span>
+                            <span class="token keyword">public</span> <span class="token class-name">OrderInfo</span> <span class="token function">next</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                                <span class="token comment">// OrderInfo ，一个 pojo 类</span>
+                                <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">OrderInfo</span><span class="token punctuation">(</span>
+                                        random<span class="token punctuation">.</span><span class="token function">nextInt</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">100000</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                                        random<span class="token punctuation">.</span><span class="token function">nextLong</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1000000</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                                        random<span class="token punctuation">.</span><span class="token function">nextUniform</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1000</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                                        <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token punctuation">}</span>
+                        <span class="token punctuation">}</span>
+                <span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">returns</span><span class="token punctuation">(</span><span class="token class-name">Types</span><span class="token punctuation">.</span><span class="token function">POJO</span><span class="token punctuation">(</span><span class="token class-name">OrderInfo</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">SingleOutputStreamOperator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">UserInfo</span><span class="token punctuation">&gt;</span></span> userInfoDS <span class="token operator">=</span> env
+                <span class="token punctuation">.</span><span class="token function">addSource</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">DataGeneratorSource</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">UserInfo</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>
+                        <span class="token keyword">new</span> <span class="token class-name">SequenceGenerator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">UserInfo</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1000000</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token class-name">RandomDataGenerator</span> random <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">RandomDataGenerator</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                            <span class="token annotation punctuation">@Override</span>
+                            <span class="token keyword">public</span> <span class="token class-name">UserInfo</span> <span class="token function">next</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                                <span class="token comment">// UserInfo ，一个 pojo 类</span>
+                                <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">UserInfo</span><span class="token punctuation">(</span>
+                                        valuesToEmit<span class="token punctuation">.</span><span class="token function">peek</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">intValue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                                        valuesToEmit<span class="token punctuation">.</span><span class="token function">poll</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">longValue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                                        random<span class="token punctuation">.</span><span class="token function">nextInt</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">100</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                                        random<span class="token punctuation">.</span><span class="token function">nextInt</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token punctuation">}</span>
+                        <span class="token punctuation">}</span>
+                <span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">returns</span><span class="token punctuation">(</span><span class="token class-name">Types</span><span class="token punctuation">.</span><span class="token function">POJO</span><span class="token punctuation">(</span><span class="token class-name">UserInfo</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        orderInfoDS<span class="token punctuation">.</span><span class="token function">print</span><span class="token punctuation">(</span><span class="token string">"order&gt;&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        userInfoDS<span class="token punctuation">.</span><span class="token function">print</span><span class="token punctuation">(</span><span class="token string">"user&gt;&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        env<span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h4><a id="512_SQL__DataGenerator_1045"></a>5.1.2. SQL 的 DataGenerator</h4> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">SQLDataGenDemo</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+
+        <span class="token class-name">Configuration</span> conf <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Configuration</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        conf<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span><span class="token class-name">RestOptions</span><span class="token punctuation">.</span>ENABLE_FLAMEGRAPH<span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">StreamExecutionEnvironment</span> env <span class="token operator">=</span> <span class="token class-name">StreamExecutionEnvironment</span><span class="token punctuation">.</span><span class="token function">createLocalEnvironmentWithWebUI</span><span class="token punctuation">(</span>conf<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        env<span class="token punctuation">.</span><span class="token function">setParallelism</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        env<span class="token punctuation">.</span><span class="token function">disableOperatorChaining</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">StreamTableEnvironment</span> tableEnv <span class="token operator">=</span> <span class="token class-name">StreamTableEnvironment</span><span class="token punctuation">.</span><span class="token function">create</span><span class="token punctuation">(</span>env<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">String</span> orderSql<span class="token operator">=</span><span class="token string">"CREATE TABLE order_info (\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    id INT,\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    user_id BIGINT,\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    total_amount DOUBLE,\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    create_time AS localtimestamp,\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    WATERMARK FOR create_time AS create_time\n"</span> <span class="token operator">+</span>
+                <span class="token string">") WITH (\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'connector' = 'datagen',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'rows-per-second'='20000',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.id.kind'='sequence',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.id.start'='1',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.id.end'='100000000',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.user_id.kind'='random',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.user_id.min'='1',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.user_id.max'='1000000',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.total_amount.kind'='random',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.total_amount.min'='1',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.total_amount.max'='1000'\n"</span> <span class="token operator">+</span>
+                <span class="token string">")"</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">String</span> userSql<span class="token operator">=</span><span class="token string">"CREATE TABLE user_info (\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    id INT,\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    user_id BIGINT,\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    age INT,\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    sex INT\n"</span> <span class="token operator">+</span>
+                <span class="token string">") WITH (\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'connector' = 'datagen',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'rows-per-second'='20000',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.id.kind'='sequence',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.id.start'='1',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.id.end'='100000000',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.user_id.kind'='sequence',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.user_id.start'='1',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.user_id.end'='1000000',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.age.kind'='random',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.age.min'='1',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.age.max'='100',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.sex.kind'='random',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.sex.min'='0',\n"</span> <span class="token operator">+</span>
+                <span class="token string">"    'fields.sex.max'='1'\n"</span> <span class="token operator">+</span>
+                <span class="token string">")"</span><span class="token punctuation">;</span>
+
+
+        tableEnv<span class="token punctuation">.</span><span class="token function">executeSql</span><span class="token punctuation">(</span>orderSql<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        tableEnv<span class="token punctuation">.</span><span class="token function">executeSql</span><span class="token punctuation">(</span>userSql<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        tableEnv<span class="token punctuation">.</span><span class="token function">executeSql</span><span class="token punctuation">(</span><span class="token string">"select * from order_info"</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">print</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h3><a id="52__UUID_1110"></a>5.2. 算子指定 UUID</h3> 
+<p>对于有状态的 Flink 应用，推荐给每个算子都指定唯一 ID（UUID）。<br> 严格地说，仅需要给有状态的算子设置就足够了。但是因为 Flink 的某些内置算子（如window）是有状态的，而有些是无状态的，可能用户不是很清楚哪些内置算子是有状态的，哪些不是。</p> 
+<p>所以从实践经验上来说，我们建议每个算子都指定上 UUID。</p> 
+<p>默认情况下，算子 UID 是根据 JobGraph 自动生成的， JobGraph 的更改可能会导致 UUID 改变。手动指定算子 UUID ，可以让 Flink有效地将算子的状态从 savepoint 映射到作业修改后（拓扑图可能也有改变）的正确的算子上。比如替换原来的 Operator 实现、增加新的Operator、删除 Operator 等等，至少我们有可能与 Savepoint 中存储的 Operator 状态对应上。这是 savepoint 在 Flink 应用中正常工作的一个基本要素。</p> 
+<p>Flink 算子的 UUID 可以通过 uid(String uid) 方法指定，通常也建议指定 name。</p> 
+<pre><code class="prism language-java">算子<span class="token punctuation">.</span><span class="token function">uid</span><span class="token punctuation">(</span><span class="token string">"指定 uid"</span><span class="token punctuation">)</span>
+<span class="token punctuation">.</span><span class="token function">reduce</span><span class="token punctuation">(</span><span class="token punctuation">(</span>value1<span class="token punctuation">,</span> value2<span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token operator">&gt;</span> <span class="token class-name">Tuple3</span><span class="token punctuation">.</span><span class="token function">of</span><span class="token punctuation">(</span><span class="token string">"uv"</span><span class="token punctuation">,</span> value2<span class="token punctuation">.</span>f1<span class="token punctuation">,</span> value1<span class="token punctuation">.</span>f2 <span class="token operator">+</span> value2<span class="token punctuation">.</span>f2<span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token punctuation">.</span><span class="token function">uid</span><span class="token punctuation">(</span><span class="token string">"uv-reduce"</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">name</span><span class="token punctuation">(</span><span class="token string">"uv-reduce"</span><span class="token punctuation">)</span>
+</code></pre> 
+<p><strong>提交案例：未指定 uid</strong></p> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>2048mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.UvDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> 
+<p>触发保存点：</p> 
+<pre><code class="prism language-shell"><span class="token comment">#直接触发</span>
+flink savepoint <span class="token operator">&lt;</span>jobId<span class="token operator">&gt;</span> <span class="token punctuation">[</span>targetDirectory<span class="token punctuation">]</span> <span class="token punctuation">[</span>-yid yarnAppId<span class="token punctuation">]</span> <span class="token comment">#on yarn 模式需要指定-yid 参数 </span>
+<span class="token comment"># //cancel 触发</span>
+flink cancel -s <span class="token punctuation">[</span>targetDirectory<span class="token punctuation">]</span> <span class="token operator">&lt;</span>jobId<span class="token operator">&gt;</span> <span class="token punctuation">[</span>-yid yarnAppId<span class="token punctuation">]</span> <span class="token comment">#on yarn 模式需要指定-yid 参数</span>
+bin/flink cancel -s hdfs://hadoop1:8020/flink-tuning/sp 98acff568e8f0827a67ff37648a29d7f -yid application_1640503677810_0017
+</code></pre> 
+<p>修改代码，从 savepoint 恢复：</p> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-s hdfs://hadoop1:8020/flink-tuning/sp/savepoint-066c90-6edf948686f6 <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>2048mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.UvDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> 
+<p>报错如下：</p> 
+<pre><code>Caused by: java.lang.IllegalStateException: Failed to rollback to checkpoint/savepoint hdfs://hadoop1:8020/flink-tuning/sp/savepoint-066c90-6edf948686f6. Cannot map checkpoint/savepoint state for operator ddb598ad156ed281023ba4eebbe487e3 to the new program,because the operator is not available in the new program. If you want to allow to skip this, you can set the --allowNonRestoredState option on the CLI.
+</code></pre> 
+<p>临时处理：在提交命令中添加 <code>--allowNonRestoredState</code> （short: <code>-n</code>） 跳过无法恢复的算子。</p> 
+<p><strong>提交案例：指定 uid</strong></p> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>2048mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.UidDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> 
+<p>触发保存点：</p> 
+<pre><code class="prism language-shell">//cancel 触发 savepoint
+bin/flink  cancel  -s  hdfs://hadoop1:8020/flink-tuning/sp  272e5d3321c5c1481cc327f6abe8cf9c -yid application_1640268344567_0033
+</code></pre> 
+<p>修改代码，从保存点恢复：</p> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-s hdfs://hadoop1:8020/flink-tuning/sp/savepoint-272e5d-d0c1097d23e0 <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>2048mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.UidDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> 
+<h3><a id="53__1218"></a>5.3. 链路延迟测量</h3> 
+<p>对于实时的流式处理系统来说，我们需要关注数据输入、计算和输出的及时性，所以处理延迟是一个比较重要的监控指标，特别是在数据量大或者软硬件条件不佳的环境下。Flink 提供了开箱即用的 LatencyMarker 机制来测量链路延迟。开启如下参数：</p> 
+<pre><code class="prism language-yaml"><span class="token comment">#默认 0，表示禁用，  单位毫秒</span>
+<span class="token key atrule">metrics.latency.interval</span><span class="token punctuation">:</span> <span class="token number">30000</span>
+</code></pre> 
+<p>监控的粒度，分为以下 3 档：</p> 
+<ol><li> <p>single：每个算子单独统计延迟；</p> </li><li> <p>operator（默认值）：每个下游算子都统计自己与 Source 算子之间的延迟；</p> </li><li> <p>subtask：每个下游算子的 sub-task 都统计自己与 Source 算子的 sub-task之间的延迟。</p> <pre><code class="prism language-properties">#默认 operator
+metrics.latency.granularity: operator
+</code></pre> </li></ol> 
+<p>一般情况下采用默认的 operator 粒度即可，这样在 Sink 端观察到的 latency metric 就是我们最想要的全链路（端到端）延迟。 subtask 粒度太细，会增大所有并行度的负担，不建议使用。</p> 
+<p>LatencyMarker 不会参与到数据流的用户逻辑中，而是直接被各算子转发并统计。为了让它尽量精确，有两点特别需要注意：</p> 
+<ol><li> <p>保证 Flink 集群内所有节点的时区、时间是同步的：ProcessingTimeService 产生时间戳最终是靠 <code>System.currentTimeMillis()</code>方法，可以用 ntp 等工具来配置。</p> </li><li> <p><strong>metrics.latency.interval</strong> 的时间间隔宜大不宜小：一般配置成 30000（30秒）左右。一是因为延迟监控的频率可以不用太频繁，二是因为 LatencyMarker 的处理也要消耗一定性能。</p> </li></ol> 
+<p>提交案例：</p> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>2048mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-Dmetrics.latency.interval<span class="token operator">=</span><span class="token number">30000</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.UidDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> 
+<p>可以通过该 metric 查看结果：<strong>flink_taskmanager_job_latency_source_id_operator_id_operator_subtask_index_latency</strong></p> 
+<p>端到端延迟的 tag 只有 murmur hash 过的算子 ID （用 uid()方法设定的），并没有算子名称，（<a href="https://issues.apache.org/jira/browse/FLINK-8592" rel="nofollow">https://issues.apache.org/jira/browse/FLINK-8592</a>）并且官方暂时不打算解决这个问题，所以我们要么用最大值来表示，要么将作业中 Sink 算子的 ID 统一化。比如使用了 Prometheus 和 Grafana 来监控，效果如下：</p> 
+<p><img src="https://images2.imgbox.com/08/88/1ol6Z6mx_o.png" alt="image-20221015114520011"></p> 
+<p>为了方便观看，可以将查出来的数据除以 1000 ，将花费时间单位修改为秒。</p> 
+<h3><a id="54__1272"></a>5.4. 开启对象重用</h3> 
+<p><img src="https://images2.imgbox.com/08/1a/k3NAT27T_o.png" alt="image-20221015114556264"></p> 
+<p>当调用了 <strong>enableObjectReuse</strong> 方法后， Flink 会把中间深拷贝的步骤都省略掉，SourceFunction 产生的数据直接作为 MapFunction 的输入，可以减少 gc 压力。但需要特别注意的是，这个方法不能随便调用，必须要确保下游 Function 只有一种（也就是一个流只会被一个算子处理），或者下游的多个 Function 均不会改变对象内部的值。否则可能会有线程安全的问题。</p> 
+<pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>2048mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-Dpipeline.object-reuse<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dmetrics.latency.interval<span class="token operator">=</span><span class="token number">30000</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.UidDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar
+</code></pre> 
+<h3><a id="55__1294"></a>5.5. 细粒度滑动窗口优化</h3> 
+<ol><li> <p>细粒度滑动的影响<br> 当使用细粒度的滑动窗口（窗口长度远远大于滑动步长）时，重叠的窗口过多，一个数据会属于多个窗口，性能会急剧下降。<br> <img src="https://images2.imgbox.com/16/44/NxPvbPWM_o.png" alt="image-20221015114702798"><br> 我们经常会碰到这种需求：以 3 分钟的频率实时计算 App 内各个子模块近 24 小时的 PV 和 UV。我们需要用 1440 / 3 = 480 个滑动窗口来实现它，但是细粒度的滑动窗口会带来性能问题，有两点：</p> 
+  <ol><li>状态<br> 对于一个元素，会将其写入对应的(key, window)二元组所圈定的 windowState 状态中。如果粒度为 480，那么每个元素到来，更新 windowState 时都要遍历 480 个窗口并写入，开销是非常大的。在采用 RocksDB 作为状态后端时，checkpoint 的瓶颈也尤其明显。</li><li>定时器<br> 每一个(key, window)二元组都需要注册两个定时器：一是触发器注册的定时器，用于决定窗口数据何时输出；二是 registerCleanupTimer() 方法注册的清理定时器，用于在窗口彻底过期（如 allowedLateness 过期）之后及时清理掉窗口的内部状态。细粒度滑动窗口会造成维护的定时器增多，内存负担加重。</li></ol> </li><li> <p>解决思路<br> DataStreamAPI 中，需要我们自己解决（https://issues.apache.org/jira/browse/FLINK-7001），flink 官方还未解决。<br> 我们一般使用滚动窗口+在线存储+读时聚合的思路作为解决方案：</p> 
+  <ol><li>从业务的视角来看，往往窗口的长度是可以被步长所整除的，可以找到窗口长度和窗口步长的最小公约数作为时间分片（一个滚动窗口的长度）；</li><li>每个滚动窗口将其周期内的数据做聚合，存到下游状态或打入外部在线存储（内存数据库如 Redis ，LSM-based NoSQL 存储如 HBase）；</li><li>扫描在线存储中对应时间区间（可以灵活指定）的所有行，并将计算结果返回给前端展示。</li></ol> </li><li> <p>细粒度的滑动窗口案例<br> 提交案例：统计最近 1 小时的 uv ，1 秒更新一次（滑动窗口）</p> <pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>2048mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.SlideWindowDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/
+</code></pre> <p><img src="https://images2.imgbox.com/fd/0e/9v5egPFR_o.png" alt="image-20221015114931682"></p> </li><li> <p>时间分片案例<br> 实现思路：</p> 
+  <ol><li> <p>比如每分钟计算一下过去 24 小时内的 pv ，因此，24 小时内会触发 1440 次窗口。</p> </li><li> <p>开启滚动窗口，时间为 1 分钟。</p> </li><li> <p>下游自定义算子实现</p> 
+    <ol><li> <p>算子内维持一个先进先出、固定长度的阻塞队列，新到一条数据（上面1分钟窗口的聚合结果），就将该数据放到阻塞队列中，然后查看阻塞队列长度是否达到指定的长度，也就是 1440 。</p> 
+      <ol><li> <p>达到<br> 循环获取阻塞的所有数据，并进行累加计算，得到过去 24 小时的结果，将最新一条数据的时间作为结束时间，最旧一条数据的时间作为开始时间，然后输出本次计算出来的 24 小时的结果。记得计算完毕之后，删除阻塞队列末尾的数据。</p> </li><li> <p>未达到<br> 什么事都不做。</p> </li></ol> </li><li> <p>记得实现 checkpoint 的相关逻辑，将阻塞队列中的数据保存到 checkpoint 中。</p> </li></ol> </li></ol> <p>提交案例：统计最近 1 小时的 uv ， 1 秒更新一次（滚动窗口+状态存储）</p> <pre><code class="prism language-shell">bin/flink run <span class="token punctuation">\</span>
+-t yarn-per-job <span class="token punctuation">\</span>
+-d <span class="token punctuation">\</span>
+-p <span class="token number">5</span> <span class="token punctuation">\</span>
+-Drest.flamegraph.enabled<span class="token operator">=</span>true <span class="token punctuation">\</span>
+-Dyarn.application.queue<span class="token operator">=</span>test <span class="token punctuation">\</span>
+-Djobmanager.memory.process.size<span class="token operator">=</span>1024mb <span class="token punctuation">\</span>
+-Dtaskmanager.memory.process.size<span class="token operator">=</span>2048mb <span class="token punctuation">\</span>
+-Dtaskmanager.numberOfTaskSlots<span class="token operator">=</span><span class="token number">2</span> <span class="token punctuation">\</span>
+-c com.atguigu.flink.tuning.SlideWindowDemo <span class="token punctuation">\</span>
+/opt/module/flink-1.13.1/myjar/flink-tuning-1.0-SNAPSHOT.jar <span class="token punctuation">\</span>
+--sliding-split <span class="token boolean">true</span>
+</code></pre> <p><img src="https://images2.imgbox.com/ec/cf/aamH1SRL_o.png" alt="image-20221015115125385"></p> <p>Flink 1.13 对 SQL 模块的 Window TVF 进行了一系列的性能优化，可以自动对滑动窗口进行切片解决细粒度滑动问题。</p> <p><img src="https://images2.imgbox.com/67/60/UBU4s1E0_o.png" alt="image-20221015115135281"></p> <p>https://nightlies.apache.org/flink/flink-docs-release-1.13/docs/dev/table/sql/queries/window-tvf</p> </li></ol> 
+<h2><a id="6_FlinkSQL__1376"></a>6. FlinkSQL 调优</h2> 
+<p>FlinkSQL官网配置参数：<a href="https://ci.apache.org/projects/flink/flink-docs-release-1.13/dev/table/config.html" rel="nofollow">https://ci.apache.org/projects/flink/flink-docs-release-1.13/dev/table/config.html</a></p> 
+<h3><a id="61__1380"></a>6.1. 设置空闲状态保留时间</h3> 
+<p>Flink SQL 新手有可能犯的错误，其中之一就是忘记设置空闲状态保留时间导致状态爆炸。列举两个场景：</p> 
+<ol><li> <p>FlinkSQL 的 regular join（inner、 left、 right），左右表的数据都会一直保存在状态里，不会清理！要么设置 TTL，要么使用 FlinkSQL 的 interval join。</p> </li><li> <p>使用 Top-N 语法进行去重，重复数据的出现一般都位于特定区间内（例如一小时或一天内），过了这段时间之后，对应的状态就不再需要了。</p> </li></ol> 
+<p>Flink SQL 可以指定空闲状态(即未更新的状态)被保留的最小时间，当状态中某个 key 对应的状态未更新的时间达到阈值时，该条状态被自动清理：</p> 
+<pre><code class="prism language-java"><span class="token comment">// API 指定</span>
+tableEnv<span class="token punctuation">.</span><span class="token function">getConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">setIdleStateRetention</span><span class="token punctuation">(</span><span class="token class-name">Duration</span><span class="token punctuation">.</span><span class="token function">ofHours</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">// 参数指定</span>
+<span class="token class-name">Configuration</span> configuration <span class="token operator">=</span> tableEnv<span class="token punctuation">.</span><span class="token function">getConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getConfiguration</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> 
+configuration<span class="token punctuation">.</span><span class="token function">setString</span><span class="token punctuation">(</span><span class="token string">"table.exec.state.ttl"</span><span class="token punctuation">,</span> <span class="token string">"1 h"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="62__1398"></a>6.2. 其他参数</h3> 
+<p>可参考：<a href="https://blog.csdn.net/u012443641/article/details/126126093">flink-sql查询配置与性能优化参数详解</a>。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/18f362685339091d6b7b7ad3c5b75fb7/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">华为RH2288 V3服务器新加硬盘不识别</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/9146b901004e0fb80d1f877477958bd4/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Kafka锦集（二）：三种不同方式，查看kafka是否已启动</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

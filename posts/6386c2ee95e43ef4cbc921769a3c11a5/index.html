@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【Android12】Android Framework系列---tombstone墓碑生成机制 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【Android12】Android Framework系列---tombstone墓碑生成机制" />
+<meta property="og:description" content="tombstone墓碑生成机制 Android中程序在运行时会遇到各种各样的问题，相应的就会产生各种异常信号，比如常见的异常信号 Singal 11：Segmentation fault表示无效的地址进行了操作，比如内存越界、空指针调用等。
+Android中在进程(主要指native进程）崩溃时会生成墓碑文件，这些文件中记录了崩溃时的调用堆栈、日志信息、寄存器二进制数据等等，用以帮助开发者已经崩溃问题。
+墓碑文件默认保存在**/data/tombstones/**目录中，以tombstone_xxx(xxx表示编号）方式命名。墓碑文件数量有上限，达到上限时会删除最旧的墓碑文件，可以通过配置属性 tombstoned.max_tombstone_count来修改默认的墓碑文件数量。
+本文源码基于Android12版本。
+墓碑环境初始化 bionic为程序初始化墓碑生成环境 bionic是android提供的符合POSIX接口的标准C库，其中提供了Linker（动态连接器）。动态链接器的作用是在运行动态链接的可执行文件时，动态链接器负责加载程序到内存中，并解析对符号的引用。
+bionic在Linker中初始化墓碑生成环境，下面的汇编代码中执行了__linker_init这个符号(函数）
+//bionic/linker/arch/arm64/begin.S #include &lt;private/bionic_asm.h&gt; ENTRY(_start) // Force unwinds to end in this function. .cfi_undefined x30 mov x0, sp bl __linker_init /* linker init returns the _entry address in the main image */ br x0 END(_start) __linker_init这个函数定义在/bionic/linker/linker_main.cpp中，先后执行__linker_init、__linker_init_post_relocation、linker_main。在linker_main函数中，调用linker_debuggerd_init，初始化墓碑生成环境。另外，在linker_main函数中可以看到很多比较重要的初始化函数，比如__system_properties_init。
+//bionic/linker/linker_main.cpp extern &#34;C&#34; ElfW(Addr) __linker_init(void* raw_args) { // Initialize TLS early so system calls and errno work. // 省略 return __linker_init_post_relocation(args, tmp_linker_so); } static ElfW(Addr) __attribute__((noinline)) __linker_init_post_relocation(KernelArgumentBlock&amp; args, soinfo&amp; tmp_linker_so) { // 省略 // 执行linker_main ElfW(Addr) start_address = linker_main(args, exe_to_load); if (g_is_ldd) _exit(EXIT_SUCCESS); INFO(&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/6386c2ee95e43ef4cbc921769a3c11a5/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-30T21:44:49+08:00" />
+<meta property="article:modified_time" content="2023-12-30T21:44:49+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【Android12】Android Framework系列---tombstone墓碑生成机制</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="tombstone_0"></a>tombstone墓碑生成机制</h3> 
+<p>Android中程序在运行时会遇到各种各样的问题，相应的就会产生各种异常信号，比如常见的异常信号 <strong>Singal 11：Segmentation fault</strong>表示无效的地址进行了操作，比如内存越界、空指针调用等。<br> Android中在进程(主要指native进程）崩溃时会生成墓碑文件，这些文件中记录了崩溃时的调用堆栈、日志信息、寄存器二进制数据等等，用以帮助开发者已经崩溃问题。<br> 墓碑文件默认保存在**/data/tombstones/**目录中，以tombstone_xxx(xxx表示编号）方式命名。墓碑文件数量有上限，达到上限时会删除最旧的墓碑文件，可以通过配置属性 <strong>tombstoned.max_tombstone_count</strong>来修改默认的墓碑文件数量。</p> 
+<p>本文源码基于Android12版本。</p> 
+<h4><a id="_6"></a>墓碑环境初始化</h4> 
+<p><img src="https://images2.imgbox.com/39/4f/INbxD1hz_o.jpg" alt="在这里插入图片描述"></p> 
+<h5><a id="bionic_9"></a>bionic为程序初始化墓碑生成环境</h5> 
+<p>bionic是android提供的符合POSIX接口的标准C库，其中提供了Linker（动态连接器）。<strong>动态链接器的作用</strong>是在运行动态链接的可执行文件时，动态链接器负责加载程序到内存中，并解析对符号的引用。<br> bionic在Linker中初始化墓碑生成环境，下面的汇编代码中执行了__linker_init这个符号(函数）</p> 
+<pre><code class="prism language-cpp"><span class="token comment">//bionic/linker/arch/arm64/begin.S</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">&lt;private/bionic_asm.h&gt;</span></span>
+
+<span class="token function">ENTRY</span><span class="token punctuation">(</span>_start<span class="token punctuation">)</span>
+  <span class="token comment">// Force unwinds to end in this function.</span>
+  <span class="token punctuation">.</span>cfi_undefined x30
+
+  mov x0<span class="token punctuation">,</span> sp
+  bl __linker_init
+
+  <span class="token comment">/* linker init returns the _entry address in the main image */</span>
+  br x0
+<span class="token function">END</span><span class="token punctuation">(</span>_start<span class="token punctuation">)</span>
+</code></pre> 
+<p>__linker_init这个函数定义在/bionic/linker/linker_main.cpp中，先后执行__linker_init、__linker_init_post_relocation、linker_main。在linker_main函数中，调用linker_debuggerd_init，初始化墓碑生成环境。另外，在linker_main函数中可以看到很多比较重要的初始化函数，比如__system_properties_init。</p> 
+<pre><code class="prism language-cpp"><span class="token comment">//bionic/linker/linker_main.cpp</span>
+<span class="token keyword">extern</span> <span class="token string">"C"</span> <span class="token function">ElfW</span><span class="token punctuation">(</span>Addr<span class="token punctuation">)</span> <span class="token function">__linker_init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token operator">*</span> raw_args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">// Initialize TLS early so system calls and errno work.</span>
+   <span class="token comment">// 省略</span>
+  <span class="token keyword">return</span> <span class="token function">__linker_init_post_relocation</span><span class="token punctuation">(</span>args<span class="token punctuation">,</span> tmp_linker_so<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">static</span> <span class="token function">ElfW</span><span class="token punctuation">(</span>Addr<span class="token punctuation">)</span> <span class="token function">__attribute__</span><span class="token punctuation">(</span><span class="token punctuation">(</span>noinline<span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token function">__linker_init_post_relocation</span><span class="token punctuation">(</span>KernelArgumentBlock<span class="token operator">&amp;</span> args<span class="token punctuation">,</span> soinfo<span class="token operator">&amp;</span> tmp_linker_so<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">// 省略</span>
+  <span class="token comment">// 执行linker_main</span>
+  <span class="token function">ElfW</span><span class="token punctuation">(</span>Addr<span class="token punctuation">)</span> start_address <span class="token operator">=</span> <span class="token function">linker_main</span><span class="token punctuation">(</span>args<span class="token punctuation">,</span> exe_to_load<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>g_is_ldd<span class="token punctuation">)</span> <span class="token function">_exit</span><span class="token punctuation">(</span>EXIT_SUCCESS<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token function">INFO</span><span class="token punctuation">(</span><span class="token string">"[ Jumping to _start (%p)... ]"</span><span class="token punctuation">,</span> <span class="token generic-function"><span class="token function">reinterpret_cast</span><span class="token generic class-name"><span class="token operator">&lt;</span><span class="token keyword">void</span><span class="token operator">*</span><span class="token operator">&gt;</span></span></span><span class="token punctuation">(</span>start_address<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token comment">// Return the address that the calling assembly stub should jump to.</span>
+  <span class="token keyword">return</span> start_address<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">static</span> <span class="token function">ElfW</span><span class="token punctuation">(</span>Addr<span class="token punctuation">)</span> <span class="token function">linker_main</span><span class="token punctuation">(</span>KernelArgumentBlock<span class="token operator">&amp;</span> args<span class="token punctuation">,</span> <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> exe_to_load<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  ProtectedDataGuard guard<span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression">TIMING</span></span>
+  <span class="token keyword">struct</span> <span class="token class-name">timeval</span> t0<span class="token punctuation">,</span> t1<span class="token punctuation">;</span>
+  <span class="token function">gettimeofday</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>t0<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+  <span class="token comment">// Sanitize the environment.</span>
+  <span class="token function">__libc_init_AT_SECURE</span><span class="token punctuation">(</span>args<span class="token punctuation">.</span>envp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token comment">// Initialize system properties</span>
+  <span class="token function">__system_properties_init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// may use 'environ'</span>
+
+  <span class="token comment">// Initialize platform properties.</span>
+  <span class="token function">platform_properties_init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token comment">// 这里！！！</span>
+  <span class="token comment">// Register the debuggerd signal handler.</span>
+  <span class="token function">linker_debuggerd_init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token comment">// 省略</span>
+  <span class="token keyword">return</span> entry<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>linker_debuggerd_init函数定义在/bionic/linker/linker_debuggerd_android.cpp中，该函数调用了libdebuggerd_handler_core库（/system/core/debuggerd）的debuggerd_init函数。</p> 
+<pre><code class="prism language-cpp"><span class="token comment">//bionic/linker/linker_debuggerd_android.cpp</span>
+<span class="token keyword">void</span> <span class="token function">linker_debuggerd_init</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">// There may be a version mismatch between the bootstrap linker and the crash_dump in the APEX,</span>
+  <span class="token comment">// so don't pass in any process info from the bootstrap linker.</span>
+  debuggerd_callbacks_t callbacks <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>__ANDROID_APEX__<span class="token punctuation">)</span></span></span>
+      <span class="token punctuation">.</span>get_process_info <span class="token operator">=</span> get_process_info<span class="token punctuation">,</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+      <span class="token punctuation">.</span>post_dump <span class="token operator">=</span> notify_gdb_of_libraries<span class="token punctuation">,</span>
+  <span class="token punctuation">}</span><span class="token punctuation">;</span>
+  <span class="token comment">// 这里</span>
+  <span class="token function">debuggerd_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>callbacks<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="debuggerdSignalHandler_91"></a>debuggerd模块为Signal安装处理的Handler</h5> 
+<p>debuggerd_init函数中，会为各个异常信号Signal注册用来处理信号的Handler。这样当程序发生异常时，就会调用注册好的Handler。</p> 
+<pre><code class="prism language-cpp"><span class="token comment">//system/core/debuggerd/handler/debuggerd_handler.cpp</span>
+<span class="token keyword">void</span> <span class="token function">debuggerd_init</span><span class="token punctuation">(</span>debuggerd_callbacks_t<span class="token operator">*</span> callbacks<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">// 省略</span>
+  <span class="token comment">// linux sigaction的标准用法</span>
+  <span class="token keyword">struct</span> <span class="token class-name">sigaction</span> action<span class="token punctuation">;</span>
+  <span class="token function">memset</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>action<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>action<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token function">sigfillset</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>action<span class="token punctuation">.</span>sa_mask<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token comment">// debuggerd_signal_handler就是用来处理异常信号的Handler</span>
+  action<span class="token punctuation">.</span>sa_sigaction <span class="token operator">=</span> debuggerd_signal_handler<span class="token punctuation">;</span>
+  action<span class="token punctuation">.</span>sa_flags <span class="token operator">=</span> SA_RESTART <span class="token operator">|</span> SA_SIGINFO<span class="token punctuation">;</span>
+
+  <span class="token comment">// Use the alternate signal stack if available so we can catch stack overflows.</span>
+  action<span class="token punctuation">.</span>sa_flags <span class="token operator">|=</span> SA_ONSTACK<span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">SA_EXPOSE_TAGBITS</span> <span class="token expression"><span class="token number">0x00000800</span></span></span>
+  <span class="token comment">// Request that the kernel set tag bits in the fault address. This is necessary for diagnosing MTE</span>
+  <span class="token comment">// faults.</span>
+  action<span class="token punctuation">.</span>sa_flags <span class="token operator">|=</span> SA_EXPOSE_TAGBITS<span class="token punctuation">;</span>
+  <span class="token comment">// 为各个异常信号注册Handler</span>
+  <span class="token function">debuggerd_register_handlers</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>action<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>debuggerd_register_handlers函数在头文件中实现（这种形式叫内联函数）。可以通过<strong>ro.debuggable</strong>或<strong>debug.debuggerd.disable</strong>属性来控制注册过程。</p> 
+<pre><code class="prism language-cpp"><span class="token comment">//system/core/debuggerd/include/debuggerd/handler.h</span>
+<span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">__attribute__</span><span class="token punctuation">(</span><span class="token punctuation">(</span>__unused__<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token function">debuggerd_register_handlers</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">sigaction</span><span class="token operator">*</span> action<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">char</span> value<span class="token punctuation">[</span>PROP_VALUE_MAX<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token string">""</span><span class="token punctuation">;</span>
+  <span class="token keyword">bool</span> enabled <span class="token operator">=</span>
+      <span class="token operator">!</span><span class="token punctuation">(</span><span class="token function">__system_property_get</span><span class="token punctuation">(</span><span class="token string">"ro.debuggable"</span><span class="token punctuation">,</span> value<span class="token punctuation">)</span> <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">strcmp</span><span class="token punctuation">(</span>value<span class="token punctuation">,</span> <span class="token string">"1"</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span>
+        <span class="token function">__system_property_get</span><span class="token punctuation">(</span><span class="token string">"debug.debuggerd.disable"</span><span class="token punctuation">,</span> value<span class="token punctuation">)</span> <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">strcmp</span><span class="token punctuation">(</span>value<span class="token punctuation">,</span> <span class="token string">"1"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>enabled<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 针对不同异常注册</span>
+    <span class="token function">sigaction</span><span class="token punctuation">(</span>SIGABRT<span class="token punctuation">,</span> action<span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">sigaction</span><span class="token punctuation">(</span>SIGBUS<span class="token punctuation">,</span> action<span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">sigaction</span><span class="token punctuation">(</span>SIGFPE<span class="token punctuation">,</span> action<span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">sigaction</span><span class="token punctuation">(</span>SIGILL<span class="token punctuation">,</span> action<span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">sigaction</span><span class="token punctuation">(</span>SIGSEGV<span class="token punctuation">,</span> action<span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">sigaction</span><span class="token punctuation">(</span>SIGSTKFLT<span class="token punctuation">,</span> action<span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">sigaction</span><span class="token punctuation">(</span>SIGSYS<span class="token punctuation">,</span> action<span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">sigaction</span><span class="token punctuation">(</span>SIGTRAP<span class="token punctuation">,</span> action<span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token function">sigaction</span><span class="token punctuation">(</span>BIONIC_SIGNAL_DEBUGGER<span class="token punctuation">,</span> action<span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>到此墓碑环境注册完成，在这个流程中可以选择通过ro.debuggable或debug.debuggerd.disable来关闭墓碑。</p> 
+<h4><a id="_140"></a>墓碑生成流程</h4> 
+<p><img src="https://images2.imgbox.com/87/37/AWLYtr5m_o.jpg" alt="在这里插入图片描述"></p> 
+<p>完成了上述墓碑环境初始化后，当程序运行发生异常，比如内存越界触发了<strong>SIGSEGV</strong>就会调用debuggerd_signal_handler这个函数（</p> 
+<pre><code class="prism language-cpp"><span class="token comment">//system/core/debuggerd/handler/debuggerd_handler.cpp</span>
+
+<span class="token comment">// Handler that does crash dumping by forking and doing the processing in the child.</span>
+<span class="token comment">// Do this by ptracing the relevant thread, and then execing debuggerd to do the actual dump.</span>
+<span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">debuggerd_signal_handler</span><span class="token punctuation">(</span><span class="token keyword">int</span> signal_number<span class="token punctuation">,</span> siginfo_t<span class="token operator">*</span> info<span class="token punctuation">,</span> <span class="token keyword">void</span><span class="token operator">*</span> context<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">// 省略</span>
+  <span class="token comment">// clone一个子进程出来（在clone出来的进程中处理墓碑生成）</span>
+  <span class="token comment">// Essentially pthread_create without CLONE_FILES, so we still work during file descriptor</span>
+  <span class="token comment">// exhaustion.</span>
+  pid_t child_pid <span class="token operator">=</span>
+    <span class="token function">clone</span><span class="token punctuation">(</span>debuggerd_dispatch_pseudothread<span class="token punctuation">,</span> pseudothread_stack<span class="token punctuation">,</span>
+          CLONE_THREAD <span class="token operator">|</span> CLONE_SIGHAND <span class="token operator">|</span> CLONE_VM <span class="token operator">|</span> CLONE_CHILD_SETTID <span class="token operator">|</span> CLONE_CHILD_CLEARTID<span class="token punctuation">,</span>
+          <span class="token operator">&amp;</span>thread_info<span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>thread_info<span class="token punctuation">.</span>pseudothread_tid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>child_pid <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">fatal_errno</span><span class="token punctuation">(</span><span class="token string">"failed to spawn debuggerd dispatch thread"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token comment">// Wait for the child to start...</span>
+  <span class="token function">futex_wait</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>thread_info<span class="token punctuation">.</span>pseudothread_tid<span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token comment">// and then wait for it to terminate.</span>
+  <span class="token function">futex_wait</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>thread_info<span class="token punctuation">.</span>pseudothread_tid<span class="token punctuation">,</span> child_pid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+  <span class="token comment">// 后面是一些收尾处理</span>
+  <span class="token comment">// Restore PR_SET_DUMPABLE to its original value.</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">prctl</span><span class="token punctuation">(</span>PR_SET_DUMPABLE<span class="token punctuation">,</span> orig_dumpable<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">fatal_errno</span><span class="token punctuation">(</span><span class="token string">"failed to restore dumpable"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token comment">// Restore PR_SET_PTRACER to its original value.</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>restore_orig_ptracer <span class="token operator">&amp;&amp;</span> <span class="token function">prctl</span><span class="token punctuation">(</span>PR_SET_PTRACER<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">fatal_errno</span><span class="token punctuation">(</span><span class="token string">"failed to restore traceable"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>info<span class="token operator">-&gt;</span>si_signo <span class="token operator">==</span> BIONIC_SIGNAL_DEBUGGER<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// If the signal is fatal, don't unlock the mutex to prevent other crashing threads from</span>
+    <span class="token comment">// starting to dump right before our death.</span>
+    <span class="token function">pthread_mutex_unlock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>crash_mutex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// Resend the signal, so that either the debugger or the parent's waitpid sees it.</span>
+    <span class="token function">resend_signal</span><span class="token punctuation">(</span>info<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>上面的函数中，clone了一个子进程来处理了墓碑生成流程。clone出来的子进程会执行debuggerd_dispatch_pseudothread函数。</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">debuggerd_dispatch_pseudothread</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token operator">*</span> arg<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">// 省略</span>
+  <span class="token comment">// 创建pipe管理（因为后面还要fork一个进程来执行crash_dump64这个bin程序)</span>
+  <span class="token comment">// pipe用来与之后fork的进程通信用</span>
+  unique_fd input_read<span class="token punctuation">,</span> input_write<span class="token punctuation">;</span>
+  unique_fd output_read<span class="token punctuation">,</span> output_write<span class="token punctuation">;</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">Pipe</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>input_read<span class="token punctuation">,</span> <span class="token operator">&amp;</span>input_write<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">0</span> <span class="token operator">||</span> <span class="token operator">!</span><span class="token function">Pipe</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>output_read<span class="token punctuation">,</span> <span class="token operator">&amp;</span>output_write<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">fatal_errno</span><span class="token punctuation">(</span><span class="token string">"failed to create pipe"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token comment">// fork一个子进程</span>
+  <span class="token comment">// Don't use fork(2) to avoid calling pthread_atfork handlers.</span>
+  pid_t crash_dump_pid <span class="token operator">=</span> <span class="token function">__fork</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>crash_dump_pid <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">async_safe_format_log</span><span class="token punctuation">(</span>ANDROID_LOG_FATAL<span class="token punctuation">,</span> <span class="token string">"libc"</span><span class="token punctuation">,</span>
+                          <span class="token string">"failed to fork in debuggerd signal handler: %s"</span><span class="token punctuation">,</span> <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>crash_dump_pid <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 省略</span>
+
+	<span class="token comment">// 子进程执行 "/apex/com.android.runtime/bin/crash_dump64 这个程序</span>
+	<span class="token comment">// crash_dump64程序是墓碑文件真正的生成者</span>
+    <span class="token function">execle</span><span class="token punctuation">(</span>CRASH_DUMP_PATH<span class="token punctuation">,</span> CRASH_DUMP_NAME<span class="token punctuation">,</span> main_tid<span class="token punctuation">,</span> pseudothread_tid<span class="token punctuation">,</span> debuggerd_dump_type<span class="token punctuation">,</span>
+           <span class="token keyword">nullptr</span><span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">async_safe_format_log</span><span class="token punctuation">(</span>ANDROID_LOG_FATAL<span class="token punctuation">,</span> <span class="token string">"libc"</span><span class="token punctuation">,</span> <span class="token string">"failed to exec crash_dump helper: %s"</span><span class="token punctuation">,</span>
+                          <span class="token function">strerror</span><span class="token punctuation">(</span>errno<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token number">1</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+  <span class="token comment">// 省略</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>在debuggerd_dispatch_pseudothread中主要做了两个事件，一个是创建Pipe用来与子进程通信。一个是fork了一个子进程，让子进程执行crash_dump64这个二进制程序。crash_dump64这个二进制程序中会真正的生成墓碑文件。<br> crash_dump64的实现在/system/core/debuggerd/crash_dump.cpp</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span><span class="token operator">*</span><span class="token operator">*</span> argv<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">// 省略</span>
+  <span class="token comment">// 判断debug.debuggerd.wait_for_debugger，是否等待gdb</span>
+  <span class="token comment">// Defer the message until later, for readability.</span>
+  <span class="token keyword">bool</span> wait_for_debugger <span class="token operator">=</span> android<span class="token double-colon punctuation">::</span>base<span class="token double-colon punctuation">::</span><span class="token function">GetBoolProperty</span><span class="token punctuation">(</span>
+      <span class="token string">"debug.debuggerd.wait_for_debugger"</span><span class="token punctuation">,</span>
+      android<span class="token double-colon punctuation">::</span>base<span class="token double-colon punctuation">::</span><span class="token function">GetBoolProperty</span><span class="token punctuation">(</span><span class="token string">"debug.debuggerd.wait_for_gdb"</span><span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>siginfo<span class="token punctuation">.</span>si_signo <span class="token operator">==</span> BIONIC_SIGNAL_DEBUGGER<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    wait_for_debugger <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token comment">// 连接tombstoned守护进程，通过tombstoned得到墓碑文件的FD(g_output_fd)</span>
+  <span class="token punctuation">{<!-- --></span>
+    <span class="token function">ATRACE_NAME</span><span class="token punctuation">(</span><span class="token string">"tombstoned_connect"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">LOG</span><span class="token punctuation">(</span>INFO<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"obtaining output fd from tombstoned, type: "</span> <span class="token operator">&lt;&lt;</span> dump_type<span class="token punctuation">;</span>
+    g_tombstoned_connected <span class="token operator">=</span> <span class="token function">tombstoned_connect</span><span class="token punctuation">(</span>g_target_thread<span class="token punctuation">,</span> <span class="token operator">&amp;</span>g_tombstoned_socket<span class="token punctuation">,</span> <span class="token operator">&amp;</span>g_output_fd<span class="token punctuation">,</span>
+                                                <span class="token operator">&amp;</span>g_proto_fd<span class="token punctuation">,</span> dump_type<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token comment">// 使用unwindstack生成函数调用堆栈</span>
+
+  <span class="token comment">// TODO: Use seccomp to lock ourselves down.</span>
+  unwindstack<span class="token double-colon punctuation">::</span>UnwinderFromPid <span class="token function">unwinder</span><span class="token punctuation">(</span><span class="token number">256</span><span class="token punctuation">,</span> vm_pid<span class="token punctuation">,</span> unwindstack<span class="token double-colon punctuation">::</span><span class="token class-name">Regs</span><span class="token double-colon punctuation">::</span><span class="token function">CurrentArch</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>unwinder<span class="token punctuation">.</span><span class="token function">Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">LOG</span><span class="token punctuation">(</span>FATAL<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"Failed to init unwinder object."</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+
+  <span class="token comment">// 生成墓碑文件中的内容</span>
+  std<span class="token double-colon punctuation">::</span>string amfd_data<span class="token punctuation">;</span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>backtrace<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">ATRACE_NAME</span><span class="token punctuation">(</span><span class="token string">"dump_backtrace"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">dump_backtrace</span><span class="token punctuation">(</span>std<span class="token double-colon punctuation">::</span><span class="token function">move</span><span class="token punctuation">(</span>g_output_fd<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>unwinder<span class="token punctuation">,</span> thread_info<span class="token punctuation">,</span> g_target_thread<span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">{<!-- --></span>
+      <span class="token function">ATRACE_NAME</span><span class="token punctuation">(</span><span class="token string">"fdsan table dump"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token function">populate_fdsan_table</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>open_files<span class="token punctuation">,</span> unwinder<span class="token punctuation">.</span><span class="token function">GetProcessMemory</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                           process_info<span class="token punctuation">.</span>fdsan_table_address<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token punctuation">{<!-- --></span>
+      <span class="token function">ATRACE_NAME</span><span class="token punctuation">(</span><span class="token string">"engrave_tombstone"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	  <span class="token comment">// 这里，生成墓碑</span>
+      <span class="token function">engrave_tombstone</span><span class="token punctuation">(</span>std<span class="token double-colon punctuation">::</span><span class="token function">move</span><span class="token punctuation">(</span>g_output_fd<span class="token punctuation">)</span><span class="token punctuation">,</span> std<span class="token double-colon punctuation">::</span><span class="token function">move</span><span class="token punctuation">(</span>g_proto_fd<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>unwinder<span class="token punctuation">,</span> thread_info<span class="token punctuation">,</span>
+                        g_target_thread<span class="token punctuation">,</span> process_info<span class="token punctuation">,</span> <span class="token operator">&amp;</span>open_files<span class="token punctuation">,</span> <span class="token operator">&amp;</span>amfd_data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+	
+  <span class="token comment">// </span>
+  <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>crash_dump64<strong>会连接tombstoned这个进程</strong>，通过tombstoned取得将要输出的墓碑文件的FD（因为墓碑文件有数量限制、达到上限时要删除旧的墓碑文件，所以专门用tombstoned这个守护进程管理）。然后使用unwindstack库生成函数堆栈，并调用<br> engrave_tombstone函数生成墓碑。</p> 
+<p>在engrave_tombstone函数中，我们会看到比较熟悉的墓碑文件中的文本内容。比如“***”这种字符。另外只有在ro.debuggable开启的状态下，才会调用dump_logs在墓碑文件中输出Log日志。</p> 
+<pre><code>//system/core/debuggerd/libdebuggerd/tombstone.cpp
+void engrave_tombstone(unique_fd output_fd, unique_fd proto_fd, unwindstack::Unwinder* unwinder,
+                       const std::map&lt;pid_t, ThreadInfo&gt;&amp; threads, pid_t target_thread,
+                       const ProcessInfo&amp; process_info, OpenFilesList* open_files,
+                       std::string* amfd_data) {
+  // Don't copy log messages to tombstone unless this is a development device.
+  Tombstone tombstone;
+  engrave_tombstone_proto(&amp;tombstone, unwinder, threads, target_thread, process_info, open_files);
+
+  if (proto_fd != -1) {
+    if (!tombstone.SerializeToFileDescriptor(proto_fd.get())) {
+      async_safe_format_log(ANDROID_LOG_ERROR, LOG_TAG, "failed to write proto tombstone: %s",
+                            strerror(errno));
+    }
+  }
+
+  log_t log;
+  log.current_tid = target_thread;
+  log.crashed_tid = target_thread;
+  log.tfd = output_fd.get();
+  log.amfd_data = amfd_data;
+
+  bool translate_proto = GetBoolProperty("debug.debuggerd.translate_proto_to_text", true);
+  if (translate_proto) {
+    tombstone_proto_to_text(tombstone, [&amp;log](const std::string&amp; line, bool should_log) {
+      _LOG(&amp;log, should_log ? logtype::HEADER : logtype::LOGS, "%s\n", line.c_str());
+    });
+  } else {
+    bool want_logs = GetBoolProperty("ro.debuggable", false);
+
+    _LOG(&amp;log, logtype::HEADER,
+         "*** *** *** *** *** *** *** *** *** *** *** *** *** *** *** ***\n");
+    dump_header_info(&amp;log);
+    _LOG(&amp;log, logtype::HEADER, "Timestamp: %s\n", get_timestamp().c_str());
+
+    auto it = threads.find(target_thread);
+    if (it == threads.end()) {
+      async_safe_fatal("failed to find target thread");
+    }
+
+    dump_thread(&amp;log, unwinder, it-&gt;second, process_info, true);
+
+    if (want_logs) {
+      dump_logs(&amp;log, it-&gt;second.pid, 50);
+    }
+
+    for (auto&amp; [tid, thread_info] : threads) {
+      if (tid == target_thread) {
+        continue;
+      }
+
+      dump_thread(&amp;log, unwinder, thread_info, process_info, false);
+    }
+
+    if (open_files) {
+      _LOG(&amp;log, logtype::OPEN_FILES, "\nopen files:\n");
+      dump_open_files_list(&amp;log, *open_files, "    ");
+    }
+
+    if (want_logs) {
+      dump_logs(&amp;log, it-&gt;second.pid, 0);
+    }
+  }
+}
+</code></pre> 
+<h4><a id="_346"></a>总结</h4> 
+<p>墓碑初始化及生成流程中，可以通过属性控制是否注册墓碑、是否生成墓碑，以及墓碑文件的数量等功能。同时，也可以根据业务需求，在墓碑中加入自定义内容，比如给墓碑文件的名字追加特殊的时间戳、追加一些自定义日志到墓碑中等等。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/d662092ecc70eb60fba926dc7f83076c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">云计算复习提纲</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/3e0a3d8390af8330606cb5868304b70a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">什么保你平安</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

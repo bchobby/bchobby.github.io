@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Spark源码分析之调度框架详解 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Spark源码分析之调度框架详解" />
+<meta property="og:description" content="文章目录 原理概述源码分析Job提交Stage划分Task提交Executor端运行Task Spark的调度框架分为资源调度和任务调度。Spark的资源调度是基于Yarn实现的，包含Driver和Executor资源的申请等，详细过程见博文 Spark源码分析之AM端运行流程（Driver） 和 Spark源码分析之CoarseGrainedExecutorBackend运行流程（Executor）；本文主要讲述Spark任务调度框架的原理和源码分析。 原理概述 由于 Spark Scheduler内部原理剖析 中的Spark任务调度总览章节感觉已经讲解的很清楚了，因此原理部分我们直接摘抄引用如下。
+当Driver起来后，Driver则会根据用户程序逻辑准备任务，并根据Executor资源情况逐步分发任务。在详细阐述任务调度前，首先说明下Spark里的几个概念。一个Spark应用程序包括Job、Stage以及Task三个概念：
+Job是以Action方法为界，遇到一个Action方法则触发一个Job；Stage是Job的子集，以RDD宽依赖(即Shuffle)为界，遇到Shuffle做一次划分；Task是Stage的子集，以并行度(分区数)来衡量，分区数是多少，则有多少个task； Spark的任务调度总体来说分两路进行，一路是Stage级的调度，一路是Task级的调度，总体调度流程如下图所示。
+Spark RDD通过其Transactions操作，形成了RDD血缘关系图，即DAG，最后通过Action的调用，触发Job并调度执行。DAGScheduler负责Stage级的调度，主要是将DAG切分成若干Stages，并将每个Stage打包成TaskSet交给TaskScheduler调度。TaskScheduler负责Task级的调度，将DAGScheduler给过来的TaskSet按照指定的调度策略分发到Executor上执行，调度过程中SchedulerBackend负责提供可用资源，其中SchedulerBackend有多种实现，分别对接不同的资源管理系统。有了上述感性的认识后，下面这张图描述了Spark-On-Yarn模式下在任务调度期间，ApplicationMaster、Driver以及Executor内部模块的交互过程。
+Driver初始化SparkContext过程中，会分别初始化DAGScheduler、TaskScheduler、SchedulerBackend以及HeartbeatReceiver，并启动SchedulerBackend以及HeartbeatReceiver。SchedulerBackend通过ApplicationMaster申请资源，并不断从TaskScheduler中拿到合适的Task分发到Executor执行。HeartbeatReceiver负责接收Executor的心跳信息，监控Executor的存活状况，并通知到TaskScheduler。
+源码分析 首先我们先看任务调度的整体流程图（Spark-On-Yarn模式），如下：
+Job提交 下面我们逐步进行源码分析（源码版本为Spark2.4.3）：
+从上面我们知道Job的执行是由Action算子触发的。我们以rdd.count()为例看启动Job过程：
+SparkContext#runJob()函数，重点分析SparkContext#runJob()函数，首先我们看其的四个参数分别为：
+rdd: RDD[T]：提交Job的rdd。func: (TaskContext, Iterator[T]) =&gt; U：在rdd的每个分区上运行的函数（运行在Executor端）。partitions: Seq[Int]：rdd的分区数组（分区个数如何确定？见 Spark源码分析之分区（Partition））resultHandler: (Int, U) =&gt; Unit)：在rdd的每个分区运行完成后在Driver端的回调函数（运行在Driver端）。 action算子往往是Job的最后一步，和transformation算子类似也会先在Executor的Task任务中执行分区函数func，但不同的是当分区函数func执行完成后会把执行结果返回给Driver端并在回调函数resultHandler进行最终的结果处理（此步是在DAGScheduler#handleTaskCompletion()函数中调用监听函数job.listener.taskSucceeded(rt.outputId, event.result) -&gt; JobWaiter#taskSucceeded()，最终完成调用resultHandler回调函数）。 由此结合上面截图的源码可知count算子在Executor端的Task任务调用func函数（Utils.getIteratorSize）累加分区数据个数，然后在Task执行完成后把累加的分区数据个数值返回Driver端执行resultHandler函数（(index, res) =&gt; results(index) = res）放置在数组results中，最后对results数组存储数值进行sum获得最终统计的元素个数值。
+注：在计算大数据量的时，使用某些action算子（例如：collect）容易引起OOM，这是由于这些算子传入SparkContext#runJob()函数的第二个参数func的实现逻辑返回的数据量过大，最终返回Driver端的多个分区的数据全部加载在内存中导致其OOM。因此，在计算的数据量较大的时候应慎用这些大量（甚至全量）返回分区数据给Driver的action算子。
+我们继续往下分析，开始进入DAGScheduler的调度…
+从上面代码可以看出，DAGScheduler的任务提交流程就是封装构建JobWaiter监听对象，JobWaiter主要作用就是异步监听任务的完成情况（在任务完成后会回调该监听对象），如果成功则在JobWaiter#taskSucceeded()中处理resultHandler回调函数，失败则捕获抛出异常。然后就可以通过构建JobSubmitted消息异步提交给DAGScheduler#eventProcessLoop等待事件驱动模型的处理。
+DAGScheduler的事件驱动模型也是一个典型的生产者-消费者模型，通过事件阻塞队列缓存住各种事件，然后通过事件分发器里的常驻线程不断的从事件队列里取事件并将该事件交给相应的事件处理handler进行处理。事件驱动模型是在DAGScheduler初始化时构建启动的，如下图：
+根据上面事件处理函数可知DAGScheduler#submitJob()提交的JobSubmitted消息事件是由DAGScheduler#handleJobSubmitted()响应处理，如下图：
+一个Job可能被划分为多个Stage，各个Stage之间存在着依赖关系，下游的Stage依赖于上游的Stage，Stage划分过程是从最后一个Stage开始往前执行的，最后一个Stage的类型是ResultStage，非最后一个Stage的类型都是ShuffleMapStage。
+ResultStage可以使用指定的函数对RDD中的分区进行计算并得到最终结果。ResultStage是最后执行的Stage，此阶段主要进行作业的收尾工作（例如：对各个分区的数据收集、打印到控制台或写入HDFS）
+Stage划分 下面我们首先分析finalStage = createResultStage(finalRDD, func, partitions, jobId, callSite)看如何划分Stage呢？
+首先看上图右侧的DAGScheduler#getShuffleDependencies()函数是对于给定的RDD获得所有的直接父shuffle依赖，其是整个Stage划分的核心函数，在生成Stage父子依赖时候多次调用，源码分析见代码。 分析上面截图可以看出创建ResultStage过程是在DAGScheduler#createResultStage()函数中首先调用DAGScheduler#getOrCreateParentStages()函数中，其首先会调用DAGScheduler#getShuffleDependencies()获得finalRDD的所有直接父shuffle依赖，然后根据获得的依赖依次调用DAGScheduler#getOrCreateShuffleMapStage()函数生成并返回直接父Stage，在调用DAGScheduler#getOrCreateShuffleMapStage()函数也会同时生成祖先Stage，并把所有Stage添加到stageIdToStage缓存，这样我们就完成了DAG中Stage的stage的拆分。我们继续分析DAGScheduler#getOrCreateShuffleMapStage()如下图：
+如上图，DAGScheduler#getOrCreateShuffleMapStage()函数首先会调用DAGScheduler#getMissingAncestorShuffleDependencies()函数获得所有祖先shuffle依赖，并依次调用DAGScheduler#createShuffleMapStage()创建所有的ShuffleMapStage，此过程会把所有创建的ShuffleMapStage放在stageIdToStage缓存中，最后把finalRDD的直接父ShuffleMapStage返回供上游DAGScheduler#createResultStage()函数创建ResultStage。最后我们看DAGScheduler#createShuffleMapStage()的代码实现，如下图：
+至此，DAG中Stage的划分源码就分析完成。下面给出一个示例可以参照理解Stage划分代码：
+val conf = new SparkConf().setMaster(&#34;local[*]&#34;).setAppName(&#34;test&#34;) val sc = new SparkContext(conf) val fileInt = sc." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/193b8c1a7b5f86cacae1d26716a771f1/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-06-13T16:20:12+08:00" />
+<meta property="article:modified_time" content="2020-06-13T16:20:12+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Spark源码分析之调度框架详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-github-gist">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_3" rel="nofollow">原理概述</a></li><li><a href="#_16" rel="nofollow">源码分析</a></li><li><ul><li><a href="#Job_19" rel="nofollow">Job提交</a></li><li><a href="#Stage_43" rel="nofollow">Stage划分</a></li><li><a href="#Task_63" rel="nofollow">Task提交</a></li><li><a href="#ExecutorTask_92" rel="nofollow">Executor端运行Task</a></li></ul> 
+ </li></ul> 
+</div> 
+<br> Spark的调度框架分为资源调度和任务调度。Spark的资源调度是基于Yarn实现的，包含Driver和Executor资源的申请等，详细过程见博文 
+<a href="https://blog.csdn.net/oTengYue/article/details/105339515">Spark源码分析之AM端运行流程（Driver）</a> 和 
+<a href="https://blog.csdn.net/oTengYue/article/details/105596352">Spark源码分析之CoarseGrainedExecutorBackend运行流程（Executor）</a>；本文主要讲述Spark任务调度框架的原理和源码分析。 
+<p></p> 
+<h2><a id="_3"></a>原理概述</h2> 
+<p>由于 <a href="http://sharkdtu.com/posts/spark-scheduler.html" rel="nofollow">Spark Scheduler内部原理剖析</a> 中的Spark任务调度总览章节感觉已经讲解的很清楚了，因此原理部分我们直接摘抄引用如下。<br> 当Driver起来后，Driver则会根据用户程序逻辑准备任务，并根据Executor资源情况逐步分发任务。在详细阐述任务调度前，首先说明下Spark里的几个概念。一个Spark应用程序包括Job、Stage以及Task三个概念：</p> 
+<ul><li>Job是以Action方法为界，遇到一个Action方法则触发一个Job；</li><li>Stage是Job的子集，以RDD宽依赖(即Shuffle)为界，遇到Shuffle做一次划分；</li><li>Task是Stage的子集，以并行度(分区数)来衡量，分区数是多少，则有多少个task；</li></ul> 
+<p>Spark的任务调度总体来说分两路进行，一路是Stage级的调度，一路是Task级的调度，总体调度流程如下图所示。<br> <img src="https://images2.imgbox.com/af/6f/ZZ9zutLd_o.png" alt="在这里插入图片描述"><br> Spark RDD通过其Transactions操作，形成了RDD血缘关系图，即DAG，最后通过Action的调用，触发Job并调度执行。DAGScheduler负责Stage级的调度，主要是将DAG切分成若干Stages，并将每个Stage打包成TaskSet交给TaskScheduler调度。TaskScheduler负责Task级的调度，将DAGScheduler给过来的TaskSet按照指定的调度策略分发到Executor上执行，调度过程中SchedulerBackend负责提供可用资源，其中SchedulerBackend有多种实现，分别对接不同的资源管理系统。有了上述感性的认识后，下面这张图描述了Spark-On-Yarn模式下在任务调度期间，ApplicationMaster、Driver以及Executor内部模块的交互过程。<br> <img src="https://images2.imgbox.com/1b/c9/mQA9DVgm_o.png" alt="在这里插入图片描述"><br> Driver初始化SparkContext过程中，会分别初始化DAGScheduler、TaskScheduler、SchedulerBackend以及HeartbeatReceiver，并启动SchedulerBackend以及HeartbeatReceiver。SchedulerBackend通过ApplicationMaster申请资源，并不断从TaskScheduler中拿到合适的Task分发到Executor执行。HeartbeatReceiver负责接收Executor的心跳信息，监控Executor的存活状况，并通知到TaskScheduler。</p> 
+<h2><a id="_16"></a>源码分析</h2> 
+<p>首先我们先看任务调度的整体流程图（Spark-On-Yarn模式），如下：<br> <img src="https://images2.imgbox.com/df/48/VRspyvzY_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="Job_19"></a>Job提交</h3> 
+<p>下面我们逐步进行源码分析（源码版本为Spark2.4.3）：<br> 从上面我们知道Job的执行是由Action算子触发的。我们以<code>rdd.count()</code>为例看启动Job过程：<br> <img src="https://images2.imgbox.com/83/81/KpvxpxV6_o.png" alt="在这里插入图片描述"><br> <code>SparkContext#runJob()</code>函数，重点分析<code>SparkContext#runJob()</code>函数，首先我们看其的四个参数分别为：</p> 
+<ul><li><strong>rdd: RDD[T]</strong>：提交Job的rdd。</li><li><strong>func: (TaskContext, Iterator[T]) =&gt; U</strong>：在rdd的每个分区上运行的函数（运行在Executor端）。</li><li><strong>partitions: Seq[Int]</strong>：rdd的分区数组（分区个数如何确定？见 <a href="https://blog.csdn.net/oTengYue/article/details/106134533">Spark源码分析之分区（Partition）</a>）</li><li><strong>resultHandler: (Int, U) =&gt; Unit)</strong>：在rdd的每个分区运行完成后在Driver端的回调函数（运行在Driver端）。</li></ul> 
+<p><strong>action算子往往是Job的最后一步，和transformation算子类似也会先在Executor的Task任务中执行分区函数func，但不同的是当分区函数func执行完成后会把执行结果返回给Driver端并在回调函数resultHandler进行最终的结果处理（此步是在<code>DAGScheduler#handleTaskCompletion()</code>函数中调用监听函数<code>job.listener.taskSucceeded(rt.outputId, event.result) -&gt; JobWaiter#taskSucceeded()</code>，最终完成调用<code>resultHandler</code>回调函数）。</strong> 由此结合上面截图的源码可知count算子在Executor端的Task任务调用func函数（<code>Utils.getIteratorSize</code>）累加分区数据个数，然后在Task执行完成后把累加的分区数据个数值返回Driver端执行resultHandler函数（<code>(index, res) =&gt; results(index) = res</code>）放置在数组<code>results</code>中，最后对<code>results</code>数组存储数值进行<code>sum</code>获得最终统计的元素个数值。</p> 
+<p>注：在计算大数据量的时，使用某些action算子（例如：collect）容易引起OOM，这是由于这些算子传入<code>SparkContext#runJob()</code>函数的第二个参数func的实现逻辑返回的数据量过大，最终返回Driver端的多个分区的数据全部加载在内存中导致其OOM。因此，在计算的数据量较大的时候应慎用这些大量（甚至全量）返回分区数据给Driver的action算子。</p> 
+<p>我们继续往下分析，开始进入DAGScheduler的调度…<br> <img src="https://images2.imgbox.com/d8/ae/YTV9dkxG_o.png" alt="在这里插入图片描述"><br> 从上面代码可以看出，DAGScheduler的任务提交流程就是封装构建JobWaiter监听对象，JobWaiter主要作用就是异步监听任务的完成情况（在任务完成后会回调该监听对象），如果成功则在<code>JobWaiter#taskSucceeded()</code>中处理resultHandler回调函数，失败则捕获抛出异常。然后就可以通过构建JobSubmitted消息异步提交给<code>DAGScheduler#eventProcessLoop</code>等待事件驱动模型的处理。<br> DAGScheduler的事件驱动模型也是一个典型的生产者-消费者模型，通过事件阻塞队列缓存住各种事件，然后通过事件分发器里的常驻线程不断的从事件队列里取事件并将该事件交给相应的事件处理handler进行处理。事件驱动模型是在DAGScheduler初始化时构建启动的，如下图：<br> <img src="https://images2.imgbox.com/5b/34/05atb7CM_o.png" alt="在这里插入图片描述"><br> 根据上面事件处理函数可知<code>DAGScheduler#submitJob()</code>提交的JobSubmitted消息事件是由<code>DAGScheduler#handleJobSubmitted()</code>响应处理，如下图：<br> <img src="https://images2.imgbox.com/b7/aa/9fcj9x26_o.png" alt="在这里插入图片描述"><br> 一个Job可能被划分为多个Stage，各个Stage之间存在着依赖关系，下游的Stage依赖于上游的Stage，Stage划分过程是从最后一个Stage开始往前执行的，最后一个Stage的类型是ResultStage，非最后一个Stage的类型都是ShuffleMapStage。<br> ResultStage可以使用指定的函数对RDD中的分区进行计算并得到最终结果。ResultStage是最后执行的Stage，此阶段主要进行作业的收尾工作（例如：对各个分区的数据收集、打印到控制台或写入HDFS）</p> 
+<h3><a id="Stage_43"></a>Stage划分</h3> 
+<p><strong>下面我们首先分析<code>finalStage = createResultStage(finalRDD, func, partitions, jobId, callSite)</code>看如何划分Stage呢？</strong><br> <img src="https://images2.imgbox.com/94/9f/6Z1N2HNW_o.png" alt="在这里插入图片描述"><br> <strong>首先看上图右侧的<code>DAGScheduler#getShuffleDependencies()</code>函数是对于给定的RDD获得所有的直接父shuffle依赖，其是整个Stage划分的核心函数，在生成Stage父子依赖时候多次调用，源码分析见代码。</strong> 分析上面截图可以看出创建ResultStage过程是在<code>DAGScheduler#createResultStage()</code>函数中首先调用<code>DAGScheduler#getOrCreateParentStages()</code>函数中，其首先会调用<code>DAGScheduler#getShuffleDependencies()</code>获得finalRDD的所有直接父shuffle依赖，然后根据获得的依赖依次调用<code>DAGScheduler#getOrCreateShuffleMapStage()</code>函数生成并返回直接父Stage，在调用<code>DAGScheduler#getOrCreateShuffleMapStage()</code>函数也会同时生成祖先Stage，并把所有Stage添加到stageIdToStage缓存，这样我们就完成了DAG中Stage的stage的拆分。我们继续分析<code>DAGScheduler#getOrCreateShuffleMapStage()</code>如下图：<br> <img src="https://images2.imgbox.com/5a/cb/0J7l3byp_o.png" alt="在这里插入图片描述"><br> 如上图，<code>DAGScheduler#getOrCreateShuffleMapStage()</code>函数首先会调用<code>DAGScheduler#getMissingAncestorShuffleDependencies()</code>函数获得所有祖先shuffle依赖，并依次调用<code>DAGScheduler#createShuffleMapStage()</code>创建所有的ShuffleMapStage，此过程会把所有创建的ShuffleMapStage放在stageIdToStage缓存中，最后把finalRDD的直接父ShuffleMapStage返回供上游<code>DAGScheduler#createResultStage()</code>函数创建ResultStage。最后我们看<code>DAGScheduler#createShuffleMapStage()</code>的代码实现，如下图：<br> <img src="https://images2.imgbox.com/1e/fe/zDeQNaD1_o.png" alt="在这里插入图片描述"><br> 至此，DAG中Stage的划分源码就分析完成。下面给出一个示例可以参照理解Stage划分代码：</p> 
+<pre><code class="prism language-scala">val conf = new SparkConf().setMaster("local[*]").setAppName("test")
+val sc = new SparkContext(conf)
+val fileInt  = sc.textFile("/data/int.txt").map{ x =&gt; val xi = x.toInt; (xi,xi*xi)}
+val spInt = sc.parallelize{ (0 until 1000).map{ x =&gt; (x,x * x+1) }}
+val joinRes = fileInt.join(spInt)
+val smRes = joinRes.mapPartitions{ iter =&gt; iter.map{ case (k,(v1,v2)) =&gt; (k, v1+v2) }}
+val filterRes = smRes.filter{ case (k,v) =&gt; v % 10 == 0 }
+val cntRes = filterRes.count()
+sc.stop()
+</code></pre> 
+<p><img src="https://images2.imgbox.com/7d/2b/zIb2yaVC_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="Task_63"></a>Task提交</h3> 
+<p><strong>下面我们回到<code>DAGScheduler#handleJobSubmitted()</code>函数看如何通过<code>submitStage(finalStage)</code>提交任务？</strong><br> <img src="https://images2.imgbox.com/17/df/EqnySpiO_o.png" alt="在这里插入图片描述"><br> 分析见上图代码注释，在<code>DAGScheduler#submitStage()</code>函数中首先判断当前Stage的父Stage是否完成，如果有未完成的，则递归的提交父Stage。这里提交的是最遥远的父Stage，后续的Stage又是什么时间提交的呢？答：在父Stage完成后会在TaskSetManager中向DagScheduler发送任务完成CompletionEvent事件，然后在<code>DagScheduler#handleTaskCompletion()</code>函数调用<code>DagScheduler#submitWaitingChildStages()</code>函数提交子Stage，从完成父子Stage的顺序调用，如下图：<br> <img src="https://images2.imgbox.com/7c/3b/DV2P5EDM_o.png" alt="在这里插入图片描述"><br> 我们回到提交stage任务的函数是<code>DAGScheduler#submitMissingTasks()</code>，继续分析<br> <img src="https://images2.imgbox.com/53/4b/LmPovAxy_o.png" alt="在这里插入图片描述"><br> 如上图分析过程见代码注释，<code>DAGScheduler#submitMissingTasks()</code>是Stage划分Task的核心函数，主要是根据Stage类型创建对应的分区任务（ShuffleMapStage -&gt; ShuffleMapTask 或 ResultStage -&gt; ResultTask），此过程会把运行分区任务的信息序列化并进行广播给Executor，然后把待计算的分区任务封装成TaskSet后提交给TaskScheduler进行任务分发调度。<br> 到这里DAGScheduler就完成了Stage划分和Task生成。下面我们继续分析TaskScheduler的源码，Spark-On-Yarn实现类是YarnScheduler，大部分的实现代码在其父类TaskSchedulerImpl，接上面流程我们继续分析<code>TaskSchedulerImpl#submitTasks()</code>函数：<br> <img src="https://images2.imgbox.com/e4/47/5k2OfRQc_o.png" alt="在这里插入图片描述"><br> 分析见上图代码注释，<strong>TaskSetManager负责在具体TaskSet的内部调度任务，包含负责追踪每一个task，如果task失败的话，会负责重试task，直到超过重试的次数限制，同时为这个TaskSet处理本地化调度机制；TaskScheduler负责与SchedulerBackend交互，并将资源提供给TaskSetManager供其作为本地化调度任务的依据。</strong> 这段代码的大致过程为TaskScheduler将TaskSet封装为TaskSetManager，存入待处理任务池（Pool）中，发送DriverEndpoint唤起消费（ReviveOffers）指令。具体过程为首先创建TaskSetManager，把它添加到调度器的Pool中（目前有两种调度器实现：FIFOSchedulableBuilder（默认）和FairSchedulableBuilder），然后调用<code>backend.reviveOffers()</code>发送指令，在Spark-On-Yarn模式下，backend的实现类是YarnSchedulerBackend，大部分代码实现在其父类CoarseGrainedSchedulerBackend中，发送指令实际就是调用<code>CoarseGrainedSchedulerBackend#reviveOffers()</code>函数，下面我们该指令的消息发送和响应过程，如下图：<br> <img src="https://images2.imgbox.com/e6/85/W1YxlZpV_o.png" alt="在这里插入图片描述"><br> 如上图最终消息在响应函数<code>CoarseGrainedSchedulerBackend#makeOffers()</code>，该函数采用加锁方式，保证在调度分配资源期间，不会Executor被释放，该方法主要做以下操作：<br> 1、获取当前全部可用的Executor封装为workOffers。<br> 2、调用TaskSchedulerImpl对封装的workOffers分配任务，获得可发送Executor端的taskDescs对象。<br> 3、调用launchTasks依次向Executor发送消息启动Task。<br> 另外从这里可以看出，DriverEndpoint在启动时候也会后台启动一个任务，定时（默认1s）向自身发送ReviveOffers指令拉取待执行任务进行分配Executor，这样就能够保证，一旦有新的Executor资源（例如：新增Executor或任务执行完成释放Executor资源）就能继续分配任务。代码如下图：<br> <img src="https://images2.imgbox.com/f7/b4/1tNHxAuv_o.png" alt="在这里插入图片描述"><br> 我们首先分析上面第2步，看<code>scheduler.resourceOffers(workOffers)</code>如何对workOffers分配任务的，具体代码在<code>TaskSchedulerImpl#resourceOffers()</code>函数中，如下图：<br> <img src="https://images2.imgbox.com/4c/9c/ttrqFyGy_o.png" alt="在这里插入图片描述"><br> 重点关注上图的截图部分， 采用双层循环的方式，外层按本地化级别优先级遍历，内部调用循环调用<code>TaskSchedulerImpl#resourceOfferSingleTaskSet()</code>函数为Task分配任务，直至没有满足条件的Task可分配后跳出内循环，放大本地化级别后继续尝试任务分配。我们继续分析Task如何分配任务如下：<br> <img src="https://images2.imgbox.com/ac/a8/1GbTCGOe_o.png" alt="在这里插入图片描述"><br> 上图截图部分是每次调用会返回一个符合的Task任务，然后把任务放置在预定义的tasks二维数组中。我们继续分析<code>TaskSetManager#resourceOffer()</code>函数：<br> <img src="https://images2.imgbox.com/4b/8f/jnu6RcJN_o.png" alt="在这里插入图片描述"><br> 分析到这我们终于看到了<code>TaskDescription</code>，它就是对Task及其资源的封装，最终被序列化后发送给Executor真正执行任务。到这Task的分配过程基本已经完成，但还是有必要看下<code>TaskSetManager#dequeueTask()</code>如何取出一个符合条件的Task的，如下图：<br> <img src="https://images2.imgbox.com/8e/3f/MPksu0Dc_o.png" alt="在这里插入图片描述"><br> 上面过程就完成了Task任务的分配，下面我们回到<code>CoarseGrainedSchedulerBackend#makeOffers()</code>看如果启动已分配好的Task的，如下图：<br> <img src="https://images2.imgbox.com/8e/5f/SDvOtoa2_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="ExecutorTask_92"></a>Executor端运行Task</h3> 
+<p>首先也是给出一张Executor运行流程图：<br> <img src="https://images2.imgbox.com/f4/47/3hzLDjdr_o.png" alt="在这里插入图片描述"><br> 由于我们分析的是Spark-On-Yarn模式，因此只需看上图中下半部分的调用流程过程即可。<br> 在上面生成了可执行的序列化TaskDescription对象后，会向CoarseGrainedExecutorBackend发送LaunchTask指令，CoarseGrainedExecutorBackend接收指令后先反序列化出待执行的TaskDescription对象，调用<code>executor.launchTask(this, taskDesc)</code>开始启动任务，如下图：<br> <img src="https://images2.imgbox.com/9d/22/pDKO8ihK_o.png" alt="在这里插入图片描述"><br> CoarseGrainedExecutorBackend是Executor运行所在的进程，Executor才是真正处理 Task 的对象，<code>Executor</code>类在初始化过程中会首先实例化一个线程池threadPool，每接收一个task都会通过线程池的方式执行。从<code>Executor#launchTask()</code>函数可以看出首先会开启一个新线程TaskRunner，然后把TaskRunner放到线程池中等待运行。我们继续分析<code>TaskRunner#run()</code>函数如下：<br> <img src="https://images2.imgbox.com/2c/54/JKPnmVa5_o.jpg" alt="在这里插入图片描述"><br> 分析过程见上面代码注释，如上面画框部分执行任务继续调用<code>Task.run()</code>函数，主要工作是创建一个TaskContext，封装task运行过程中的上下文信息，然后调用子类的<code>ShuffleMapTask#runTask()</code>或<code>ResultTask#runTask()</code>函数执行算子计算逻辑（注：具体是哪种任务类型，是在<code>DAGScheduler#submitMissingTasks()</code>中会根据stage类型生成Task任务时候确定的，在Executor端反序列化后的任务就已经确定了是哪种任务类型了），如下图：<br> <img src="https://images2.imgbox.com/6b/78/efXSTNUq_o.png" alt="在这里插入图片描述"><br> 两种Task任务递归调用RDD算子过程类似，下面以ShuffleMapTask中<code>iterator()</code>函数（假设父RDD是MapPartitionsRDD），看如何完成递归调用的？如下图：<br> <img src="https://images2.imgbox.com/8e/80/dCZNAVZ6_o.png" alt="在这里插入图片描述"><br> 上面分析完了Task中RDD的递归计算，那一个Task的源RDD一般分两种：读取外部数据源RDD（例如HadoopRDD、JDBCRDD等）和ShuffledRDD。第一个是整个job的开始源RDD，主要是从外部数据源读取数据源的，不同的外部数据源有不同的实现；第二个是在产生Shuffle后拆分为父子Stage后，子Stage的Task的源RDD。我们重点看下第二个ShuffledRDD的compute函数的实现：<br> <img src="https://images2.imgbox.com/a7/79/mIRiiTuL_o.png" alt="在这里插入图片描述"><br> 最后给出一张Task的底层原理机制图：<br> <img src="https://images2.imgbox.com/d1/45/qPTak31b_o.png" alt="在这里插入图片描述"><br> 至此，Task在Executor的执行流程分析也完成了。<br> 最后给一个WC和其DAG可视化图供理解调度过程：</p> 
+<pre><code class="prism language-scala">import org.apache.spark._
+
+object WordCount {
+  def main(args: Array[String]) {
+    if (args.length &lt; 2) {
+      System.err.println("Usage: WordCount &lt;inputfile&gt; &lt;outputfile&gt;");
+      System.exit(1);
+    }
+    val conf = new SparkConf().setAppName("WordCount")
+    val sc = new SparkContext(conf)
+    val result = sc.textFile(args(0))
+      .flatMap(line =&gt; line.split(" "))
+      .map(word =&gt; (word, 1))
+      .reduceByKey(_ + _)
+    result.saveAsTextFile(args(1))
+  }
+}
+</code></pre> 
+<p><img src="https://images2.imgbox.com/98/3c/ZlclmZ22_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/3c/2c/n1k0xhd9_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6c6d56375a8cb1eff209e981b4ba5ec6/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C&#43;&#43;中vector的常用操作</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a9c0ae4a20218d70043f2b2d270ad6bf/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Flink原理：Flink中的日志框架配置</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

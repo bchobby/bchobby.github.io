@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>详解Android 关机/重启流程 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="详解Android 关机/重启流程" />
+<meta property="og:description" content="本文基于android 10源码分析
+手机长按power键，弹出关机提示对话框，如下图
+一、先来看长按power键执行的流程。
+开机后先注册输入监听事件，长按power键时，kernel层会发出一个事件上来，该事件最终被InputDispatcher.handleReceiveCallback监听到
+frameworks\native\services\inputflinger\InputDispatcher.cpp int InputDispatcher::handleReceiveCallback(int fd, int events, void* data) { InputDispatcher* d = static_cast&lt;InputDispatcher*&gt;(data); { .......... sp&lt;Connection&gt; connection = d-&gt;mConnectionsByFd.valueAt(connectionIndex); if (!(events &amp; (ALOOPER_EVENT_ERROR | ALOOPER_EVENT_HANGUP))) { ....... status_t status; for (;;) { uint32_t seq; bool handled; //收到完成分发的信号才跳出循环 status = connection-&gt;inputPublisher.receiveFinishedSignal(&amp;seq, &amp;handled); if (status) { break; } //完成分发循环 d-&gt;finishDispatchCycleLocked(currentTime, connection, seq, handled); gotOne = true; } ........ } ......... return 0; // remove the callback } // release lock frameworks\native\services\inputflinger\InputDispatcher." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/1e8ab66ac0de574193b0d7cd2c9b932d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-09-07T15:10:01+08:00" />
+<meta property="article:modified_time" content="2023-09-07T15:10:01+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">详解Android 关机/重启流程</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>本文基于android 10源码分析</p> 
+<p>手机长按power键，弹出关机提示对话框，如下图</p> 
+<p><img alt="" height="161" src="https://images2.imgbox.com/d2/36/p08hih2U_o.png" width="265"></p> 
+<p><strong>一、先来看长按power键执行的流程。</strong></p> 
+<p>开机后先注册输入监听事件，长按power键时，kernel层会发出一个事件上来，该事件最终被InputDispatcher.handleReceiveCallback监听到</p> 
+<pre><code class="language-java">frameworks\native\services\inputflinger\InputDispatcher.cpp
+int InputDispatcher::handleReceiveCallback(int fd, int events, void* data) {
+InputDispatcher* d = static_cast&lt;InputDispatcher*&gt;(data);
+{ 
+..........
+    sp&lt;Connection&gt; connection = d-&gt;mConnectionsByFd.valueAt(connectionIndex);
+    if (!(events &amp; (ALOOPER_EVENT_ERROR | ALOOPER_EVENT_HANGUP))) {
+       .......
+        status_t status;
+        for (;;) {
+            uint32_t seq;
+            bool handled;
+            //收到完成分发的信号才跳出循环
+            status = connection-&gt;inputPublisher.receiveFinishedSignal(&amp;seq, &amp;handled);
+            if (status) {
+                break;
+            }
+            //完成分发循环
+            d-&gt;finishDispatchCycleLocked(currentTime, connection, seq, handled);
+            gotOne = true;
+        }
+       ........
+    }
+    .........
+    return 0; // remove the callback
+} // release lock</code></pre> 
+<pre><code class="language-java">frameworks\native\services\inputflinger\InputDispatcher.cpp
+void InputDispatcher::finishDispatchCycleLocked(nsecs_t currentTime,
+const sp&lt;Connection&gt;&amp; connection, uint32_t seq, bool handled) {
+    ......
+    // 完成一次按键分发，通知其他系统组件并准备开始下一个调度周期
+    onDispatchCycleFinishedLocked(currentTime, connection, seq, handled);
+}</code></pre> 
+<pre><code class="language-cpp">frameworks\native\services\inputflinger\InputDispatcher.cpp
+void InputDispatcher::onDispatchCycleFinishedLocked(
+        nsecs_t currentTime, const sp&lt;Connection&gt;&amp; connection, uint32_t seq, bool handled) {
+    CommandEntry* commandEntry = postCommandLocked(
+            &amp; InputDispatcher::doDispatchCycleFinishedLockedInterruptible);
+    commandEntry-&gt;connection = connection;
+    commandEntry-&gt;eventTime = currentTime;
+    commandEntry-&gt;seq = seq;
+    commandEntry-&gt;handled = handled;
+}
+</code></pre> 
+<pre><code class="language-cpp">frameworks\native\services\inputflinger\InputDispatcher.cpp
+void InputDispatcher::doDispatchCycleFinishedLockedInterruptible(
+CommandEntry* commandEntry) {
+.........
+    //按键事件
+    if (dispatchEntry-&gt;eventEntry-&gt;type == EventEntry::TYPE_KEY) {
+        KeyEntry* keyEntry = static_cast&lt;KeyEntry*&gt;(dispatchEntry-&gt;eventEntry);
+        restartEvent = afterKeyEventLockedInterruptible(connection,
+                dispatchEntry, keyEntry, handled);
+    } else if (dispatchEntry-&gt;eventEntry-&gt;type == EventEntry::TYPE_MOTION) {//触摸滑动事件
+        MotionEntry* motionEntry = static_cast&lt;MotionEntry*&gt;(dispatchEntry-&gt;eventEntry);
+        restartEvent = afterMotionEventLockedInterruptible(connection,
+                dispatchEntry, motionEntry, handled);
+    } else {
+        restartEvent = false;
+    }
+    // 开始下一次的按键分发
+    startDispatchCycleLocked(now(), connection);
+}</code></pre> 
+<pre><code class="language-cpp">bool InputDispatcher::afterKeyEventLockedInterruptible(const sp&lt;Connection&gt;&amp; connection,
+        DispatchEntry* dispatchEntry, KeyEntry* keyEntry, bool handled) {
+  ..............................
+            KeyEvent event;
+            //对keyevent的结构体赋值，如按键的keyCode action downtime eventtime等
+            initializeKeyEvent(&amp;event, keyEntry);
+            event.setFlags(event.getFlags() | AKEY_EVENT_FLAG_CANCELED);
+
+            mLock.unlock();
+            //继续分发事件
+
+            mPolicy-&gt;dispatchUnhandledKey(connection-&gt;inputChannel-&gt;getToken(),
+                                          &amp;event, keyEntry-&gt;policyFlags, &amp;event);
+
+          ...............
+
+}</code></pre> 
+<pre><code class="language-cpp">android\frameworks\base\services\core\jni\com_android_server_input_InputManagerService.cpp
+bool NativeInputManager::dispatchUnhandledKey(const sp&lt;IBinder&gt;&amp; token,
+        const KeyEvent* keyEvent, uint32_t policyFlags, KeyEvent* outFallbackKeyEvent) {
+  ........
+    if (policyFlags &amp; POLICY_FLAG_TRUSTED) {
+    ......
+        if (keyEventObj) {
+        //回调到JAVA层InputManagerService.java
+            jobject fallbackKeyEventObj = env-&gt;CallObjectMethod(mServiceObj,
+                    gServiceClassInfo.dispatchUnhandledKey,
+                    tokenObj, keyEventObj, policyFlags);
+            if (checkAndClearExceptionFromCallback(env, "dispatchUnhandledKey")) {
+                fallbackKeyEventObj = nullptr;
+            }
+      ........      
+    }
+    return result;
+}</code></pre> 
+<p>事件是从native层的InputDispatcher.cpp一直传到java层，在native层主要做了keyevent的封装，循环等待下一次事件的分发。</p> 
+<p><strong>二、从native调用到java层后，我们继续看看它的数据流向是怎么调用到关机提示框的</strong></p> 
+<pre><code class="language-cpp">frameworks\base\services\core\java\com\android\server\input\InputManagerService.java
+//由native层com_android_server_input_InputManagerService.cpp的NativeInputManager::dispatchUnhandledKey回调
+private KeyEvent dispatchUnhandledKey(IBinder focus, KeyEvent event, int policyFlags) {
+    return mWindowManagerCallbacks.dispatchUnhandledKey(focus, event, policyFlags);
+}
+</code></pre> 
+<p>mWindowManagerCallbacks是在SystemServer.startOtherServices得到InputManagerCallback并设置的，所以dispatchUnhandledKey是在InputManagerCallback.java</p> 
+<pre><code class="language-cpp">frameworks\base\services\core\java\com\android\server\wm\InputManagerCallback.java
+public KeyEvent dispatchUnhandledKey(
+        IBinder focus, KeyEvent event, int policyFlags) {
+    WindowState windowState = mService.windowForClientLocked(null, focus, false);
+    //mService.mPolicy是PhoneWindowManager的实例
+    return mService.mPolicy.dispatchUnhandledKey(windowState, event, policyFlags);
+}</code></pre> 
+<p>直接看它的调用栈：</p> 
+<p>PhoneWindowManager.dispatchUnhandledKey--&gt;PhoneWindowManager.interceptFallback --&gt; PhoneWindowManager.interceptKeyBeforeDispatching --&gt;PhoneWindowManager.interceptPowerKeyDown --&gt;PhoneWindowManager.powerLongPress --&gt;PhoneWindowManager. showGlobalActionsInternal--&gt;GlobalActions.showDialog --&gt;LegacyGlobalActions.showDialog</p> 
+<p>最后走到LegacyGlobalActions类，该类是关机提示框的实现类，提示框的显示、逻辑处理都是在此实现，对话框显示的不仅仅是关机/重启，还有飞行模式、截图、锁定等，不同的手机开发商定制的功能也不同，对话框的创建逻辑</p> 
+<pre><code class="language-cpp">frameworks\base\services\core\java\com\android\server\policy\LegacyGlobalActions.java
+private ActionsDialog createDialog() {
+    // Simple toggle style if there's no vibrator, otherwise use a tri-state
+    if (!mHasVibrator) {
+        mSilentModeAction = new SilentModeToggleAction();
+    } else {
+        mSilentModeAction = new SilentModeTriStateAction(mContext, mAudioManager, mHandler);
+    }
+    //飞行模式相关
+    mAirplaneModeOn = new ToggleAction(
+            R.drawable.ic_lock_airplane_mode,
+            R.drawable.ic_lock_airplane_mode_off,
+            R.string.global_actions_toggle_airplane_mode,
+            R.string.global_actions_airplane_mode_on_status,
+            R.string.global_actions_airplane_mode_off_status) {
+            ....................
+        }
+
+        @Override
+        public boolean showDuringKeyguard() {
+            return true;
+        }
+
+        @Override
+        public boolean showBeforeProvisioning() {
+            return false;
+        }
+    };
+    onAirplaneModeChanged();
+
+    mItems = new ArrayList&lt;Action&gt;();
+    String[] defaultActions = mContext.getResources().getStringArray(
+            com.android.internal.R.array.config_globalActionsList);
+
+    ArraySet&lt;String&gt; addedKeys = new ArraySet&lt;String&gt;();
+    for (int i = 0; i &lt; defaultActions.length; i++) {
+        String actionKey = defaultActions[i];
+        if (addedKeys.contains(actionKey)) {
+          ...................
+        } else if (GLOBAL_ACTION_KEY_RESTART.equals(actionKey)) {
+            mItems.add(new RestartAction(mContext, mWindowManagerFuncs));//把重启添加到列表
+        } else {
+            Log.e(TAG, "Invalid global action key " + actionKey);
+        }
+        // Add here so we don't add more than one.
+        addedKeys.add(actionKey);
+    }
+
+    ...............
+    ActionsDialog dialog = new ActionsDialog(mContext, params);
+    dialog.setCanceledOnTouchOutside(false); // Handled by the custom class.
+
+    dialog.getListView().setItemsCanFocus(true);
+    dialog.getListView().setLongClickable(true);
+    dialog.getListView().setOnItemLongClickListener(//对话框长按事件
+            new AdapterView.OnItemLongClickListener() {
+                @Override
+                public boolean onItemLongClick(AdapterView&lt;?&gt; parent, View view, int position,
+                        long id) {
+                    final Action action = mAdapter.getItem(position);
+                    if (action instanceof LongPressAction) {
+                        return ((LongPressAction) action).onLongPress();
+                    }
+                    return false;
+                }
+    });
+    dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_KEYGUARD_DIALOG);
+
+    dialog.setOnDismissListener(this);
+
+    return dialog;
+}</code></pre> 
+<p>对话框Item的点击事件，点击事件后的onPress()是RestartAction里的onPress()</p> 
+<pre><code class="language-cpp">frameworks\base\services\core\java\com\android\server\policy\LegacyGlobalActions.java
+@Override
+public void onClick(DialogInterface dialog, int which) {
+    if (!(mAdapter.getItem(which) instanceof SilentModeTriStateAction)) {
+        dialog.dismiss();
+    }
+    mAdapter.getItem(which).onPress();//这里会走到RestartAction.onPress())
+}</code></pre> 
+<p>在RestartAction.onPress()直接调用了mWindowManagerFuncs.reboot(false)，mWindowManagerFuncs是WindowManagerService的实例，直接看它里面的reboot函数，该函数直接调用了ShutdownThread.reboot。</p> 
+<p><strong>三、ShutdownThread是重启/关机的类，重启/关机的逻辑主要在此类实现。</strong></p> 
+<p>先看看此类的基本结构，此类是final类，不能被其他类继承，也不能被其他类覆盖，属于线程类，继承Thread。</p> 
+<p>ShutdownThread.reboot进入到了shutdownInner然后调用ShutdownThread.beginShutdownSequence，在这里主要做了显示关机进度对话框、保持屏幕打开，启动线程</p> 
+<pre><code class="language-cpp">frameworks\base\services\core\java\com\android\server\power\ShutdownThread.java
+private static void beginShutdownSequence(Context context) {
+  ........
+  //设置关机进度对话框
+    sInstance.mProgressDialog = showShutdownDialog(context);
+    sInstance.mContext = context;
+    sInstance.mPowerManager = (PowerManager)context.getSystemService(Context.POWER_SERVICE);
+
+    // 确保不进入休眠
+    sInstance.mCpuWakeLock = null;
+    try {
+        sInstance.mCpuWakeLock = sInstance.mPowerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK, TAG + "-cpu");
+        sInstance.mCpuWakeLock.setReferenceCounted(false);
+        sInstance.mCpuWakeLock.acquire();
+    } catch (SecurityException e) {
+        Log.w(TAG, "No permission to acquire wake lock", e);
+        sInstance.mCpuWakeLock = null;
+    }
+
+    //确保屏幕打开
+    sInstance.mScreenWakeLock = null;
+    if (sInstance.mPowerManager.isScreenOn()) {
+        try {
+            sInstance.mScreenWakeLock = sInstance.mPowerManager.newWakeLock(
+                    PowerManager.FULL_WAKE_LOCK, TAG + "-screen");
+            sInstance.mScreenWakeLock.setReferenceCounted(false);
+            sInstance.mScreenWakeLock.acquire();
+        } catch (SecurityException e) {
+            Log.w(TAG, "No permission to acquire wake lock", e);
+            sInstance.mScreenWakeLock = null;
+        }
+    }
+ .............
+    };
+    sInstance.start();//启动线程
+}</code></pre> 
+<p>启动线程后，进入到run()</p> 
+<pre><code class="language-cpp">frameworks\base\services\core\java\com\android\server\power\ShutdownThread.java
+public void run() {
+    ...................
+    //重启后是否进入安全模式
+    if (mRebootSafeMode) {
+        SystemProperties.set(REBOOT_SAFEMODE_PROPERTY, "1");
+    }
+
+     //检测是否有关机动画，禁止屏幕旋转
+    if (checkAnimationFileExist()) {
+        freeze_orien_shutdownanim();
+    }
+
+  ............
+    // 发送关机广播
+    mActionDone = false;
+    Intent intent = new Intent(Intent.ACTION_SHUTDOWN);
+    intent.addFlags(Intent.FLAG_RECEIVER_FOREGROUND | Intent.FLAG_RECEIVER_REGISTERED_ONLY);
+    if (checkAnimationFileExist()) {
+       intent.putExtra("PLAY_SHUTDOWN_ANIMATION",1);
+    }
+    mContext.sendOrderedBroadcastAsUser(intent,
+            UserHandle.ALL, null, br, mHandler, 0, null, null);
+
+    //检查是否有关机动画
+    if (checkAnimationFileExist()) {
+        start_shutdownanim();//显示关机动画，----【见小节3.1】
+        thaw_orien_shutdownanim();//解除禁止屏幕旋转
+    }
+   ..................
+    if (am != null) {
+        try {
+            am.shutdown(MAX_BROADCAST_TIME);//关闭activityManager-----【见小节3.2】
+        } catch (RemoteException e) {
+        }
+    }
+   ................
+    final PackageManagerService pm = (PackageManagerService)
+        ServiceManager.getService("package");
+    if (pm != null) {
+        pm.shutdown();//关闭PackageManager ----------【见小节3.3】
+    }
+    ............
+    shutdownRadios(MAX_RADIO_WAIT_TIME);//关闭射频
+    ...........
+    if (checkAnimationFileExist()) {
+        wait_shutdownanim_end();//等待动画结束 -------------【见小节3.4】
+    }
+    mPowerManager.goToSleep(SystemClock.uptimeMillis());//关闭屏幕，进入休眠
+    rebootOrShutdown(mContext, mReboot, mReason);//重启或关机 ------【见小节3.5】
+}</code></pre> 
+<p>线程run主要是对关机进度、关机动画、关闭AMS、PMS、射频等，最后等待动画结束，关闭屏幕进入休眠，真正进入重启或关机</p> 
+<p><strong>3.1 ShutdownThread.start_shutdownanim</strong></p> 
+<pre><code class="language-cpp">private static void start_shutdownanim() {
+    try {
+        SystemProperties.set(LOOP_COMPLETED_PROP_NAME, "false");
+        SystemProperties.set("service.bootanim.exit", "0");
+        SystemProperties.set("ctl.start", "shutdownanim");
+    } catch (Exception e){
+       Log.e(TAG,"shutdownanim command exe err!");
+    }
+}</code></pre> 
+<p>这里设置了两个属性，一个标记动画是否退出，一个是显示关机动画。属性“ctrl.start”和"ctrl.stop"是用来启动和停止服务，这里表示启动关机动画，然后显示关机动画的画面</p> 
+<p><strong>3.2 ActivityManagerService.shutdown</strong></p> 
+<pre><code class="language-cpp">public boolean shutdown(int timeout) {
+    //检测权限
+    if (checkCallingPermission(android.Manifest.permission.SHUTDOWN)
+            != PackageManager.PERMISSION_GRANTED) {
+        throw new SecurityException("Requires permission "
+                + android.Manifest.permission.SHUTDOWN);
+    }
+
+    final boolean timedout = mAtmInternal.shuttingDown(mBooted, timeout);//关闭activity ------【见3.2.1】
+
+    mAppOpsService.shutdown();//关闭op的服务，其实就是把应用的操作时间、uid等保存到 /data/system/appops.xml
+    if (mUsageStatsService != null) {
+        mUsageStatsService.prepareShutdown();//关闭使用状态服务，把状态信息写入到/data/system/users/0/app_idle_stats.xml
+    }
+    mBatteryStatsService.shutdown();//关闭电池状态服务 --------【见3.2.2】
+    synchronized (this) {
+        mProcessStats.shutdownLocked();//保存当前进程的状态，把进程信息写入到/data/system/procstats目录下
+    }
+
+    return timedout;
+}</code></pre> 
+<p><strong>3.2.1 ActivityTaskManagerService.ShuttingDown</strong></p> 
+<pre><code class="language-cpp">public boolean shuttingDown(boolean booted, int timeout) {
+    synchronized (mGlobalLock) {
+        mShuttingDown = true;
+        mRootActivityContainer.prepareForShutdown();//屏幕进入休眠
+        updateEventDispatchingLocked(booted);//关闭触摸、按键等事件的分发
+        notifyTaskPersisterLocked(null, true);//更新最近任务 移除最近应用的缩略图、保存最近应用的信息到/data/system_ce/0/recent_tasks目录下
+        return mStackSupervisor.shutdownLocked(timeout);//关闭activity栈管理
+    }
+}</code></pre> 
+<p><strong>3.2.2 BatteryStatesService.shutdown</strong></p> 
+<pre><code class="language-cpp">public void shutdown() {
+    Slog.w("BatteryStats", "Writing battery stats before shutdown...");
+
+    syncStats("shutdown", BatteryExternalStatsWorker.UPDATE_ALL);
+
+    synchronized (mStats) {
+        //调用到BatteryStatsImpl.shutdownLocked,保存当前电池状态到/data/system/batterystats.bin,把之前的电池状态信息保存到/data/system/battery-history目录下
+        mStats.shutdownLocked();
+    }
+    // 关闭当前线程池
+    mWorker.shutdown();
+}</code></pre> 
+<p><strong>3.3 PackageManagerService.shutdown</strong></p> 
+<pre><code class="language-cpp">public void shutdown() {
+    mPackageUsage.writeNow(mPackages);//保存应用使用的数据到/data/system/package-usage.list
+    mCompilerStats.writeNow();//统计文件预编译的信息并保存到/data/system/package-cstats.list
+    mDexManager.writePackageDexUsageNow();//把使用了dex的应用信息保存到/data/system/package-dex-usage.list
+    PackageWatchdog.getInstance(mContext).writeNow();
+
+    // This is the last chance to write out pending restriction settings
+    synchronized (mPackages) {
+        if (mHandler.hasMessages(WRITE_PACKAGE_RESTRICTIONS)) {
+            mHandler.removeMessages(WRITE_PACKAGE_RESTRICTIONS);
+            for (int userId : mDirtyUsers) {
+                mSettings.writePackageRestrictionsLPr(userId);//把应用的信息保存到/data/system/users/0/package-restrictions.xml
+            }
+            mDirtyUsers.clear();
+        }
+    }
+}</code></pre> 
+<p><strong>3.4 ShutdownThread.wait_shutdownanim_end</strong></p> 
+<pre><code class="language-cpp">frameworks\base\services\core\java\com\android\server\power\ShutdownThread.java
+private static final String LOOP_COMPLETED_PROP_NAME = "sys.anim_loop.completed";
+private static void wait_shutdownanim_end() {
+    while(!SystemProperties.get(LOOP_COMPLETED_PROP_NAME, "false").equals("true")) {
+        try {
+            Thread.sleep(200);
+        } catch (Exception e) {
+        }
+    }
+}</code></pre> 
+<p>通过循环监听sys.anim_loop.completed的属性值来判断是否退出关机动画</p> 
+<p><strong>3.5 ShutdownThread.rebootOrShutdown</strong></p> 
+<pre><code class="language-cpp">public static void rebootOrShutdown(final Context context, boolean reboot, String reason) {
+    if (reboot) {
+        Log.i(TAG, "Rebooting, reason: " + reason);
+        PowerManagerService.lowLevelReboot(reason);//进入重启
+        Log.e(TAG, "Reboot failed, will attempt shutdown instead");
+        reason = null;
+    } else if (SHUTDOWN_VIBRATE_MS &gt; 0 &amp;&amp; context != null) {//如果是关机，则开启震动
+        Vibrator vibrator = new SystemVibrator(context);
+        try {
+            vibrator.vibrate(SHUTDOWN_VIBRATE_MS, VIBRATION_ATTRIBUTES);
+        } catch (Exception e) {
+            // Failure to vibrate shouldn't interrupt shutdown.  Just log it.
+            Log.w(TAG, "Failed to vibrate during shutdown.", e);
+        }
+        try {
+            Thread.sleep(SHUTDOWN_VIBRATE_MS);
+        } catch (InterruptedException unused) {
+        }
+    }
+    // 进入关机
+    Log.i(TAG, "Performing low-level shutdown...");
+    PowerManagerService.lowLevelShutdown(reason);
+}</code></pre> 
+<p>我们来看看进入重启lowLevelReboot函数做了什么</p> 
+<pre><code class="language-cpp">base/services/core/java/com/android/server/power/PowerManagerService.java
+public static void lowLevelReboot(String reason) {
+    if (reason == null) {
+        reason = "";
+    }
+    //根据reason重启后进入哪一种模式
+    if (reason.equals(PowerManager.REBOOT_QUIESCENT)) {
+        sQuiescent = true;
+        reason = "";
+    } else if (reason.endsWith("," + PowerManager.REBOOT_QUIESCENT)) {
+        sQuiescent = true;
+        reason = reason.substring(0,
+                reason.length() - PowerManager.REBOOT_QUIESCENT.length() - 1);
+    }
+
+    if (reason.equals(PowerManager.REBOOT_RECOVERY)
+            || reason.equals(PowerManager.REBOOT_RECOVERY_UPDATE)) {
+        reason = "recovery";
+    }
+
+    if (sQuiescent) {
+        reason = reason + ",quiescent";
+    }
+
+    SystemProperties.set("sys.powerctl", "reboot," + reason);//设置sys.powerctl属性
+    try {
+        Thread.sleep(20 * 1000L);
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+    }
+    Slog.wtf(TAG, "Unexpected return from lowLevelReboot!");
+}</code></pre> 
+<p>可以看到我们可以根据参数reason来设置重启后让设备进入哪一种模式，最后把reboot和reason一起保存到属性sys.powerctl上，init进程监听到sys.powerctl被设置了，如果值是reboot则开启开机的流程。</p> 
+<p>如重启后需要进入recovery模式则只需把reason赋值为recovery，</p> 
+<p>在关机流程中，调用的是PowerManagerService.lowLevelShutdown函数，这个函数仅设置sys.powerctl的属性值为shutdown和reason。</p> 
+<p><strong>四、为什么设置了sys.powerctl的属性设备就关机/重启了呢？继续跟随sys.powerctl的属性，看看做了哪些事情</strong></p> 
+<pre><code class="language-cpp">system/core/init/propery_service.cpp
+uint32_t HandlePropertySet(const std::string&amp; name, const std::string&amp; value,
+                           const std::string&amp; source_context, const ucred&amp; cr,
+                           SocketConnection* socket, std::string* error) {
+    if (auto ret = CheckPermissions(name, value, source_context, cr, error); ret != PROP_SUCCESS) {
+        return ret;
+    }
+
+    if (StartsWith(name, "ctl.")) {//以ctl.开头的属性进入另外一个分支
+        return SendControlMessage(name.c_str() + 4, value, cr.pid, socket, error);
+    }
+
+    // sys.powerctl is a special property that is used to make the device reboot.  We want to log
+    // any process that sets this property to be able to accurately blame the cause of a shutdown.
+    if (name == "sys.powerctl") {//关注点
+        std::string cmdline_path = StringPrintf("proc/%d/cmdline", cr.pid);
+        std::string process_cmdline;
+        std::string process_log_string;
+        if (ReadFileToString(cmdline_path, &amp;process_cmdline)) {//通过pid读取进程名
+            // Since cmdline is null deliminated, .c_str() conveniently gives us just the process
+            // path.
+            process_log_string = StringPrintf(" (%s)", process_cmdline.c_str());
+        }
+        LOG(INFO) &lt;&lt; "Received sys.powerctl='" &lt;&lt; value &lt;&lt; "' from pid: " &lt;&lt; cr.pid
+                  &lt;&lt; process_log_string;
+    }
+    .........
+    return PropertySet(name, value, error);
+}</code></pre> 
+<p>属性有改变时，就会触发property_changed</p> 
+<pre><code class="language-cpp">system/core/init/init.cpp
+void property_changed(const std::string&amp; name, const std::string&amp; value) {
+
+    if (name == "sys.powerctl") {
+
+        shutdown_command = value;//属性值赋给shutdown_command
+        do_shutdown = true;
+    }
+
+    if (property_triggers_enabled) ActionManager::GetInstance().QueuePropertyChange(name, value);
+
+    if (waiting_for_prop) {
+        if (wait_prop_name == name &amp;&amp; wait_prop_value == value) {
+            LOG(INFO) &lt;&lt; "Wait for property '" &lt;&lt; wait_prop_name &lt;&lt; "=" &lt;&lt; wait_prop_value
+                      &lt;&lt; "' took " &lt;&lt; *waiting_for_prop;
+            ResetWaitForProp();
+        }
+    }
+}</code></pre> 
+<pre><code class="language-cpp">system/core/init/init.cpp
+int SecondStageMain(int argc, char** argv) {
+    ............
+    while (true) {
+        // By default, sleep until something happens.
+        auto epoll_timeout = std::optional&lt;std::chrono::milliseconds&gt;{};
+
+        if (do_shutdown &amp;&amp; !shutting_down) {
+            do_shutdown = false;
+            if (HandlePowerctlMessage(shutdown_command)) {//关机/重启消息---【见4.1小节】
+                shutting_down = true;
+            }
+        }
+
+        if (!(waiting_for_prop || Service::is_exec_service_running())) {
+            am.ExecuteOneCommand();//只需命令，命令的发送是在HandlePowerctlMessage函数里封装的
+        }
+        if (!(waiting_for_prop || Service::is_exec_service_running())) {
+            if (!shutting_down) {
+                auto next_process_action_time = HandleProcessActions();
+
+                // If there's a process that needs restarting, wake up in time for that.
+                if (next_process_action_time) {
+                    epoll_timeout = std::chrono::ceil&lt;std::chrono::milliseconds&gt;(
+                            *next_process_action_time - boot_clock::now());
+                    if (*epoll_timeout &lt; 0ms) epoll_timeout = 0ms;
+                }
+            }
+
+            // If there's more work to do, wake up again immediately.
+            if (am.HasMoreCommands()) epoll_timeout = 0ms;
+        }
+
+        if (auto result = epoll.Wait(epoll_timeout); !result) {//进入等待，不会消耗CPU，时间到达epoll_timeout后唤醒
+            LOG(ERROR) &lt;&lt; result.error();
+        }
+    }
+
+    return 0;
+}</code></pre> 
+<p>SecondStageMain是在开机阶段进行的，通过while进入死循环，epoll.wait进入等待，时间到达后唤醒</p> 
+<p><strong>4.1小节</strong></p> 
+<pre><code class="language-cpp">system/core/init/reboot.cpp
+bool HandlePowerctlMessage(const std::string&amp; command) {
+    unsigned int cmd = 0;
+    std::vector&lt;std::string&gt; cmd_params = Split(command, ",");
+    std::string reboot_target = "";
+    bool run_fsck = false;
+    bool command_invalid = false;
+
+    if (cmd_params.size() &gt; 3) {
+        command_invalid = true;
+    } else if (cmd_params[0] == "shutdown") {
+        cmd = ANDROID_RB_POWEROFF;//如果是手动关机，cmd_params.size为1
+        if (cmd_params.size() == 2) {
+            if (cmd_params[1] == "userrequested") {
+                // The shutdown reason is PowerManager.SHUTDOWN_USER_REQUESTED.
+                // Run fsck once the file system is remounted in read-only mode.
+                run_fsck = true;
+            } else if (cmd_params[1] == "thermal") {
+                // Turn off sources of heat immediately.
+                TurnOffBacklight();
+                // run_fsck is false to avoid delay
+                cmd = ANDROID_RB_THERMOFF;
+            }
+        }
+    } else if (cmd_params[0] == "reboot") {
+        cmd = ANDROID_RB_RESTART2;
+        if (cmd_params.size() &gt;= 2) {
+            reboot_target = cmd_params[1];
+            // adb reboot fastboot should boot into bootloader for devices not
+            // supporting logical partitions.
+            if (reboot_target == "fastboot" &amp;&amp;
+                !android::base::GetBoolProperty("ro.boot.dynamic_partitions", false)) {
+                reboot_target = "bootloader";
+            }
+            // When rebooting to the bootloader notify the bootloader writing
+            // also the BCB.
+            if (reboot_target == "bootloader") {//重启进入bootloader
+                std::string err;
+                if (!write_reboot_bootloader(&amp;err)) {
+                    LOG(ERROR) &lt;&lt; "reboot-bootloader: Error writing "
+                                  "bootloader_message: "
+                               &lt;&lt; err;
+                }
+            } else if (reboot_target == "sideload" || reboot_target == "sideload-auto-reboot" ||
+                       reboot_target == "fastboot") {
+                std::string arg = reboot_target == "sideload-auto-reboot" ? "sideload_auto_reboot"
+                                                                          : reboot_target;
+                const std::vector&lt;std::string&gt; options = {
+                        "--" + arg,
+                };
+                std::string err;
+                if (!write_bootloader_message(options, &amp;err)) {
+                    LOG(ERROR) &lt;&lt; "Failed to set bootloader message: " &lt;&lt; err;
+                    return false;
+                }
+                reboot_target = "recovery";
+            }
+
+            // If there is an additional parameter, pass it along
+            if ((cmd_params.size() == 3) &amp;&amp; cmd_params[2].size()) {
+                reboot_target += "," + cmd_params[2];
+            }
+        }
+    } else {
+        command_invalid = true;
+    }
+    if (command_invalid) {
+        LOG(ERROR) &lt;&lt; "powerctl: unrecognized command '" &lt;&lt; command &lt;&lt; "'";
+        return false;
+    }
+
+    LOG(INFO) &lt;&lt; "Clear action queue and start shutdown trigger";
+    ActionManager::GetInstance().ClearQueue();
+    // Queue shutdown trigger first
+    ActionManager::GetInstance().QueueEventTrigger("shutdown");
+    // Queue built-in shutdown_done
+    auto shutdown_handler = [cmd, command, reboot_target, run_fsck](const BuiltinArguments&amp;) {
+        DoReboot(cmd, command, reboot_target, run_fsck);//做重启命令---【见4.2小节】
+        return Success();
+    };
+    ..............
+    return true;
+}</code></pre> 
+<p>4.2小节</p> 
+<pre><code class="language-cpp">static void DoReboot(unsigned int cmd, const std::string&amp; reason, const std::string&amp; rebootTarget,
+                     bool runFsck) {
+    ..................
+    // 关闭步骤
+    // 1. 关闭出关键的服务之外的所有服务
+    if (shutdown_timeout &gt; 0ms) {
+        LOG(INFO) &lt;&lt; "terminating init services";
+
+        // Ask all services to terminate except shutdown critical ones.
+        for (const auto&amp; s : ServiceList::GetInstance().services_in_shutdown_order()) {
+            if (!s-&gt;IsShutdownCritical()) s-&gt;Terminate();
+        }
+
+        int service_count = 0;
+        // Only wait up to half of timeout here
+        auto termination_wait_timeout = shutdown_timeout / 2;
+        while (t.duration() &lt; termination_wait_timeout) {
+            ReapAnyOutstandingChildren();
+
+            service_count = 0;
+            for (const auto&amp; s : ServiceList::GetInstance()) {
+                // Count the number of services running except shutdown critical.
+                // Exclude the console as it will ignore the SIGTERM signal
+                // and not exit.
+                // Note: SVC_CONSOLE actually means "requires console" but
+                // it is only used by the shell.
+                if (!s-&gt;IsShutdownCritical() &amp;&amp; s-&gt;pid() != 0 &amp;&amp; (s-&gt;flags() &amp; SVC_CONSOLE) == 0) {
+                    service_count++;
+                }
+            }
+
+            if (service_count == 0) {
+                // All terminable services terminated. We can exit early.
+                break;
+            }
+
+            // Wait a bit before recounting the number or running services.
+            std::this_thread::sleep_for(50ms);
+        }
+        LOG(INFO) &lt;&lt; "Terminating running services took " &lt;&lt; t
+                  &lt;&lt; " with remaining services:" &lt;&lt; service_count;
+    }
+
+    // minimum safety steps before restarting
+    // 2. 关闭出关机之外的所有服务
+    for (const auto&amp; s : ServiceList::GetInstance().services_in_shutdown_order()) {
+        if (!s-&gt;IsShutdownCritical()) s-&gt;Stop();
+    }
+    SubcontextTerminate();
+    ReapAnyOutstandingChildren();
+
+    // 3. 关闭ROM的所有分区
+    Service* voldService = ServiceList::GetInstance().FindService("vold");
+    if (voldService != nullptr &amp;&amp; voldService-&gt;IsRunning()) {
+        ShutdownVold();
+        voldService-&gt;Stop();
+    } else {
+        LOG(INFO) &lt;&lt; "vold not running, skipping vold shutdown";
+    }
+    // logcat stopped here
+    for (const auto&amp; s : ServiceList::GetInstance().services_in_shutdown_order()) {
+        if (kill_after_apps.count(s-&gt;name())) s-&gt;Stop();
+    }
+    // 4. 卸载所有硬盘分区等
+    {
+        Timer sync_timer;
+        LOG(INFO) &lt;&lt; "sync() before umount...";
+        sync();
+        LOG(INFO) &lt;&lt; "sync() before umount took" &lt;&lt; sync_timer;
+    }
+    // 5. 清除缓存，关闭Zram分区
+    KillZramBackingDevice();
+
+    UmountStat stat = TryUmountAndFsck(runFsck, shutdown_timeout - t.duration());
+    // Follow what linux shutdown is doing: one more sync with little bit delay
+    {
+        Timer sync_timer;
+        LOG(INFO) &lt;&lt; "sync() after umount...";
+        sync();
+        LOG(INFO) &lt;&lt; "sync() after umount took" &lt;&lt; sync_timer;
+    }
+    if (!is_thermal_shutdown) std::this_thread::sleep_for(100ms);
+    LogShutdownTime(stat, &amp;t);
+    // 重启
+    RebootSystem(cmd, rebootTarget);//进入到了linux和bootable的关机流程.
+    abort();
+}</code></pre> 
+<p><strong>五、总结：</strong></p> 
+<p>android的重启/关机流程从上到下，首先是在kernal层上报事件，frawework的native层InputRead读取到事件后分发给InputDispatcher，InputDispatcher把事件继续传递给java层，java层先做关机对话框显示，用户选择重启/关机后则进入到ShutdownThread类，重启/关机的逻辑是在该线程类里实现的，主要做了显示关机进度、关机动画、关闭屏幕、保存应用状态、保存电池信息等，然后直接通过sys.powerctl把关机/重启/重启后的进入的模式的值写入到属性值里 。在系统开机时通过死循环来来监听sys.powerctl的变化，并引入epoll.wait来挂起，等待时间到达后再唤醒，最后关闭所有服务、清除缓存、卸载分区等五个步骤后，进入linux和bootable的关机流程。可以看到，设置sys.powerctl的属性后是关机的关键，可以用这个属性避开权限的限制等。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/166deca07bd8c9233d3ff87c8bd1be8e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Hydro OJ</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/1153da38fd37f20ba242099c5e458792/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C&#43;&#43; 一种数组快速排序方法详解</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

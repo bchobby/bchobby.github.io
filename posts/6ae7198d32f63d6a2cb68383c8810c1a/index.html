@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink基础：时间和水印 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Flink基础：时间和水印" />
+<meta property="og:description" content="​
+往期推荐：
+Flink基础：入门介绍
+Flink基础：DataStream API
+Flink基础：实时处理管道与ETL
+Flink深入浅出：资源管理
+Flink深入浅出：部署模式
+Flink深入浅出：内存模型
+Flink深入浅出：JDBC Source从理论到实战
+Flink深入浅出：Sql Gateway源码分析
+Flink深入浅出：JDBC Connector源码分析
+本篇终于到了Flink的核心内容：时间与水印。最初接触这个概念是在Spark Structured Streaming中，一直无法理解水印的作用。直到使用了一段时间Flink之后，对实时流处理有了一定的理解，才想清楚其中的缘由。接下来就来介绍下Flink中的时间和水印，以及基于时间特性支持的窗口处理。
+1 时间和水印 1.1 介绍 Flink支持不同的时间类型：
+事件时间：事件发生的时间，是设备生产或存储事件的时间，一般都直接存储在事件上，比如Mysql Binglog中的修改时间；或者用户访问日志的访问时间等。 摄入时间：事件进入Flink的时间，这个时间不常用。 处理时间：某个特殊的算子处理事件的时间，当不在意事件的顺序时，为了保证高吞吐低延迟，会采用这种时间。 比如想要计算给定某天的第一个小时的股票价格趋势，就需要使用事件时间。如果选择处理时间进行计算，那么将会按照当前Flink应用处理的时间进行统计，就可能会造成数据一致性问题，历史数据的分析也很难复现。还有个典型的场景是流式处理往往是7*24小时不间断的运行，加入使用处理时间，当中间停机进行代码更新或者BUG处理时，再次启动，中间未处理的数据会堆积当重启时间一次性处理，这样对统计结果就造成大大的干扰。
+1.2 使用EventTime Flink默认使用的是处理时间，可以通过下面的方法修改成事件时间：
+final StreamExecutionEnvironment env =
+StreamExecutionEnvironment.getExecutionEnvironment();
+env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
+如果需要使用事件时间，还需要提供时间抽取器和水印生成器，这样Flink才可以追踪到事件时间的处理进度。
+1.3 水印 通过下面的例子，可以了解为什么需要水印，水印是怎么工作的。在这个例子中，每个事件都带有一个时间标识，下面的数字就是事件上的时间，很明显它们是乱序到达的。第一个到达的是4，然后是2：
+23 19 22 24 21 14 17 13 12 15 9 11 7 2 4(第一个事件)
+加入现在希望对流进行排序，那么每个事件到达的时候，就需要产生一个流，按照时间戳排好序输出每个到达的事件。
+上帝视角：第一个到达的事件是4，但是不能立刻就把它当做第一个元素放入排序流中，因为现在事件是乱序的，无法确定前面的事件是否已经到达。当然现在你已经看到完整的事件顺序，当然会知道只要再等待一个事件，4之前的事件就都处理完了(这就是上帝视角)，但在现实中我们是一条条接收的数据，无法知道4后面出现的是2。 缓存和延迟：如果使用缓存，那么很有可能会永远停止等待。第一个事件是4，第二个事件是2，我们是不是只需要等待一个事件就能保证事件的完整？可能是，也可能不是，比如现在事件就永远等待不到1。 排序策略：对于任何给定的时间事件停止等待之前的数据，直接进行排序。这就是水印的作用：用来定义何时停止等待更早的数据。Flink中的事件时间处理依赖于水印生成器，每当元素进入到Flink，会根据其事件时间，生成一个新的时间戳，即水印。对于t时间的水印，意味着Flink不会再接收t之前的数据，那么t之前的数据就可以进行排序产出顺序流了。在上面的例子中，当水印的时间戳到达2时，就会把2事件输出。 水印策略：每当事件延迟到达时，这些延迟都不是固定的，一种简单的方式是按照最大的延迟事件来判断。对于大部分的应用，这种固定水印都可以工作的比较好。 1.4 延迟和完整性 在批处理中，用户可以一次性看到全部的数据，因此可以很容易的知道事件的顺序。在流处理中总需要等待一段时间，确定事件完整后才能产生结果。可以很激进的配置一个较短的水印延迟时间，这样虽然输入结果不完整(有的时间延迟还未到达就已经开始计算)，但是速度会很快。或者设置较长的延迟，数据会相对完整，但是会有一定的延迟。也可以采用混合的策略，刚开始延迟小一点，当处理了部分数据后，延迟增加。
+1.5 延时 延时通过水印来定义，Watermark(t)代表了t时间的事件是完整的，即小于t的事件都可以开始处理了。
+1.6 使用水印 为了支撑事件时间机制的处理，Flink需要知道每个事件的时间，然后为其产生一个水印。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/6ae7198d32f63d6a2cb68383c8810c1a/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-11-14T23:36:00+08:00" />
+<meta property="article:modified_time" content="2020-11-14T23:36:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink基础：时间和水印</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="cnblogs_post_body" class="blogpost-body" style="font-size: 16px;"> 
+ <p></p> 
+ <div style="text-align: center;"> 
+  <img src="https://images2.imgbox.com/66/f9/TzgddmN2_o.png" style="outline: none;"> 
+ </div> 
+ <p>​</p> 
+ <p><strong>往期推荐：</strong></p> 
+ <p><a href="http://mp.weixin.qq.com/s?__biz=MzU1NjY0NTQxNw==&amp;mid=2247485026&amp;idx=1&amp;sn=6a20ba0ca67cc0a820961c6bc8cd04bc&amp;chksm=fbc0ab24ccb722326873e7432736116f44b948e35f5712a38c85225aa56ffc29c88c4d299b83&amp;scene=21#wechat_redirect" rel="nofollow noopener noreferrer" target="_blank">Flink基础：入门介绍</a></p> 
+ <p><a href="http://mp.weixin.qq.com/s?__biz=MzU1NjY0NTQxNw==&amp;mid=2247485037&amp;idx=1&amp;sn=96cf9ea57cef091021874badf28a9f76&amp;chksm=fbc0ab2bccb7223d09e5ed2559dabca228834f1fff3bc950c7cbd9b25da1923d0ebc33f53639&amp;scene=21#wechat_redirect" rel="nofollow noopener noreferrer" target="_blank">Flink基础：DataStream API</a></p> 
+ <p><a href="http://mp.weixin.qq.com/s?__biz=MzU1NjY0NTQxNw==&amp;mid=2247485047&amp;idx=1&amp;sn=51723763a0b8bfeb08db9fa3f1b0069b&amp;chksm=fbc0ab31ccb72227274bb09fcd6ddfe3c264d5b0ce2609e7d50c793226c87189389bf723d9f6&amp;scene=21#wechat_redirect" rel="nofollow noopener noreferrer" target="_blank">Flink基础：实时处理管道与ETL</a></p> 
+ <p><a href="http://mp.weixin.qq.com/s?__biz=MzU1NjY0NTQxNw==&amp;mid=2247484996&amp;idx=1&amp;sn=b26737e32d07a9a7bf00cf739b15e1c6&amp;chksm=fbc0ab02ccb722143a789e6a79c6ba5f331bab0042ea64ff75cc6a02381b618bf876b41d56f8&amp;scene=21#wechat_redirect" rel="nofollow noopener noreferrer" target="_blank">Flink深入浅出：资源管理</a></p> 
+ <p><a href="http://mp.weixin.qq.com/s?__biz=MzU1NjY0NTQxNw==&amp;mid=2247484987&amp;idx=1&amp;sn=cc08ab620f15d510a7c3c0700651e013&amp;chksm=fbc0ab7dccb7226b8aa0d8b31f62cd4847a70beb43f67c7982d14b005b9873972027ab68178f&amp;scene=21#wechat_redirect" rel="nofollow noopener noreferrer" target="_blank">Flink深入浅出：部署模式</a></p> 
+ <p><a href="http://mp.weixin.qq.com/s?__biz=MzU1NjY0NTQxNw==&amp;mid=2247484974&amp;idx=1&amp;sn=f02489295de20d1398b38f2ee0e939ab&amp;chksm=fbc0ab68ccb7227e243ab7db77bde55bec5c9ba5ef0a7940eb5a14000c150c3723aab30f4c5a&amp;scene=21#wechat_redirect" rel="nofollow noopener noreferrer" target="_blank">Flink深入浅出：内存模型</a></p> 
+ <p><a href="http://mp.weixin.qq.com/s?__biz=MzU1NjY0NTQxNw==&amp;mid=2247484547&amp;idx=1&amp;sn=eaab22866f7e0fa492f79349f38604e6&amp;chksm=fbc0a9c5ccb720d3c7b18de81c88f6175cb1f83286b82b253e73268a2eeb4b2a3cd5e73ab748&amp;scene=21#wechat_redirect" rel="nofollow noopener noreferrer" target="_blank">Flink深入浅出：JDBC Source从理论到实战</a></p> 
+ <p><a href="http://mp.weixin.qq.com/s?__biz=MzU1NjY0NTQxNw==&amp;mid=2247484529&amp;idx=1&amp;sn=2dbdb75daad3f248ededd88449d77f02&amp;chksm=fbc0a937ccb72021a5f06a70609b9d87f043c8fd33f423a0079885da3acf7cecd14d49f2dff4&amp;scene=21#wechat_redirect" rel="nofollow noopener noreferrer" target="_blank">Flink深入浅出：Sql Gateway源码分析</a></p> 
+ <p><a href="http://mp.weixin.qq.com/s?__biz=MzU1NjY0NTQxNw==&amp;mid=2247484513&amp;idx=1&amp;sn=0402cb44d2ad55cde6b3990010e3b59d&amp;chksm=fbc0a927ccb72031d94d26fe7d43fb66be7e2059fab599b35055e8d257cd21feecbc0a15b476&amp;scene=21#wechat_redirect" rel="nofollow noopener noreferrer" target="_blank">Flink深入浅出：JDBC Connector源码分析</a></p> 
+ <p>本篇终于到了Flink的核心内容：时间与水印。最初接触这个概念是在Spark Structured Streaming中，一直无法理解水印的作用。直到使用了一段时间Flink之后，对实时流处理有了一定的理解，才想清楚其中的缘由。接下来就来介绍下Flink中的时间和水印，以及基于时间特性支持的窗口处理。</p> 
+ <h4>1 时间和水印</h4> 
+ <h6>1.1 介绍</h6> 
+ <p>Flink支持不同的时间类型：</p> 
+ <ul><li><strong>事件时间</strong>：事件发生的时间，是设备生产或存储事件的时间，一般都直接存储在事件上，比如Mysql Binglog中的修改时间；或者用户访问日志的访问时间等。</li></ul> 
+ <ul><li class="_mce_tagged_br"><strong>摄入时间</strong>：事件进入Flink的时间，这个时间不常用。</li></ul> 
+ <ul><li class="_mce_tagged_br"><strong>处理时间</strong>：某个特殊的算子处理事件的时间，当不在意事件的顺序时，为了保证高吞吐低延迟，会采用这种时间。</li></ul> 
+ <p>比如想要计算给定某天的第一个小时的股票价格趋势，就需要使用事件时间。如果选择处理时间进行计算，那么将会按照当前Flink应用处理的时间进行统计，就可能会造成数据一致性问题，历史数据的分析也很难复现。还有个典型的场景是流式处理往往是7*24小时不间断的运行，加入使用处理时间，当中间停机进行代码更新或者BUG处理时，再次启动，中间未处理的数据会堆积当重启时间一次性处理，这样对统计结果就造成大大的干扰。</p> 
+ <h6>1.2 使用EventTime</h6> 
+ <p>Flink默认使用的是处理时间，可以通过下面的方法修改成事件时间：</p> 
+ <pre class="has"><code>final StreamExecutionEnvironment env =<br>    StreamExecutionEnvironment.getExecutionEnvironment();<br>env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);<br></code></pre> 
+ <p>如果需要使用事件时间，还需要提供时间抽取器和水印生成器，这样Flink才可以追踪到事件时间的处理进度。</p> 
+ <h6>1.3 水印</h6> 
+ <p>通过下面的例子，可以了解为什么需要水印，水印是怎么工作的。在这个例子中，每个事件都带有一个时间标识，下面的数字就是事件上的时间，很明显它们是乱序到达的。第一个到达的是4，然后是2：</p> 
+ <pre class="has"><code>23 19 22 24 21 14 17 13 12 15 9 11 7 2 4(第一个事件)<br></code></pre> 
+ <p>加入现在希望对流进行排序，那么每个事件到达的时候，就需要产生一个流，按照时间戳排好序输出每个到达的事件。</p> 
+ <ul><li><strong>上帝视角</strong>：第一个到达的事件是4，但是不能立刻就把它当做第一个元素放入排序流中，因为现在事件是乱序的，无法确定前面的事件是否已经到达。当然现在你已经看到完整的事件顺序，当然会知道只要再等待一个事件，4之前的事件就都处理完了(这就是上帝视角)，但在现实中我们是一条条接收的数据，无法知道4后面出现的是2。</li></ul> 
+ <ul><li class="_mce_tagged_br"><strong>缓存和延迟</strong>：如果使用缓存，那么很有可能会永远停止等待。第一个事件是4，第二个事件是2，我们是不是只需要等待一个事件就能保证事件的完整？可能是，也可能不是，比如现在事件就永远等待不到1。</li></ul> 
+ <ul><li class="_mce_tagged_br"><strong>排序策略</strong>：对于任何给定的时间事件停止等待之前的数据，直接进行排序。这就是水印的作用：用来定义何时停止等待更早的数据。Flink中的事件时间处理依赖于水印生成器，每当元素进入到Flink，会根据其事件时间，生成一个新的时间戳，即水印。对于t时间的水印，意味着Flink不会再接收t之前的数据，那么t之前的数据就可以进行排序产出顺序流了。在上面的例子中，当水印的时间戳到达2时，就会把2事件输出。</li></ul> 
+ <ul><li class="_mce_tagged_br"><strong>水印策略</strong>：每当事件延迟到达时，这些延迟都不是固定的，一种简单的方式是按照最大的延迟事件来判断。对于大部分的应用，这种固定水印都可以工作的比较好。</li></ul> 
+ <h6>1.4 延迟和完整性</h6> 
+ <p>在批处理中，用户可以一次性看到全部的数据，因此可以很容易的知道事件的顺序。在流处理中总需要等待一段时间，确定事件完整后才能产生结果。可以很激进的配置一个较短的水印延迟时间，这样虽然输入结果不完整(有的时间延迟还未到达就已经开始计算)，但是速度会很快。或者设置较长的延迟，数据会相对完整，但是会有一定的延迟。也可以采用混合的策略，刚开始延迟小一点，当处理了部分数据后，延迟增加。</p> 
+ <h6>1.5 延时</h6> 
+ <p>延时通过水印来定义，Watermark(t)代表了t时间的事件是完整的，即小于t的事件都可以开始处理了。</p> 
+ <h6>1.6 使用水印</h6> 
+ <p>为了支撑事件时间机制的处理，Flink需要知道每个事件的时间，然后为其产生一个水印。</p> 
+ <pre class="has"><code>DataStream&lt;Event&gt; stream = ...<br><br>WatermarkStrategy&lt;Event&gt; strategy = WatermarkStrategy<br>  .&lt;Event&gt;forBoundedOutOfOrderness(Duration.ofSeconds(20))<br>  // 选择时间字段    <br>  .withTimestampAssigner((event, timestamp) -&gt; event.timestamp);<br><br>DataStream&lt;Event&gt; withTimestampsAndWatermarks =<br>  // 定义水印生成的策略<br>  stream.assignTimestampsAndWatermarks(strategy);<br></code></pre> 
+ <h4>2 窗口</h4> 
+ <p>Flink拥有丰富的窗口语义，接下来将会了解到：</p> 
+ <ul><li>如何在无限数据流上使用窗口聚合数据</li></ul> 
+ <ul><li class="_mce_tagged_br">Flink都支持什么类型的窗口</li></ul> 
+ <ul><li class="_mce_tagged_br">如何实现一个窗口聚合</li></ul> 
+ <h6>2.1 介绍</h6> 
+ <p>当进行流处理时很自然的想针对一部分数据聚合分析，比如想要统计每分钟有多少浏览、每周每个用户有多少次会话、每分钟每个传感器的最大温度等。Flink的窗口分析依赖于两个抽象概念：窗口分配器Assigner(用来指定事件属于哪个窗口，在必要的时候新建窗口)，窗口函数Function(应用于窗口内的数据)。Flink的窗口也有触发器Trigger的概念，它决定了何时调用窗口函数进行处理；Evictor用于剔除窗口中不需要计算的数据。可以像下面这样创建窗口：</p> 
+ <pre class="has"><code>stream.<br>  .keyBy(&lt;key selector&gt;)<br>  .window(&lt;window assigner&gt;)<br>  .reduce|aggregate|process(&lt;window function&gt;)<br></code></pre> 
+ <p>也可以在非key数据流上使用窗口，但是一定要小心，因为处理过程将不会并行执行：</p> 
+ <pre class="has"><code>stream.<br>  .windowAll(&lt;window assigner&gt;)<br>  .reduce|aggregate|process(&lt;window function&gt;)<br></code></pre> 
+ <h6>2.2 窗口分配器</h6> 
+ <p>Flink有几种内置的窗口分配器:</p> 
+ <p></p> 
+ <div style="text-align: center;"> 
+  <img src="https://images2.imgbox.com/24/4f/mCvNrROy_o.png" style="outline: none;"> 
+ </div> 
+ <p>按照窗口聚合的种类可以大致分为：</p> 
+ <ul><li><strong>滚动窗口</strong>：比如统计每分钟的浏览量，<code>TumblingEventTimeWindows.of(Time.minutes(1))</code></li></ul> 
+ <ul><li class="_mce_tagged_br"><strong>滑动窗口</strong>：比如每10秒钟统计一次一分钟内的浏览量，<code>SlidingEventTimeWindows.of(Time.minutes(1), Time.seconds(10))</code></li></ul> 
+ <ul><li class="_mce_tagged_br"><strong>会话窗口</strong>：统计会话内的浏览量，会话的定义是同一个用户两次访问不超过30分钟，<code>EventTimeSessionWindows.withGap(Time.minutes(30))</code></li></ul> 
+ <p>窗口的时间可以通过下面的几种时间单位来定义：</p> 
+ <ul><li>毫秒，<code>Time.milliseconds(n)</code></li></ul> 
+ <ul><li class="_mce_tagged_br">秒，<code>Time.seconds(n)</code></li></ul> 
+ <ul><li class="_mce_tagged_br">分钟，<code>Time.minutes(n)</code></li></ul> 
+ <ul><li class="_mce_tagged_br">小时，<code>Time.hours(n)</code></li></ul> 
+ <ul><li class="_mce_tagged_br">天，<code>Time.days(n)</code></li></ul> 
+ <p><strong>基于时间的窗口分配器</strong>支持事件时间和处理时间，这两种类型的时间处理的吞吐量会有差别。使用处理时间优点是延迟很低，但是也存在几个缺点：无法正确的处理历史数据；无法处理乱序数据；结果非幂等。当使用<strong>基于数量的窗口</strong>，如果数量不够，可能永远不会触发窗口操作。没有选项支持超时处理或部分窗口的处理，当然你可以通过自定义窗口的方式来实现。<strong>全局窗口分配器</strong>会在一个窗口内，统一分配每个事件。如果需要自定义窗口，一般会基于它来做。不过推荐直接使用ProcessFunction。</p> 
+ <h6>2.3 窗口函数</h6> 
+ <p>有三种选择来处理窗口中的内容：</p> 
+ <ul><li>当做批处理，使用<code>ProcessWindowFunction</code>，基于Iterable处理窗口内容</li></ul> 
+ <ul><li class="_mce_tagged_br">增量的使用<code>ReduceFunction</code>和<code>AggregateFunction</code>依次处理窗口的每个数据</li></ul> 
+ <ul><li class="_mce_tagged_br">上面两者结合，使用<code>ReduceFunction</code>和<code>AggregateFunction</code>进行预聚合，然后使用<code>ProcessFunction</code>进行批量处理。</li></ul> 
+ <p>下面给出了方法1和方法3的例子，需求为在每分钟内寻找到每个传感器的值，产生&lt;key,&gt;的结果流。</p> 
+ <h6>2.3.1 ProcessWindowFunction的例子</h6> 
+ <pre class="has"><code>DataStream&lt;SensorReading&gt; input = ...<br><br>input<br>    .keyBy(x -&gt; x.key)<br>    .window(TumblingEventTimeWindows.of(Time.minutes(1)))<br>    .process(new MyWastefulMax());<br><br>public static class MyWastefulMax extends ProcessWindowFunction&lt;<br>        SensorReading,                  // input type<br>        Tuple3&lt;String, Long, Integer&gt;,  // output type<br>        String,                         // key type<br>        TimeWindow&gt; {                   // window type<br><br>    @Override<br>    public void process(<br>            String key,<br>            Context context, <br>            Iterable&lt;SensorReading&gt; events,<br>            Collector&lt;Tuple3&lt;String, Long, Integer&gt;&gt; out) {<!-- --><br><br>        int max = 0;<br>        for (SensorReading event : events) {<!-- --><br>            max = Math.max(event.value, max);<br>        }<br>        out.collect(Tuple3.of(key, context.window().getEnd(), max));<br>    }<br>}<br></code></pre> 
+ <p>有一些内容需要了解：</p> 
+ <ul class=" list-paddingleft-2"><li> <p>所有窗口分配的时间都在Flink中按照key缓存起来，直到窗口触发，因此代价很昂贵。</p> </li><li> <p>ProcessWindowFunction中传入了Context对象，内部包含了对应的窗口信息，接口类似：</p> </li></ul> 
+ <pre class="has"><code>public abstract class Context implements java.io.Serializable {<!-- --><br>    public abstract W window();<br><br>    public abstract long currentProcessingTime();<br>    public abstract long currentWatermark();<br><br>    public abstract KeyedStateStore windowState();<br>    public abstract KeyedStateStore globalState();<br>}<br></code></pre> 
+ <p>其中windowState和globalState会为每个key、每个窗口或者全局存储信息，当需要记录窗口的某些信息的时候会很有用。</p> 
+ <h6>2.3.2 Incremental Aggregation例子</h6> 
+ <pre class="has"><code>DataStream&lt;SensorReading&gt; input = ...<br><br>input<br>    .keyBy(x -&gt; x.key)<br>    .window(TumblingEventTimeWindows.of(Time.minutes(1)))<br>    .reduce(new MyReducingMax(), new MyWindowFunction());<br><br>private static class MyReducingMax implements ReduceFunction&lt;SensorReading&gt; {<!-- --><br>    public SensorReading reduce(SensorReading r1, SensorReading r2) {<!-- --><br>        return r1.value() &gt; r2.value() ? r1 : r2;<br>    }<br>}<br><br>private static class MyWindowFunction extends ProcessWindowFunction&lt;<br>    SensorReading, Tuple3&lt;String, Long, SensorReading&gt;, String, TimeWindow&gt; {<!-- --><br><br>    @Override<br>    public void process(<br>            String key,<br>            Context context,<br>            Iterable&lt;SensorReading&gt; maxReading,<br>            Collector&lt;Tuple3&lt;String, Long, SensorReading&gt;&gt; out) {<!-- --><br><br>        SensorReading max = maxReading.iterator().next();<br>        out.collect(Tuple3.of(key, context.window().getEnd(), max));<br>    }<br>}<br></code></pre> 
+ <p>注意iterable只会执行一次，即只有MyReducingMax输出的值才会传入这里。</p> 
+ <h6>2.4 延迟事件</h6> 
+ <p>默认当使用基于事件时间窗口时，延迟事件会直接丢弃。有两种方法可以处理这个问题：你可以把需要丢弃的事件重新搜集起来输出到另一个流中，也叫侧输出；或者配置水印的延迟时间。</p> 
+ <pre class="has"><code>OutputTag&lt;Event&gt; lateTag = new OutputTag&lt;Event&gt;("late"){};<br><br>SingleOutputStreamOperator&lt;Event&gt; result = stream.<br>  .keyBy(...)<br>  .window(...)<br>  .sideOutputLateData(lateTag)<br>  .process(...);<br><br>DataStream&lt;Event&gt; lateStream = result.getSideOutput(lateTag);<br></code></pre> 
+ <p>通过指定允许延迟的间隔时间，当在允许的延迟范围内，仍然可以分配到对应的窗口(窗口对应的状态信息将会保留一段时间)。但是会导致对应窗口重新计算(也叫做延迟响应late firing)默认允许的延迟是0，也就是说一旦事件在水印之后就会被丢弃掉。</p> 
+ <pre class="has"><code>stream.<br>    .keyBy(...)<br>    .window(...)<br>    .allowedLateness(Time.seconds(10))<br>    .process(...);<br></code></pre> 
+ <p>当配置延迟后，只有那些在允许的延迟之外的数据会被丢弃或者使用侧输出搜集起来。</p> 
+ <h4>3 注意</h4> 
+ <p>Flink的窗口处理可能跟你想的不太一样，基于在flink用户邮件中常问的问题，整理如下</p> 
+ <h6>3.1 滑动窗口造成数据拷贝</h6> 
+ <p>滑动窗口会造成大量的窗口对象，并且会拷贝每个对象到对应的窗口中。比如，你的滑动窗口为每15分钟统计24小时的窗口长度，那么每个时间将会复制到4*24=96个窗口中。</p> 
+ <h6>3.2 时间窗口会对齐到系统时间</h6> 
+ <p>如果使用1个小时的窗口，那么当应用在12:05启动时，并不是说第一个窗口的时间范围是到1:05，事实上第一个窗口的时间是12:05到01:00，只有55分钟而已。注意，滚动窗口和滑动窗口都支持偏移值的参数配置。</p> 
+ <h6>3.3 窗口后面可以接窗口</h6> 
+ <p>比如：</p> 
+ <pre class="has"><code>stream<br>    .keyBy(t -&gt; t.key)<br>    .timeWindow(&lt;time specification&gt;)<br>    .reduce(&lt;reduce function&gt;)<br>    .timeWindowAll(&lt;same time specification&gt;)<br>    .reduce(&lt;same reduce function&gt;)<br></code></pre> 
+ <p>这样的代码能够工作主要是因为第一个窗口输出的内容系统会自动添加一个窗口结束的时间，后面的处理可以基于这个时间再次进行窗口操作，但是需要窗口的配置统一或者整数倍。</p> 
+ <h6>3.4 空窗口没有输出</h6> 
+ <p>只有对应的事件到达时，才会创建对应的窗口。因此如果没有对应的事件，窗口就不会创建，因此也不会有任何输出。</p> 
+ <h6>3.5 延迟数据造成延迟合并</h6> 
+ <p>对于会话窗口，实际上会为每个事件在一开始分配一个新的窗口，当新的事件到达时，会根据时间间隔合并窗口。因此如果事件延迟到达，很有可能会造成窗口的延迟合并。</p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/080d97fbb560228bf6d478af8411965a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">SpringBoot之自动装配原理</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/943e7d3f411dca5c6fed6ca17310e9b2/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">matlab函数定义和调用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

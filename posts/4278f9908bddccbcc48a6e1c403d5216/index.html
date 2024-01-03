@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>超详细Zookeeper&#43;Kafka&#43;ELK集群部署 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="超详细Zookeeper&#43;Kafka&#43;ELK集群部署" />
+<meta property="og:description" content="一、Zookeeper 概述 1、Zookeeper 定义 Zookeeper是一个开源的分布式的，为分布式框架提供协调服务的Apache项目。
+2、Zookeeper 工作机制 Zookeeper从设计模式角度来理解：是一个基于观察者模式设计的分布式服务管理框架，它负责存储和管理大家都关心的数据，然后接受观察者的注册，一旦这些数据的状态发生变化，Zookeeper就将负责通知已经在Zookeeper上注册的那些观察者做出相应的反应。也就是说 Zookeeper = 文件系统 &#43; 通知机制。
+3、Zookeeper 特点 （1）Zookeeper：一个领导者（Leader），多个跟随者（Follower）组成的集群。
+（2）Zookeepe集群中只要有半数以上节点存活，Zookeeper集群就能正常服务。所以Zookeeper适合安装奇数台服务器。
+（3）全局数据一致：每个Server保存一份相同的数据副本，Client无论连接到哪个Server，数据都是一致的。
+（4）更新请求顺序执行，来自同一个Client的更新请求按其发送顺序依次执行，即先进先出。
+（5）数据更新原子性，一次数据更新要么成功，要么失败。
+（6）实时性，在一定时间范围内，Client能读到最新数据。
+4、Zookeeper 数据结构 ZooKeeper数据模型的结构与Linux文件系统很类似，整体上可以看作是一棵树，每个节点称做一个ZNode。每一个ZNode默认能够存储1MB的数据，每个ZNode都可以通过其路径唯一标识。
+5、Zookeeper 应用场景 提供的服务包括：统一命名服务、统一配置管理、统一集群管理、服务器节点动态上下线、软负载均衡等。
+●统一命名服务
+在分布式环境下，经常需要对应用/服务进行统一命名，便于识别。例如：IP不容易记住，而域名容易记住。
+●统一配置管理
+（1）分布式环境下，配置文件同步非常常见。一般要求一个集群中，所有节点的配置信息是一致的，比如Kafka集群。对配置文件修改后，希望能够快速同步到各个节点上。
+（2）配置管理可交由ZooKeeper实现。可将配置信息写入ZooKeeper上的一个Znode。各个客户端服务器监听这个Znode。一旦 Znode中的数据被修改，ZooKeeper将通知各个客户端服务器。
+●统一集群管理
+（1）分布式环境中，实时掌握每个节点的状态是必要的。可根据节点实时状态做出一些调整。
+（2）ZooKeeper可以实现实时监控节点状态变化。可将节点信息写入ZooKeeper上的一个ZNode。监听这个ZNode可获取它的实时状态变化。
+●服务器动态上下线
+客户端能实时洞察到服务器上下线的变化。
+●软负载均衡
+在Zookeeper中记录每台服务器的访问数，让访问数最少的服务器去处理最新的客户端请求。
+6、Zookeeper 选举机制 ●第一次启动选举机制 （1）服务器1启动，发起一次选举。服务器1投自己一票。此时服务器1票数一票，不够半数以上（3票），选举无法完成，服务器1状态保持为LOOKING；
+（2）服务器2启动，再发起一次选举。服务器1和2分别投自己一票并交换选票信息：此时服务器1发现服务器2的myid比自己目前投票推举的（服务器1）大，更改选票为推举服务器2。此时服务器1票数0票，服务器2票数2票，没有半数以上结果，选举无法完成，服务器1，2状态保持LOOKING
+（3）服务器3启动，发起一次选举。此时服务器1和2都会更改选票为服务器3。此次投票结果：服务器1为0票，服务器2为0票，服务器3为3票。此时服务器3的票数已经超过半数，服务器3当选Leader。服务器1，2更改状态为FOLLOWING，服务器3更改状态为LEADING；
+（4）服务器4启动，发起一次选举。此时服务器1，2，3已经不是LOOKING状态，不会更改选票信息。交换选票信息结果：服务器3为3票，服务器4为1票。此时服务器4服从多数，更改选票信息为服务器3，并更改状态为FOLLOWING；
+（5）服务器5启动，同4一样当小弟。
+●非第一次启动选举机制 （1）当ZooKeeper 集群中的一台服务器出现以下两种情况之一时，就会开始进入Leader选举：
+1）服务器初始化启动。
+2）服务器运行期间无法和Leader保持连接。
+（2）而当一台机器进入Leader选举流程时，当前集群也可能会处于以下两种状态：
+1）集群中本来就已经存在一个Leader。
+对于已经存在Leader的情况，机器试图去选举Leader时，会被告知当前服务器的Leader信息，对于该机器来说，仅仅需要和 Leader机器建立连接，并进行状态同步即可。
+2）集群中确实不存在Leader。
+假设ZooKeeper由5台服务器组成，SID分别为1、2、3、4、5，ZXID分别为8、8、8、7、7，并且此时SID为3的服务器是Leader。某一时刻，3和5服务器出现故障，因此开始进行Leader选举。
+选举Leader规则：
+1.EPOCH大的直接胜出
+2.EPOCH相同，事务id大的胜出
+3.事务id相同，服务器id大的胜出
+-------------------------------------------------------------------------------------
+SID：服务器ID。用来唯一标识一台ZooKeeper集群中的机器，每台机器不能重复，和myid一致。
+ZXID：事务ID。ZXID是一个事务ID，用来标识一次服务器状态的变更。在某一时刻，集群中的每台机器的ZXID值不一定完全一致，这和ZooKeeper服务器对于客户端“更新请求”的处理逻辑速度有关。
+Epoch：每个Leader任期的代号。没有Leader时同一轮投票过程中的逻辑时钟值是相同的。每投完一次票这个数据就会增加
+二、部署 Zookeeper 集群 1、部署Zookeeper集群的操作步骤 准备 3 台服务器做 Zookeeper 集群" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/4278f9908bddccbcc48a6e1c403d5216/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-05-29T10:37:05+08:00" />
+<meta property="article:modified_time" content="2023-05-29T10:37:05+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">超详细Zookeeper&#43;Kafka&#43;ELK集群部署</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2 id="一zookeeper-概述">一、Zookeeper 概述</h2> 
+<h3 id="1zookeeper-定义">1、Zookeeper 定义</h3> 
+<p>Zookeeper是一个开源的分布式的，为分布式框架提供协调服务的Apache项目。</p> 
+<h3 id="2zookeeper-工作机制">2、Zookeeper 工作机制</h3> 
+<p>Zookeeper从设计模式角度来理解：是一个基于观察者模式设计的分布式服务管理框架，它负责存储和管理大家都关心的数据，然后接受观察者的注册，一旦这些数据的状态发生变化，Zookeeper就将负责通知已经在Zookeeper上注册的那些观察者做出相应的反应。也就是说 Zookeeper = 文件系统 + 通知机制。</p> 
+<h3 id="3zookeeper-特点">3、Zookeeper 特点</h3> 
+<p>（1）Zookeeper：一个领导者（Leader），多个跟随者（Follower）组成的集群。</p> 
+<p>（2）Zookeepe集群中只要有半数以上节点存活，Zookeeper集群就能正常服务。所以Zookeeper适合安装奇数台服务器。</p> 
+<p>（3）全局数据一致：每个Server保存一份相同的数据副本，Client无论连接到哪个Server，数据都是一致的。</p> 
+<p>（4）更新请求顺序执行，来自同一个Client的更新请求按其发送顺序依次执行，即先进先出。</p> 
+<p>（5）数据更新原子性，一次数据更新要么成功，要么失败。</p> 
+<p>（6）实时性，在一定时间范围内，Client能读到最新数据。</p> 
+<h3 id="4zookeeper-数据结构">4、Zookeeper 数据结构</h3> 
+<p>ZooKeeper数据模型的结构与Linux文件系统很类似，整体上可以看作是一棵树，每个节点称做一个ZNode。每一个ZNode默认能够存储1MB的数据，每个ZNode都可以通过其路径唯一标识。</p> 
+<h3 id="5zookeeper-应用场景">5、Zookeeper 应用场景</h3> 
+<p>提供的服务包括：统一命名服务、统一配置管理、统一集群管理、服务器节点动态上下线、软负载均衡等。</p> 
+<p>●统一命名服务</p> 
+<p>在分布式环境下，经常需要对应用/服务进行统一命名，便于识别。例如：IP不容易记住，而域名容易记住。</p> 
+<p>●统一配置管理</p> 
+<p>（1）分布式环境下，配置文件同步非常常见。一般要求一个集群中，所有节点的配置信息是一致的，比如Kafka集群。对配置文件修改后，希望能够快速同步到各个节点上。</p> 
+<p>（2）配置管理可交由ZooKeeper实现。可将配置信息写入ZooKeeper上的一个Znode。各个客户端服务器监听这个Znode。一旦 Znode中的数据被修改，ZooKeeper将通知各个客户端服务器。</p> 
+<p>●统一集群管理</p> 
+<p>（1）分布式环境中，实时掌握每个节点的状态是必要的。可根据节点实时状态做出一些调整。</p> 
+<p>（2）ZooKeeper可以实现实时监控节点状态变化。可将节点信息写入ZooKeeper上的一个ZNode。监听这个ZNode可获取它的实时状态变化。</p> 
+<p>●服务器动态上下线</p> 
+<p>客户端能实时洞察到服务器上下线的变化。</p> 
+<p>●软负载均衡</p> 
+<p>在Zookeeper中记录每台服务器的访问数，让访问数最少的服务器去处理最新的客户端请求。</p> 
+<h3 id="6zookeeper-选举机制">6、Zookeeper 选举机制</h3> 
+<h4 id="第一次启动选举机制">●第一次启动选举机制</h4> 
+<p>（1）服务器1启动，发起一次选举。服务器1投自己一票。此时服务器1票数一票，不够半数以上（3票），选举无法完成，服务器1状态保持为LOOKING；</p> 
+<p>（2）服务器2启动，再发起一次选举。服务器1和2分别投自己一票并交换选票信息：此时服务器1发现服务器2的myid比自己目前投票推举的（服务器1）大，更改选票为推举服务器2。此时服务器1票数0票，服务器2票数2票，没有半数以上结果，选举无法完成，服务器1，2状态保持LOOKING</p> 
+<p>（3）服务器3启动，发起一次选举。此时服务器1和2都会更改选票为服务器3。此次投票结果：服务器1为0票，服务器2为0票，服务器3为3票。此时服务器3的票数已经超过半数，服务器3当选Leader。服务器1，2更改状态为FOLLOWING，服务器3更改状态为LEADING；</p> 
+<p>（4）服务器4启动，发起一次选举。此时服务器1，2，3已经不是LOOKING状态，不会更改选票信息。交换选票信息结果：服务器3为3票，服务器4为1票。此时服务器4服从多数，更改选票信息为服务器3，并更改状态为FOLLOWING；</p> 
+<p>（5）服务器5启动，同4一样当小弟。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/59/00/2YydIxMP_o.png"></p> 
+<h4 id="非第一次启动选举机制">●非第一次启动选举机制</h4> 
+<p>（1）当ZooKeeper 集群中的一台服务器出现以下两种情况之一时，就会开始进入Leader选举：</p> 
+<p>1）服务器初始化启动。</p> 
+<p>2）服务器运行期间无法和Leader保持连接。</p> 
+<p>（2）而当一台机器进入Leader选举流程时，当前集群也可能会处于以下两种状态：</p> 
+<p>1）集群中本来就已经存在一个Leader。</p> 
+<p>对于已经存在Leader的情况，机器试图去选举Leader时，会被告知当前服务器的Leader信息，对于该机器来说，仅仅需要和 Leader机器建立连接，并进行状态同步即可。</p> 
+<p>2）集群中确实不存在Leader。</p> 
+<p>假设ZooKeeper由5台服务器组成，SID分别为1、2、3、4、5，ZXID分别为8、8、8、7、7，并且此时SID为3的服务器是Leader。某一时刻，3和5服务器出现故障，因此开始进行Leader选举。</p> 
+<p>选举Leader规则：</p> 
+<p>1.EPOCH大的直接胜出</p> 
+<p>2.EPOCH相同，事务id大的胜出</p> 
+<p>3.事务id相同，服务器id大的胜出</p> 
+<p>-------------------------------------------------------------------------------------<br> SID：服务器ID。用来唯一标识一台ZooKeeper集群中的机器，每台机器不能重复，和myid一致。</p> 
+<p>ZXID：事务ID。ZXID是一个事务ID，用来标识一次服务器状态的变更。在某一时刻，集群中的每台机器的ZXID值不一定完全一致，这和ZooKeeper服务器对于客户端“更新请求”的处理逻辑速度有关。</p> 
+<p>Epoch：每个Leader任期的代号。没有Leader时同一轮投票过程中的逻辑时钟值是相同的。每投完一次票这个数据就会增加</p> 
+<h2 id="二部署-zookeeper-集群">二、部署 Zookeeper 集群</h2> 
+<h3 id="1部署zookeeper集群的操作步骤">1、部署Zookeeper集群的操作步骤</h3> 
+<p>准备 3 台服务器做 Zookeeper 集群</p> 
+<p>192.168.229.33<br> 192.168.229.77<br> 192.168.229.99</p> 
+<h4 id="11-安装前准备">1.1 安装前准备</h4> 
+<p>//关闭防火墙</p> 
+<pre><code>systemctl stop firewalld
+systemctl disable firewalld
+setenforce 0　　
+</code></pre> 
+<p>//安装 JDK</p> 
+<pre><code>yum install -y java-1.8.0-openjdk java-1.8.0-openjdk-devel
+java -version　　
+</code></pre> 
+<p>//下载安装包<br> 官方下载地址：<a href="https://archive.apache.org/dist/zookeeper/" rel="nofollow" title="Index of /dist/zookeeper">Index of /dist/zookeeper</a></p> 
+<pre><code>cd /opt
+wget https://archive.apache.org/dist/zookeeper/zookeeper-3.5.7/apache-zookeeper-3.5.7-bin.tar.gz　　
+</code></pre> 
+<h4 id="12安装-zookeeper">1.2、安装 Zookeeper</h4> 
+<pre><code>cd /opt
+tar -zxvf apache-zookeeper-3.5.7-bin.tar.gz
+mv apache-zookeeper-3.5.7-bin /usr/local/zookeeper-3.5.7　　
+</code></pre> 
+<h4 id="13-修改配置文件">1.3 修改配置文件</h4> 
+<pre><code>cd /usr/local/zookeeper-3.5.7/conf/
+cp zoo_sample.cfg zoo.cfg
+ 
+vim zoo.cfg
+tickTime=2000 #通信心跳时间，Zookeeper服务器与客户端心跳时间，单位毫秒
+initLimit=10 #Leader和Follower初始连接时能容忍的最多心跳数（tickTime的数量），这里表示为10*2s
+syncLimit=5 #Leader和Follower之间同步通信的超时时间，这里表示如果超过5*2s，Leader认为Follwer死掉，并从服务器列表中删除Follwer
+dataDir=/usr/local/zookeeper-3.5.7/data ●修改，指定保存Zookeeper中的数据的目录，目录需要单独创建
+dataLogDir=/usr/local/zookeeper-3.5.7/logs ●添加，指定存放日志的目录，目录需要单独创建
+clientPort=2181 #客户端连接端口
+#添加集群信息
+server.1=192.168.2.33:3188:3288
+server.2=192.168.2.77:3188:3288
+server.3=192.168.2.99:3188:3288　
+</code></pre> 
+<p>server.A=B:C:D<br> ●A是一个数字，表示这个是第几号服务器。集群模式下需要在zoo.cfg中dataDir指定的目录下创建一个文件myid，这个文件里面有一个数据就是A的值，Zookeeper启动时读取此文件，拿到里面的数据与zoo.cfg里面的配置信息比较从而判断到底是哪个server。<br> ●B是这个服务器的地址。<br> ●C是这个服务器Follower与集群中的Leader服务器交换信息的端口。<br> ●D是万一集群中的Leader服务器挂了，需要一个端口来重新进行选举，选出一个新的Leader，而这个端口就是用来执行选举时服务器相互通信的端口。<br> -------------------------------------------------------------------------------------</p> 
+<h4 id="14-拷贝配置好的-zookeeper-配置文件到其他机器上">1.4 拷贝配置好的 Zookeeper 配置文件到其他机器上</h4> 
+<pre><code>scp /usr/local/zookeeper-3.5.7/conf/zoo.cfg 192.168.229.50:/usr/local/zookeeper-3.5.7/conf/
+scp /usr/local/zookeeper-3.5.7/conf/zoo.cfg 192.168.229.40:/usr/local/zookeeper-3.5.7/conf/
+</code></pre> 
+<h4 id="15-在每个节点上创建数据目录和日志目录">1.5 在每个节点上创建数据目录和日志目录</h4> 
+<pre><code>mkdir /usr/local/zookeeper-3.5.7/data
+mkdir /usr/local/zookeeper-3.5.7/logs　　
+</code></pre> 
+<h4 id="16-在每个节点的datadir指定的目录下创建一个-myid-的文件">1.6 在每个节点的dataDir指定的目录下创建一个 myid 的文件</h4> 
+<pre><code>echo 1 &gt; /usr/local/zookeeper-3.5.7/data/myid
+echo 2 &gt; /usr/local/zookeeper-3.5.7/data/myid
+echo 3 &gt; /usr/local/zookeeper-3.5.7/data/myid　　
+</code></pre> 
+<h4 id="17-配置-zookeeper-启动脚本">1.7 配置 Zookeeper 启动脚本</h4> 
+<pre><code>vim /etc/init.d/zookeeper
+#!/bin/bash
+#chkconfig:2345 20 90
+#description:Zookeeper Service Control Script
+ZK_HOME='/usr/local/zookeeper-3.5.7'
+case $1 in
+start)
+echo "---------- zookeeper 启动 ------------"
+$ZK_HOME/bin/zkServer.sh start
+;;
+stop)
+echo "---------- zookeeper 停止 ------------"
+$ZK_HOME/bin/zkServer.sh stop
+;;
+restart)
+echo "---------- zookeeper 重启 ------------"
+$ZK_HOME/bin/zkServer.sh restart
+;;
+status)
+echo "---------- zookeeper 状态 ------------"
+$ZK_HOME/bin/zkServer.sh status
+;;
+*)
+echo "Usage: $0 {start|stop|restart|status}"
+esac　　　
+</code></pre> 
+<h4 id="18-设置开机自启">1.8 设置开机自启</h4> 
+<pre><code>chmod +x /etc/init.d/zookeeper
+chkconfig --add zookeeper
+</code></pre> 
+<h4 id="19-分别启动-zookeeper">1.9 分别启动 Zookeeper</h4> 
+<pre><code>service zookeeper start　　　
+</code></pre> 
+<h4 id="110-查看当前状态">1.10 查看当前状态</h4> 
+<pre><code>service zookeeper status
+</code></pre> 
+<h3 id="2实例操作部署zookeeper集群">2、实例操作：部署Zookeeper集群</h3> 
+<h4 id="21-安装前准备">2.1 安装前准备</h4> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/22/0e/OXhwDrMR_o.png"></p> 
+<h4 id="22安装-zookeeper">2.2、安装 Zookeeper</h4> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/be/b8/SCkVkqf5_o.png"></p> 
+<h4 id="23-修改配置文件">2.3 修改配置文件</h4> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/8d/e3/wqjfQvcu_o.png"></p> 
+<h4 id="14-拷贝配置好的-zookeeper-配置文件到其他机器上-1">1.4 拷贝配置好的 Zookeeper 配置文件到其他机器上</h4> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/fe/43/l4L4y1F1_o.png"></p> 
+<h4 id="15-在每个节点上创建数据目录和日志目录-1">1.5 在每个节点上创建数据目录和日志目录</h4> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/27/b2/WrK82YL0_o.png"></p> 
+<h4 id="16-在每个节点的datadir指定的目录下创建一个-myid-的文件-1">1.6 在每个节点的dataDir指定的目录下创建一个 myid 的文件</h4> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/2f/41/GQNqQ6aL_o.png"></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/b6/37/yY5t918j_o.png"></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/56/59/sfbB6dJm_o.png"></p> 
+<h4 id="17-配置-zookeeper-启动脚本-1">1.7 配置 Zookeeper 启动脚本</h4> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/1a/ea/stBxR0WA_o.png"></p> 
+<h4 id="18-设置开机自启并开启服务">1.8 设置开机自启并开启服务</h4> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/41/c4/wAWuC2j2_o.png"></p> 
+<h4 id="19-查看当前状态">1.9 查看当前状态</h4> 
+<p>一个leader，两个follower</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/f3/f2/Rqpmy0nD_o.png"></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/78/5a/jiHFQM6B_o.png"></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/c2/59/3yKEA4Zq_o.png"></p> 
+<h2 id="三kafka-概述">三、Kafka 概述</h2> 
+<h3 id="1为什么需要消息队列mq">1、为什么需要消息队列（MQ）</h3> 
+<p>主要原因是由于在高并发环境下，同步请求来不及处理，请求往往会发生阻塞。比如大量的请求并发访问数据库，导致行锁表锁，最后请求线程会堆积过多，从而触发 too many connection 错误，引发雪崩效应。</p> 
+<p>我们使用消息队列，通过异步处理请求，从而缓解系统的压力。消息队列常应用于异步处理，流量削峰，应用解耦，消息通讯等场景。</p> 
+<p>当前比较常见的 MQ 中间件有 ActiveMQ、RabbitMQ、RocketMQ、Kafka 等。</p> 
+<h3 id="2使用消息队列的好处">2、使用消息队列的好处</h3> 
+<p>（1）解耦</p> 
+<p>允许你独立的扩展或修改两边的处理过程，只要确保它们遵守同样的接口约束。</p> 
+<p>（2）可恢复性</p> 
+<p>系统的一部分组件失效时，不会影响到整个系统。消息队列降低了进程间的耦合度，所以即使一个处理消息的进程挂掉，加入队列中的消息仍然可以在系统恢复后被处理。</p> 
+<p>（3）缓冲</p> 
+<p>有助于控制和优化数据流经过系统的速度，解决生产消息和消费消息的处理速度不一致的情况。</p> 
+<p>（4）灵活性 &amp; 峰值处理能力</p> 
+<p>在访问量剧增的情况下，应用仍然需要继续发挥作用，但是这样的突发流量并不常见。如果为以能处理这类峰值访问为标准来投入资源随时待命无疑是巨大的浪费。使用消息队列能够使关键组件顶住突发的访问压力，而不会因为突发的超负荷的请求而完全崩溃。</p> 
+<p>（5）异步通信</p> 
+<p>很多时候，用户不想也不需要立即处理消息。消息队列提供了异步处理机制，允许用户把一个消息放入队列，但并不立即处理它。想向队列中放入多少消息就放多少，然后在需要的时候再去处理它们。</p> 
+<h3 id="3消息队列的两种模式">3、消息队列的两种模式</h3> 
+<p>（1）点对点模式（一对一，消费者主动拉取数据，消息收到后消息清除）</p> 
+<p>消息生产者生产消息发送到消息队列中，然后消息消费者从消息队列中取出并且消费消息。消息被消费以后，消息队列中不再有存储，所以消息消费者不可能消费到已经被消费的消息。消息队列支持存在多个消费者，但是对一个消息而言，只会有一个消费者可以消费。</p> 
+<p>（2）发布/订阅模式（一对多，又叫观察者模式，消费者消费数据之后不会清除消息）</p> 
+<p>消息生产者（发布）将消息发布到 topic 中，同时有多个消息消费者（订阅）消费该消息。和点对点方式不同，发布到 topic 的消息会被所有订阅者消费。</p> 
+<p>发布/订阅模式是定义对象间一种一对多的依赖关系，使得每当一个对象（目标对象）的状态发生改变，则所有依赖于它的对象（观察者对象）都会得到通知并自动更新。</p> 
+<h3 id="4kafka-定义">4、Kafka 定义</h3> 
+<p>Kafka 是一个分布式的基于发布/订阅模式的消息队列（MQ，Message Queue），主要应用于大数据实时处理领域。</p> 
+<h3 id="5kafka-简介">5、Kafka 简介</h3> 
+<p>Kafka 是最初由 Linkedin 公司开发，是一个分布式、支持分区的（partition）、多副本的（replica），基于 Zookeeper 协调的分布式消息中间件系统，它的最大的特性就是可以实时的处理大量数据以满足各种需求场景，比如基于 hadoop 的批处理系统、低延迟的实时系统、Spark/Flink 流式处理引擎，nginx 访问日志，消息服务等等，用 scala 语言编写，</p> 
+<p>Linkedin 于 2010 年贡献给了 Apache 基金会并成为顶级开源项目。</p> 
+<h3 id="6kafka-的特性">6、Kafka 的特性</h3> 
+<p>●高吞吐量、低延迟</p> 
+<p>Kafka 每秒可以处理几十万条消息，它的延迟最低只有几毫秒。每个 topic 可以分多个 Partition，Consumer Group 对 Partition 进行消费操作，提高负载均衡能力和消费能力。</p> 
+<p>●可扩展性</p> 
+<p>kafka 集群支持热扩展</p> 
+<p>●持久性、可靠性</p> 
+<p>消息被持久化到本地磁盘，并且支持数据备份防止数据丢失</p> 
+<p>●容错性</p> 
+<p>允许集群中节点失败（多副本情况下，若副本数量为 n，则允许 n-1 个节点失败）</p> 
+<p>●高并发</p> 
+<p>支持数千个客户端同时读写</p> 
+<h3 id="7kafka-系统架构">7、Kafka 系统架构</h3> 
+<p>（1）Broker</p> 
+<p>一台 kafka 服务器就是一个 broker。一个集群由多个 broker 组成。一个 broker 可以容纳多个 topic。</p> 
+<p>（2）Topic</p> 
+<p>可以理解为一个队列，生产者和消费者面向的都是一个 topic。</p> 
+<p>类似于数据库的表名或者 ES 的 index</p> 
+<p>物理上不同 topic 的消息分开存储</p> 
+<p>（3）Partition</p> 
+<p>为了实现扩展性，一个非常大的 topic 可以分布到多个 broker（即服务器）上，一个 topic 可以分割为一个或多个 partition，每个 partition 是一个有序的队列。Kafka 只保证 partition 内的记录是有序的，而不保证 topic 中不同 partition 的顺序。</p> 
+<p>每个 topic 至少有一个 partition，当生产者产生数据的时候，会根据分配策略选择分区，然后将消息追加到指定的分区的队列末尾。</p> 
+<h3 id="partation-数据路由规则">Partation 数据路由规则：</h3> 
+<ul><li>指定了 patition，则直接使用；</li><li>未指定 patition 但指定 key（相当于消息中某个属性），通过对 key 的 value 进行 hash 取模，选出一个 patition；</li><li>patition 和 key 都未指定，使用轮询选出一个 patition。</li></ul> 
+<p>每条消息都会有一个自增的编号，用于标识消息的偏移量，标识顺序从 0 开始。</p> 
+<p>每个 partition 中的数据使用多个 segment 文件存储。</p> 
+<p>如果 topic 有多个 partition，消费数据时就不能保证数据的顺序。严格保证消息的消费顺序的场景下（例如商品秒杀、 抢红包），需要将 partition 数目设为 1。</p> 
+<p>●broker 存储 topic 的数据。如果某 topic 有 N 个 partition，集群有 N 个 broker，那么每个 broker 存储该 topic 的一个 partition。<br> ●如果某 topic 有 N 个 partition，集群有 (N+M) 个 broker，那么其中有 N 个 broker 存储 topic 的一个 partition， 剩下的 M 个 broker 不存储该 topic 的 partition 数据。<br> ●如果某 topic 有 N 个 partition，集群中 broker 数目少于 N 个，那么一个 broker 存储该 topic 的一个或多个 partition。在实际生产环境中，尽量避免这种情况的发生，这种情况容易导致 Kafka 集群数据不均衡。</p> 
+<h3 id="分区的原因">分区的原因</h3> 
+<p>●方便在集群中扩展，每个Partition可以通过调整以适应它所在的机器，而一个topic又可以有多个Partition组成，因此整个集群就可以适应任意大小的数据了；</p> 
+<p>●可以提高并发，因为可以以Partition为单位读写了。</p> 
+<p>（4）Replica</p> 
+<p>副本，为保证集群中的某个节点发生故障时，该节点上的 partition 数据不丢失，且 kafka 仍然能够继续工作，kafka 提供了副本机制，一个 topic 的每个分区都有若干个副本，一个 leader 和若干个 follower。</p> 
+<p>（5）Leader</p> 
+<p>每个 partition 有多个副本，其中有且仅有一个作为 Leader，Leader 是当前负责数据的读写的 partition。</p> 
+<p>（6）Follower</p> 
+<p>Follower 跟随 Leader，所有写请求都通过 Leader 路由，数据变更会广播给所有 Follower，Follower 与 Leader 保持数据同步。Follower 只负责备份，不负责数据的读写。<br> 如果 Leader 故障，则从 Follower 中选举出一个新的 Leader。<br> 当 Follower 挂掉、卡住或者同步太慢，Leader 会把这个 Follower 从 ISR（Leader 维护的一个和 Leader 保持同步的 Follower 集合） 列表中删除，重新创建一个 Follower。</p> 
+<p>（7）Producer</p> 
+<p>生产者即数据的发布者，该角色将消息发布到 Kafka 的 topic 中。</p> 
+<p>broker 接收到生产者发送的消息后，broker 将该消息追加到当前用于追加数据的 segment 文件中。</p> 
+<p>生产者发送的消息，存储到一个 partition 中，生产者也可以指定数据存储的 partition。</p> 
+<p>（8）Consumer</p> 
+<p>消费者可以从 broker 中读取数据。消费者可以消费多个 topic 中的数据。</p> 
+<p>（9）Consumer Group（CG）</p> 
+<p>消费者组，由多个 consumer 组成。</p> 
+<p>所有的消费者都属于某个消费者组，即消费者组是逻辑上的一个订阅者。可为每个消费者指定组名，若不指定组名则属于默认的组。</p> 
+<p>将多个消费者集中到一起去处理某一个 Topic 的数据，可以更快的提高数据的消费能力。</p> 
+<p>消费者组内每个消费者负责消费不同分区的数据，一个分区只能由一个组内消费者消费，防止数据被重复读取。</p> 
+<p>消费者组之间互不影响。</p> 
+<p>（10）offset 偏移量</p> 
+<p>可以唯一的标识一条消息。</p> 
+<p>偏移量决定读取数据的位置，不会有线程安全的问题，消费者通过偏移量来决定下次读取的消息（即消费位置）。</p> 
+<p>消息被消费之后，并不被马上删除，这样多个业务就可以重复使用 Kafka 的消息。</p> 
+<p>某一个业务也可以通过修改偏移量达到重新读取消息的目的，偏移量由用户控制。</p> 
+<p>消息最终还是会被删除的，默认生命周期为 1 周（7*24小时）。</p> 
+<p>（11）Zookeeper</p> 
+<p>Kafka 通过 Zookeeper 来存储集群的 meta 信息。</p> 
+<p>由于 consumer 在消费过程中可能会出现断电宕机等故障，consumer 恢复后，需要从故障前的位置的继续消费，所以 consumer 需要实时记录自己消费到了哪个 offset，以便故障恢复后继续消费。</p> 
+<p>Kafka 0.9 版本之前，consumer 默认将 offset 保存在 Zookeeper 中；从 0.9 版本开始，consumer 默认将 offset 保存在 Kafka 一个内置的 topic 中，该 topic 为 __consumer_offsets。</p> 
+<h2 id="四部署zookeeper--kafka-集群">四、部署zookeeper + kafka 集群</h2> 
+<h3 id="1部署zookeeper--kafka-集群">1、部署zookeeper + kafka 集群</h3> 
+<h4 id="11-下载安装包">1.1 下载安装包</h4> 
+<p>官方下载地址：<a href="http://kafka.apache.org/downloads.html" rel="nofollow" title="Apache Kafka">Apache Kafka</a></p> 
+<pre><code>cd /opt
+wget https://mirrors.tuna.tsinghua.edu.cn/apache/kafka/2.7.1/kafka_2.13-2.7.1.tgz　
+</code></pre> 
+<h4 id="12安装-kafka">1.2.安装 Kafka</h4> 
+<pre><code>cd /opt/
+tar zxvf kafka_2.13-2.7.1.tgz
+mv kafka_2.13-2.7.1 /usr/local/kafka　
+</code></pre> 
+<h4 id="13-修改配置文件-1">1.3 修改配置文件</h4> 
+<pre><code>cd /usr/local/kafka/config/
+cp server.properties{,.bak}
+ 
+vim server.properties
+broker.id=0                                    #21行，broker的全局唯一编号，每个broker不能重复，因此要在其他机器上配置 broker.id=1、broker.id=2
+listeners=PLAINTEXT://192.168.2.33:9092       #31行，指定监听的IP和端口，如果修改每个broker的IP需区分开来，也可保持默认配置不用修改
+num.network.threads=3                          #42行，broker 处理网络请求的线程数量，一般情况下不需要去修改
+num.io.threads=8                               #45行，用来处理磁盘IO的线程数量，数值应该大于硬盘数
+socket.send.buffer.bytes=102400                #48行，发送套接字的缓冲区大小
+socket.receive.buffer.bytes=102400             #51行，接收套接字的缓冲区大小
+socket.request.max.bytes=104857600             #54行，请求套接字的缓冲区大小
+log.dirs=/usr/local/kafka/logs                 #60行，kafka运行日志存放的路径，也是数据存放的路径
+num.partitions=1                               #65行，topic在当前broker上的默认分区个数，会被topic创建时的指定参数覆盖
+num.recovery.threads.per.data.dir=1            #69行，用来恢复和清理data下数据的线程数量
+log.retention.hours=168                        #103行，segment文件（数据文件）保留的最长时间，单位为小时，默认为7天，超时将被删除
+log.segment.bytes=1073741824                   #110行，一个segment文件最大的大小，默认为 1G，超出将新建一个新的segment文件
+zookeeper.connect=192.168.2.33:2181,192.168.2.77:2181,192.168.2.99:2181                                   #123行，配置连接Zookeeper集群地址
+</code></pre> 
+<h4 id="14-修改环境变量">1.4 修改环境变量</h4> 
+<pre><code>vim /etc/profile
+export KAFKA_HOME=/usr/local/kafka
+export PATH=$PATH:$KAFKA_HOME/bin
+ 
+source /etc/profile　
+</code></pre> 
+<h4 id="15-配置-zookeeper-启动脚本">1.5 配置 Zookeeper 启动脚本</h4> 
+<pre><code>vim /etc/init.d/kafka
+#!/bin/bash
+#chkconfig:2345 22 88
+#description:Kafka Service Control Script
+KAFKA_HOME='/usr/local/kafka'
+case $1 in
+start)
+echo "---------- Kafka 启动 ------------"
+${KAFKA_HOME}/bin/kafka-server-start.sh -daemon ${KAFKA_HOME}/config/server.properties
+;;
+stop)
+echo "---------- Kafka 停止 ------------"
+${KAFKA_HOME}/bin/kafka-server-stop.sh
+;;
+restart)
+$0 stop
+$0 start
+;;
+status)
+echo "---------- Kafka 状态 ------------"
+count=$(ps -ef | grep kafka | egrep -cv "grep|$$")
+if [ "$count" -eq 0 ];then
+echo "kafka is not running"
+else
+echo "kafka is running"
+fi
+;;
+*)
+echo "Usage: $0 {start|stop|restart|status}"
+esac　　
+</code></pre> 
+<h4 id="16-设置开机自启">1.6 设置开机自启</h4> 
+<pre><code>chmod +x /etc/init.d/kafka
+chkconfig --add kafka　
+</code></pre> 
+<h4 id="17-分别启动-kafka">1.7 分别启动 Kafka</h4> 
+<pre><code>service kafka start　　
+</code></pre> 
+<h4 id="18-kafka-命令行操作">1.8 Kafka 命令行操作</h4> 
+<p>//创建topic</p> 
+<pre><code>kafka-topics.sh --create --zookeeper 192.168.2.33:2181,192.168.23.77:2181,192.168.2.99:2181 --replication-factor 2 --partitions 3 --topic test
+ 
+-------------------------------------------------------------------------------------
+--zookeeper：定义 zookeeper 集群服务器地址，如果有多个 IP 地址使用逗号分割，一般使用一个 IP 即可
+--replication-factor：定义分区副本数，1 代表单副本，建议为 2
+--partitions：定义分区数
+--topic：定义 topic 名称
+------------------------------------　
+</code></pre> 
+<p>//查看当前服务器中的所有 topic</p> 
+<pre><code>kafka-topics.sh --list --zookeeper 192.168.2.33:2181,192.168.2.77:2181,192.168.2.99:2181　
+</code></pre> 
+<p>//查看某个 topic 的详情</p> 
+<pre><code>kafka-topics.sh --describe --zookeeper 192.168.2.33:2181,192.168.2.77:2181,192.168.2.99:2181　　
+</code></pre> 
+<p>//发布消息</p> 
+<pre><code>kafka-console-producer.sh --broker-list 192.168.2.33:9092,192.168.2.77:9092,192.168.2.99:9092 --topic test　　
+</code></pre> 
+<p>//消费消息</p> 
+<pre><code>kafka-console-consumer.sh --bootstrap-server 192.168.2.33:9092,192.168.2.77:9092,192.168.2.99:9092 --topic test --from-beginning
+ 
+-------------------------------------------------------------------------------------
+--from-beginning：会把主题中以往所有的数据都读取出来
+-------------------------------------------------------------------------------------　　
+</code></pre> 
+<p>//修改分区数</p> 
+<pre><code>kafka-topics.sh --zookeeper 192.168.2.33:2181,192.168.2.77:2181,192.168.2.99:2181 --alter --topic test  --partitions 6　　
+</code></pre> 
+<p>//删除 topic</p> 
+<pre><code>kafka-topics.sh --delete --zookeeper 192.168.2.33:2181,192.168.2.77:2181,192.168.2.99:2181 --topic  test
+</code></pre> 
+<h3 id="2实例操作部署zookeeper--kafka-集群">2、实例操作：部署zookeeper + kafka 集群</h3> 
+<h4 id="11-安装zookeeper集群">1.1 安装zookeeper集群</h4> 
+<p>详见本篇博客上文，接着上面的实验继续做（在所有集群服务器操作）</p> 
+<h4 id="12-下载安装包并安装kafka">1.2 下载安装包并安装kafka</h4> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/a3/05/BvPHGKTX_o.png"></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/15/64/3HtdeNDa_o.png"></p> 
+<h4 id="13-修改配置文件-2">1.3 修改配置文件</h4> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/a7/ca/saLtJEiW_o.png"></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/bb/c4/Crybd6mp_o.png"></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/af/d9/4T719RzD_o.png"></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/77/61/nD8x1cIF_o.png"></p> 
+<h4 id="14-修改环境变量-1">1.4 修改环境变量</h4> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/ca/74/aMyZHl9A_o.png"></p> 
+<h4 id="15-配置-kafka-启动脚本并设置开机自启启动kafka">1.5 配置 kafka 启动脚本并设置开机自启，启动kafka</h4> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/b9/89/vansK166_o.png"></p> 
+<h4 id="16--kafka-命令行操作">1.6 Kafka 命令行操作</h4> 
+<p>创建topic并查看</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/f8/3e/1QtIAkZM_o.png"></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/6b/95/ahrukwDP_o.png"></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/a1/26/HPWDEW7n_o.png"></p> 
+<p>发布消息并读取消息</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/8c/c0/1NvgEZsM_o.png"></p> 
+<p>修改分区数</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/bf/0f/HwHRess7_o.png"></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/3d/30/tFhy1jRT_o.png"></p> 
+<p>删除 topic</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/7f/78/p77PNkWS_o.png"></p> 
+<h2 id="五部署-filebeatkafkaelk">五、部署 Filebeat+Kafka+ELK</h2> 
+<h3 id="1部署-filebeatkafkaelk的操作步骤">1、部署 Filebeat+Kafka+ELK的操作步骤</h3> 
+<h4 id="11部署-zookeeperkafka-集群">1.1.部署 Zookeeper+Kafka 集群</h4> 
+<p>见上文，接着上面的实验做的</p> 
+<h4 id="12部署-filebeat">1.2、部署 Filebeat</h4> 
+<p>要搭建ELK，详见之前的博客</p> 
+<pre><code>cd /usr/local/filebeat
+ 
+vim filebeat.yml
+filebeat.prospectors:
+- type: log
+enabled: true
+paths:
+- /var/log/messages
+- /var/log/*.log
+......
+#添加输出到 Kafka 的配置
+output.kafka:
+enabled: true
+hosts: ["192.168.2。33:9092","192.168.2.77:9092","192.168.2.99:9092"] #指定 Kafka 集群配置
+topic: "filebeat_test" #指定 Kafka 的 topic
+ 
+#启动 filebeat
+./filebeat -e -c filebeat.yml　　
+</code></pre> 
+<h4 id="13部署-elk在-logstash-组件所在节点上新建一个-logstash-配置文件">1.3.部署 ELK，在 Logstash 组件所在节点上新建一个 Logstash 配置文件</h4> 
+<pre><code>cd /etc/logstash/conf.d/
+ 
+vim filebeat.conf
+input {
+kafka {
+bootstrap_servers =&gt; "192.168.229.60:9092,192.168.229.50:9092,192.168.229.40:9092"
+topics =&gt; "filebeat_test"
+group_id =&gt; "test123"
+auto_offset_reset =&gt; "earliest"
+}
+}
+ 
+output {
+elasticsearch {
+hosts =&gt; ["192.168.229.70:9200"]
+index =&gt; "filebeat_test-%{+YYYY.MM.dd}"
+}
+stdout {
+codec =&gt; rubydebug
+}
+}　　
+</code></pre> 
+<h4 id="14-启动-logstash">1.4 启动 logstash</h4> 
+<pre><code>logstash -f filebeat.conf　　
+</code></pre> 
+<h4 id="15-浏览器访问测试">1.5 浏览器访问测试</h4> 
+<p>浏览器访问 <a href="http://192.168.2.22:5601/" rel="nofollow" title="http://192.168.2.22:5601">http://192.168.2.22:5601</a> 登录 Kibana，单击“Create Index Pattern”按钮添加索引“filebeat_test-*”，单击 “create” 按钮创建，单击 “Discover” 按钮可查看图表信息及日志信息。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/632c0df845f31db66721c2dc1832a973/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">30行python代码实现“代码雨”</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/25b3905a6c71ffde27a238a1a1c80a7a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Swift的日常一些笔记</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

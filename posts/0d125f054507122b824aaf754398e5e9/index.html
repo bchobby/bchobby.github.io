@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Schedutil governor情景分析 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Schedutil governor情景分析" />
+<meta property="og:description" content="前言
+内核工匠在之前的几篇文章中已经详细介绍了CPU的调频子系统的软件框架，本文把重点放在了schedutil governor（后文称之sugov）的代码逻辑。通过详细的代码级别的分析，希望能够帮助读者理解sugov的代码精妙之处。本文主要分四个章节：第一章简单重复了sugov相关的软件结构和基本算法，让读者对整个sugov在系统所处的位置和基本的逻辑控制有所了解。第二章对sugov使用的数据结构给出了详细的解释。第三章对sugov和cpufreq core的基本数据流和控制流进行分析。第四章描述了sugov本身的调频逻辑。
+本文出现的内核代码来自Linux5.10.61，为了减少篇幅，我们会引用缩减版本的代码（仅包含主要逻辑），如果有兴趣，读者可以配合原始代码阅读本文。
+一、Sugov概述
+1、sugov相关软件模块
+Sugov在整个调频软件的位置如下所示：
+Sugov作为一种内核调频策略模块，它主要是根据当前CPU的利用率进行调频。因此，sugov会注册一个callback函数（sugov_update_shared/sugov_update_single）到调度器负载跟踪模块，当CPU util发生变化的时候就会调用该callback函数，检查一下当前CPU频率是否和当前的CPU util匹配，如果不匹配，那么就进行提频或者降频。
+为了适配各种场景，sugov还提供了可调参数，用户空间可以检测当前的场景，并根据不同的场景设定不同的参数，以便满足用户性能/功耗的需求。
+Sugov选定target frequency之后，需要通过cpufreq core（cpufreq framework）、cpufreq driver，cpu调频硬件完成频率的调整。cpufreq core是一个硬件无关的调频框架，集中管理了cpufreq governor、cpufreq driver、cpufreq device对象，同时提供了简单方便使用的接口API，让工程师很轻松的就能完成特定governor或者driver的撰写。
+2、Sugov的基本算法描述
+Sugov的基本算法如下：
+和基于采样的governor不同的是sugov是基于调度器调度事件的。每当发生调度事件的时候，负载跟踪模块会及时更新各个level的调度实体和cfs_rq的平均调度负载（sched_avg），直到顶层cfs rq（即CPU的平均调度负载）。
+每当CPU利用率发生变化的时候，调度器都会调用cpufreq_update_util通知sugov，由sugov判断是否需要进行调频操作。基于采样的governor是governor定期去采样负载信息，而sugov是调度事件（进程切换、入队、出队、tick等）驱动调频的，因此调频会更及时。具体驱动调频的时机包括：
+（1）实时线程（rt或者deadline）的入队出队
+（2）Cpu上的cfs util发生变化
+（3）处于Iowait的任务被唤醒
+调度事件的发生还是非常密集的，特别是在重载的情况下，很多任务可能执行若干个us就切换出去了。如果每次都计算CPU util看看是否需要调整频率，那么本身sugov就给系统带来较重的负荷，因此并非每次调频时机都会真正执行调频检查，sugov设置了一个最小调频间隔，小于这个间隔的调频请求会被过滤掉。当然，这个最小调频间隔规定也不是永远强制执行，在特定情况下（例如cpufreq core修改了sugov可以动态调整的范围的时候），调频间隔判断可以略过。
+由于调频的最小粒度是cluster，当一个cpu上的util发生变化而发起调频操作的时候，实际上sugov会遍历cluster中的所有CPU（如果cluster中只有一个cpu，那么不需要这么复杂，我们这里以cluster中包含多个cpu的sugov_update_shared场景为例来进行说明），找到util最大的那个，用这个最大的util来驱动调频。
+在计算cpu util要从多个视角考量：
+（1）cfs、rt、dl、irq的load avg。这些都是从执行时间的视角来看util，由于PELT窗口是同步的，因此这些load avg可以对比和运算
+（2）任务属性视角。对于deadline类型的任务，我们需要根据当前dl任务的参数来计算满足该任务deadline的最小utility。
+找到cluster中最大的cpu utility之后，通过将其映射到一个具体的CPU frequency上来（具体参考map_util_freq函数）。目前sugov采用的映射公式如下：
+next_freq = C *max_freq * util / max
+其中C = 1.25，表示CPU需要调整的next freq需要提供1.25倍的算力，这样CPU在next freq上运行当前的任务还有20%的算力余量。这里计算出来的next_freq未必是最终设定的频率，因为底层硬件支持的调频是一系列的档位频率，因此，还需要底层硬件驱动进一步根据next_freq来选择一个它支持的频率，最后设定下去。
+二、sugov使用的数据结构
+1、structsugov_tunables
+这个数据结构用来描述sugov的可调参数：
+2、structsugov_cpu
+Sugov为每一个cpu构建了该数据结构，记录per-cpu的调频数据信息：
+3、structsugov_policy
+Sugov为每一个cluster构建了该数据结构，记录per-cluster的调频数据信息：
+三、Sugov和cpufreq core之间的接口和流程分析
+1、Sugov的注册
+如果想要自己实现一个cpufreq governor，那么就需要定义一个struct cpufreq_governor的数据对象并向cpufreq framwork（或者叫cpufreq core）系统注册它。对于sugov而言，这个数据对象定义如下：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/0d125f054507122b824aaf754398e5e9/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-03-18T17:00:00+08:00" />
+<meta property="article:modified_time" content="2022-03-18T17:00:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Schedutil governor情景分析</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <p style="text-align:left;"><strong>前言</strong></p> 
+ <p style="text-align:left;">内核工匠在之前的几篇文章中已经详细介绍了CPU的调频子系统的软件框架，本文把重点放在了schedutil governor（后文称之sugov）的代码逻辑。通过详细的代码级别的分析，希望能够帮助读者理解sugov的代码精妙之处。本文主要分四个章节：第一章简单重复了sugov相关的软件结构和基本算法，让读者对整个sugov在系统所处的位置和基本的逻辑控制有所了解。第二章对sugov使用的数据结构给出了详细的解释。第三章对sugov和cpufreq core的基本数据流和控制流进行分析。第四章描述了sugov本身的调频逻辑。</p> 
+ <p style="text-align:left;">本文出现的内核代码来自Linux5.10.61，为了减少篇幅，我们会引用缩减版本的代码（仅包含主要逻辑），如果有兴趣，读者可以配合原始代码阅读本文。</p> 
+ <p style="text-align:left;"><strong>一、Sugov</strong><strong>概述</strong></p> 
+ <p style="text-align:left;">1、sugov相关软件模块</p> 
+ <p style="text-align:left;">Sugov在整个调频软件的位置如下所示：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/7a/6e/HwwmyZC3_o.png" alt="2c7ec45b829cd08fe0d940e717225642.png"></p> 
+ <p style="text-align:left;">Sugov作为一种内核调频策略模块，它主要是根据当前CPU的利用率进行调频。因此，sugov会注册一个callback函数（sugov_update_shared/sugov_update_single）到调度器负载跟踪模块，当CPU util发生变化的时候就会调用该callback函数，检查一下当前CPU频率是否和当前的CPU util匹配，如果不匹配，那么就进行提频或者降频。</p> 
+ <p style="text-align:left;">为了适配各种场景，sugov还提供了可调参数，用户空间可以检测当前的场景，并根据不同的场景设定不同的参数，以便满足用户性能/功耗的需求。</p> 
+ <p style="text-align:left;">Sugov选定target frequency之后，需要通过cpufreq core（cpufreq framework）、cpufreq driver，cpu调频硬件完成频率的调整。cpufreq core是一个硬件无关的调频框架，集中管理了cpufreq governor、cpufreq driver、cpufreq device对象，同时提供了简单方便使用的接口API，让工程师很轻松的就能完成特定governor或者driver的撰写。</p> 
+ <p style="text-align:left;">2、Sugov的基本算法描述</p> 
+ <p style="text-align:left;">Sugov的基本算法如下：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/f4/89/gXHqzzvp_o.png" alt="d5d09a5d47a361981b121db6753485c6.png"></p> 
+ <p style="text-align:left;">和基于采样的governor不同的是sugov是基于调度器调度事件的。每当发生调度事件的时候，负载跟踪模块会及时更新各个level的调度实体和cfs_rq的平均调度负载（sched_avg），直到顶层cfs rq（即CPU的平均调度负载）。</p> 
+ <p style="text-align:left;">每当CPU利用率发生变化的时候，调度器都会调用cpufreq_update_util通知sugov，由sugov判断是否需要进行调频操作。基于采样的governor是governor定期去采样负载信息，而sugov是调度事件（进程切换、入队、出队、tick等）驱动调频的，因此调频会更及时。具体驱动调频的时机包括：</p> 
+ <p style="text-align:left;">（1）实时线程（rt或者deadline）的入队出队</p> 
+ <p style="text-align:left;">（2）Cpu上的cfs util发生变化</p> 
+ <p style="text-align:left;">（3）处于Iowait的任务被唤醒</p> 
+ <p style="text-align:left;">调度事件的发生还是非常密集的，特别是在重载的情况下，很多任务可能执行若干个us就切换出去了。如果每次都计算CPU util看看是否需要调整频率，那么本身sugov就给系统带来较重的负荷，因此并非每次调频时机都会真正执行调频检查，sugov设置了一个最小调频间隔，小于这个间隔的调频请求会被过滤掉。当然，这个最小调频间隔规定也不是永远强制执行，在特定情况下（例如cpufreq core修改了sugov可以动态调整的范围的时候），调频间隔判断可以略过。</p> 
+ <p style="text-align:left;">由于调频的最小粒度是cluster，当一个cpu上的util发生变化而发起调频操作的时候，实际上sugov会遍历cluster中的所有CPU（如果cluster中只有一个cpu，那么不需要这么复杂，我们这里以cluster中包含多个cpu的sugov_update_shared场景为例来进行说明），找到util最大的那个，用这个最大的util来驱动调频。</p> 
+ <p style="text-align:left;">在计算cpu util要从多个视角考量：</p> 
+ <p style="text-align:left;">（1）cfs、rt、dl、irq的load avg。这些都是从执行时间的视角来看util，由于PELT窗口是同步的，因此这些load avg可以对比和运算</p> 
+ <p style="text-align:left;">（2）任务属性视角。对于deadline类型的任务，我们需要根据当前dl任务的参数来计算满足该任务deadline的最小utility。</p> 
+ <p style="text-align:left;">找到cluster中最大的cpu utility之后，通过将其映射到一个具体的CPU frequency上来（具体参考map_util_freq函数）。目前sugov采用的映射公式如下：</p> 
+ <p style="text-align:left;">next_freq = C *max_freq * util / max</p> 
+ <p style="text-align:left;">其中C = 1.25，表示CPU需要调整的next freq需要提供1.25倍的算力，这样CPU在next freq上运行当前的任务还有20%的算力余量。这里计算出来的next_freq未必是最终设定的频率，因为底层硬件支持的调频是一系列的档位频率，因此，还需要底层硬件驱动进一步根据next_freq来选择一个它支持的频率，最后设定下去。</p> 
+ <p style="text-align:left;"><strong>二、</strong><strong>sugov使用的数据结构</strong></p> 
+ <p style="text-align:left;">1、structsugov_tunables</p> 
+ <p style="text-align:left;">这个数据结构用来描述sugov的可调参数：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/9d/0b/iUAJsYt8_o.png" alt="2e874ab3c4fabb1645ad758807220c20.png"></p> 
+ <p style="text-align:left;">2、structsugov_cpu</p> 
+ <p style="text-align:left;">Sugov为每一个cpu构建了该数据结构，记录per-cpu的调频数据信息：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/3b/d2/6fJRAftA_o.png" alt="a60f99072c1dcc2b602ac12bd98af7a8.png"></p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/a4/9b/Dv7qhuvJ_o.png" alt="6abfe7e1051140f80128a7fab404cf3e.png"></p> 
+ <p style="text-align:left;">3、structsugov_policy</p> 
+ <p style="text-align:left;">Sugov为每一个cluster构建了该数据结构，记录per-cluster的调频数据信息：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/52/ea/8kcCIMj4_o.png" alt="514904c03b95ea8ad8850c914ab9c1bb.png"></p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/43/81/0hRhNMjn_o.png" alt="427199d45823f96a579803d6b578bc22.png"></p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/23/34/NOEpsvfM_o.png" alt="d201308aa6d7d39d75779a305fe18a4f.png"></p> 
+ <p style="text-align:left;"><strong>三、</strong><strong>Sugov和cpufreq core之间的接口和流程分析</strong></p> 
+ <p style="text-align:left;">1、Sugov的注册</p> 
+ <p style="text-align:left;">如果想要自己实现一个cpufreq governor，那么就需要定义一个struct cpufreq_governor的数据对象并向cpufreq framwork（或者叫cpufreq core）系统注册它。对于sugov而言，这个数据对象定义如下：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/0c/7a/5oZeIxVP_o.png" alt="ea8d1dc89952779f64e1e5bf4042eaea.png"></p> 
+ <p style="text-align:left;">然后调用cpufreq_governor_init(schedutil_gov)即可向系统注册sugov。完成注册之后，仅仅是系统可以看到这个governor，它还不一定会起作用，在将sugov设置为当前的governor之后（通过/sys/devices/system/cpu/cpufreq/policyx/scaling_governor），sugov的功能才会启用，根据调度器的利用率信息对CPU频率进行控制。当sugov切换成当前governor的时候，cpufreq framework会依次调用sugov_init、sugov_start完成sugov的初始化和启动。当sugov被其他governor替换的时候，cpufreq framework会依次调用sugov_stop、sugov_exit函数。具体请参考cpufreq_set_policy函数。</p> 
+ <p style="text-align:left;">除了人为的切换cpufreq gover，在cpu hotplug场景也会有governor的启停操作。例如当CPU offline的时候，如果cluster中的所有CPU都被offline，那么cpufreq framework会依次调用sugov_stop、sugov_exit函数让sugov停止工作。如果仅仅是cluster中的一个cpu被offline，cluster中还有其他oneline的cpu core，那么我们仅仅是调用sugov_stop来暂停sugov的运作，然后在cpufreq policy中清除该cpu的bit，最后调用sugov_start来确保其他active cpu可以通过sugov来继续开展频率调整工作。Cpufreq online的操作类似，当online的cpu core所在的cluster还有active的cpu的时候，那么我们仅仅需要调用sugov_stop暂停该policy的运作，在把当前online的cpu core加入cpufreq policy的cpu mask后，重新调用sugov_start来恢复该cluster的调频运作就OK了。如果该oneline的cpu是cluster的第一个cpu core，那么逻辑要复杂一些，需要重新初始化整个cpufreq policy（cpufreq_init_policy），也就会依次调用sugov_init、sugov_start完成sugov的初始化和启动。</p> 
+ <p style="text-align:left;">当cpufreq policy（位于cpufreq framework）中的频率调整范围发生变化之后（例如由于发热而引起的CPU限频），需要通知到cpufreq governor layer，这时候会调用sugov_limits来通知频率受限事件。</p> 
+ <p style="text-align:left;">Cpufreq governor有很多种，并不是每一种governor都是普适的。例如：有些特定的的硬件平台根本就不希望上层的governor自动调整频率，而是自己完全掌控，这时候sugov类似的governor就不适合了。为了解决这个问题，struct cpufreq_governor和struct cpufreq_driver都提供了flags成员，报告给cpufreq core，由它来判断一个cpufreq governor是否匹配当前硬件驱动。由于sugov会自己根据CPU利用率动态的调整频率，因此需要标记CPUFREQ_GOV_DYNAMIC_SWITCHING。</p> 
+ <p style="text-align:left;">2、sugov的初始化</p> 
+ <p style="text-align:left;">我们分两段来解析sugov的初始化过程。sugov_init的第一段执行逻辑大致如下：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/6f/06/ZwNq8Sgd_o.png" alt="6ae18811aff3031d5b1d06360cb7c4e6.png"></p> 
+ <p style="text-align:left;">A、structcpufreq_policy的governor_data会指向当前governor policy对象，要把sugov设置为当前governor，那么旧的governor应该完成stop和exit动作，确保governor_data为空，否则返回-EBUSY</p> 
+ <p style="text-align:left;">B、调用cpufreq_enable_fast_switch来使能fast switch功能。所谓fast switch是指在频率切换过程中不涉及阻塞的行为，可以直接在中断上下文执行频率切换动作。当然，这里只是sugov policy层enable fast switch，具体是否支持还要看底层cpufreq驱动。为了调和cpufreq governor和cpufreq driver的行为，cpufreq policy数据结构提供了两个成员：fast_switch_possible和fast_switch_enabled。如果底层驱动支持快速切频功能，那么cpufreq driver必须提供fast_switch的回调函数，这时候cpufreq policy的fast_switch_possible等于true，表示驱动支持任何上下文（包括中断上下文）的频率切换。只有上下打通（上指governor，下指driver），CPU频率切换才走fast switch路径。</p> 
+ <p style="text-align:left;">此外，fast switch和cpufreq transition notifier是互斥的，如果有驱动已经注册了cpufreq transition notifier，那么fast switch将无法enable，反之亦然。那么为何会有这样的限制呢？其实在fasts witch出现之前就已经有了cpufreq transition notifier机制：即当CPU频率发生变化的时候，cpufreq驱动将通过notifier机制向注册的模块发送PRECHANGE和POSTCHANGE消息。收到消息的模块会调用callback来回应这个频率切换事件。然而在fasts witch机制下，我们不能调用这些callback，除非保证调用callback的过程是非阻塞的。为了保证频率切换是串行执行的，驱动模块一般会执行下面的逻辑：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/cf/5f/B8xqMEfI_o.png" alt="9f91d94cf12c89c56a7a8bb2010c4876.png"></p> 
+ <p style="text-align:left;">对于fast switch，我们无法实现类似的notifiy操作，因为cpufreq_freq_transition_begin函数中有阻塞操作wait_event（为了串行化多个上下文的频率切换动作，transition_begin和transition_end顺便也完成了同步功能）。当然，我们也可以设计atomic版本的cpufreq notifier机制，但是这样要改造所有callback函数，这几乎是不现实的，所以做成fast switch和cpufreq transition notifier互斥是最简单的方案。</p> 
+ <p style="text-align:left;">顺便说一句，虽然fast switch没有了频率切换通知机制，但是串行化仍然是需要的，因此，调用cpufreq_driver_fast_switch（一般是governor）完成cpu频率快速切换的时候，调用者需要使用适当的同步机制。</p> 
+ <p style="text-align:left;">C、调用sugov_policy_alloc分配sugov policy对象，通过其policy成员建立和cpufreq framework的关联。</p> 
+ <p style="text-align:left;">D、当不支持fast switch的时候，我们需要一个可以阻塞的线程上下文来发起调频操作。在早期的版本，这是通过workqueue机制来实现的。不过考虑到普通线程在RT/DL负载重或者整机负载非常重的情况下，cpu频率切换会由于调度延迟的加大而delay。因此，slow switch修改为优先级为50的rt内核线程（SCHED_FIFO）来替代workqueue。后来，考虑到频率切换确实非常重要，需要尽快完成，因此最终将该内核线程修改为deadline类型，即一人之下（stop class），万人之上。具体请参考sugov_kthread_create函数。当policy是fast switch模式的时候，这个deadline的内核线程是不需要的。</p> 
+ <p style="text-align:left;">一般手机系统中有多个调频域，因此有多个cpufreq policy（对应cluster，cluster内的cpu统一调频），每个policy都可以有自己的可调节参数，当然也可以所有policy共同使用一组可调参数（global_tunables全局变量）。具体是使用统一的可调参数还是per-cluster可调参数是底层驱动决定的（CPUFREQ_HAVE_GOVERNOR_PER_POLICY）。目前手机场景，大部分是per-cluster的可调参数。因此我们这里略过global tunables的场景，sugov_init的第二段执行逻辑大致如下：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/98/0a/CfpXYBQw_o.png" alt="8d6f56f2650984e505b2509c3c1a8937.png"></p> 
+ <p style="text-align:left;">A、调用sugov_tunables_alloc函数分配该policy（或者说cluster）的struct sugov_tunables数据对象，并建立sugov和tunable对象之间的关联（即把sugov的tunables成员指向这个分配的数据对象，同时也会把sugov挂入tunables 的链表）。</p> 
+ <p style="text-align:left;">B、关于调频间隔有三个控制参数。一个是来自CPU调频硬件能力的，即硬件需要从F1频率切换到F2频率并且稳定下来的时间间隔。保存在cpufreq policy数据结构的cpuinfo成员的transition_latency中。另外两个来自软件，一个是上层sugov的设定，保存在tunables数据结构的rate_limit_us成员中（也可以说是sugov policy的freq_update_delay_ns的成员）。另外一个是底层cpufreq driver对上层governor的间隔需求，保存在cpufreq policy数据结构的transition_delay_us中。在初始化的时候，rate_limit_us应该跟随policy-&gt;transition_delay_us，如果driver没有设定该值，那么考虑硬件transition_latency乘上一个合理的倍数（缺省是1000）。对于一些硬件transition_latency比较慢的平台，这样的调频间隔设定的太大，因此clamp min到10ms。</p> 
+ <p style="text-align:left;">C、建立cpufreq framework和sugov的关联（初始化governor_data）</p> 
+ <p style="text-align:left;">D、初始化可调参数的sysfs接口</p> 
+ <p style="text-align:left;"> 3、Sugov的启动</p> 
+ <p style="text-align:left;">sugov_start首先执行sugov policy各个成员的初始化，逻辑大致如下：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/fd/d4/kNvGzxEU_o.png" alt="9f56d736e514a6f9c7391d4bd6ccba93.png"></p> 
+ <p style="text-align:left;">在cpufreq governor layer，sugov是否发起频率切换是由freq_update_delay_ns参数确定的，因此在启动sugov的时候需要根据tunable参数中的rate_limit_us来完成其初始化。need_freq_update的初始化和底层驱动相关，如果底层驱动需要在policy更新min或者max frequency的时候，无脑下发调频请求（参考__cpufreq_driver_target），那么need_freq_update是always true的（即驱动是标记CPUFREQ_NEED_UPDATE_LIMITS，目前只有intel CPU的驱动是这样设定的）。其他的成员初始化非常简单，不再赘述。</p> 
+ <p style="text-align:left;">随后，sugov_start会遍历该sugov policy（cluster）中的所有cpu，建立sugov cpu和sugov policy之间的关联，代码逻辑如下：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/1e/79/kRSfSfBv_o.png" alt="77f19ea48167102d11bcef5bda19efc3.png"></p> 
+ <p style="text-align:left;">最后，sugov_start会遍历该sugov policy（cluster）中的所有cpu，调用cpufreq_add_update_util_hook为sugov cpu注册调频回调函数，代码逻辑如下：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/29/66/vwDKhHUF_o.png" alt="b1c20709d3d653a0d1c7b6aa04a96de6.png"></p> 
+ <p style="text-align:left;">至此，sugov和调度器打通了，一旦调度器判断CPU util发生变化，那么将调用相应的回调函数，由sugov进一步判断是否需要进行频率调整。</p> 
+ <p style="text-align:left;">4、Sugov的停止</p> 
+ <p style="text-align:left;">sugov_stop执行逻辑大致如下：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/77/84/pLDQhsbn_o.png" alt="e3c00e77edf426a08928c515b683dd4d.png"></p> 
+ <p style="text-align:left;">A、遍历该sugov policy（cluster）中的所有cpu，调用cpufreq_remove_update_util_hook注销sugov cpu的调频回调函数</p> 
+ <p style="text-align:left;">B、sugov_stop之后可能会调用sugov_exit来释放该governor所持有的资源，包括update_util_data对象。通过synchronize_rcu函数可以确保之前对update_util_data对象的并发访问都已经离开了临界区，从而后续可以安全释放。</p> 
+ <p style="text-align:left;">C、在不支持fast switch模式的时候，我们需要把pending状态状态的irq work和kthread work处理完毕，为后续销毁线程做准备</p> 
+ <p style="text-align:left;">5、Sugov的退出</p> 
+ <p style="text-align:left;">sugov_exit主要功能是释放申请的资源，具体执行逻辑大致如下：</p> 
+ <p style="text-align:left;">A、断开cpufreq framework中的cpufreq policy和sugover的关联（即将其governor_data设置为NULL）</p> 
+ <p style="text-align:left;">B、调用sugov_tunables_free释放可调参数的内存（如果是多个policy共用一个可调参数对象，那么需要通过引用计数来判断是否还有sugov policy引用该对象）</p> 
+ <p style="text-align:left;">C、调用sugov_kthread_stop来消耗用于sugov调频的内核线程（仅用在不支持fast switch场景）</p> 
+ <p style="text-align:left;">D、调用sugov_policy_free释放sugov policy的内存</p> 
+ <p style="text-align:left;">E、调用cpufreq_disable_fast_switch来禁止本policy上的fast switch。</p> 
+ <p style="text-align:left;">6、限频处理</p> 
+ <p style="text-align:left;">从系统角度看，整个限频路径如下：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/1a/07/5hRu3wn5_o.png" alt="9e58d023e3efa2a34144211af3d27f95.png"></p> 
+ <p style="text-align:left;">想要发起限频的内核模块A（例如检测到触摸事件后，将min freq拉升到1.2GHz）通过PM Qos模块提供的接口API向指定的cpufreq policy发起限频请求操作（例如freq_qos_add_request、freq_qos_update_request接口）。PM Qos模块会根据这个新的限频请求，并综合之前的所有的限频请求计算当前实际的限频值，如果限频值发生了变化，那么就通知cpufreq core模块frequency limits已经更新（具体的接口形态是notifier_block）。收到这个通知之后，cpufreq core模块会调用refresh_frequency_limits，最后通知到sugov模块调用sugov_limits。sugov_limits执行逻辑大致如下：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/d4/b6/YVcdr7rV_o.png" alt="c8d8aa02a367dbc6256fc7280438e32d.png"></p> 
+ <p style="text-align:left;">A、对于不支持fast switch的情况下，立刻调用cpufreq_policy_apply_limits函数使用最新的max和min来修正当前cpu频率，同时标记sugov policy中的limits_changed成员。</p> 
+ <p style="text-align:left;">B、对于支持fast switch的情况下，仅仅标记sugov policy中的limits_changed成员即可，并不立刻进行频率修正。后续在调用cpufreq_update_util函数进行调频的时候会强制进行一次频率调整。</p> 
+ <p style="text-align:left;"><strong>四、</strong><strong>sugov如何进行调频</strong></p> 
+ <p style="text-align:left;">1、Sugov的频率调整间隔</p> 
+ <p style="text-align:left;">虽然在调度器中有很多点都会触发cpu utility change的时间，从而会调用governor的callback函数，但是为了避免多度频繁的进行cpu频率调整（例如底层cpufreq驱动最多1ms完成频率切换，那么上次0.5ms连续下发的频率调整命令其实是没有意义的），sugov模块通过sugov_should_update_freq函数来过滤调度器密集下发的频率调整请求：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/c5/b3/Ykq3UEsg_o.png" alt="d562ba4053e291d5cd3d1cf6a8b7a6ea.png"></p> 
+ <p style="text-align:left;">A、CPU a能否调整不在一个cluster中另外一个CPU b的频率？不同的硬件平台是不一样的，有些平台上调整CPU频率的寄存器是per CPU的，因此只能调整自己CPU（cluster）的频率。这时候就需要判断一下当前发起的cpu是否在当前准备进行频率调整的policy之中，如果不在，那么就没有必要继续下去了，毕竟到了底层也无法完成频率调整，还不如一开始就结束，节省后续相关的计算。对于ARM平台不存在这样的限制，因此其cpufreq policy的dvfs_possible_from_any_cpu成员都是true的，用来标记任何的cpu都可以修改其他cpu的频率。这种情况下，也不是全部长驱直入的，需要看看当前CPU是否处于offline的过程中，如果是那么也不能进行频率调整。</p> 
+ <p style="text-align:left;">B、调度器有可能会以非常密集的间隔来上报cpu util change事件，为防止没有意义的调频，sugov会进行拦截。然而还是有一些特殊情况：当该cpufreq policy的频率上下限发生变更的时候，就会忽略时间间隔的限制。此外，当cpu util的变更是由于deadline的带宽需求引发的，那么同样也需要忽略时间间隔的限制，具体参考ignore_dl_rate_limit函数。</p> 
+ <p style="text-align:left;">C、这里是正常的sugov在调频时间间隔的限制逻辑。</p> 
+ <p style="text-align:left;">2、计算cpu utility</p> 
+ <p style="text-align:left;">schedutil_cpu_util是计算cpu utility的主函数，大概的逻辑过程如下：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/64/be/uy6ydABF_o.png" alt="0cf0d91c0d0fd7dd7298757b3f03931a.png"></p> 
+ <p style="text-align:left;">A、Cpu utility应该是综合考虑CPU上各个调度类（cfs、rt、dl）以及irq的utility。然而为了平衡性能和功耗，在某些场景下（例如手机场景），用户空间会通过uclamp机制对用户体验相关的线程进行boost，或者对后台线程进行频率限制。这样，CPU频率的选择并不能完全从负载跟踪模块得到的utility去换算，而是要综合考虑用户空间的uclamp限制。在过去，没有uclamp功能，在计算调频utility的场景下（FREQUENCY_UTIL），只要rq上有rt任务，那么就上报该CPU的最大可能的utility。如果系统使能了uclamp功能并且的确对cfs或者rt任务进行了uclamp，那么我们将采用更精细的频率控制方法（下面会讲）。</p> 
+ <p style="text-align:left;">B、如果该CPU处理了过多的中断handler（包括软中断），irq负载已经高过CPU的最大算力，那么直接提满频。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/15/04/FbbZ1GLu_o.png" alt="966ca91fdd52b0f534b0d718d217e743.png"></p> 
+ <p style="text-align:left;">A、这里累加了cfs和rt任务的utility，并通根据当前的设置进行clamp。关于uclamp机制，后续我们会其他的文章详细描述，敬请期待。</p> 
+ <p style="text-align:left;">B、Deadline类型的任务可以从两个不同的层面输出utility，一种是PELT算法下的utility，另外一个是带宽视角下的utility。一般而言，PELT dl utility不应该算入来提频，但这里只是为了判断是否cfs rt和dl已经耗尽了所有的CPU算力，如果是这样，那么直接返回cpu utility的最大值。如果本次调用schedutil_cpu_util是为了计算能耗（ENERGY_UTIL），那么utility需要累计deadline类型的任务，毕竟只要运行就会消耗CPU的能量。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/67/22/puBbGHYg_o.png" alt="b5d20662ce2920422486357596a7a824.png"></p> 
+ <p style="text-align:left;">A、各种类型任务的PELT跟踪下的utility是在一个timeline下（基于pelt clock），并且窗口也是对齐的，因此它们可以相加起来。Irq utility的计算和这些task utility的计算形式是类似的，但是timeline和窗口并不是对齐的，因此不能直接相加。Irq time并没有计算进入task clock，因此task utility计算值会稍微大一些。这个概念有点类似irq会偷走一部分的cpu算力，从而让其capacity没有那么大。这里通过scale_irq_capacity对任务的utility进行调整。</p> 
+ <p style="text-align:left;">B、至此，util变量保存了cfs和rt的利用率信息（经过clamp和irq的调整），这里再累加上dl任务的utility。对于频率调整的util，dl任务采用了带宽视角的utility，作为CPU输出算力的最小值，毕竟CPU算力至少要满足dl任务的带宽需要。</p> 
+ <p style="text-align:left;">3、iowait boost</p> 
+ <p style="text-align:left;">在sugov中内嵌了iowait boost算法，主要是为了解决轻载下的io吞吐量下降的问题：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/a7/f2/OlPeLVrp_o.png" alt="fca9a422b813ddab04c824af78fb5fc3.png"></p> 
+ <p style="text-align:left;">在轻载场景下，CPU上往往只有一个重载io的任务在运行。假设目前处于较高的CPU频率状态，这时候CPU的busy的时间比较短，utility比较轻，因此sugov就会将CPU频率降低，从而拉长了任务运行时间，这样，单位时间内下发的io command数量就会降低，从而拉低了io吞吐量。</p> 
+ <p style="text-align:left;">iowait boost算法过程如下：</p> 
+ <p style="text-align:left;">（1）当enqueue一个处于iowait状态任务的时候，通过cpufreq_update_util来通知sugov模块发生了一次SCHED_CPUFREQ_IOWAIT类型的cpu utility变化。</p> 
+ <p style="text-align:left;">（2）在sugov callback函数中调用sugov_iowait_boost来更新该CPU的io wait boost状态。具体更新的规则如下表所示：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/ee/32/SW2uZFFs_o.png" alt="23362f0db18d16d6c4176816a94b4587.png"></p> 
+ <p style="text-align:left;">（3）在调用sugov_get_util函数获取cpu utility之后，通过调用sugov_iowait_apply来应用iowait boost的utility值。如果Iowait boost之后的utility比较大的话，那么用iowait boost utility来替代之前计算的cpu utility。顺便说一句，如果在一个tick内没有联系的pending的iowait boost，那么Iowait boost值会衰减，也就是说，只有在大量io下发的场景中，CPU频率才会维持较高的boost值。</p> 
+ <p style="text-align:left;">4、计算cluster的utility</p> 
+ <p style="text-align:left;">对于只有一个cpu的cluster，cpu utility就是cluster的utility，对于cluster内有多个cpu的情况，我们需要遍历cluster中的cpu，找到cluster utility（用来映射cluster频率的utility），具体的代码实现在sugov_next_freq_shared函数中，如下：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/77/3b/NYu1f4iX_o.png" alt="c96ca53a89212f94c0c0d1396a4471e9.png"></p> 
+ <p style="text-align:left;">A、获取该CPU的utility和CPU的最大算力</p> 
+ <p style="text-align:left;">B、大部分的情况下，一个cluster中的CPU其微架构是一样的，因此其最大算力也是一样的，这时候就是选择cpu utility最大的那个就OK了。如果cluster中的CPU微架构不同，那么需要对比的是（utility/capacity）</p> 
+ <p style="text-align:left;">5、如何将cluster utility映射到具体的频率？</p> 
+ <p style="text-align:left;">通过get_next_freq函数，我们可以将cluster上指定的utility映射到具体的频率上去：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/cb/80/gHfbg111_o.png" alt="6f0c77c69c7368ea95392c99485386a4.png"></p> 
+ <p style="text-align:left;">A、我们期望utility能够匹配当前算力，什么叫匹配？我们这里采用了20%的余量，即当前utility耗尽80%的目标算力即可（目标算力就是调整到目标频率CPU输出的算力）</p> 
+ <p style="text-align:left;">B、这里通过map_util_freq映射出来的目标频率并不是最终CPU调整到的频率，不过如果这里计算的频率如果和上次缓存的目标频率一样的话，那么其底层驱动实际调整的频率应该也是一样的，因此这里不会再调用cpufreq_driver_resolve_freq函数来确定实际的CPU频率，直接返回sg_policy-&gt;next_freq。</p> 
+ <p style="text-align:left;">C、底层驱动（硬件）不能支持“无级变速”，因此CPU频率是一张表格，有固定的档位，每一档对应一个CPU频率。在计算得到目标频率之后，还需要将其解析为底层驱动支持的频点。具体的方式有很多种，例如取大于目标频率的最小频点、取小于该目标频率的最大频点，或者最靠近的频点。</p> 
+ <p style="text-align:left;">6、发起调频</p> 
+ <p style="text-align:left;">至此，我们已经获得了需要调频的频点，下面就是通知底层驱动软件进行实际的频率调整了。对于单cpu的cluster而言，调频代码如下：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/ff/da/yAv3tpKD_o.png" alt="5b17374cbac15d2ecc215b92e741dca0.png"></p> 
+ <p style="text-align:left;">A、如果本次是想要调降频率，但是最近该CPU并没有进入idle状态（runqueue上仍然有任务），这时候立刻调降频率有点为时过早，我们先保持频率不变</p> 
+ <p style="text-align:left;">B、快速切换频率路径。由于cluster只有一个cpu，而且调用sugov_update_single已经获取了rq lock，因此sugov_fast_switch不需要其他手段来控制并发。</p> 
+ <p style="text-align:left;">C、慢速切换频率路径。在这个场景下，仅仅rq lock不足以保护并发，因为慢速切换频率需要在sugov kthread上下文进行实际的调频动作，因此需要使用sg_policy-&gt;update_lock。</p> 
+ <p style="text-align:left;">对于sugov_update_shared，其频率切换的逻辑和sugov_update_single类似，只不过sugov policy数据会在多个cpu上并发（无论是快速还是慢速切换频率路径），因此统一使用了update_lock来控制并发。</p> 
+ <p style="text-align:left;"><strong>五、小结</strong><br></p> 
+ <p style="text-align:left;">Schedutilgovernor是标准linux缺省的cpufreq governor，它主要是hook在调度器的负载跟踪模块，当cpu的负载发生变化的时候就会驱动一次调频流程。通过遍历cluster中所有CPU，找到最大的负载来映射到target frequency。底层驱动会根据这个target frequency并结合CPU频率表选择一个最适合的频率设定下去。</p> 
+ <p style="text-align:left;">Schedutil governor虽然是一个优秀的governor，但是在移动平台上它还是有各种各样的缺点。目前各大厂商的工程师也正在优化cpufreq governor，也欢迎热爱技术的你积极参与。</p> 
+ <p>参考文献：</p> 
+ <p>1、内核源代码</p> 
+ <p>2、linux-5.10.61\Documentation\scheduler\*</p> 
+ <p><img src="https://images2.imgbox.com/b6/ea/7wMHXFRM_o.png" alt="9a043dda68091647bc7b73502438fd77.gif"></p> 
+ <pre class="has"><code class="language-go">长按关注内核工匠微信
+
+
+Linux 内核黑科技 | 技术文章 | 精选教程</code></pre> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2b58b326fa55d275c59a6c39bafcfd8f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C&#43;&#43;之装饰(decorator)模式</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7ac51a73d86e33b8d8dc6096b9cd2dd3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">vue路由传参的两种方式,实现返回上个页面不刷新</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

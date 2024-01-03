@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>hadoop中压缩与解压详解 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="hadoop中压缩与解压详解" />
+<meta property="og:description" content="概述 本文会从一下几点介绍压缩也解压 1. 什么是压缩、解压？ 2. hadoop中的压缩 、解压格式有哪些？ 3. 有什么优缺点？ 4. 应用场景有哪些？ 5. 如何使用？ 6. LzoCodec和LzopCodec区别 7. Hive中的使用 大家可以带着上述几个问题来进行学习、思考。
+1 什么是压缩、解压 用一句最直白的话概述，压缩就是通过某种技术（算法）把原始文件变下，相应的解压就是把压缩后的文件变成原始文件。嘿嘿是不是又可以变大又可以变小。
+想要对hadoop中压缩，解压进行深刻的认识，可以从该路线进行思考：hdfs ==&gt; map ==&gt; shuffle ==&gt; reduce 2 hadoop中的压缩格式 压缩格式UNIX工具算 法文件扩展名可分割DEFLATE无DEFLATE.deflateNogzipgzipDEFLATE.gzNoLZ4无LZ4.LZ4NObzipbzipbzip.bz2YESLZOlzopLZO.lzoYES if indexedSnappy无Snappy.snappyNO 一个简单的案例对于集中压缩方式之间的压缩比和压缩速度进行一个感观性的认识
+测试环境: 8 core i7 cpu 8GB memory 64 bit CentOS 1.4GB Wikipedia Corpus 2-gram text input 压缩比 压缩时间 可以看出压缩比越高，压缩时间越长，压缩比：Snappy &lt; LZ4 &lt; LZO &lt; GZIP &lt; BZIP2
+gzip: 优点：压缩比在四种压缩方式中较高；hadoop本身支持，在应用中处理gzip格式的文件就和直接处理文本一样；有hadoop native库；大部分linux系统都自带gzip命令，使用方便。 缺点：不支持split。
+lzo压缩 优点：压缩/解压速度也比较快，合理的压缩率；支持split，是hadoop中最流行的压缩格式；支持hadoop native库；需要在linux系统下自行安装lzop命令，使用方便。 缺点：压缩率比gzip要低；hadoop本身不支持，需要安装；lzo虽然支持split，但需要对lzo文件建索引，否则hadoop也是会把lzo文件看成一个普通文件（为了支持split需要建索引，需要指定inputformat为lzo格式）。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/407cceedce76edcca05897681df12633/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2018-03-12T11:39:55+08:00" />
+<meta property="article:modified_time" content="2018-03-12T11:39:55+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">hadoop中压缩与解压详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h5 id="概述">概述</h5> 
+<p>本文会从一下几点介绍压缩也解压 <br> 1. 什么是压缩、解压？ <br> 2. hadoop中的压缩 、解压格式有哪些？ <br> 3. 有什么优缺点？ <br> 4. 应用场景有哪些？ <br> 5. 如何使用？ <br> 6. LzoCodec和LzopCodec区别 <br> 7. Hive中的使用 <br> 大家可以带着上述几个问题来进行学习、思考。</p> 
+<h5 id="1-什么是压缩解压">1 什么是压缩、解压</h5> 
+<p>用一句最直白的话概述，压缩就是通过某种技术（算法）把原始文件变下，相应的解压就是把压缩后的文件变成原始文件。嘿嘿是不是又可以变大又可以变小。</p> 
+<ul><li>想要对hadoop中压缩，解压进行深刻的认识，可以从该路线进行思考：<em>hdfs ==&gt; map ==&gt; shuffle ==&gt; reduce</em></li></ul> 
+<h5 id="2-hadoop中的压缩格式">2 hadoop中的压缩格式</h5> 
+<table><thead><tr><th>压缩格式</th><th>UNIX工具</th><th>算 法</th><th>文件扩展名</th><th>可分割</th></tr></thead><tbody><tr><td>DEFLATE</td><td>无</td><td>DEFLATE</td><td>.deflate</td><td>No</td></tr><tr><td>gzip</td><td>gzip</td><td>DEFLATE</td><td>.gz</td><td>No</td></tr><tr><td>LZ4</td><td>无</td><td>LZ4</td><td>.LZ4</td><td>NO</td></tr><tr><td>bzip</td><td>bzip</td><td>bzip</td><td>.bz2</td><td>YES</td></tr><tr><td>LZO</td><td>lzop</td><td>LZO</td><td>.lzo</td><td>YES if indexed</td></tr><tr><td>Snappy</td><td>无</td><td>Snappy</td><td>.snappy</td><td>NO</td></tr></tbody></table> 
+<p>一个简单的案例对于集中压缩方式之间的压缩比和压缩速度进行一个感观性的认识</p> 
+<pre class="prettyprint"><code class=" hljs mel">测试环境:
+<span class="hljs-number">8</span> core i7 cpu 
+<span class="hljs-number">8</span>GB <span class="hljs-keyword">memory</span>
+<span class="hljs-number">64</span> bit CentOS
+<span class="hljs-number">1.4</span>GB Wikipedia Corpus <span class="hljs-number">2</span>-gram <span class="hljs-keyword">text</span> input</code></pre> 
+<ul><li>压缩比 <br> <img src="https://images2.imgbox.com/f9/63/tggBUAdQ_o.png" alt="这里写图片描述" title=""></li><li><p>压缩时间 <br> <img src="https://images2.imgbox.com/98/3f/9eFPV7Ys_o.png" alt="这里写图片描述" title=""> <br> <strong>可以看出压缩比越高，压缩时间越长，压缩比：Snappy &lt; LZ4 &lt; LZO &lt; GZIP &lt; BZIP2</strong></p></li><li><p>gzip: <br> <strong>优点</strong>：压缩比在四种压缩方式中较高；hadoop本身支持，在应用中处理gzip格式的文件就和直接处理文本一样；有hadoop native库；大部分linux系统都自带gzip命令，使用方便。 <br> <strong>缺点</strong>：不支持split。</p></li><li><p>lzo压缩 <br> <strong>优点</strong>：压缩/解压速度也比较快，合理的压缩率；支持split，是hadoop中最流行的压缩格式；支持hadoop native库；需要在linux系统下自行安装lzop命令，使用方便。 <br> <strong>缺点</strong>：压缩率比gzip要低；hadoop本身不支持，需要安装；lzo虽然支持split，但需要对lzo文件建索引，否则hadoop也是会把lzo文件看成一个普通文件（为了支持split需要建索引，需要指定inputformat为lzo格式）。</p></li><li>snappy压缩 <br> <strong>优点</strong>：压缩速度快；支持hadoop native库。 <br> <strong>缺点</strong>：不支持split；压缩比低；hadoop本身不支持，需要安装；linux系统下没有对应的命令。</li><li>bzip2压缩 <br> <strong>优点</strong>：支持split；具有很高的压缩率，比gzip压缩率都高；hadoop本身支持，但不支持native；在linux系统下自带bzip2命令，使用方便。 <br> <strong>缺点</strong>：压缩/解压速度慢；不支持native。</li></ul> 
+<h5 id="3-优缺点">3 优缺点</h5> 
+<p>对于压缩的好处可以从两方面考虑：Storage + Compute； <br> 1. Storage ：基于HDFS考虑，减少了存储文件所占空间，提升了数据传输速率； <br> 2. Compute：基于YARN上的计算(MapReduce/Hive/Spark/….)速度的提升。</p> 
+<p><strong>在hadoop大数据的背景下，这两点尤为重要，怎样达到一个高效的处理，选择什么样的压缩方式和存储格式（下篇博客介绍）是很关键的。</strong> <br> <img src="https://images2.imgbox.com/39/11/7HiPtXoa_o.png" alt="这里写图片描述" title=""> <br> 从这幅图带领大家进一步认识压缩于解压的优缺点，看到这幅图后你们有一定自己的认识吗？ <br> <strong>优点：</strong>减少存储空间（HDFS）,降低网络带宽，减少磁盘IO <br> <strong>缺点：</strong>既然存在优点，那必然存在缺点，那就是CPU啦，压缩和解压肯定要消耗CPU的，如果CPU过高那肯定会导致集群负载过高，从而导致你的计算缓慢，job阻塞，文件读取变慢一系列原因。</p> 
+<p><strong>总结</strong>： <br> 1. 不同的场景选择不同的压缩方式，肯定没有一个一劳永逸的方法，如果选择高压缩比，那么对于cpu的性能要求要高，同时压缩、解压时间耗费也多；选择压缩比低的，对于磁盘io、网络io的时间要多，空间占据要多；<strong>对于支持分割的，可以实现并行处理</strong>。 <br> 2. 分片的理解：举个例子，一个未压缩的文件有1GB大小，hdfs默认的block大小是64MB,那么这个文件就会被分为16个block作为mapreduce的输入，每一个单独使用一个map任务。如果这个文件是已经使用gzip压缩的呢，如果分成16个块，每个块做成一个输入，显然是不合适的，因为gzip压缩流的随即读是不可能的。实际上，当mapreduce处理压缩格式的文件的时候它会认识到这是一个gzip的压缩文件，而gzip又不支持随即读，它就会把16个块分给一个map去处理，这里就会有很多非本地处理的map任务，整个过程耗费的时间就会相当长。 <br> lzo压缩格式也会是同样的问题，但是通过使用hadoop lzo库的索引工具以后，lzo就可以支持splittable。bzip2也是支持splittable的。</p> 
+<h5 id="4-压缩在mapreduce中的应用场景">4 压缩在MapReduce中的应用场景</h5> 
+<p><img src="https://images2.imgbox.com/e3/be/P8V21apJ_o.png" alt="这里写图片描述" title=""> <br> <strong>在hadoop中的应用场景总结在三方面：输入，中间，输出。</strong></p> 
+<p>整体思路：hdfs ==&gt; map ==&gt; shuffle ==&gt; reduce</p> 
+<ol><li>Use Compressd Map Input:从HDFS中读取文件进行Mapreuce作业，如果数据很大，可以使用压缩并且选择支持分片的压缩方式（Bzip2,LZO），可以实现并行处理，提高效率，减少磁盘读取时间，同时选择合适的存储格式例如Sequence Files，RC,ORC等；</li><li>Compress Intermediate Data:Map输出作为Reducer的输入，需要经过shuffle这一过程，需要把数据读取到一个环形缓冲区，然后读取到本地磁盘，所以选择压缩可以减少了存储文件所占空间，提升了数据传输速率，建议使用压缩速度快的压缩方式，例如Snappy和LZO.</li><li>Compress Reducer Output:进行归档处理或者链接Mapreduce的工作（该作业的输出作为下个作业的输入），压缩可以减少了存储文件所占空间，提升了数据传输速率，如果作为归档处理，可以采用高的压缩比（Gzip,Bzip2），如果作为下个作业的输入，考虑是否要分片进行选择。</li></ol> 
+<h5 id="5-中间压缩的配置和最终结果压缩的配置">5 中间压缩的配置和最终结果压缩的配置</h5> 
+<p>可以使用<code>Hadoop checknative</code>检测本机有哪些可用的压缩方式</p> 
+<h6 id="51-配置文件的修改">5.1 配置文件的修改</h6> 
+<ul><li>core-site.xml codecs</li></ul> 
+<pre class="prettyprint"><code class=" hljs avrasm">
+&lt;property&gt;
+    &lt;name&gt;io<span class="hljs-preprocessor">.compression</span><span class="hljs-preprocessor">.codecs</span>&lt;/name&gt;
+    &lt;value&gt;
+    org<span class="hljs-preprocessor">.apache</span><span class="hljs-preprocessor">.hadoop</span><span class="hljs-preprocessor">.io</span><span class="hljs-preprocessor">.compress</span><span class="hljs-preprocessor">.GzipCodec</span>,
+    org<span class="hljs-preprocessor">.apache</span><span class="hljs-preprocessor">.hadoop</span><span class="hljs-preprocessor">.io</span><span class="hljs-preprocessor">.compress</span><span class="hljs-preprocessor">.DefaultCodec</span>, <span class="hljs-preprocessor">#zlib-&gt;Default</span>
+    org<span class="hljs-preprocessor">.apache</span><span class="hljs-preprocessor">.hadoop</span><span class="hljs-preprocessor">.io</span><span class="hljs-preprocessor">.compress</span><span class="hljs-preprocessor">.BZip</span>2Codec,
+    <span class="hljs-keyword">com</span><span class="hljs-preprocessor">.hadoop</span><span class="hljs-preprocessor">.compression</span><span class="hljs-preprocessor">.lzo</span><span class="hljs-preprocessor">.LzoCodec</span>,
+    <span class="hljs-keyword">com</span><span class="hljs-preprocessor">.hadoop</span><span class="hljs-preprocessor">.compression</span><span class="hljs-preprocessor">.lzo</span><span class="hljs-preprocessor">.LzopCodec</span>,
+    org<span class="hljs-preprocessor">.apache</span><span class="hljs-preprocessor">.hadoop</span><span class="hljs-preprocessor">.io</span><span class="hljs-preprocessor">.compress</span><span class="hljs-preprocessor">.Lz</span>4Codec,
+    org<span class="hljs-preprocessor">.apache</span><span class="hljs-preprocessor">.hadoop</span><span class="hljs-preprocessor">.io</span><span class="hljs-preprocessor">.compress</span><span class="hljs-preprocessor">.SnappyCodec</span>,
+    &lt;/value&gt;
+&lt;/property&gt;</code></pre> 
+<ul><li>mapred-site.xml (switch+codec)</li></ul> 
+<pre class="prettyprint"><code class=" hljs avrasm">&lt;property&gt;
+             <span class="hljs-preprocessor">#支持压缩</span>
+    &lt;name&gt;mapreduce<span class="hljs-preprocessor">.output</span><span class="hljs-preprocessor">.fileoutputformat</span><span class="hljs-preprocessor">.compress</span>&lt;/name&gt;
+    &lt;value&gt;true&lt;/value&gt;
+&lt;/property&gt;
+            <span class="hljs-preprocessor">#压缩方式</span>
+&lt;property&gt;
+    &lt;name&gt;mapreduce<span class="hljs-preprocessor">.output</span><span class="hljs-preprocessor">.fileoutputformat</span><span class="hljs-preprocessor">.compress</span><span class="hljs-preprocessor">.codec</span>&lt;/name&gt;
+    &lt;value&gt;org<span class="hljs-preprocessor">.apache</span><span class="hljs-preprocessor">.hadoop</span><span class="hljs-preprocessor">.io</span><span class="hljs-preprocessor">.compress</span><span class="hljs-preprocessor">.BZip</span>2Codec&lt;/value&gt;
+&lt;/property&gt; </code></pre> 
+<ul><li>中间压缩：中间压缩就是处理作业map任务和reduce任务之间的数据，对于中间压缩，最好选择一个节省CPU耗时的压缩方式（快）</li></ul> 
+<p>hadoop压缩有一个默认的压缩格式，当然可以通过修改<code>mapred.map.output.compression.codec</code>属性，使用新的压缩格式，这个变量可以在mapred-site.xml 中设置 </p> 
+<pre class="prettyprint"><code class=" hljs avrasm">&lt;property&gt;
+         &lt;name&gt;mapred<span class="hljs-preprocessor">.map</span><span class="hljs-preprocessor">.output</span><span class="hljs-preprocessor">.compression</span><span class="hljs-preprocessor">.codec</span>&lt;/name&gt;
+         &lt;value&gt;org<span class="hljs-preprocessor">.apache</span><span class="hljs-preprocessor">.hadoop</span><span class="hljs-preprocessor">.io</span><span class="hljs-preprocessor">.compress</span><span class="hljs-preprocessor">.SnappyCodec</span>&lt;/value&gt;
+         &lt;description&gt; This controls whether intermediate files produced by Hive
+         between multiple map-reduce jobs are compressed. The compression codec
+         <span class="hljs-keyword">and</span> other options are determined from hadoop config variables
+         mapred<span class="hljs-preprocessor">.output</span><span class="hljs-preprocessor">.compress</span>* &lt;/description&gt;
+&lt;/property&gt; </code></pre> 
+<ul><li>最终压缩：可以选择高压缩比，减少了存储文件所占空间，提升了数据传输速率 <br> mapred-site.xml 中设置 </li></ul> 
+<pre class="prettyprint"><code class=" hljs avrasm">&lt;property&gt;
+    &lt;name&gt;mapreduce<span class="hljs-preprocessor">.output</span><span class="hljs-preprocessor">.fileoutputformat</span><span class="hljs-preprocessor">.compress</span><span class="hljs-preprocessor">.codec</span>&lt;/name&gt;
+    &lt;value&gt;org<span class="hljs-preprocessor">.apache</span><span class="hljs-preprocessor">.hadoop</span><span class="hljs-preprocessor">.io</span><span class="hljs-preprocessor">.compress</span><span class="hljs-preprocessor">.BZip</span>2Codec&lt;/value&gt;
+&lt;/property&gt;</code></pre> 
+<h5 id="6计算wc使用不同的压缩格式">6计算WC使用不同的压缩格式</h5> 
+<p><strong>1.使用Bzip2压缩方式</strong> <br> - input.txt文件</p> 
+<pre class="prettyprint"><code class=" hljs ruby">[hadoop<span class="hljs-variable">@hadoop</span> data]<span class="hljs-variable">$ </span>cat input.txt 
+hello java
+hello hadoop
+hello hive
+hello sqoop
+hello hdfs
+hello spark</code></pre> 
+<ul><li>mapred-site.xml</li></ul> 
+<pre class="prettyprint"><code class=" hljs xml"><span class="hljs-tag">&lt;<span class="hljs-title">configuration</span>&gt;</span>
+<span class="hljs-tag">&lt;<span class="hljs-title">property</span>&gt;</span>
+        <span class="hljs-tag">&lt;<span class="hljs-title">name</span>&gt;</span>mapreduce.framework.name<span class="hljs-tag">&lt;/<span class="hljs-title">name</span>&gt;</span>
+                <span class="hljs-tag">&lt;<span class="hljs-title">value</span>&gt;</span>yarn<span class="hljs-tag">&lt;/<span class="hljs-title">value</span>&gt;</span>
+<span class="hljs-tag">&lt;/<span class="hljs-title">property</span>&gt;</span>
+<span class="hljs-tag">&lt;<span class="hljs-title">property</span>&gt;</span>
+        <span class="hljs-tag">&lt;<span class="hljs-title">name</span>&gt;</span>mapreduce.output.fileoutputformat.compress<span class="hljs-tag">&lt;/<span class="hljs-title">name</span>&gt;</span>
+                <span class="hljs-tag">&lt;<span class="hljs-title">value</span>&gt;</span>true<span class="hljs-tag">&lt;/<span class="hljs-title">value</span>&gt;</span>
+<span class="hljs-tag">&lt;/<span class="hljs-title">property</span>&gt;</span>
+<span class="hljs-tag">&lt;<span class="hljs-title">property</span>&gt;</span>          <span class="hljs-tag">&lt;<span class="hljs-title">name</span>&gt;</span>mapreduce.output.fileoutputformat.compress.codec<span class="hljs-tag">&lt;/<span class="hljs-title">name</span>&gt;</span>       <span class="hljs-tag">&lt;<span class="hljs-title">value</span>&gt;</span>org.apache.hadoop.io.compress.BZip2Codec<span class="hljs-tag">&lt;/<span class="hljs-title">value</span>&gt;</span>
+<span class="hljs-tag">&lt;/<span class="hljs-title">property</span>&gt;</span>
+
+<span class="hljs-tag">&lt;/<span class="hljs-title">configuration</span>&gt;</span></code></pre> 
+<pre class="prettyprint"><code class=" hljs haskell">[hadoop@hadoop <span class="hljs-typedef"><span class="hljs-keyword">data</span>]$ hdfs dfs -ls /</span>
+<span class="hljs-type">Found</span> <span class="hljs-number">3</span> items
+-rw-r<span class="hljs-comment">--r--   3 hadoop supergroup         70 2018-03-01 12:48 /input.txt</span>
+<span class="hljs-title">drwx</span>-wx-wx   - hadoop supergroup          <span class="hljs-number">0</span> <span class="hljs-number">2018</span>-<span class="hljs-number">03</span>-<span class="hljs-number">01</span> <span class="hljs-number">12</span>:<span class="hljs-number">57</span> /tmp
+<span class="hljs-title">drwxr</span>-xr-x   - hadoop supergroup          <span class="hljs-number">0</span> <span class="hljs-number">2018</span>-<span class="hljs-number">03</span>-<span class="hljs-number">01</span> <span class="hljs-number">14</span>:<span class="hljs-number">42</span> /user</code></pre> 
+<ul><li>计算wc</li></ul> 
+<pre class="prettyprint"><code class=" hljs brainfuck"><span class="hljs-comment">命令:</span>
+<span class="hljs-title">[</span><span class="hljs-comment">hadoop@hadoop</span> <span class="hljs-comment">mapreduce</span><span class="hljs-title">]</span><span class="hljs-comment">$</span> <span class="hljs-comment">hadoop</span> <span class="hljs-comment">jar</span> <span class="hljs-comment">hadoop</span><span class="hljs-literal">-</span><span class="hljs-comment">mapreduce</span><span class="hljs-literal">-</span><span class="hljs-comment">examples</span><span class="hljs-literal">-</span><span class="hljs-comment">2</span><span class="hljs-string">.</span><span class="hljs-comment">6</span><span class="hljs-string">.</span><span class="hljs-comment">0</span><span class="hljs-literal">-</span><span class="hljs-comment">cdh5</span><span class="hljs-string">.</span><span class="hljs-comment">7</span><span class="hljs-string">.</span><span class="hljs-comment">0</span><span class="hljs-string">.</span><span class="hljs-comment">jar</span> <span class="hljs-comment">wordcount</span> <span class="hljs-comment">/input</span><span class="hljs-string">.</span><span class="hljs-comment">txt</span> <span class="hljs-comment">/wc/output</span>
+
+<span class="hljs-comment">查看结果：</span>
+<span class="hljs-title">[</span><span class="hljs-comment">hadoop@hadoop</span> <span class="hljs-comment">mapreduce</span><span class="hljs-title">]</span><span class="hljs-comment">$</span> <span class="hljs-comment">hdfs</span> <span class="hljs-comment">dfs</span> <span class="hljs-literal">-</span><span class="hljs-comment">ls</span> <span class="hljs-comment">/wc/output</span>
+<span class="hljs-comment">Found</span> <span class="hljs-comment">2</span> <span class="hljs-comment">items</span>
+<span class="hljs-literal">-</span><span class="hljs-comment">rw</span><span class="hljs-literal">-</span><span class="hljs-comment">r</span><span class="hljs-literal">-</span><span class="hljs-literal">-</span><span class="hljs-comment">r</span><span class="hljs-literal">-</span><span class="hljs-literal">-</span>   <span class="hljs-comment">3</span> <span class="hljs-comment">hadoop</span> <span class="hljs-comment">supergroup</span>          <span class="hljs-comment">0</span> <span class="hljs-comment">2018</span><span class="hljs-literal">-</span><span class="hljs-comment">03</span><span class="hljs-literal">-</span><span class="hljs-comment">02</span> <span class="hljs-comment">15:54</span> <span class="hljs-comment">/wc/output/_SUCCESS</span>
+<span class="hljs-literal">-</span><span class="hljs-comment">rw</span><span class="hljs-literal">-</span><span class="hljs-comment">r</span><span class="hljs-literal">-</span><span class="hljs-literal">-</span><span class="hljs-comment">r</span><span class="hljs-literal">-</span><span class="hljs-literal">-</span>   <span class="hljs-comment">3</span> <span class="hljs-comment">hadoop</span> <span class="hljs-comment">supergroup</span>         <span class="hljs-comment">77</span> <span class="hljs-comment">2018</span><span class="hljs-literal">-</span><span class="hljs-comment">03</span><span class="hljs-literal">-</span><span class="hljs-comment">02</span> <span class="hljs-comment">15:54</span> <span class="hljs-comment">/wc/output/part</span><span class="hljs-literal">-</span><span class="hljs-comment">r</span><span class="hljs-literal">-</span><span class="hljs-comment">00000</span><span class="hljs-string">.</span><span class="hljs-comment">bz2</span>
+
+<span class="hljs-string">.</span><span class="hljs-comment">bz2出现成功</span></code></pre> 
+<p><strong>2snappy压缩格式</strong> <br> mapred-site.xml</p> 
+<pre class="prettyprint"><code class=" hljs xml"><span class="hljs-tag">&lt;<span class="hljs-title">property</span>&gt;</span>
+        <span class="hljs-tag">&lt;<span class="hljs-title">name</span>&gt;</span>mapreduce.output.fileoutputformat.compress<span class="hljs-tag">&lt;/<span class="hljs-title">name</span>&gt;</span>
+                <span class="hljs-tag">&lt;<span class="hljs-title">value</span>&gt;</span>true<span class="hljs-tag">&lt;/<span class="hljs-title">value</span>&gt;</span>             
+<span class="hljs-tag">&lt;/<span class="hljs-title">property</span>&gt;</span>
+<span class="hljs-tag">&lt;<span class="hljs-title">property</span>&gt;</span>          <span class="hljs-tag">&lt;<span class="hljs-title">name</span>&gt;</span>mapreduce.output.fileoutputformat.compress.codec<span class="hljs-tag">&lt;/<span class="hljs-title">name</span>&gt;</span>
+    <span class="hljs-tag">&lt;<span class="hljs-title">value</span>&gt;</span>org.apache.hadoop.io.compress.SnappyCodec<span class="hljs-tag">&lt;/<span class="hljs-title">value</span>&gt;</span>
+<span class="hljs-tag">&lt;/<span class="hljs-title">property</span>&gt;</span></code></pre> 
+<pre class="prettyprint"><code class=" hljs brainfuck"><span class="hljs-title">[</span><span class="hljs-comment">hadoop@hadoop</span> <span class="hljs-comment">mapreduce</span><span class="hljs-title">]</span><span class="hljs-comment">$</span> <span class="hljs-comment">hdfs</span> <span class="hljs-comment">dfs</span> <span class="hljs-literal">-</span><span class="hljs-comment">ls</span> <span class="hljs-comment">/wc/output_snappy</span>
+<span class="hljs-comment">Found</span> <span class="hljs-comment">2</span> <span class="hljs-comment">items</span>
+<span class="hljs-literal">-</span><span class="hljs-comment">rw</span><span class="hljs-literal">-</span><span class="hljs-comment">r</span><span class="hljs-literal">-</span><span class="hljs-literal">-</span><span class="hljs-comment">r</span><span class="hljs-literal">-</span><span class="hljs-literal">-</span>   <span class="hljs-comment">3</span> <span class="hljs-comment">hadoop</span> <span class="hljs-comment">supergroup</span>          <span class="hljs-comment">0</span> <span class="hljs-comment">2018</span><span class="hljs-literal">-</span><span class="hljs-comment">03</span><span class="hljs-literal">-</span><span class="hljs-comment">02</span> <span class="hljs-comment">16:11</span> <span class="hljs-comment">/wc/output_snappy/_SUCCESS</span>
+<span class="hljs-literal">-</span><span class="hljs-comment">rw</span><span class="hljs-literal">-</span><span class="hljs-comment">r</span><span class="hljs-literal">-</span><span class="hljs-literal">-</span><span class="hljs-comment">r</span><span class="hljs-literal">-</span><span class="hljs-literal">-</span>   <span class="hljs-comment">3</span> <span class="hljs-comment">hadoop</span> <span class="hljs-comment">supergroup</span>         <span class="hljs-comment">63</span> <span class="hljs-comment">2018</span><span class="hljs-literal">-</span><span class="hljs-comment">03</span><span class="hljs-literal">-</span><span class="hljs-comment">02</span> <span class="hljs-comment">16:11</span> <span class="hljs-comment">/wc/output_snappy/part</span><span class="hljs-literal">-</span><span class="hljs-comment">r</span><span class="hljs-literal">-</span><span class="hljs-comment">00000</span><span class="hljs-string">.</span><span class="hljs-comment">snappy</span></code></pre> 
+<p><strong>LZO压缩方式</strong> <br> mapred-site.xml</p> 
+<pre class="prettyprint"><code class=" hljs xml"><span class="hljs-tag">&lt;<span class="hljs-title">property</span>&gt;</span>
+        <span class="hljs-tag">&lt;<span class="hljs-title">name</span>&gt;</span>mapreduce.output.fileoutputformat.compress<span class="hljs-tag">&lt;/<span class="hljs-title">name</span>&gt;</span>
+                <span class="hljs-tag">&lt;<span class="hljs-title">value</span>&gt;</span>true<span class="hljs-tag">&lt;/<span class="hljs-title">value</span>&gt;</span>             
+<span class="hljs-tag">&lt;/<span class="hljs-title">property</span>&gt;</span>
+<span class="hljs-tag">&lt;<span class="hljs-title">property</span>&gt;</span>          <span class="hljs-tag">&lt;<span class="hljs-title">name</span>&gt;</span>mapreduce.output.fileoutputformat.compress.codec<span class="hljs-tag">&lt;/<span class="hljs-title">name</span>&gt;</span>
+    <span class="hljs-tag">&lt;<span class="hljs-title">value</span>&gt;</span>com.hadoop.compression.lzo.LzoCodec<span class="hljs-tag">&lt;/<span class="hljs-title">value</span>&gt;</span>
+<span class="hljs-tag">&lt;/<span class="hljs-title">property</span>&gt;</span></code></pre> 
+<pre class="prettyprint"><code class=" hljs brainfuck"><span class="hljs-title">[</span><span class="hljs-comment">hadoop@hadoop</span> <span class="hljs-comment">mapreduce</span><span class="hljs-title">]</span><span class="hljs-comment">$</span> <span class="hljs-comment">hdfs</span> <span class="hljs-comment">dfs</span> <span class="hljs-literal">-</span><span class="hljs-comment">ls</span> <span class="hljs-comment">/wc/output_lzo</span>   
+<span class="hljs-comment">Found</span> <span class="hljs-comment">2</span> <span class="hljs-comment">items</span>
+<span class="hljs-literal">-</span><span class="hljs-comment">rw</span><span class="hljs-literal">-</span><span class="hljs-comment">r</span><span class="hljs-literal">-</span><span class="hljs-literal">-</span><span class="hljs-comment">r</span><span class="hljs-literal">-</span><span class="hljs-literal">-</span>   <span class="hljs-comment">3</span> <span class="hljs-comment">hadoop</span> <span class="hljs-comment">supergroup</span>          <span class="hljs-comment">0</span> <span class="hljs-comment">2018</span><span class="hljs-literal">-</span><span class="hljs-comment">03</span><span class="hljs-literal">-</span><span class="hljs-comment">02</span> <span class="hljs-comment">16:29</span> <span class="hljs-comment">/wc/output_lzo/_SUCCESS</span>
+<span class="hljs-literal">-</span><span class="hljs-comment">rw</span><span class="hljs-literal">-</span><span class="hljs-comment">r</span><span class="hljs-literal">-</span><span class="hljs-literal">-</span><span class="hljs-comment">r</span><span class="hljs-literal">-</span><span class="hljs-literal">-</span>   <span class="hljs-comment">3</span> <span class="hljs-comment">hadoop</span> <span class="hljs-comment">supergroup</span>         <span class="hljs-comment">66</span> <span class="hljs-comment">2018</span><span class="hljs-literal">-</span><span class="hljs-comment">03</span><span class="hljs-literal">-</span><span class="hljs-comment">02</span> <span class="hljs-comment">16:29</span> <span class="hljs-comment">/wc/output_lzo/part</span><span class="hljs-literal">-</span><span class="hljs-comment">r</span><span class="hljs-literal">-</span><span class="hljs-comment">00000</span><span class="hljs-string">.</span><span class="hljs-comment">lzo_deflate</span></code></pre> 
+<p>注意：<code>&lt;value&gt;com.hadoop.compression.lzo.LzoCodec&lt;/value&gt;</code>如果value这样配置默认结尾是lzo_deflate，如果<code>com.hadoop.compression.lzo.LzopCodec</code>这样配置会生成.lzo结尾的文件。</p> 
+<h5 id="7-lzocodec和lzopcodec区别">7 LzoCodec和LzopCodec区别：</h5> 
+<ol><li>LzoCodec比LzopCodec更快， LzopCodec为了兼容LZOP程序添加了如 bytes signature, header等信息</li><li>如果使用 LzoCodec作为Reduce输出，则输出文件扩展名为”.lzo_deflate”，它无法被lzop读取；</li><li>如果使用LzopCodec作为Reduce输出，则扩展名为”.lzo”，它可以被lzop读取</li><li>生成lzo index job的”DistributedLzoIndexer“无法为 LzoCodec即 “.lzo_deflate”扩展名的文件创建index <br> ”.lzo_deflate“文件无法作为MapReduce输入，”.LZO”文件则可以。 <br> 综上所述得出最佳实践：map输出的中间数据使用 LzoCodec，reduce输出使用 LzopCodec</li></ol> 
+<h5 id="8-hive中设置压缩方式">8 Hive中设置压缩方式</h5> 
+<pre class="prettyprint"><code class=" hljs avrasm"><span class="hljs-keyword">SET</span> hive<span class="hljs-preprocessor">.exec</span><span class="hljs-preprocessor">.compress</span><span class="hljs-preprocessor">.output</span>=true<span class="hljs-comment">; //默认不支持压缩</span>
+<span class="hljs-keyword">SET</span> mapreduce<span class="hljs-preprocessor">.output</span><span class="hljs-preprocessor">.fileoutputformat</span><span class="hljs-preprocessor">.compress</span><span class="hljs-preprocessor">.codec</span>=org<span class="hljs-preprocessor">.apache</span><span class="hljs-preprocessor">.hadoop</span><span class="hljs-preprocessor">.io</span><span class="hljs-preprocessor">.compress</span><span class="hljs-preprocessor">.BZip</span>2Codec<span class="hljs-comment">; //设置最终以bz2存储</span></code></pre> 
+<p><strong>注意</strong>：不建议再配置文件中设置</p> 
+<ul><li>BZip2整合Hive</li></ul> 
+<pre class="prettyprint"><code class=" hljs sql">[hadoop@hadoop data]$ du -sh page_views.dat
+19M     page_views.dat
+
+创建表：
+<span class="hljs-operator"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> page_views(
+track_time string,
+url string,
+session_id string,
+referer string,
+ip string,
+end_user_id string,
+city_id string
+)<span class="hljs-keyword">ROW</span> FORMAT DELIMITED FIELDS TERMINATED <span class="hljs-keyword">BY</span> <span class="hljs-string">"\t"</span>;</span>
+
+加载数据：
+<span class="hljs-operator"><span class="hljs-keyword">load</span> data <span class="hljs-keyword">local</span> inpath <span class="hljs-string">"/home/hadoop/data/page_views.dat"</span> overwrite <span class="hljs-keyword">into</span> <span class="hljs-keyword">table</span> page_views;</span>  
+
+hive：
+<span class="hljs-operator"><span class="hljs-keyword">SET</span> hive.<span class="hljs-keyword">exec</span>.compress.<span class="hljs-keyword">output</span>=<span class="hljs-keyword">true</span>;</span>
+<span class="hljs-operator"><span class="hljs-keyword">SET</span> mapreduce.<span class="hljs-keyword">output</span>.fileoutputformat.compress.codec=org.apache.hadoop.io.compress.BZip2Codec;</span>
+<span class="hljs-operator"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> page_views_bzip2
+<span class="hljs-keyword">ROW</span> FORMAT DELIMITED FIELDS TERMINATED <span class="hljs-keyword">BY</span> <span class="hljs-string">"\t"</span></span></code></pre> 
+<ul><li>snappy整合Hive</li></ul> 
+<pre class="prettyprint"><code class=" hljs sql"><span class="hljs-operator"><span class="hljs-keyword">SET</span> hive.<span class="hljs-keyword">exec</span>.compress.<span class="hljs-keyword">output</span>=<span class="hljs-keyword">false</span>;</span>
+<span class="hljs-operator"><span class="hljs-keyword">SET</span> hive.<span class="hljs-keyword">exec</span>.compress.<span class="hljs-keyword">output</span>=<span class="hljs-keyword">true</span>;</span> 
+<span class="hljs-operator"><span class="hljs-keyword">SET</span> mapreduce.<span class="hljs-keyword">output</span>.fileoutputformat.compress.codec=org.apache.hadoop.io.compress.SnappyCodec;</span>
+<span class="hljs-operator"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> page_views_Snappy
+<span class="hljs-keyword">ROW</span> FORMAT DELIMITED FIELDS TERMINATED <span class="hljs-keyword">BY</span> <span class="hljs-string">"\t"</span>
+<span class="hljs-keyword">as</span> <span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> page_views;</span>    
+
+hdfs dfs -du -h /user/hive/warehouse/hive.db/page_views_snappy/000000_0.snappy
+大小：8.4</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/bac362e2198b5c3a576c582586f8a269/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">IntelliJ IDEA里找不到javax.servlet的jar包</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/abebc1cf1d94eabd9e090645c40fb743/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">WAP网页中点击链接直接拨打电话的方法</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

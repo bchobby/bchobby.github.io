@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Linux的进程管理 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Linux的进程管理" />
+<meta property="og:description" content="目录
+1、概述
+2、进程描述符
+2.1 进程描述符的分配
+2.2 进程描述符的存放
+2.3 进程状态
+2.4 进程上下文
+2.5 进程家族树
+3、进程的创建
+4、进程的终结
+5、线程的实现
+1、概述 进程是执行期的代码。但是进程不止包括这样一段可执行的代码，还包括进程执行相关的各种资源：
+打开的文件；挂起的信号；内核内部的数据；处理器状态；一个或多个具有内存映射的地址空间；一个或多个执行线程；存放全局变量的数据段；...... 进程在创建它的时候开始存活，在Linux系统中，这通常的fork()系统调用的结果。fork()系统调用通过复制一个现有进程来创建一个新的进程，调用fork()的进程称为父进程，新创建的进程称为子进程。在fork()系统调用结束时，父进程恢复执行，子进程开始执行。fork()系统调用从内核返回两次：一次是回到父进程，一次是回到子进程。Linux内核中，fork()实际上是通过clone()调用实现的。
+fork()调用后，通过exec()调用可以创建新的地址空间，并把程序载入其中。最终，程序通过exit()调用退出执行，并释放其占用的资源。父进程可以通过wait4()调用等待子进程的执行结果。程序执行完成后被设置为僵死状态，直到它的父进程调用wait()或waitpid()调用。
+执行线程简称线程，是在进程中活动的对象。每个线程都有一个独立的程序计数器、进程栈和一组进程寄存器。内核调度的对象是线程而不是进程。对于Linux而言，线程就是一种特殊的进程。
+2、进程描述符 进程描述符用来描述一个具体的进程的所有信息。进程描述符的数据结构叫做task_struct，定义在&lt;linux/sched.h&gt;文件中。
+task_struct数据大小约为1.7KB（32位机器），包含了内核管理一个进程所需要的全部信息：
+进程的id（pid）；打开的文件；进程的地址空间；挂起的信息；进程的状态；...... 2.1 进程描述符的分配 Linux通过slab分配器动态分配task_struct结构，分配时只需要在进程内核栈的尾端创建一个新的结构thread_info即可。其中，task域存放的是指向task_struct的指针。
+2.2 进程描述符的存放 内核通过唯一的进程标识值PID（Process Identification Value）来标识每个进程。pid的类型是隐含类型pid_t，实际上就是int。为了兼容老版本，PID数的最大值是32768（有符号short int最大值），但是可以在&lt;linux/threads.h&gt;中增加到400万。内核把每个进程的pid存放到进程描述符中。
+内核大部分处理进程的操作，都是通过task_struct实现的，因此内核需要能获取到指向task_struct的指针。有些内存结构有专门的寄存器存放task_struct的指针，而x86等寄存器不富裕的体系，只能在内核栈的尾端创建thread_info，通过计算内存偏移来简接查找task_struct。
+2.3 进程状态 进程描述符的state域描述了进程的状态。进程包含5种状态：
+TASK_RUNNING：运行，进程是可执行的。可能正在执行，也可能正在任务队列等待执行。这是进程在用户空间中执行的唯一可能的状态；TASK_INTERRUPTIBLE：可中断，此时的进程正在睡眠（也叫阻塞），等待某些条件的达成。处于此状态的进程会因为提前接收到信号而被唤醒；TASK_UNINTERRUPTIBLE：不可中断，除了接收到信号也不会提前被唤醒，其他的和可中断相同。这个状态通常用在等待时不受干扰，或者等待的事情很快发生的场景；__TASK_TRACED：被其他进程跟踪的进程，例如通过ptrace对调试进程进行跟踪；__TASK_STOPPED：停止，进程停止执行，进程没有投入运行，也不能投入运行。通常这种状态发生在接收到SIGSTOP、SIGTSTP、SIGTTIN、SIGTTOU等信号时；在调试期间接受到任何信号，也会进入这个状态。 2.4 进程上下文 当一个程序执行了系统调用，或者触发了某个异常，就陷入了内核空间，此时称内核“代表程序执行”，并处于进程上下文。除非期间有更高优先级的进程要执行，并且调度器做出了相应调整，否则在内核退出的时候，程序恢复在用户空间继续运行。
+系统调用和异常处理是对内核明确定义的接口，进程只有通过这些接口才能陷入内核，即进程对内核的所有访问都需要通过这些接口。
+2.5 进程家族树 Linux的所有进程都是PID为1的初始进程的后代。内核在系统启动的最后阶段启动init进程。该进程读取系统的初始化脚本，并执行相关的程序，最终完成系统启动的整个过程。
+系统中每个进程都有一个父进程，和零个或多个子进程。拥有同一父进程的进程，称为兄弟进程。进程间的关系存放在进程描述符中，每个task_struct都包含一个parent指针，指向父进程所在的task_struct，以及一个名为children的指针链表，指向所有的子进程的task_struct。
+3、进程的创建 Unix把进程的创建拆分成了两个函数：
+fork()：Linux通过clone()系统调用实现了fork()，通过拷贝当前进程创建一个子进程。子进程和父进程的区别只在于PID、PPID（父进程的PID）和一些统计量。exec()：将可执行文件载入地址空间开始执行。 Linux的fork()使用写时拷贝（copy-on-write）页实现资源的复制。资源的复制，只有在需要写入的时候才进行，在此之前以只读方式共享。这种技术使地址空间的页拷贝推迟到实际发生写入的时候才进行，如果页根本不会被写入，例如fork()后立即执行exec()，则无需复制。这样可以避免拷贝大量根本不会被使用的数据，这也是Unix快速执行的能力的一种重要支撑。
+fork()的实际开销就是复制父进程的页表，以及给子进程创建唯一的进程描述符。进程页表是进程私有的结果，映射了内核态和用户态的线性地址。
+4、进程的终结 当一个进程终结时，内核会回收进程的全部资源，并通知父进程。
+1、do_exit()方法回收资源并更新状态：
+回收地址空间：如果没有其他进程占用，就释放掉地址空间；回收文件描述符、文件系统数据：引用计数分别递减，如果减为0，就释放；执行退出代码：执行操作系统规定的退出动作，并把退出代码存放到task_struct中的exit_code中供父进程随时检索；设置退出状态：task_struct中的exit_state设置为EXIT_ZOMBIE，进程不再接受调度；给子进程重新寻找父进程，新的父进程是线程组的其他线程，或者init进程；调用schedule()方法切换到新的进程。 2、此时，进程所占有的内存资源只剩下内核栈、thread_info和task_struct。此时进程存在的唯一目的，就是向它的父进程提供信息。父进程检索到相关信息后，或者通知内核那是无关信息后，内核会释放剩下的这些资源。
+5、线程的实现 Linux内核并没有线程的概念，它把线程当做进程来实现，线程仅仅被视为与其他进程共享某些资源的进程。线程有自己的task_struct，所以从内核的角度，线程只是一个普通的进程，仅仅是和其他进程共享了一些资源，比如地址空间等。
+1、线程的创建
+创建线程和创建进程相似，也是调用clone()实现，只不过传递的一些参数，用来控制共享一些资源：
+clone(CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND, 0) 这些代码是用来和父进程共享：地址空间、文件系统资源、文件描述符和信号处理程序。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/e3ee88fed64f0437aa6bf695ff5585c6/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-04-15T19:31:46+08:00" />
+<meta property="article:modified_time" content="2021-04-15T19:31:46+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Linux的进程管理</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="1%E3%80%81%E6%A6%82%E8%BF%B0-toc" style="margin-left:40px;"><a href="#1%E3%80%81%E6%A6%82%E8%BF%B0" rel="nofollow">1、概述</a></p> 
+<p id="2%E3%80%81%E8%BF%9B%E7%A8%8B%E6%8F%8F%E8%BF%B0%E7%AC%A6-toc" style="margin-left:40px;"><a href="#2%E3%80%81%E8%BF%9B%E7%A8%8B%E6%8F%8F%E8%BF%B0%E7%AC%A6" rel="nofollow">2、进程描述符</a></p> 
+<p id="2.1%20%E8%BF%9B%E7%A8%8B%E6%8F%8F%E8%BF%B0%E7%AC%A6%E7%9A%84%E5%88%86%E9%85%8D-toc" style="margin-left:80px;"><a href="#2.1%20%E8%BF%9B%E7%A8%8B%E6%8F%8F%E8%BF%B0%E7%AC%A6%E7%9A%84%E5%88%86%E9%85%8D" rel="nofollow">2.1 进程描述符的分配</a></p> 
+<p id="2.2%C2%A0%E8%BF%9B%E7%A8%8B%E6%8F%8F%E8%BF%B0%E7%AC%A6%E7%9A%84%E5%AD%98%E6%94%BE-toc" style="margin-left:80px;"><a href="#2.2%C2%A0%E8%BF%9B%E7%A8%8B%E6%8F%8F%E8%BF%B0%E7%AC%A6%E7%9A%84%E5%AD%98%E6%94%BE" rel="nofollow">2.2 进程描述符的存放</a></p> 
+<p id="2.3%20%E8%BF%9B%E7%A8%8B%E7%8A%B6%E6%80%81-toc" style="margin-left:80px;"><a href="#2.3%20%E8%BF%9B%E7%A8%8B%E7%8A%B6%E6%80%81" rel="nofollow">2.3 进程状态</a></p> 
+<p id="2.4%20%E8%BF%9B%E7%A8%8B%E4%B8%8A%E4%B8%8B%E6%96%87-toc" style="margin-left:80px;"><a href="#2.4%20%E8%BF%9B%E7%A8%8B%E4%B8%8A%E4%B8%8B%E6%96%87" rel="nofollow">2.4 进程上下文</a></p> 
+<p id="2.5%20%E8%BF%9B%E7%A8%8B%E5%AE%B6%E6%97%8F%E6%A0%91-toc" style="margin-left:80px;"><a href="#2.5%20%E8%BF%9B%E7%A8%8B%E5%AE%B6%E6%97%8F%E6%A0%91" rel="nofollow">2.5 进程家族树</a></p> 
+<p id="3%E3%80%81%E8%BF%9B%E7%A8%8B%E7%9A%84%E5%88%9B%E5%BB%BA-toc" style="margin-left:40px;"><a href="#3%E3%80%81%E8%BF%9B%E7%A8%8B%E7%9A%84%E5%88%9B%E5%BB%BA" rel="nofollow">3、进程的创建</a></p> 
+<p id="4%E3%80%81%E8%BF%9B%E7%A8%8B%E7%9A%84%E7%BB%88%E7%BB%93-toc" style="margin-left:80px;"><a href="#4%E3%80%81%E8%BF%9B%E7%A8%8B%E7%9A%84%E7%BB%88%E7%BB%93" rel="nofollow">4、进程的终结</a></p> 
+<p id="5%E3%80%81%E7%BA%BF%E7%A8%8B%E7%9A%84%E5%AE%9E%E7%8E%B0-toc" style="margin-left:40px;"><a href="#5%E3%80%81%E7%BA%BF%E7%A8%8B%E7%9A%84%E5%AE%9E%E7%8E%B0" rel="nofollow">5、线程的实现</a></p> 
+<hr id="hr-toc"> 
+<h3 id="1%E3%80%81%E6%A6%82%E8%BF%B0">1、概述</h3> 
+<p>    进程是执行期的代码。但是进程不止包括这样一段可执行的代码，还包括进程执行相关的各种资源：</p> 
+<ul><li>打开的文件；</li><li>挂起的信号；</li><li>内核内部的数据；</li><li>处理器状态；</li><li>一个或多个具有内存映射的地址空间；</li><li>一个或多个执行线程；</li><li>存放全局变量的数据段；</li><li>......</li></ul> 
+<p>    进程在创建它的时候开始存活，在Linux系统中，这通常的fork()系统调用的结果。fork()系统调用通过复制一个现有进程来创建一个新的进程，调用fork()的进程称为父进程，新创建的进程称为子进程。在fork()系统调用结束时，父进程恢复执行，子进程开始执行。fork()系统调用从内核返回两次：一次是回到父进程，一次是回到子进程。Linux内核中，fork()实际上是通过clone()调用实现的。</p> 
+<p>    fork()调用后，通过exec()调用可以创建新的地址空间，并把程序载入其中。最终，程序通过exit()调用退出执行，并释放其占用的资源。父进程可以通过wait4()调用等待子进程的执行结果。程序执行完成后被设置为僵死状态，直到它的父进程调用wait()或waitpid()调用。</p> 
+<p>    执行线程简称线程，是在进程中活动的对象。每个线程都有一个独立的程序计数器、进程栈和一组进程寄存器。内核调度的对象是线程而不是进程。对于Linux而言，线程就是一种特殊的进程。</p> 
+<h3 id="2%E3%80%81%E8%BF%9B%E7%A8%8B%E6%8F%8F%E8%BF%B0%E7%AC%A6">2、进程描述符</h3> 
+<p>    进程描述符用来描述一个具体的进程的所有信息。进程描述符的数据结构叫做task_struct，定义在&lt;linux/sched.h&gt;文件中。</p> 
+<p>    task_struct数据大小约为1.7KB（32位机器），包含了内核管理一个进程所需要的全部信息：</p> 
+<ul><li>进程的id（pid）；</li><li>打开的文件；</li><li>进程的地址空间；</li><li>挂起的信息；</li><li>进程的状态；</li><li>......</li></ul> 
+<h4 id="2.1%20%E8%BF%9B%E7%A8%8B%E6%8F%8F%E8%BF%B0%E7%AC%A6%E7%9A%84%E5%88%86%E9%85%8D">2.1 进程描述符的分配</h4> 
+<p>    Linux通过slab分配器动态分配task_struct结构，分配时只需要在进程内核栈的尾端创建一个新的结构thread_info即可。其中，task域存放的是指向task_struct的指针。</p> 
+<p style="text-align:center;"><img alt="" height="226" src="https://images2.imgbox.com/22/01/UWYQzlrO_o.png" width="374"></p> 
+<h4 id="2.2%C2%A0%E8%BF%9B%E7%A8%8B%E6%8F%8F%E8%BF%B0%E7%AC%A6%E7%9A%84%E5%AD%98%E6%94%BE">2.2 进程描述符的存放</h4> 
+<p>    内核通过唯一的进程标识值PID（Process Identification Value）来标识每个进程。pid的类型是隐含类型pid_t，实际上就是int。为了兼容老版本，PID数的最大值是32768（有符号short int最大值），但是可以在&lt;linux/threads.h&gt;中增加到400万。内核把每个进程的pid存放到进程描述符中。</p> 
+<p>    内核大部分处理进程的操作，都是通过task_struct实现的，因此内核需要能获取到指向task_struct的指针。有些内存结构有专门的寄存器存放task_struct的指针，而x86等寄存器不富裕的体系，只能在内核栈的尾端创建thread_info，通过计算内存偏移来简接查找task_struct。</p> 
+<h4 id="2.3%20%E8%BF%9B%E7%A8%8B%E7%8A%B6%E6%80%81">2.3 进程状态</h4> 
+<p>    进程描述符的state域描述了进程的状态。进程包含5种状态：</p> 
+<ul><li>TASK_RUNNING：运行，进程是可执行的。可能正在执行，也可能正在任务队列等待执行。这是进程在用户空间中执行的唯一可能的状态；</li><li>TASK_INTERRUPTIBLE：可中断，此时的进程正在睡眠（也叫阻塞），等待某些条件的达成。处于此状态的进程会因为提前接收到信号而被唤醒；</li><li>TASK_UNINTERRUPTIBLE：不可中断，除了接收到信号也不会提前被唤醒，其他的和可中断相同。这个状态通常用在等待时不受干扰，或者等待的事情很快发生的场景；</li><li>__TASK_TRACED：被其他进程跟踪的进程，例如通过ptrace对调试进程进行跟踪；</li><li>__TASK_STOPPED：停止，进程停止执行，进程没有投入运行，也不能投入运行。通常这种状态发生在接收到SIGSTOP、SIGTSTP、SIGTTIN、SIGTTOU等信号时；在调试期间接受到任何信号，也会进入这个状态。</li></ul> 
+<p style="text-align:center;"><img alt="" height="440" src="https://images2.imgbox.com/76/1a/gAdgprVe_o.png" width="582"></p> 
+<h4 id="2.4%20%E8%BF%9B%E7%A8%8B%E4%B8%8A%E4%B8%8B%E6%96%87">2.4 进程上下文</h4> 
+<p>    当一个程序执行了系统调用，或者触发了某个异常，就陷入了内核空间，此时称内核“代表程序执行”，并处于进程上下文。除非期间有更高优先级的进程要执行，并且调度器做出了相应调整，否则在内核退出的时候，程序恢复在用户空间继续运行。</p> 
+<p>    系统调用和异常处理是对内核明确定义的接口，进程只有通过这些接口才能陷入内核，即进程对内核的所有访问都需要通过这些接口。</p> 
+<h4 id="2.5%20%E8%BF%9B%E7%A8%8B%E5%AE%B6%E6%97%8F%E6%A0%91">2.5 进程家族树</h4> 
+<p>    Linux的所有进程都是PID为1的初始进程的后代。内核在系统启动的最后阶段启动init进程。该进程读取系统的初始化脚本，并执行相关的程序，最终完成系统启动的整个过程。</p> 
+<p>    系统中每个进程都有一个父进程，和零个或多个子进程。拥有同一父进程的进程，称为兄弟进程。进程间的关系存放在进程描述符中，每个task_struct都包含一个parent指针，指向父进程所在的task_struct，以及一个名为children的指针链表，指向所有的子进程的task_struct。</p> 
+<h3 id="3%E3%80%81%E8%BF%9B%E7%A8%8B%E7%9A%84%E5%88%9B%E5%BB%BA">3、进程的创建</h3> 
+<p>    Unix把进程的创建拆分成了两个函数：</p> 
+<ul><li>fork()：Linux通过clone()系统调用实现了fork()，通过拷贝当前进程创建一个子进程。子进程和父进程的区别只在于PID、PPID（父进程的PID）和一些统计量。</li><li>exec()：将可执行文件载入地址空间开始执行。</li></ul> 
+<p>    Linux的fork()使用写时拷贝（copy-on-write）页实现资源的复制。资源的复制，只有在需要写入的时候才进行，在此之前以只读方式共享。这种技术使地址空间的页拷贝推迟到实际发生写入的时候才进行，如果页根本不会被写入，例如fork()后立即执行exec()，则无需复制。这样可以避免拷贝大量根本不会被使用的数据，这也是Unix快速执行的能力的一种重要支撑。</p> 
+<p>    fork()的实际开销就是复制父进程的页表，以及给子进程创建唯一的进程描述符。进程页表是进程私有的结果，映射了内核态和用户态的线性地址。</p> 
+<h4 id="4%E3%80%81%E8%BF%9B%E7%A8%8B%E7%9A%84%E7%BB%88%E7%BB%93">4、进程的终结</h4> 
+<p>    当一个进程终结时，内核会回收进程的全部资源，并通知父进程。</p> 
+<p>1、do_exit()方法回收资源并更新状态：</p> 
+<ol><li>回收地址空间：如果没有其他进程占用，就释放掉地址空间；</li><li>回收文件描述符、文件系统数据：引用计数分别递减，如果减为0，就释放；</li><li>执行退出代码：执行操作系统规定的退出动作，并把退出代码存放到task_struct中的exit_code中供父进程随时检索；</li><li>设置退出状态：task_struct中的exit_state设置为EXIT_ZOMBIE，进程不再接受调度；</li><li>给子进程重新寻找父进程，新的父进程是线程组的其他线程，或者init进程；</li><li>调用schedule()方法切换到新的进程。</li></ol> 
+<p>2、此时，进程所占有的内存资源只剩下内核栈、thread_info和task_struct。此时进程存在的唯一目的，就是向它的父进程提供信息。父进程检索到相关信息后，或者通知内核那是无关信息后，内核会释放剩下的这些资源。</p> 
+<h3 id="5%E3%80%81%E7%BA%BF%E7%A8%8B%E7%9A%84%E5%AE%9E%E7%8E%B0">5、线程的实现</h3> 
+<p>    Linux内核并没有线程的概念，它把线程当做进程来实现，线程仅仅被视为与其他进程共享某些资源的进程。线程有自己的task_struct，所以从内核的角度，线程只是一个普通的进程，仅仅是和其他进程共享了一些资源，比如地址空间等。</p> 
+<p>1、线程的创建</p> 
+<p>    创建线程和创建进程相似，也是调用clone()实现，只不过传递的一些参数，用来控制共享一些资源：</p> 
+<pre><code class="language-cpp">clone(CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND, 0)</code></pre> 
+<p>    这些代码是用来<em><strong>和父进程共享：地址空间、文件系统资源、文件描述符和信号处理程序</strong></em>。</p> 
+<p>    相对之下，创建进程的命令：</p> 
+<pre><code class="language-cpp">clone(SIGCHLD)</code></pre> 
+<p>2、内核线程</p> 
+<p>    内核线程是独立运行在内核空间的标准进程，内核在后台执行操作，使用内核线程来完成。内核线程和普通进程的区别，只在于内核线程没有独立的地址空间。它们只在内核空间运行，不会切换到用户空间。内核进程和普通进程一样，可以被调度，也可以被抢占。</p> 
+<p>    内核线程只能由内核线程来创建，内核从kthreadadd内核进程衍生出新的内核进程。在Linux系统中，可以使用ps -ef命令看到很多内核线程。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ee0b18e6c600022f53050bacc5e6ad59/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">LaTeX 排版（四）——颜色与超链接</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ba5644b60f188d879d5ab4f0d7f865b8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">烟圈（smoke ring）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

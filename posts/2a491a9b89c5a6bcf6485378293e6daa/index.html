@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>浅尝树莓派3之串口配置 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="浅尝树莓派3之串口配置" />
+<meta property="og:description" content="树莓派3硬件串口的使用及编程 发表于 2017-01-29 | 分类于 树莓派 | 暂无评论 | 阅读次数 54 引言 本文转载自： http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/ 主要为了记录下来下次再配置时的方便。 通常学习一块新的硬件平台，大家第一个工程便是流水灯，实际上这属于IO口的基本控制，这与上篇文章VS使用wiringPi库控制树莓派的GPIO是异曲同工的，接下来便应该是开始使用其通信接口，而通信接口里面最简单的又属串口（uart），虽然简单但目前仍然有很多模块是以串口作为通信接口的，如一些蓝牙模块、低速wifi模块、GPS模块、GPRS模块等。树莓派3代与之前的树莓派相比除了CPU性能上的提升外，还有一个显著的特色便是板载集成了WIFI及蓝牙，正是由于集成的这个蓝牙模块，又使得树莓派3代的串口使用相比于之前版本有了些麻烦，本文的目的便是解决这些麻烦并编写验证了一个简单的串口代码。
+树莓派3代串口的麻烦 树莓派从大的方向来说一共出了3代，每一代的CPU外设基本相同，但内核不同，外设里面一共包含两个串口，一个称之为硬件串口（/dev/ttyAMA0），一个称之为mini串口（/dev/ttyS0）。硬件串口由硬件实现，有单独的波特率时钟源，性能高、可靠，mini串口性能低，功能也简单，并且没有波特率专用的时钟源而是由CPU内核时钟提供，因此mini串口有个致命的弱点是：波特率受到内核时钟的影响。内核若在智能调整功耗降低主频时，相应的这个mini串口的波特率便受到牵连了，虽然你可以固定内核的时钟频率，但这显然不符合低碳、节能的口号。在所有的树莓派板卡中都通过排针将一个串口引出来了，目前除了树莓派3代以外 ，引出的串口默认是CPU的那个硬件串口。而在树莓派3代中，由于板载蓝牙模块，因此这个硬件串口被默认分配给与蓝牙模块通信了，而把那个mini串口默认分配给了排针引出的GPIO Tx Rx，下图是树莓派3的接口图
+其中红框中就是引出的串口IO，如果我们需要通过UART外接模块，默认情况下必须得使用性能很低的mini串口了，而且随着内核主频的变化，还会造成波特率的变化导致通信的失败，几乎很难使用。所以我们希望恢复硬件串口与GPIO 14/15的映射关系，使得我们能够通过GPIO使用高性能的硬件串口来连接我们的串口设备。
+将树莓派3的硬件串口与mini串口默认映射对换 树莓派可以配置文件来修改设备树，我的理解是可以通过配置文件来修改管脚的映射关系，这在许多Cortex-M3内核的单片机中也很常见，可以将同一个串口映射到不同的管脚上，以方便PCB的布线。
+为了在树莓派3中通过GPIO使用高性能的硬件串口，我们必须将分配给蓝牙使用的硬件串口与分配给IO排针的mini串口进行对换，这必然会使得蓝牙模块的功能受到影响，但还好，蓝牙并不是必须的。
+在树莓派系统中
+1 /boot/overlays/ 目录下，提供了一个pi3-miniuart-bt-overlay.dtb的文件，这个文件的作用可以通过该目录下的README文件查看
+如果没有pi3-miniuart-bt-overlay.dtb这个文件，点击 http://ukonline2000.com/wp-content/uploads/2016/03/ 下载
+README文件中说明了这个文件的功能是将树莓派3的蓝牙切换到mini串口（ttyS0），并且恢复硬件串口（ttyAMA0）到GPIO 14&amp;15脚中。并且给出了载入的方法。
+首先在树莓派命令终端中通过命令查看树莓派3当前的串口映射关系
+1 ls -l /dev 红色框中体现的应该是一种映射关系，此处暂时没有做深究，简单理解 serial0 就是GPIO映射的串口，此时GPIO映射的串口是默认的/dev/ttyS0这个mini串口。
+使用下面这条指令编辑 /boot/config.txt 文件
+1 sudo nano /boot/config.txt 在该文件中增加一行代码
+1 dtoverlay=pi3-miniuart-bt 然后保存文件，重启树莓派使之生效。
+再通过 ls -l /dev 命令查看修改后的映射关系
+对比修改前的关系，可以看出serial0和serial1 与 ttyAMA0和ttyS0的映射关系对换完成了，也就是ttyAMA0映射到了引出的GPIO Tx Rx上。
+禁用串口的控制台功能 前面的步骤已经交换了硬件串口与mini串口的映射关系，但现在想使用树莓派外接串口模块进行通信还不行，因为树莓派IO引出的串口默认是用来做控制台使用的，它的初衷是为了在没有网络接口时，通过串口对树莓派进行相关的配置。因此需要禁用这个默认功能，使得串口为我们自由使用。
+在树莓派命令窗口中分别通过如下两个命令停止和禁用串口的控制台功能
+1 2 sudo systemctl stop serial-getty@ttyAMA0." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/2a491a9b89c5a6bcf6485378293e6daa/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2017-02-28T20:19:41+08:00" />
+<meta property="article:modified_time" content="2017-02-28T20:19:41+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">浅尝树莓派3之串口配置</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2 class="post-title" style="font-size:26px; margin:0px; padding:0px; font-weight:400; line-height:1.5; text-align:center; word-break:break-word"> 树莓派3硬件串口的使用及编程</h2> 
+<div class="post-meta" style="margin:3px 0px 60px; color:rgb(153,153,153); font-size:12px; text-align:center"> 
+ <span class="post-time"><span class="post-meta-item-icon" style="margin-right:3px"><span class="fa fa-calendar-o" style=""></span> </span><span class="post-meta-item-text">发表于</span> 2017-01-29 </span> 
+ <span class="post-category"><span class="post-meta-divider" style="margin:0px 0.5em">|</span> <span class="post-meta-item-icon" style="margin-right:3px"><span class="fa fa-folder-o" style=""></span> </span><span class="post-meta-item-text">分类于</span> <a target="_blank" href="http://etrd.org/categories/%E6%A0%91%E8%8E%93%E6%B4%BE/" rel="index noopener noreferrer" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word">树莓派 </a></span> 
+ <span class="post-comments-count"><span class="post-meta-divider" style="margin:0px 0.5em">|</span> <span class="post-meta-item-icon" style="margin-right:3px"><span class="fa fa-comment-o" style=""></span> </span><a target="_blank" href="http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/#comments" rel="nofollow noopener noreferrer" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"><span class="post-comments-count ds-thread-count">暂无评论</span> </a></span> 
+ <span id="/2017/01/29/树莓派3硬件串口的使用及编程/" class="leancloud_visitors"><span class="post-meta-divider" style="margin:0px 0.5em">|</span> <span class="post-meta-item-icon" style="margin-right:3px"><span class="fa fa-eye" style=""></span> </span><span class="post-meta-item-text">阅读次数 </span><span class="leancloud-visitors-count">54</span></span> 
+</div> 
+<div class="post-body" style='font-family:Lato,"PingFang SC","Microsoft YaHei",sans-serif; text-align:justify; font-size:14px; color:rgb(85,85,85)'> 
+ <h5 id="引言" style="margin:20px 0px 15px; padding:10px 0px 0px; line-height:1.5; font-size:16px"> <a target="_blank" href="http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/#%E5%BC%95%E8%A8%80" rel="nofollow noopener noreferrer" class="headerlink" title="引言" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"></a>引言</h5> 
+ <div>
+   本文转载自：  
+ </div> 
+ <div>
+   http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/ 
+ </div> 
+ <div>
+   主要为了记录下来下次再配置时的方便。 
+ </div> 
+ <p style="margin-top:0px; margin-bottom:25px">通常学习一块新的硬件平台，大家第一个工程便是流水灯，实际上这属于IO口的基本控制，这与上篇文章<a target="_blank" href="http://etrd.org/2017/01/27/VS%E4%BD%BF%E7%94%A8wiringPi%E5%BA%93%E6%8E%A7%E5%88%B6%E6%A0%91%E8%8E%93%E6%B4%BE%E7%9A%84GPIO/" rel="nofollow noopener noreferrer" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word">VS使用wiringPi库控制树莓派的GPIO</a>是异曲同工的，接下来便应该是开始使用其通信接口，而通信接口里面最简单的又属串口（uart），虽然简单但目前仍然有很多模块是以串口作为通信接口的，如一些蓝牙模块、低速wifi模块、GPS模块、GPRS模块等。树莓派3代与之前的树莓派相比除了CPU性能上的提升外，还有一个显著的特色便是板载集成了WIFI及蓝牙，正是由于集成的这个蓝牙模块，又使得树莓派3代的串口使用相比于之前版本有了些麻烦，本文的目的便是解决这些麻烦并编写验证了一个简单的串口代码。</p> 
+ <h5 id="树莓派3代串口的麻烦" style="margin:20px 0px 15px; padding:10px 0px 0px; line-height:1.5; font-size:16px"> <a target="_blank" href="http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/#%E6%A0%91%E8%8E%93%E6%B4%BE3%E4%BB%A3%E4%B8%B2%E5%8F%A3%E7%9A%84%E9%BA%BB%E7%83%A6" rel="nofollow noopener noreferrer" class="headerlink" title="树莓派3代串口的麻烦" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"></a>树莓派3代串口的麻烦</h5> 
+ <p style="margin-top:0px; margin-bottom:25px">树莓派从大的方向来说一共出了3代，每一代的CPU外设基本相同，但内核不同，外设里面一共包含两个串口，一个称之为硬件串口（<strong>/dev/ttyAMA0</strong>），一个称之为mini串口（<strong>/dev/ttyS0</strong>）。硬件串口由硬件实现，有单独的波特率时钟源，性能高、可靠，mini串口性能低，功能也简单，并且没有波特率专用的时钟源而是由CPU内核时钟提供，因此mini串口有个致命的弱点是：波特率受到内核时钟的影响。内核若在智能调整功耗降低主频时，相应的这个mini串口的波特率便受到牵连了，虽然你可以固定内核的时钟频率，但这显然不符合低碳、节能的口号。在所有的树莓派板卡中都通过排针将一个串口引出来了，目前除了树莓派3代以外 ，引出的串口默认是CPU的那个硬件串口。而在树莓派3代中，由于板载蓝牙模块，因此这个硬件串口被默认分配给与蓝牙模块通信了，而把那个mini串口默认分配给了排针引出的GPIO Tx Rx，下图是树莓派3的接口图</p> 
+ <p style="margin-top:0px; margin-bottom:25px"><a target="_blank" href="http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/QQ%E6%88%AA%E5%9B%BE20170129145844.png" rel="group noopener noreferrer" class="fancybox" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"><img src="https://images2.imgbox.com/f3/80/TAc7vRYN_o.png" alt="QQ截图20170129145844" style="border:1px solid rgb(221,221,221); display:block!important; margin:0px auto; max-width:100%; height:auto; padding:3px"></a></p> 
+ <p style="margin-top:0px; margin-bottom:25px">其中红框中就是引出的串口IO，如果我们需要通过UART外接模块，默认情况下必须得使用性能很低的mini串口了，而且随着内核主频的变化，还会造成波特率的变化导致通信的失败，几乎很难使用。所以我们希望恢复硬件串口与GPIO 14/15的映射关系，使得我们能够通过GPIO使用高性能的硬件串口来连接我们的串口设备。</p> 
+ <a target="_blank" id="more" style="background-color:transparent; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"></a> 
+ <h5 id="将树莓派3的硬件串口与mini串口默认映射对换" style="margin:20px 0px 15px; padding:10px 0px 0px; line-height:1.5; font-size:16px"> <a target="_blank" href="http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/#%E5%B0%86%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%9A%84%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E4%B8%8Emini%E4%B8%B2%E5%8F%A3%E9%BB%98%E8%AE%A4%E6%98%A0%E5%B0%84%E5%AF%B9%E6%8D%A2" rel="nofollow noopener noreferrer" class="headerlink" title="将树莓派3的硬件串口与mini串口默认映射对换" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"></a>将树莓派3的硬件串口与mini串口默认映射对换</h5> 
+ <p style="margin-top:0px; margin-bottom:25px">树莓派可以配置文件来修改设备树，我的理解是可以通过配置文件来修改管脚的映射关系，这在许多Cortex-M3内核的单片机中也很常见，可以将同一个串口映射到不同的管脚上，以方便PCB的布线。</p> 
+ <p style="margin-top:0px; margin-bottom:25px">为了在树莓派3中通过GPIO使用高性能的硬件串口，我们必须将分配给蓝牙使用的硬件串口与分配给IO排针的mini串口进行对换，这必然会使得蓝牙模块的功能受到影响，但还好，蓝牙并不是必须的。</p> 
+ <p style="margin-top:0px; margin-bottom:25px">在树莓派系统中</p> 
+ <table style="border-collapse:collapse; border-spacing:0px; margin:0px; width:auto; border:none; font-size:14px; table-layout:fixed"><tbody><tr style="background-color:rgb(249,249,249)"><td class="gutter" style=""> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(134,145,148); background:rgb(239,242,243); line-height:1.6; border:none; text-align:right'><span class="line" style="height:20px">1</span>
+</pre> </td><td class="code" style="padding:0px; vertical-align:middle; border:none"> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(77,77,76); background:rgb(247,247,247); line-height:1.6; border:none'><span class="line" style="height:20px">/boot/overlays/</span>
+</pre> </td></tr></tbody></table> 
+ <p style="margin-top:0px; margin-bottom:25px">目录下，提供了一个pi3-miniuart-bt-overlay.dtb的文件，这个文件的作用可以通过该目录下的README文件查看</p> 
+ <p style="margin-top:0px; margin-bottom:25px">如果没有<span style='color:rgb(85,85,85); font-family:Lato,"PingFang SC","Microsoft YaHei",sans-serif; font-size:14px; text-align:justify'>pi3-miniuart-bt-overlay.dtb</span>这个文件，点击 http://ukonline2000.com/wp-content/uploads/2016/03/ <span style='color:rgb(85,85,85); font-family:Lato,"PingFang SC","Microsoft YaHei",sans-serif; font-size:14px; text-align:justify'>下载</span></p> 
+ <p style="margin-top:0px; margin-bottom:25px"><a target="_blank" href="http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/QQ%E6%88%AA%E5%9B%BE20170129153256.png" rel="group noopener noreferrer" class="fancybox" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"><img src="https://images2.imgbox.com/1f/9b/rFZCJuLA_o.png" alt="QQ截图20170129153256" style="border:1px solid rgb(221,221,221); display:block!important; margin:0px auto; max-width:100%; height:auto; padding:3px"></a></p> 
+ <p style="margin-top:0px; margin-bottom:25px"><a target="_blank" href="http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/QQ%E6%88%AA%E5%9B%BE20170129153541.png" rel="group noopener noreferrer" class="fancybox" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"><img src="https://images2.imgbox.com/6f/3a/wxlOizQq_o.png" alt="QQ截图20170129153541" style="border:1px solid rgb(221,221,221); display:block!important; margin:0px auto; max-width:100%; height:auto; padding:3px"></a></p> 
+ <p style="margin-top:0px; margin-bottom:25px">README文件中说明了这个文件的功能是将树莓派3的蓝牙切换到mini串口（ttyS0），并且恢复硬件串口（ttyAMA0）到GPIO 14&amp;15脚中。并且给出了载入的方法。</p> 
+ <p style="margin-top:0px; margin-bottom:25px">首先在树莓派命令终端中通过命令查看树莓派3当前的串口映射关系</p> 
+ <table style="border-collapse:collapse; border-spacing:0px; margin:0px; width:auto; border:none; font-size:14px; table-layout:fixed"><tbody><tr style="background-color:rgb(249,249,249)"><td class="gutter" style=""> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(134,145,148); background:rgb(239,242,243); line-height:1.6; border:none; text-align:right'><span class="line" style="height:20px">1</span>
+</pre> </td><td class="code" style="padding:0px; vertical-align:middle; border:none"> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(77,77,76); background:rgb(247,247,247); line-height:1.6; border:none'><span class="line" style="height:20px">ls -l /dev</span>
+</pre> </td></tr></tbody></table> 
+ <p style="margin-top:0px; margin-bottom:25px"><a target="_blank" href="http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/QQ%E6%88%AA%E5%9B%BE20170129151839.png" rel="group noopener noreferrer" class="fancybox" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"><img src="https://images2.imgbox.com/28/ba/M44gVjHc_o.png" alt="QQ截图20170129151839" style="border:1px solid rgb(221,221,221); display:block!important; margin:0px auto; max-width:100%; height:auto; padding:3px"></a></p> 
+ <p style="margin-top:0px; margin-bottom:25px">红色框中体现的应该是一种映射关系，此处暂时没有做深究，简单理解 serial0 就是GPIO映射的串口，此时GPIO映射的串口是默认的<strong>/dev/ttyS0</strong>这个mini串口。</p> 
+ <p style="margin-top:0px; margin-bottom:25px">使用下面这条指令编辑 /boot/config.txt 文件</p> 
+ <table style="border-collapse:collapse; border-spacing:0px; margin:0px; width:auto; border:none; font-size:14px; table-layout:fixed"><tbody><tr style="background-color:rgb(249,249,249)"><td class="gutter" style=""> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(134,145,148); background:rgb(239,242,243); line-height:1.6; border:none; text-align:right'><span class="line" style="height:20px">1</span>
+</pre> </td><td class="code" style="padding:0px; vertical-align:middle; border:none"> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(77,77,76); background:rgb(247,247,247); line-height:1.6; border:none'><span class="line" style="height:20px">sudo nano /boot/config.txt</span>
+</pre> </td></tr></tbody></table> 
+ <p style="margin-top:0px; margin-bottom:25px">在该文件中增加一行代码</p> 
+ <table style="border-collapse:collapse; border-spacing:0px; margin:0px; width:auto; border:none; font-size:14px; table-layout:fixed"><tbody><tr style="background-color:rgb(249,249,249)"><td class="gutter" style=""> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(134,145,148); background:rgb(239,242,243); line-height:1.6; border:none; text-align:right'><span class="line" style="height:20px">1</span>
+</pre> </td><td class="code" style="padding:0px; vertical-align:middle; border:none"> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(77,77,76); background:rgb(247,247,247); line-height:1.6; border:none'><span class="line" style="height:20px">dtoverlay=pi3-miniuart-bt</span></pre> </td></tr></tbody></table> 
+ <p style="margin-top:0px; margin-bottom:25px">然后保存文件，<strong>重启</strong>树莓派使之生效。</p> 
+ <p style="margin-top:0px; margin-bottom:25px">再通过 ls -l /dev 命令查看修改后的映射关系</p> 
+ <p style="margin-top:0px; margin-bottom:25px"><a target="_blank" href="http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/QQ%E6%88%AA%E5%9B%BE20170129154121.png" rel="group noopener noreferrer" class="fancybox" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"><img src="https://images2.imgbox.com/ab/b3/kWVKq8wn_o.png" alt="QQ截图20170129154121" style="border:1px solid rgb(221,221,221); display:block!important; margin:0px auto; max-width:100%; height:auto; padding:3px"></a></p> 
+ <p style="margin-top:0px; margin-bottom:25px">对比修改前的关系，可以看出serial0和serial1 与 ttyAMA0和ttyS0的映射关系对换完成了，也就是ttyAMA0映射到了引出的GPIO Tx Rx上。</p> 
+ <h5 id="禁用串口的控制台功能" style="margin:20px 0px 15px; padding:10px 0px 0px; line-height:1.5; font-size:16px"> <a target="_blank" href="http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/#%E7%A6%81%E7%94%A8%E4%B8%B2%E5%8F%A3%E7%9A%84%E6%8E%A7%E5%88%B6%E5%8F%B0%E5%8A%9F%E8%83%BD" rel="nofollow noopener noreferrer" class="headerlink" title="禁用串口的控制台功能" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"></a>禁用串口的控制台功能</h5> 
+ <p style="margin-top:0px; margin-bottom:25px">前面的步骤已经交换了硬件串口与mini串口的映射关系，但现在想使用树莓派外接串口模块进行通信还不行，因为树莓派IO引出的串口默认是用来做控制台使用的，它的初衷是为了在没有网络接口时，通过串口对树莓派进行相关的配置。因此需要禁用这个默认功能，使得串口为我们自由使用。</p> 
+ <p style="margin-top:0px; margin-bottom:25px">在树莓派命令窗口中分别通过如下两个命令停止和禁用串口的控制台功能</p> 
+ <table style="border-collapse:collapse; border-spacing:0px; margin:0px; width:auto; border:none; font-size:14px; table-layout:fixed"><tbody><tr style="background-color:rgb(249,249,249)"><td class="gutter" style=""> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(134,145,148); background:rgb(239,242,243); line-height:1.6; border:none; text-align:right'><span class="line" style="height:20px">1</span>
+<span class="line" style="height:20px">2</span>
+</pre> </td><td class="code" style="padding:0px; vertical-align:middle; border:none"> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(77,77,76); background:rgb(247,247,247); line-height:1.6; border:none'><span class="line" style="height:20px">sudo systemctl stop serial-getty@ttyAMA0.service</span>
+<span class="line" style="height:20px">sudo systemctl disable serial-getty@ttyAMA0.service</span>
+</pre> </td></tr></tbody></table> 
+ <p style="margin-top:0px; margin-bottom:25px">由于我们前面已经交换了串口的映射关系，因此这里注意是ttyAMA0。</p> 
+ <p style="margin-top:0px; margin-bottom:25px">然后通过下列指令编辑cmdline.txt文件</p> 
+ <table style="border-collapse:collapse; border-spacing:0px; margin:0px; width:auto; border:none; font-size:14px; table-layout:fixed"><tbody><tr style="background-color:rgb(249,249,249)"><td class="gutter" style=""> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(134,145,148); background:rgb(239,242,243); line-height:1.6; border:none; text-align:right'><span class="line" style="height:20px">1</span>
+</pre> </td><td class="code" style="padding:0px; vertical-align:middle; border:none"> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(77,77,76); background:rgb(247,247,247); line-height:1.6; border:none'><span class="line" style="height:20px">sudo nano /boot/cmdline.txt</span>
+</pre> </td></tr></tbody></table> 
+ <p style="margin-top:0px; margin-bottom:25px">然后看到里面类似如下的内容</p> 
+ <table style="border-collapse:collapse; border-spacing:0px; margin:0px; width:auto; border:none; font-size:14px; table-layout:fixed"><tbody><tr style="background-color:rgb(249,249,249)"><td class="gutter" style=""> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(134,145,148); background:rgb(239,242,243); line-height:1.6; border:none; text-align:right'><span class="line" style="height:20px">1</span>
+</pre> </td><td class="code" style="padding:0px; vertical-align:middle; border:none"> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(77,77,76); background:rgb(247,247,247); line-height:1.6; border:none'><span class="line" style="height:20px">dwc_otg.lpm_enable=0 console=serial0,115200 console=tty1 root=/dev/mmcblk0p2 rootfstype=ext4 elevator=deadline fsck.repair=yes rootwait</span>
+</pre> </td></tr></tbody></table> 
+ <p style="margin-top:0px; margin-bottom:25px">把console=serial0,115200删掉 <del>console=serial0,115200</del> ，剩下的内容类似如下</p> 
+ <table style="border-collapse:collapse; border-spacing:0px; margin:0px; width:auto; border:none; font-size:14px; table-layout:fixed"><tbody><tr style="background-color:rgb(249,249,249)"><td class="gutter" style=""> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(134,145,148); background:rgb(239,242,243); line-height:1.6; border:none; text-align:right'><span class="line" style="height:20px">1</span>
+</pre> </td><td class="code" style="padding:0px; vertical-align:middle; border:none"> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(77,77,76); background:rgb(247,247,247); line-height:1.6; border:none'><span class="line" style="height:20px">dwc_otg.lpm_enable=0 console=tty1 root=/dev/mmcblk0p2 rootfstype=ext4 elevator=deadline fsck.repair=yes rootwait</span>
+</pre> </td></tr></tbody></table> 
+ <p style="margin-top:0px; margin-bottom:25px">然后<strong>重新启动</strong>树莓派，使修改生效</p> 
+ <h5 id="编写一个简单的串口程序" style="margin:20px 0px 15px; padding:10px 0px 0px; line-height:1.5; font-size:16px"> <a target="_blank" href="http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/#%E7%BC%96%E5%86%99%E4%B8%80%E4%B8%AA%E7%AE%80%E5%8D%95%E7%9A%84%E4%B8%B2%E5%8F%A3%E7%A8%8B%E5%BA%8F" rel="nofollow noopener noreferrer" class="headerlink" title="编写一个简单的串口程序" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"></a>编写一个简单的串口程序</h5> 
+ <p style="margin-top:0px; margin-bottom:25px">wiringpi实际上不只提供了基本的IO口的读写函数，还提供了串口操作库函数，引用”wiringserial.h”即可使用，仍然使用前面的工程，参考<a target="_blank" href="https://github.com/WiringPi/WiringPi/blob/master/examples/serialRead.c" rel="external noopener noreferrer" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word">wiringpi的串口例程</a>，写了如下代码：</p> 
+ <table style="border-collapse:collapse; border-spacing:0px; margin:0px; width:auto; border:none; font-size:14px; table-layout:fixed"><tbody><tr style="background-color:rgb(249,249,249)"><td class="gutter" style=""> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(134,145,148); background:rgb(239,242,243); line-height:1.6; border:none; text-align:right'><span class="line" style="height:20px">1</span>
+<span class="line" style="height:20px">2</span>
+<span class="line" style="height:20px">3</span>
+<span class="line" style="height:20px">4</span>
+<span class="line" style="height:20px">5</span>
+<span class="line" style="height:20px">6</span>
+<span class="line" style="height:20px">7</span>
+<span class="line" style="height:20px">8</span>
+<span class="line" style="height:20px">9</span>
+<span class="line" style="height:20px">10</span>
+<span class="line" style="height:20px">11</span>
+<span class="line" style="height:20px">12</span>
+<span class="line" style="height:20px">13</span>
+<span class="line" style="height:20px">14</span>
+<span class="line" style="height:20px">15</span>
+<span class="line" style="height:20px">16</span>
+<span class="line" style="height:20px">17</span>
+<span class="line" style="height:20px">18</span>
+<span class="line" style="height:20px">19</span>
+<span class="line" style="height:20px">20</span>
+<span class="line" style="height:20px">21</span>
+<span class="line" style="height:20px">22</span>
+<span class="line" style="height:20px">23</span>
+<span class="line" style="height:20px">24</span>
+<span class="line" style="height:20px">25</span>
+</pre> </td><td class="code" style="padding:0px; vertical-align:middle; border:none"> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(77,77,76); background:rgb(247,247,247); line-height:1.6; border:none'><span class="line" style="height:20px"><span class="meta" style="color:rgb(137,89,168)">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;errno.h&gt;</span></span></span>
+<span class="line" style="height:20px"><span class="meta" style="color:rgb(137,89,168)">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;string.h&gt;</span></span></span>
+<span class="line" style="height:20px"><span class="meta" style="color:rgb(137,89,168)">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;wiringpi.h&gt;</span></span></span>
+<span class="line" style="height:20px"><span class="meta" style="color:rgb(137,89,168)">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;wiringserial.h&gt;</span></span></span>
+<span class="line" style="height:20px"></span>
+<span class="line" style="height:20px"><span class="function" style="color:rgb(66,113,174)"><span class="keyword" style="color:rgb(137,89,168)">int</span> <span class="title" style="color:rgb(62,153,159)">main</span><span class="params" style="color:rgb(245,135,31)">(<span class="keyword" style="color:rgb(137,89,168)">int</span> argc, <span class="keyword" style="color:rgb(137,89,168)">char</span> *argv[])</span></span>
+<span class="line" style="height:20px"></span>{<!-- --></span>
+<span class="line" style="height:20px">	<span class="keyword" style="color:rgb(137,89,168)">int</span> fd;</span>
+<span class="line" style="height:20px">	<span class="keyword" style="color:rgb(137,89,168)">if</span> ((fd = serialOpen(<span class="string" style="color:rgb(113,140,0)">"/dev/ttyAMA0"</span>, <span class="number" style="color:rgb(113,140,0)">115200</span>)) &lt; <span class="number" style="color:rgb(113,140,0)">0</span>)</span>
+<span class="line" style="height:20px">	{<!-- --></span>
+<span class="line" style="height:20px">		<span class="built_in" style="color:rgb(245,135,31)">fprintf</span>(<span class="built_in" style="color:rgb(245,135,31)">stderr</span>, <span class="string" style="color:rgb(113,140,0)">"Unable to open serial device: %s\n"</span>, strerror(errno));</span>
+<span class="line" style="height:20px">		<span class="keyword" style="color:rgb(137,89,168)">return</span> <span class="number" style="color:rgb(113,140,0)">1</span> ;</span>
+<span class="line" style="height:20px">	}</span>
+<span class="line" style="height:20px">	serialPuts(fd, <span class="string" style="color:rgb(113,140,0)">"uart send test, just by launcher"</span>);</span>
+<span class="line" style="height:20px">	</span>
+<span class="line" style="height:20px">	<span class="keyword" style="color:rgb(137,89,168)">for</span> (;;)</span>
+<span class="line" style="height:20px">	{<!-- --></span>
+<span class="line" style="height:20px">		<span class="keyword" style="color:rgb(137,89,168)">if</span> (serialDataAvail(fd) &gt; <span class="number" style="color:rgb(113,140,0)">0</span>)</span>
+<span class="line" style="height:20px">		{<!-- --></span>
+<span class="line" style="height:20px">			<span class="built_in" style="color:rgb(245,135,31)">putchar</span>(serialGetchar(fd));	</span>
+<span class="line" style="height:20px">		}</span>
+<span class="line" style="height:20px">		</span>
+<span class="line" style="height:20px">	}</span>
+<span class="line" style="height:20px">	<span class="keyword" style="color:rgb(137,89,168)">return</span> <span class="number" style="color:rgb(113,140,0)">0</span>;</span>
+<span class="line" style="height:20px">}</span>
+</pre> </td></tr></tbody></table> 
+ <p style="margin-top:0px; margin-bottom:25px">使用USB转TTL串口模块，USB端接电脑，TTL端接树莓派的IO口，实物连接图如下：</p> 
+ <p style="margin-top:0px; margin-bottom:25px"><a target="_blank" href="http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/QQ%E6%88%AA%E5%9B%BE20170129165518.png" rel="group noopener noreferrer" class="fancybox" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"><img src="https://images2.imgbox.com/2f/5b/JGGKkVXK_o.png" alt="QQ截图20170129165518" style="border:1px solid rgb(221,221,221); display:block!important; margin:0px auto; max-width:100%; height:auto; padding:3px"></a></p> 
+ <table style="border-collapse:collapse; border-spacing:0px; margin:0px; width:auto; border:none; font-size:14px; table-layout:fixed"><tbody><tr style="background-color:rgb(249,249,249)"><td class="gutter" style=""> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(134,145,148); background:rgb(239,242,243); line-height:1.6; border:none; text-align:right'><span class="line" style="height:20px">1</span>
+</pre> </td><td class="code" style="padding:0px; vertical-align:middle; border:none"> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(77,77,76); background:rgb(247,247,247); line-height:1.6; border:none'><span class="line" style="height:20px">serialPuts(fd, <span class="string" style="color:rgb(113,140,0)">"uart send test, just by launcher"</span>);</span>
+</pre> </td></tr></tbody></table> 
+ <p style="margin-top:0px; margin-bottom:25px">该语句是实现树莓派发送一串字符串给Windows电脑端的串口调试助手</p> 
+ <table style="border-collapse:collapse; border-spacing:0px; margin:0px; width:auto; border:none; font-size:14px; table-layout:fixed"><tbody><tr style="background-color:rgb(249,249,249)"><td class="gutter" style=""> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(134,145,148); background:rgb(239,242,243); line-height:1.6; border:none; text-align:right'><span class="line" style="height:20px">1</span>
+<span class="line" style="height:20px">2</span>
+<span class="line" style="height:20px">3</span>
+<span class="line" style="height:20px">4</span>
+</pre> </td><td class="code" style="padding:0px; vertical-align:middle; border:none"> <pre style='overflow:auto; font-family:consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace; font-size:13px; margin-top:0px; margin-bottom:0px; padding:10px; color:rgb(77,77,76); background:rgb(247,247,247); line-height:1.6; border:none'><span class="line" style="height:20px"><span class="keyword" style="color:rgb(137,89,168)">if</span> (serialDataAvail(fd) &gt; <span class="number" style="color:rgb(113,140,0)">0</span>)</span>
+<span class="line" style="height:20px">{<!-- --></span>
+<span class="line" style="height:20px">	<span class="built_in" style="color:rgb(245,135,31)">putchar</span>(serialGetchar(fd));	</span>
+<span class="line" style="height:20px">}</span>
+</pre> </td></tr></tbody></table> 
+ <p style="margin-top:0px; margin-bottom:25px">这几行代码是实现将Windows电脑端串口调试助手发过来的信息进行接收，并显示在调试输出信息上。</p> 
+ <p style="margin-top:0px; margin-bottom:25px">实测结果：</p> 
+ <p style="margin-top:0px; margin-bottom:25px"><a target="_blank" href="http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/QQ%E6%88%AA%E5%9B%BE20170129142637.png" rel="group noopener noreferrer" class="fancybox" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"><img src="https://images2.imgbox.com/6e/3a/m1ygESpp_o.png" alt="QQ截图20170129142637" style="border:1px solid rgb(221,221,221); display:block!important; margin:0px auto; max-width:100%; height:auto; padding:3px"></a></p> 
+ <p style="margin-top:0px; margin-bottom:25px">这是Windows串口调试助手上接收的信息，以及等待发送的信息。</p> 
+ <p style="margin-top:0px; margin-bottom:25px"><a target="_blank" href="http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/QQ%E6%88%AA%E5%9B%BE20170129162448.png" rel="group noopener noreferrer" class="fancybox" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"><img src="https://images2.imgbox.com/ec/04/DWtEbhuM_o.png" alt="QQ截图20170129162448" style="border:1px solid rgb(221,221,221); display:block!important; margin:0px auto; max-width:100%; height:auto; padding:3px"></a></p> 
+ <p style="margin-top:0px; margin-bottom:25px">这是调试时，树莓派串口接收到信息时的输出</p> 
+ <h5 id="小结" style="margin:20px 0px 15px; padding:10px 0px 0px; line-height:1.5; font-size:16px"> <a target="_blank" href="http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/#%E5%B0%8F%E7%BB%93" rel="nofollow noopener noreferrer" class="headerlink" title="小结" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"></a>小结</h5> 
+ <p style="margin-top:0px; margin-bottom:25px">树莓派3代不同于以往的树莓派旧版，CPU的高性能硬件串口默认分配给了蓝牙使用，GPIO 14&amp;15默认分配的是性能较差的mini串口，在无需使用板载蓝牙的情况下，可以通过配置文件修改树莓派的设备树，使得高性能硬件串口重新恢复映射到IO排针接口中。同时要想通过GPIO 14&amp;15外接串口通信模块还需要关掉串口的默认控制台功能。本文在参考已有文献资料的情况下试图阐述清楚了树莓派中两个串口的关系，并最后给出了一个简单的示例代码实现了串口的编程使用。</p> 
+ <p style="margin-top:0px; margin-bottom:25px">限于水平，难免有理解或者认识的错误之处，有任何问题，请让我知道。</p> 
+ <h5 id="参考文献" style="margin:20px 0px 15px; padding:10px 0px 0px; line-height:1.5; font-size:16px"> <a target="_blank" href="http://etrd.org/2017/01/29/%E6%A0%91%E8%8E%93%E6%B4%BE3%E7%A1%AC%E4%BB%B6%E4%B8%B2%E5%8F%A3%E7%9A%84%E4%BD%BF%E7%94%A8%E5%8F%8A%E7%BC%96%E7%A8%8B/#%E5%8F%82%E8%80%83%E6%96%87%E7%8C%AE" rel="nofollow noopener noreferrer" class="headerlink" title="参考文献" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word"></a>参考文献</h5> 
+ <p style="margin-top:0px; margin-bottom:25px"><a target="_blank" href="http://spellfoundry.com/2016/05/29/configuring-gpio-serial-port-raspbian-jessie-including-pi-3/" rel="external noopener noreferrer" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word">http://spellfoundry.com/2016/05/29/configuring-gpio-serial-port-raspbian-jessie-including-pi-3/</a></p> 
+ <p style="margin-top:0px; margin-bottom:25px"><a target="_blank" href="https://www.raspberrypi.com.tw/10842/raspberry-pi-3-uart-overlay-workaround/" rel="external noopener noreferrer" style="background-color:transparent; color:rgb(34,34,34); text-decoration:none; border-bottom:1px solid rgb(34,34,34); word-wrap:break-word; outline:0px">https://www.raspberrypi.com.tw/10842/raspberry-pi-3-uart-overlay-workaround/</a></p> 
+ <p style="margin-top:0px; margin-bottom:25px"><a target="_blank" href="http://wiringpi.com/reference/serial-library/" rel="external noopener noreferrer" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word">http://wiringpi.com/reference/serial-library/</a></p> 
+ <p style="margin-top:0px; margin-bottom:25px"><a target="_blank" href="https://github.com/WiringPi/WiringPi/blob/master/examples/serialRead.c" rel="external noopener noreferrer" style="background-color:transparent; color:rgb(85,85,85); text-decoration:none; border-bottom:1px solid rgb(153,153,153); word-wrap:break-word">https://github.com/WiringPi/WiringPi/blob/master/examples/serialRead.c</a></p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3ad2a5f5c9dbc3b9be4cd05c215052ad/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">初学python：运行环境与第一行代码</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ca37d9456b58b4ee1b0e0eb7d2411700/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">mapshaper系列之四 - 编辑命令</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>FPGA学习日记（七）HDMI图像数据传输 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="FPGA学习日记（七）HDMI图像数据传输" />
+<meta property="og:description" content="一、实现目标
+将像素数据通过HDMI传输，在显示器上显示。
+二、数据流传输
+HDMI常采用TMDS传输（上升沿复位）方式：
+（1）通过三个通道分别可传入8位的rgb视频信号，2位的控制信号，4位的音频信号或其他数据信号，其中行场同步信号在blue的控制信号中传输；
+（2）在encode编码器这端，将输入的8位视频信号通过TMDS算法转换为10位的视频信号输出到并串转换模块；
+（3）在并串转换模块中将输入的10位数据转为串行数发送到接受设备。
+三、数据流传输实现
+顶层模块，使用差分输出原语OBUFDS，p端口输出数据与输入数据相同，n端口输出相同时钟下的反相数据。
+// Descriptions: DVI发送端顶层模块 module dvi_transmitter_top( input pclk, // pixel clock input pclk_x5, // pixel clock x5，ddr模式只需*5 input reset_n, // reset input [23:0] video_din, // RGB888 video in input video_hsync, // hsync data input video_vsync, // vsync data input video_de, // data enable output tmds_clk_p, // TMDS 时钟通道 output tmds_clk_n, output [2:0] tmds_data_p, // TMDS 数据通道 output [2:0] tmds_data_n, output tmds_oen // TMDS 输出使能 ); //wire define wire reset; //并行数据 wire [9:0] red_10bit; wire [9:0] green_10bit; wire [9:0] blue_10bit; wire [9:0] clk_10bit; //串行数据 wire [2:0] tmds_data_serial; wire tmds_clk_serial; //***************************************************** //** main code //***************************************************** assign tmds_oen = 1&#39;b1; assign clk_10bit = 10&#39;b1111100000; //异步复位，同步释放,TMDS协议中复位信号为高 asyn_rst_syn reset_syn( ." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/3dee305452b4416036500fe0d6889826/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-08-14T22:46:35+08:00" />
+<meta property="article:modified_time" content="2020-08-14T22:46:35+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">FPGA学习日记（七）HDMI图像数据传输</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>一、实现目标</p> 
+<p>将像素数据通过HDMI传输，在显示器上显示。</p> 
+<p>二、数据流传输</p> 
+<p>HDMI常采用TMDS传输（上升沿复位）方式：</p> 
+<p><img alt="" height="695" src="https://images2.imgbox.com/aa/69/9PoghCIm_o.png" width="726"></p> 
+<p>（1）通过三个通道分别可传入8位的rgb视频信号，2位的控制信号，4位的音频信号或其他数据信号，其中行场同步信号在blue的控制信号中传输；</p> 
+<p>（2）在encode编码器这端，将输入的8位视频信号通过TMDS算法转换为10位的视频信号输出到并串转换模块；</p> 
+<p>（3）在并串转换模块中将输入的10位数据转为串行数发送到接受设备。</p> 
+<p>三、数据流传输实现</p> 
+<p>顶层模块，使用差分输出原语OBUFDS，p端口输出数据与输入数据相同，n端口输出相同时钟下的反相数据。</p> 
+<pre><code>// Descriptions:        DVI发送端顶层模块
+
+
+module dvi_transmitter_top(
+    input        pclk,           // pixel clock
+    input        pclk_x5,        // pixel clock x5，ddr模式只需*5
+    input        reset_n,        // reset
+    
+    input [23:0] video_din,      // RGB888 video in
+    input        video_hsync,    // hsync data
+    input        video_vsync,    // vsync data
+    input        video_de,       // data enable
+    
+    output       tmds_clk_p,    // TMDS 时钟通道
+    output       tmds_clk_n,
+    output [2:0] tmds_data_p,   // TMDS 数据通道
+    output [2:0] tmds_data_n,
+    output       tmds_oen       // TMDS 输出使能
+    );
+    
+//wire define    
+wire        reset;
+    
+//并行数据
+wire [9:0]  red_10bit;
+wire [9:0]  green_10bit;
+wire [9:0]  blue_10bit;
+wire [9:0]  clk_10bit;  
+  
+//串行数据
+wire [2:0]  tmds_data_serial;
+wire        tmds_clk_serial;
+
+//*****************************************************
+//**                    main code
+//***************************************************** 
+assign tmds_oen  = 1'b1;  
+assign clk_10bit = 10'b1111100000;
+
+//异步复位，同步释放,TMDS协议中复位信号为高
+asyn_rst_syn reset_syn(
+    .reset_n    (reset_n),
+    .clk        (pclk),
+    
+    .syn_reset  (reset)    //高有效
+    );
+  
+//对三个颜色通道进行编码，分别输出
+dvi_encoder encoder_b (
+    .clkin      (pclk),
+    .rstin	    (reset),
+    
+    .din        (video_din[7:0]),
+    .c0			(video_hsync),
+    .c1			(video_vsync),
+    .de			(video_de),
+    .dout		(blue_10bit)
+    ) ;
+
+dvi_encoder encoder_g (
+    .clkin      (pclk),
+    .rstin	    (reset),
+    
+    .din		(video_din[15:8]),
+    .c0			(1'b0),
+    .c1			(1'b0),
+    .de			(video_de),
+    .dout		(green_10bit)
+    ) ;
+    
+dvi_encoder encoder_r (
+    .clkin      (pclk),
+    .rstin	    (reset),
+    
+    .din		(video_din[23:16]),
+    .c0			(1'b0),
+    .c1			(1'b0),
+    .de			(video_de),
+    .dout		(red_10bit)
+    ) ;
+    
+//对编码后的数据进行并串转换，引用原语快速实现并串转换
+serializer_10_to_1 serializer_b(
+    .reset              (reset),                // 复位,高有效
+    .paralell_clk       (pclk),                 // 输入并行数据时钟
+    .serial_clk_5x      (pclk_x5),              // 输入串行数据时钟
+    .paralell_data      (blue_10bit),           // 输入并行数据
+
+    .serial_data_out    (tmds_data_serial[0])   // 输出串行数据
+    );    
+    
+serializer_10_to_1 serializer_g(
+    .reset              (reset),
+    .paralell_clk       (pclk),
+    .serial_clk_5x      (pclk_x5),
+    .paralell_data      (green_10bit),
+
+    .serial_data_out    (tmds_data_serial[1])
+    );
+    
+serializer_10_to_1 serializer_r(
+    .reset              (reset),
+    .paralell_clk       (pclk),
+    .serial_clk_5x      (pclk_x5),
+    .paralell_data      (red_10bit),
+
+    .serial_data_out    (tmds_data_serial[2])
+    );
+            
+serializer_10_to_1 serializer_clk(
+    .reset              (reset),
+    .paralell_clk       (pclk),
+    .serial_clk_5x      (pclk_x5),
+    .paralell_data      (clk_10bit),
+
+    .serial_data_out    (tmds_clk_serial)
+    );
+    
+//转换差分信号，差分滤波振荡器  
+OBUFDS #(
+    .IOSTANDARD         ("TMDS_33")    // I/O电平标准为TMDS
+) TMDS0 (
+    .I                  (tmds_data_serial[0]),
+    .O                  (tmds_data_p[0]),
+    .OB                 (tmds_data_n[0]) 
+);
+
+OBUFDS #(
+    .IOSTANDARD         ("TMDS_33")    // I/O电平标准为TMDS
+) TMDS1 (
+    .I                  (tmds_data_serial[1]),
+    .O                  (tmds_data_p[1]),
+    .OB                 (tmds_data_n[1]) 
+);
+
+OBUFDS #(
+    .IOSTANDARD         ("TMDS_33")    // I/O电平标准为TMDS
+) TMDS2 (
+    .I                  (tmds_data_serial[2]), 
+    .O                  (tmds_data_p[2]), 
+    .OB                 (tmds_data_n[2])  
+);
+
+OBUFDS #(
+    .IOSTANDARD         ("TMDS_33")    // I/O电平标准为TMDS
+) TMDS3 (
+    .I                  (tmds_clk_serial), 
+    .O                  (tmds_clk_p),
+    .OB                 (tmds_clk_n) 
+);
+  
+endmodule</code></pre> 
+<p>编码器模块（TMDS算法）：</p> 
+<pre><code> `timescale 1 ps / 1ps
+
+module dvi_encoder (
+  input            clkin,    // pixel clock input
+  input            rstin,    // async. reset input (active high)
+  input      [7:0] din,      // data inputs: expect registered
+  input            c0,       // c0 input
+  input            c1,       // c1 input
+  input            de,       // de input
+  output reg [9:0] dout      // data outputs
+);
+
+
+  reg [3:0] n1d; //number of 1 in din
+  reg [7:0] din_q;//暂存输入数据
+
+//计算当前数据中“1”的个数，并寄存当前din的数据
+  always @ (posedge clkin) begin
+    n1d &lt;=#1 din[0] + din[1] + din[2] + din[3] + din[4] + din[5] + din[6] + din[7];
+
+    din_q &lt;=#1 din;
+  end
+
+/*8位转9位，通过判断数据中1的个数，决定进行逐位异或还是逐位同或操作，新增最高位为判定位取反
+decision1=1，进行逐位同或，decision1=0，进行逐位异或*/
+  wire decision1;
+
+  assign decision1 = (n1d &gt; 4'h4) | ((n1d == 4'h4) &amp; (din_q[0] == 1'b0));//判定翻转次数
+
+  wire [8:0] q_m;
+  assign q_m[0] = din_q[0];
+  assign q_m[1] = (decision1) ? (q_m[0] ^~ din_q[1]) : (q_m[0] ^ din_q[1]);  //同或：异或
+  assign q_m[2] = (decision1) ? (q_m[1] ^~ din_q[2]) : (q_m[1] ^ din_q[2]);
+  assign q_m[3] = (decision1) ? (q_m[2] ^~ din_q[3]) : (q_m[2] ^ din_q[3]);
+  assign q_m[4] = (decision1) ? (q_m[3] ^~ din_q[4]) : (q_m[3] ^ din_q[4]);
+  assign q_m[5] = (decision1) ? (q_m[4] ^~ din_q[5]) : (q_m[4] ^ din_q[5]);
+  assign q_m[6] = (decision1) ? (q_m[5] ^~ din_q[6]) : (q_m[5] ^ din_q[6]);
+  assign q_m[7] = (decision1) ? (q_m[6] ^~ din_q[7]) : (q_m[6] ^ din_q[7]);
+  assign q_m[8] = (decision1) ? 1'b0 : 1'b1;
+
+/*9位转10位，分别对当前数据的0，1进行计数；并设置累加器保存每次0，1个数的差值；
+四个状态：1.当当前数据num0 = mum1或累加器值为0，不翻转，最高位为次高位取反，低八位有次高位决定是否取反；2.当前数据num0&gt;num1,且累加器数据为负，翻转；3.当前数据num0&lt;num1,且累加器数据为正，翻转；4.其他情况保持
+若使能信号不为1，则由控制位输入的特定数据决定输出相应的数据
+*/
+
+
+  reg [3:0] n1q_m, n0q_m; // number of 1s and 0s for q_m
+  always @ (posedge clkin) begin
+    n1q_m  &lt;=#1 q_m[0] + q_m[1] + q_m[2] + q_m[3] + q_m[4] + q_m[5] + q_m[6] + q_m[7];
+    n0q_m  &lt;=#1 4'h8 - (q_m[0] + q_m[1] + q_m[2] + q_m[3] + q_m[4] + q_m[5] + q_m[6] + q_m[7]);
+  end
+
+  parameter CTRLTOKEN0 = 10'b1101010100;
+  parameter CTRLTOKEN1 = 10'b0010101011;
+  parameter CTRLTOKEN2 = 10'b0101010100;
+  parameter CTRLTOKEN3 = 10'b1010101011;
+
+  reg [4:0] cnt; //disparity counter, MSB is the sign bit
+  wire decision2, decision3;
+
+  assign decision2 = (cnt == 5'h0) | (n1q_m == n0q_m);
+
+  assign decision3 = (~cnt[4] &amp; (n1q_m &gt; n0q_m)) | (cnt[4] &amp; (n0q_m &gt; n1q_m));
+
+  // pipe line alignment与din对齐
+
+  reg       de_q, de_reg;
+  reg       c0_q, c1_q;
+  reg       c0_reg, c1_reg;
+  reg [8:0] q_m_reg;
+
+  always @ (posedge clkin) begin
+    de_q    &lt;=#1 de;
+    de_reg  &lt;=#1 de_q;
+    
+    c0_q    &lt;=#1 c0;
+    c0_reg  &lt;=#1 c0_q;
+    c1_q    &lt;=#1 c1;
+    c1_reg  &lt;=#1 c1_q;
+
+    q_m_reg &lt;=#1 q_m;
+  end
+
+  ///
+  // 10-bit out
+  // disparity counter
+  ///
+  always @ (posedge clkin or posedge rstin) begin
+    if(rstin) begin
+      dout &lt;= 10'h0;
+      cnt &lt;= 5'h0;
+    end else begin
+      if (de_reg) begin
+        if(decision2) begin
+          dout[9]   &lt;=#1 ~q_m_reg[8]; 
+          dout[8]   &lt;=#1 q_m_reg[8]; 
+          dout[7:0] &lt;=#1 (q_m_reg[8]) ? q_m_reg[7:0] : ~q_m_reg[7:0];
+
+          cnt &lt;=#1 (~q_m_reg[8]) ? (cnt + n0q_m - n1q_m) : (cnt + n1q_m - n0q_m);
+        end else begin
+          if(decision3) begin
+            dout[9]   &lt;=#1 1'b1;
+            dout[8]   &lt;=#1 q_m_reg[8];
+            dout[7:0] &lt;=#1 ~q_m_reg[7:0];
+
+            cnt &lt;=#1 cnt + {q_m_reg[8], 1'b0} + (n0q_m - n1q_m);
+          end else begin
+            dout[9]   &lt;=#1 1'b0;
+            dout[8]   &lt;=#1 q_m_reg[8];
+            dout[7:0] &lt;=#1 q_m_reg[7:0];
+
+            cnt &lt;=#1 cnt - {~q_m_reg[8], 1'b0} + (n1q_m - n0q_m);
+          end
+        end
+      end else begin
+        case ({c1_reg, c0_reg})
+          2'b00:   dout &lt;=#1 CTRLTOKEN0;
+          2'b01:   dout &lt;=#1 CTRLTOKEN1;
+          2'b10:   dout &lt;=#1 CTRLTOKEN2;
+          default: dout &lt;=#1 CTRLTOKEN3;
+        endcase
+
+        cnt &lt;=#1 5'h0;
+      end
+    end
+  end
+  
+endmodule </code></pre> 
+<p>TMDS编码算法流程图如下：</p> 
+<p><img alt="" height="809" src="https://images2.imgbox.com/d6/f7/brkbcltH_o.png" width="680"></p> 
+<p>TMDS 通过逻辑算法将 8 位字符数据通过最小转换编码为 10 位字符数据，前 8 位数据由原始信号经运后获得，第 9 位表示运算的方式， 1 表示异或 0 表示异或非。经过 DC 平衡后（第 10 位），采用差分信号传输数据。第 10 位实际是一个反转标志位， 1表示进行了反转而 0 表示没有反转，从而达到 DC 平衡。接收端在收到信号后，再进行相反的运算。 TMDS 和 LVDS、 TTL 相比有较好的电磁兼容性能。这种算法可以减小传输信号过程的上冲和下冲，而 DC 平衡使信号对传输线的电磁干扰减少，可以用低成本的专用电缆实现长距离、高质量的数字信号传输。</p> 
+<p>TMDS算法有接口规范定义，调用时可对以上模块进行修改后使用，在接收端通过译码器输出RGB888数据。</p> 
+<p><img alt="" height="368" src="https://images2.imgbox.com/e5/41/btNhs8gp_o.png" width="1200"></p> 
+<p>并串转换模块，可调用原语OSERDESE2实现：</p> 
+<pre><code>//并串转换
+module serializer_10_to_1(
+    input           reset,              // 复位,高有效
+    input           paralell_clk,       // 输入并行数据时钟
+    input           serial_clk_5x,      // 输入串行数据时钟
+    input   [9:0]   paralell_data,      // 输入并行数据
+
+    output 			serial_data_out     // 输出串行数据
+    );
+
+wire		connect1;
+wire		connect2;
+
+
+
+// OSERDESE2: Output SERial/DESerializer with bitslip
+// 7 Series
+// Xilinx HDL Language Template, version 2019.1
+OSERDESE2 #(
+			.DATA_RATE_OQ("DDR"), // DDR, SDR
+			.DATA_RATE_TQ("SDR"), // DDR, BUF, SDR.DATA_WIDTH(4), // Parallel data width (2-8,10,14)
+			.DATA_WIDTH(10),
+			.SERDES_MODE("MASTER"), // MASTER, SLAVE
+			.TBYTE_CTL("FALSE"), // Enable tristate byte operation (FALSE, TRUE)
+			.TBYTE_SRC("FALSE"), // Tristate byte source (FALSE, TRUE)
+			.TRISTATE_WIDTH(1) // 3-state converter width (1,4)
+)
+OSERDESE2_Master (
+			.OQ(serial_data_out), // 1-bit output: Data path output
+			// SHIFTOUT1 / SHIFTOUT2: 1-bit (each) output: Data output expansion (1-bit each)
+			.SHIFTOUT1(connect1),
+			.SHIFTOUT2(connect2),
+
+			.CLK(serial_clk_5x), // 1-bit input: High speed clock
+			.CLKDIV(paralell_clk), // 1-bit input: Divided clock
+			// D1 - D8: 1-bit (each) input: Parallel data inputs (1-bit each)
+			.D1(paralell_data[0]),
+			.D2(paralell_data[1]),
+			.D3(paralell_data[2]),
+			.D4(paralell_data[3]),
+			.D5(paralell_data[4]),
+			.D6(paralell_data[5]),
+			.D7(paralell_data[6]),
+			.D8(paralell_data[7]),
+			.OCE(1'b1), // 1-bit input: Output data clock enable
+			.RST(reset), // 1-bit input: Reset
+			// SHIFTIN1 / SHIFTIN2: 1-bit (each) input: Data input expansion (1-bit each)
+			.SHIFTIN1(connect1),
+			.SHIFTIN2(connect2),
+			// T1 - T4: 1-bit (each) input: Parallel 3-state inputs
+			.T1(1'b0),
+			.T2(1'b0),
+			.T3(1'b0),
+			.T4(1'b0),
+			.TBYTEIN(1'b0), // 1-bit input: Byte group tristate(3 state)
+			.TCE(1'b0) // 1-bit input: 3-state clock enable
+);
+// End of OSERDESE2_inst instantiation
+OSERDESE2 #(
+			.DATA_RATE_OQ("DDR"), // DDR, SDR
+			.DATA_RATE_TQ("SDR"), // DDR, BUF, SDR.DATA_WIDTH(4), // Parallel data width (2-8,10,14)
+
+			.SERDES_MODE("SLAVE"), // MASTER, SLAVE
+			.SRVAL_OQ(1'b0), // OQ output value when SR is used (1'b0,1'b1)
+			.SRVAL_TQ(1'b0), // TQ output value when SR is used (1'b0,1'b1)
+			.TBYTE_CTL("FALSE"), // Enable tristate byte operation (FALSE, TRUE)
+			.TBYTE_SRC("FALSE"), // Tristate byte source (FALSE, TRUE)
+			.TRISTATE_WIDTH(4) // 3-state converter width (1,4)
+)
+OSERDESE2_Slave (
+			.OFB(OFB), // 1-bit output: Feedback path for data
+			.OQ(OQ), // 1-bit output: Data path output
+			// SHIFTOUT1 / SHIFTOUT2: 1-bit (each) output: Data output expansion (1-bit each)
+			.SHIFTOUT1(connect1),
+			.SHIFTOUT2(connect2),
+			.TBYTEOUT(TBYTEOUT), // 1-bit output: Byte group tristate
+			.TFB(), // 1-bit output: 3-state control
+			.TQ(), // 1-bit output: 3-state control
+			.CLK(serial_clk_5x), // 1-bit input: High speed clock
+			.CLKDIV(paralell_clk), // 1-bit input: Divided clock
+			// D1 - D8: 1-bit (each) input: Parallel data inputs (1-bit each)
+			.D1(1'b0)),
+			.D2(1'b0)),
+			.D3(paralell_data[8]),
+			.D4(paralell_data[9]),
+			.D5(1'b0)),
+			.D6(1'b0)),
+			.D7(1'b0)),
+			.D8(1'b0)),
+			.OCE(1'b1), // 1-bit input: Output data clock enable
+			.RST(reset), // 1-bit input: Reset
+			// SHIFTIN1 / SHIFTIN2: 1-bit (each) input: Data input expansion (1-bit each)
+			.SHIFTIN1(connect1),
+			.SHIFTIN2(connect2),
+			// T1 - T4: 1-bit (each) input: Parallel 3-state inputs
+			.T1(1'b0),
+			.T2(1'b0),
+			.T3(1'b0),
+			.T4(1'b0),
+			.TBYTEIN(1'b0), // 1-bit input: Byte group tristate
+			.TCE(1'b0) // 1-bit input: 3-state clock enable
+);</code></pre> 
+<p>原语可搜索xilinx官方文档，其中有verilog示例代码，只需按提示添加信号即可，减少了代码量。</p> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a86503c91f2c116fbc9110e13083953a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Siddhi（一）能力及架构</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/47ebd0db455c2f5284c602cc634a091b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">使用Nginx的Docker镜像部署前端项目</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

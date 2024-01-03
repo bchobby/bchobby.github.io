@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Yolov5算法解读 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Yolov5算法解读" />
+<meta property="og:description" content="yolov5于2020年由glenn-jocher首次提出，直至今日yolov5仍然在不断进行升级迭代。
+Yolov5有YOLOv5s、YOLOv5m、YOLOv5l、YOLOv5x四个版本。文件中，这几个模型的结构基本一样，不同的是depth_multiple模型深度和width_multiple模型宽度这两个参数。 yolov5主要分为输入端，backbone，Neck，和head(prediction)。backbone是New CSP-Darknet53。Neck层为SPFF和New CSP-PAN。Head层为Yolov3 head。 yolov5 6.0版本的主要架构如下图所示：
+从整体结构图中，我们可以看到Backbone，neck和head由不同的blocks构成，下面是对于这三个部分，逐一介绍各个blocks。
+1. 输入端：
+YOLOv5在输入端采用了Mosaic数据增强，参考了CutMix数据增强的方法，Mosaic数据增强由原来的两张图像提高到四张图像进行拼接，并对图像进行随机缩放，随机裁剪和随机排列。使用数据增强可以改善数据集中，小、中、大目标数据不均衡的问题。
+Mosaic数据增强的主要步骤为：1. Mosaic 2.Copy paste 3.Random affine（Scale, Translation and Shear) 4.Mixup 5.Albumentations 6. Augment HSV(Hue, Saturation, Value) 7. Random horizontal flip.
+采用Mosaic数据增强的方式有几个优点：1.丰富数据集：随机使用4张图像，随机缩放后随机拼接，增加很多小目标，大大丰富了数据集，提高了网络的鲁棒性。2.减少GPU占用：随机拼接的方式让一张图像可以计算四张图像的数据，减少每个batch的数量，即使只有一个GPU，也能得到较好的结果。3.同时通过对识别物体的裁剪，使模型根据局部特征识别物体，有助于被遮挡物体的检测，从而提升了模型的检测能力。
+2.backbone
+在Backbone中，有conv，C3，SPFF是我们需要阐明的。
+2.1.Conv模块 Conv卷积层由卷积，batch normalization和SiLu激活层组成。batch normalization具有防止过拟合，加速收敛的作用。SiLu激活函数是Sigmoid 加权线性组合，SiLU 函数也称为 swish 函数。
+公式：silu(x)=x∗σ(x),where σ(x) is the logistic sigmoid. Silu函数处处可导，且连续光滑。Silu并非一个单调的函数，最大的缺点是计算量大。
+2.2 C3模块 C3其结构作用基本相同均为CSP架构，只是在修正单元的选择上有所不同，其包含了3个标准卷积层，数量由配置文件yaml的n和depth_multiple参数乘积决定。该模块是对残差特征进行学习的主要模块,其结构分为两支,一支使用了上述指定多个Bottleneck堆叠，另一支仅经过一个基本卷积模块，最后将两支进行concat操作。
+这个模块相对于之前版本BottleneckCSP模块不同的是，经历过残差输出后的卷积模块被去掉了，concat后的标准卷积模块中的激活函数也为SiLU。
+Bottleneck模块借鉴了ResNet的残差结构，其中一路先进行1 ×1卷积将特征图的通道数减小一半，从而减少计算量，再通过3 ×3卷积提取特征，并且将通道数加倍，其输入与输出的通道数是不发生改变的。而另外一路通过shortcut进行残差连接，与第一路的输出特征图相加，从而实现特征融合。
+在YOLOv5的Backbone中的Bottleneck都默认使shortcut为True，而在Head中的Bottleneck都不使用shortcut。
+2.3. SPPF模块
+SPPF由SPP改进而来，SPP先通过一个标准卷积模块将输入通道减半，然后分别做kernel-size为5，9，13的max pooling（对于不同的核大小，padding是自适应的）。对三次最大池化的结果与未进行池化操作的数据进行concat，最终合并后channel数是原来的2倍。
+yolo的SPP借鉴了空间金字塔的思想，通过SPP模块实现了局部特征和全部特征。经过局部特征与全矩特征相融合后，丰富了特征图的表达能力，有利于待检测图像中目标大小差异较大的情况，对yolo这种复杂的多目标检测的精度有很大的提升。　SPPF（Spatial Pyramid Pooling - Fast ）使用3个5×5的最大池化，代替原来的5×5、9×9、13×13最大池化，多个小尺寸池化核级联代替SPP模块中单个大尺寸池化核，从而在保留原有功能，即融合不同感受野的特征图，丰富特征图的表达能力的情况下，进一步提高了运行速度。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/4e036c3b2ffb51d2e8a5c6361e3f252d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-11-28T15:01:05+08:00" />
+<meta property="article:modified_time" content="2022-11-28T15:01:05+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Yolov5算法解读</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>yolov5于2020年由glenn-jocher首次提出，直至今日yolov5仍然在不断进行升级迭代。</p> 
+<p>Yolov5有YOLOv5s、YOLOv5m、YOLOv5l、YOLOv5x四个版本。文件中，这几个模型的结构基本一样，不同的是<code>depth_multiple模型深度</code>和<code>width_multiple模型宽度</code>这两个参数。 </p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/5c/2f/cvbwQGxb_o.png"></p> 
+<p>yolov5主要分为输入端，backbone，Neck，和head(prediction)。backbone是New CSP-Darknet53。Neck层为SPFF和New CSP-PAN。Head层为Yolov3 head。 yolov5 6.0版本的主要架构如下图所示：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/c7/81/S4OJCDHs_o.png"></p> 
+<p></p> 
+<p>从整体结构图中，我们可以看到Backbone，neck和head由不同的blocks构成，下面是对于这三个部分，逐一介绍各个blocks。</p> 
+<p><strong>1. 输入端：</strong></p> 
+<p>YOLOv5在输入端采用了Mosaic数据增强，参考了CutMix数据增强的方法，Mosaic数据增强由原来的两张图像提高到四张图像进行拼接，并对图像进行随机缩放，随机裁剪和随机排列。使用数据增强可以改善数据集中，小、中、大目标数据不均衡的问题。</p> 
+<p>Mosaic数据增强的主要步骤为：1. Mosaic 2.Copy paste 3.Random affine（Scale, Translation and Shear) 4.Mixup 5.Albumentations 6. Augment HSV(Hue, Saturation, Value) 7. Random horizontal flip.</p> 
+<p>采用Mosaic数据增强的方式有几个优点：1.丰富数据集：随机使用4张图像，随机缩放后随机拼接，增加很多小目标，大大丰富了数据集，提高了网络的鲁棒性。2.减少GPU占用：随机拼接的方式让一张图像可以计算四张图像的数据，减少每个batch的数量，即使只有一个GPU，也能得到较好的结果。3.同时通过对识别物体的裁剪，使模型根据局部特征识别物体，有助于被遮挡物体的检测，从而提升了模型的检测能力。</p> 
+<p style="text-align:center;"><img alt="" height="488" src="https://images2.imgbox.com/55/2e/WTiGH6tA_o.jpg" width="488"></p> 
+<p><strong>2.backbone</strong></p> 
+<p>在<strong>Backbone</strong>中，有conv，C3，SPFF是我们需要阐明的。</p> 
+<h4>2.1.Conv模块</h4> 
+<p>Conv卷积层由卷积，batch normalization和SiLu激活层组成。batch normalization具有防止过拟合，加速收敛的作用。SiLu激活函数是Sigmoid 加权线性组合，SiLU 函数也称为 swish 函数。<br> 公式：silu(x)=x∗σ(x),where σ(x) is the logistic sigmoid. Silu函数处处可导，且连续光滑。Silu并非一个单调的函数，最大的缺点是计算量大。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/ed/84/e2sAz7qe_o.png"></p> 
+<p class="img-center"><img alt="" height="161" src="https://images2.imgbox.com/f3/6d/PaXyUFgp_o.png" width="371"></p> 
+<h4>2.2 C3模块</h4> 
+<p>C3其结构作用基本相同均为CSP架构，只是在修正单元的选择上有所不同，其包含了3个标准卷积层，数量由配置文件yaml的n和depth_multiple参数乘积决定。该模块是对残差特征进行学习的主要模块,其结构分为两支,一支使用了上述指定多个Bottleneck堆叠，另一支仅经过一个基本卷积模块，最后将两支进行concat操作。<br> 这个模块相对于之前版本BottleneckCSP模块不同的是，经历过残差输出后的卷积模块被去掉了，concat后的标准卷积模块中的激活函数也为SiLU。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/fe/50/lQ4VSsbU_o.png"></p> 
+<p>Bottleneck模块借鉴了ResNet的残差结构，其中一路先进行1 ×1卷积将特征图的通道数减小一半，从而减少计算量，再通过3 ×3卷积提取特征，并且将通道数加倍，其输入与输出的通道数是不发生改变的。而另外一路通过shortcut进行残差连接，与第一路的输出特征图相加，从而实现特征融合。<br> 在YOLOv5的Backbone中的Bottleneck都默认使shortcut为True，而在Head中的Bottleneck都不使用shortcut。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/a6/6c/1WbmI3Ur_o.png"></p> 
+<p></p> 
+<p><strong>2.3. SPPF模块</strong></p> 
+<p>SPPF由SPP改进而来，SPP先通过一个标准卷积模块将输入通道减半，然后分别做kernel-size为5，9，13的max pooling（对于不同的核大小，padding是自适应的）。对三次最大池化的结果与未进行池化操作的数据进行concat，最终合并后channel数是原来的2倍。</p> 
+<p>yolo的SPP借鉴了空间金字塔的思想，通过SPP模块实现了局部特征和全部特征。经过局部特征与全矩特征相融合后，丰富了特征图的表达能力，有利于待检测图像中目标大小差异较大的情况，对yolo这种复杂的多目标检测的精度有很大的提升。　　</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/9a/56/kZK0CTHu_o.png"></p> 
+<p></p> 
+<p></p> 
+<p>SPPF（Spatial Pyramid Pooling - Fast ）使用3个5×5的最大池化，代替原来的5×5、9×9、13×13最大池化，多个小尺寸池化核级联代替<strong>SPP模块</strong>中单个大尺寸池化核，从而在保留原有功能，即融合不同感受野的特征图，丰富特征图的表达能力的情况下，进一步提高了运行速度。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/ad/ff/1hs1IDKv_o.png"></p> 
+<p></p> 
+<p><strong>3. Neck</strong></p> 
+<p>在<strong>Neck</strong>部分，yolov5主要采用了PANet结构。</p> 
+<p>PANet在FPN（feature pyramid network）上提取网络内特征层次结构，<strong>FPN</strong>中顶部信息流需要通过骨干网络(Backbone)逐层地往下传递，由于层数相对较多，因此计算量比较大（a)。</p> 
+<p><strong>PANet</strong>在<strong>FPN</strong>的基础上又引入了一个自底向上(Bottom-up)的路径。经过自顶向下(Top-down)的特征融合后，再进行自底向上(Bottom-up)的特征融合，这样底层的位置信息也能够传递到深层，从而增强多个尺度上的定位能力。</p> 
+<p><img alt="" height="635" src="https://images2.imgbox.com/94/ed/AZMxqdo2_o.png" width="1200"></p> 
+<p>(a) FPN backbone. (b) Bottom-up path augmentation. (c) Adaptive feature pooling. (d) Box branch. (e) Fully-connected fusion.</p> 
+<p><strong>4.Head</strong></p> 
+<p><strong>4.1 head</strong></p> 
+<p>Head部分主要用于检测目标，分别输出20*20，40*40和80*80的特征图大小，对应的是32*32，16*16和8*8像素的目标。</p> 
+<p class="img-center"><img alt="在这里插入图片描述" src="https://images2.imgbox.com/53/f0/MgrVH7G7_o.png"></p> 
+<p>YOLOv5的Head对Neck中得到的不同尺度的特征图分别通过1×1卷积将通道数扩展，扩展后的特征通道数为(类别数量+5)×每个检测层上的anchor数量。其中5分别对应的是预测框的中心点横坐标、纵坐标、宽度、高度和置信度，这里的置信度表示预测框的可信度，取值范围为( 0 , 1 ) ，值越大说明该预测框中越有可能存在目标。<br> Head中的3个检测层分别对应Neck中得到的3种不同尺寸的特征图。特征图上的每个网格都预设了3个不同宽高比的anchor，可以在特征图的通道维度上保存所有基于anchor先验框的位置信息和分类信息，用来预测和回归目标。<br><strong> 4.2 目标框回归</strong></p> 
+<p> YOLOv5的目标框回归计算公式如下所示：</p> 
+<p></p> 
+<h4 style="text-align:center;"><img alt="" height="221" src="https://images2.imgbox.com/4a/69/sgSF22bZ_o.png" width="317"></h4> 
+<h4 style="text-align:center;"><img alt="" height="122" src="https://images2.imgbox.com/c5/22/8asnWoSj_o.png" width="245"></h4> 
+<p>其中(bx,by,bw,bh)表示预测框的中心点坐标、宽度和高度，（Cx, Cy)表示预测框中心点所在网格的左上角坐标，(tx,ty)表示预测框的中心点相对于网格左上角坐标的偏移量，(tw,th)表示预测框的宽高相对于anchor宽高的缩放比例，表示(pw,ph)先验框anchor的宽高。<br> 为了将预测框的中心点约束到当前网格中，使用Sigmoid函数处理偏移量，使预测的偏移值保持在(0,1)范围内。这样一来，根据目标框回归计算公式，预测框中心点坐标的偏移量保持在(−0.5,1.5)范围内，如上图蓝色区域所示。预测框的宽度和高度对于anchor的放缩范围为（0,4）。</p> 
+<p><strong>4.3 目标的建立</strong></p> 
+<p>如上面所述，YOLOv5的每个检测层上的每个网格都预设了多个anchor先验框，但并不是每个网格中都存在目标，也并不是每个anchor都适合用来回归当前目标，因此需要对这些anchor先验框进行筛选，将其划分为正样本和负样本。本文的正负样本指的是预测框而不是Ground Truth(人工标注的真实框)。<br> 与YOLOv3/4不同的是，YOLOv5采用的是基于宽高比例的匹配策略，它的大致流程如下：</p> 
+<p>1. 对于每一个Ground Truth(人工标注的真实框)，分别计算它与9种不同anchor的宽与宽的比值(w1/w2, w2/w1)和高与高的比值(h1/h2, h2/h1)。</p> 
+<p><img alt="" height="202" src="https://images2.imgbox.com/bb/5e/3ER8nZGJ_o.png" width="194"><br> 2. 找到Ground Truth与anchor的宽比(w1/w2, w2/w1)和高比(h1/h2, h2/h1)中的最大值，作为该Ground Truth和anchor的比值。<br> 3. 若Ground Truth和anchor的比值r^max小于设定的比值阈值(超参数中默认为anchor_t = 4.0)，那么这个anchor就负责预测这个Ground Truth，这个anchor所回归得到的预测框就被称为正样本，剩余所有的预测框都是负样本。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/94/df/cSOkKPuY_o.png"></p> 
+<p><br> 通过上述方法，YOLOv5不仅筛选了正负样本，同时对于部分Ground Truth在单个尺度上匹配了多个anchor来进行预测，总体上增加了一定的正样本数量。除此以外，YOLOv5还通过以下几种方法增加正样本的个数，从而加快收敛速度。</p> 
+<p>跨网格扩充： 如果某个Ground Truth的中心点落在某个检测层上的某个网格中，除了中心点所在的网格之外，其左、上、右、下4个邻域的网格中，靠近Ground Truth中心点的两个网格中的anchor也会参与预测和回归，即一个目标会由3个网格的anchor进行预测，如下图所示。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/a7/cd/Va4ZAiIh_o.png"></p> 
+<p><br> 跨分支扩充：YOLOv5的检测头包含了3个不同尺度的检测层，每个检测层上预设了3种不同长宽比的anchor，假设一个Ground Truth可以和不同尺度的检测层上的anchor匹配，则这3个检测层上所有符合条件的anchor都可以用来预测该Ground Truth，即一个目标可以由多个检测层的多个anchor进行预测。</p> 
+<p> </p> 
+<p><strong>NMS non-maximum suppression</strong></p> 
+<p>当我们得到对目标的预测后，一个目标通常会产生很多冗余的预测框。Non-maximum suppression（NMS）其核心思想在于抑制非极大值的目标，去除冗余，从而搜索出局部极大值的目标，找到最优值。</p> 
+<p>在我们对目标产生预测框后，往往会产生大量冗余的边界框，因此我们需要去除位置准确率低的边界框，保留位置准确率高的边界框。NMS的主要步骤为：<br> 1.对于每个种类的置信度按照从大到小的顺序排序，选出置信度最高的边框。</p> 
+<p>2.遍历其余所有剩下的边界框，计算这些边界框与置信度最高的边框的IOU值。如果某一边界框和置信度最高的边框IOU阈值大于我们所设定的IOU阈值，这意味着同一个物体被两个重复的边界框所预测，则去掉这这个边框。</p> 
+<p>3.从未处理的边框中再选择一个置信度最高的值，重复第二步的过程，直到选出的边框不再有与它超过IOU阈值的边框。</p> 
+<h4>5.损失函数</h4> 
+<p><strong>5.1 总损失</strong></p> 
+<p>YOLOv5的损失主要由三个部分组成。分类损失，目标损失和定位损失。</p> 
+<ul><li> <p><strong>Classes loss</strong>，分类损失，采用的是<strong>BCE loss</strong>，只计算正样本的分类损失。</p> </li><li> <p><strong>Objectness loss</strong>，置信度损失，采用的依然是<strong>BCE loss</strong>，指的是网络预测的目标边界框与GT Box的CIoU。这里计算的是所有样本的损失。</p> </li><li> <p><strong>Location loss</strong>，定位损失，采用的是<strong>CIoU loss</strong>，只计算正样本的定位损失。</p> </li></ul> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/d3/15/5GKUY9F6_o.png"></p> 
+<p>其中，lambda为平衡系数，分别为0.5，1和0.05。</p> 
+<p><strong>5.2 定位损失 Location loss</strong></p> 
+<p><strong>IOU， intersection of Union</strong>交并比，它的作用是衡量目标检测中预测框与真实框的重叠程度。假设预测框为<strong>A</strong>，真实框为<strong>B</strong>，则<strong>IoU</strong>的表达式为</p> 
+<p class="img-center"><img alt="" height="66" src="https://images2.imgbox.com/9d/94/qtfyrjNz_o.png" width="122"></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/e1/f2/gG5XdF8g_o.png"></p> 
+<p>但是当预测框与真实框没有相交时，<strong>IoU</strong>不能反映两者之间的距离，并且此时<strong>IoU</strong>损失为0，将会影响梯度回传，从而导致无法训练。此外，<strong>IoU</strong>无法精确的反映预测框与真实框的重合度大小。YOLOv5默认使用<strong>CIoU</strong>来计算边界框损失。其中<strong>DIoU</strong>将预测框和真实框之间的<strong>距离</strong>，<strong>重叠率</strong>以及<strong>尺度</strong>等因素都考虑了进去，使得目标框回归变得更加稳定。<strong>CIoU</strong>是在<strong>DIoU</strong>的基础上，遵循与IoU相同的定义，进一步考虑了<strong>Bounding Box</strong>的宽和高的比。即将比较对象的形状属性编码为区域（region）属性；b)维持IoU的尺寸不变性；c) 在重叠对象的情况下确保与IoU的强相关性。</p> 
+<p>DIoU的损失函数为                                    </p> 
+<p class="img-center"><img alt="" height="88" src="https://images2.imgbox.com/4c/b3/EYk332X8_o.png" width="299"></p> 
+<p>其中b和b^gt 分别表示预测框和真实框的中心点，ρ表示两个中心点之间的欧式距离，c表示预测框和真实框的最小闭包区域的对角线距离，gt是ground truth缩写</p> 
+<p>如下图所示:</p> 
+<p class="img-center"><img alt="" height="164" src="https://images2.imgbox.com/3f/54/HcwH8TOr_o.png" width="189"></p> 
+<p>CIoU是在DIoU的惩罚项基础上添加了一个影响因子αv，这个因子将预测框的宽高比和真实框的宽高比考虑进去，即<strong>CIoU</strong>的损失计算公式为</p> 
+<p class="img-center"><img alt="" height="64" src="https://images2.imgbox.com/4e/25/ggdMmEOb_o.png" width="287"></p> 
+<p> 其中α是权重参数，它的表达式为</p> 
+<p class="img-center"><img alt="" height="61" src="https://images2.imgbox.com/b3/14/E09yZsIp_o.png" width="193"></p> 
+<p> v是用来衡量宽高比的一致性，它的表达式为</p> 
+<p class="img-center"><img alt="" height="64" src="https://images2.imgbox.com/ac/59/wUYrJx26_o.png" width="291"></p> 
+<p></p> 
+<p><strong>5.3 分类损失</strong></p> 
+<p>YOLOv5默认使用二元交叉熵函数来计算分类损失。<strong>二元交叉熵函数</strong>的定义为</p> 
+<p class="img-center"><img alt="" height="73" src="https://images2.imgbox.com/9b/a5/BlfyUadU_o.png" width="596"></p> 
+<p>其中y为输入样本对应的标签（正样本为1，负样本为0），p为模型预测该输入样本为正样本的概率。假设<img alt="" height="41" src="https://images2.imgbox.com/b2/cd/1SPMgdav_o.png" width="170">，<strong>交叉熵函数</strong>的定义可简化为 </p> 
+<p class="img-center"><img alt="" height="54" src="https://images2.imgbox.com/6f/da/FlxIkc76_o.png" width="129"></p> 
+<p>YOLOv5使用二元交叉熵损失函数计算类别概率和目标置信度得分的损失，各个标签不是互斥的。YOLOv5使用多个独立的逻辑（logistic）分类器替换softmax函数，以计算输入属于特定标签的可能性。在计算分类损失进行训练时，对每个标签使用二元交叉熵损失。这也避免使用softmax函数而降低了计算复杂度。</p> 
+<p><strong>5.4 置信度损失</strong></p> 
+<p>每个预测框的置信度表示这个预测框的可靠程度，值越大表示该预测框越可靠，也表示越接近真实框。对于置信度标签，YOLO之前的版本认为所有存在目标的网格(正样本)对应的标签值均为1，其余网格(负样本)对应的标签值为0。但是这样带来的问题是有些预测框可能只是在目标的周围，而并不能精准预测框的位置。因此YOLOv5的做法是，根据网格对应的预测框与真实框的CIoU作为该预测框的置信度标签。与计算分类损失一样，YOLOv5默认使用<strong>二元交叉熵函数</strong>来计算置信度损失。</p> 
+<p>同时，对于目标损失，在不同的预测特征层也给予了不同权重。这些</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/ea/c9/oN8k4x0h_o.png"></p> 
+<p>在源码中，针对预测小目标的预测特征层采用的权重是4.0，针对预测中等目标的预测特征层采用的权重是1.0，针对预测大目标的预测特征层采用的权重是0.4，作者说这是针对COCO数据集设置的超参数。</p> 
+<p></p> 
+<p><strong> </strong></p> 
+<h3></h3> 
+<div> 
+ <p></p> 
+ <p></p> 
+</div> 
+<div></div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/978dc972dc8da9d4ba5a7e174b94b97e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">电脑上怎么录屏并保存？进来学习一下小技巧</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a72da609d5091129f86eb79f754485a2/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">MySQL 数据库时间相差8小时</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

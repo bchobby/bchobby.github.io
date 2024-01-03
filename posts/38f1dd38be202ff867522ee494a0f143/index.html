@@ -1,0 +1,1577 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>springBoot整合spring security&#43;JWT实现单点登录与权限管理前后端分离 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="springBoot整合spring security&#43;JWT实现单点登录与权限管理前后端分离" />
+<meta property="og:description" content="在前一篇文章当中，我们介绍了springBoot整合spring security单体应用版，在这篇文章当中，我将介绍springBoot整合spring secury&#43;JWT实现单点登录与权限管理。
+本文涉及的权限管理模型是基于资源的动态权限管理。数据库设计的表有 user 、role、user_role、permission、role_permission。
+单点登录当中，关于访问者信息的存储有多种解决方案。如将其以key-value的形式存储于redis数据库中，访问者令牌中存放key。校验用户身份时，凭借访问者令牌中的key去redis中找value，没找到则返回“令牌已过期”，让访问者去(重新)认证。本文中的demo，是将访问者信息加密后存于token中返回给访问者，访问者携带令牌去访问服务时，服务提供者直接解密校验token即可。两种实现各有优缺点。大家也可以尝试着将本文中的demo的访问者信息存储改造成存在redis中的方式。文末提供完整的代码及sql脚本下载地址。
+在进入正式步骤之前，我们需要了解以下知识点。
+单点登录SSO 单点登录也称分布式认证，指的是在有多个系统的项目中，用户经过一次认证，即可访问该项目下彼此相互信任的系统。
+单点登录流程 给大家画了个流程图
+关于JWT jwt，全称JSON Web Token，是一款出色的分布式身份校验方案。
+jwt由三个部分组成
+头部：主要设置一些规范信息，签名部分的编码格式就在头部中声明。有效载荷：token中存放有效信息的部分，比如用户名，用户角色，过期时间等，但不适合放诸如密码等敏感数据，会造成泄露。签名：将头部与载荷分别采用base64编码后，用“.”相连，再加入盐，最后使用头部声明的编码类型进行编码，就得到了签名。 jwt生成的Token安全性分析
+想要使得token不被伪造，就要确保签名不被篡改。然而，其签名的头部和有效载荷使用base64编码，这与明文无异。因此，我们只能在盐上做手脚了。我们对盐进行非对称加密后，在将token发放给用户。
+RSA非对称加密 基本原理：同时生成两把密钥：私钥和公钥，私钥隐秘保存，公钥可以下发给信任客户端 。
+公钥加密：只有私钥才能解密
+私钥加密：私钥或者公钥都能解密
+优缺点：
+优点：安全、难以破解
+缺点：耗时，但是为了安全，这是可以接受的
+SpringSecurity&#43;JWT&#43;RSA分布式认证思路分析 通过之前的学习，我们知道了spring security主要是基于过滤器链来做认证的，因此，如何打造我们的单点登录，突破口就在于spring security中的认证过滤器。
+用户认证
+在分布式项目当中，现在大多数都是前后端分离架构设计的，因此，我们需要能够接收POST请求的认证参数，而不是传统的表单提交。因此，我们需要修改修
+改UsernamePasswordAuthenticationFilter过滤器中attemptAuthentication方法，让其能够接收请求体。
+关于spring security的认证流程分析，大家可以参考我上一篇文章《Spring Security认证流程分析--练气后期》。
+另外，默认情况下，successfulAuthentication 方法在通过认证后，直接将认证信息放到服务器的session当中就ok了。而我们分布式应用当中，前后端分离，禁用了session。因此，我们需要在认证通过后生成token（载荷内具有验证用户身份必要的信息）返回给用户。
+身份校验
+默认情况下，BasicAuthenticationFilter过滤器中doFilterInternal方法校验用户是否登录，就是看session中是否有用户信息。在分布式应用当中，我们要修改为，验证用户携带的token是否合法，并解析出用户信息，交给SpringSecurity，以便于后续的授权功能可以正常使用。
+实现步骤 （默认大家一已经创建好了数据库）
+第一步：创建一个springBoot的project 这个父工程主要做依赖的版本管理。
+其pom.xml文件如下
+&lt;?xml version=&#34;1.0&#34; encoding=&#34;UTF-8&#34;?&gt; &lt;project xmlns=&#34;http://maven.apache.org/POM/4.0.0&#34; xmlns:xsi=&#34;http://www.w3.org/2001/XMLSchema-instance&#34; xsi:schemaLocation=&#34;http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd&#34;&gt; &lt;modelVersion&gt;4.0.0&lt;/modelVersion&gt; &lt;modules&gt; &lt;module&gt;common&lt;/module&gt; &lt;/modules&gt; &lt;parent&gt; &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt; &lt;artifactId&gt;spring-boot-starter-parent&lt;/artifactId&gt; &lt;version&gt;2.3.3.RELEASE&lt;/version&gt; &lt;relativePath/&gt; &lt;!-- lookup parent from repository --&gt; &lt;/parent&gt; &lt;packaging&gt;pom&lt;/packaging&gt; &lt;groupId&gt;pers." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/38f1dd38be202ff867522ee494a0f143/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-12-01T14:06:39+08:00" />
+<meta property="article:modified_time" content="2022-12-01T14:06:39+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">springBoot整合spring security&#43;JWT实现单点登录与权限管理前后端分离</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>在前一篇文章当中，我们介绍了springBoot整合spring security单体应用版，在这篇文章当中，我将介绍springBoot整合spring secury+JWT实现单点登录与权限管理。</p> 
+<p>本文涉及的权限管理模型是<strong>基于资源的动态权限管理</strong>。数据库设计的表有 user 、role、user_role、permission、role_permission。</p> 
+<p>单点登录当中，关于访问者信息的存储有多种解决方案。如将其以key-value的形式存储于redis数据库中，访问者令牌中存放key。校验用户身份时，凭借访问者令牌中的key去redis中找value，没找到则返回“令牌已过期”，让访问者去(重新)认证。本文中的demo，是将访问者信息加密后存于token中返回给访问者，访问者携带令牌去访问服务时，服务提供者直接解密校验token即可。两种实现各有优缺点。大家也可以尝试着将本文中的demo的访问者信息存储改造成存在redis中的方式。文末提供完整的代码及sql脚本下载地址。</p> 
+<p>在进入正式步骤之前，我们需要了解以下知识点。</p> 
+<h4 id="单点登录sso">单点登录SSO</h4> 
+<p>单点登录也称分布式认证，指的是在有多个系统的项目中，用户经过一次认证，即可访问该项目下彼此相互信任的系统。</p> 
+<h4 id="单点登录流程">单点登录流程</h4> 
+<p>给大家画了个流程图</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/c1/da/uvotOHPP_o.png"></p> 
+<h4 id="关于jwt">关于JWT</h4> 
+<p>jwt，全称JSON Web Token，是一款出色的分布式身份校验方案。</p> 
+<p>jwt由三个部分组成</p> 
+<ol><li>头部：主要设置一些规范信息，签名部分的编码格式就在头部中声明。</li><li>有效载荷：token中存放有效信息的部分，比如用户名，用户角色，过期时间等，但不适合放诸如密码等敏感数据，会造成泄露。</li><li>签名：将头部与载荷分别采用base64编码后，用“.”相连，再加入盐，最后使用头部声明的编码类型进行编码，就得到了签名。</li></ol> 
+<p>jwt生成的Token安全性分析</p> 
+<p>想要使得token不被伪造，就要确保签名不被篡改。然而，其签名的头部和有效载荷使用base64编码，这与明文无异。因此，我们只能在盐上做手脚了。我们对盐进行非对称加密后，在将token发放给用户。</p> 
+<h4 id="rsa非对称加密">RSA非对称加密</h4> 
+<ol><li> <p>基本原理：同时生成两把密钥：私钥和公钥，私钥隐秘保存，公钥可以下发给信任客户端 。</p> 
+  <ul><li> <p>公钥加密：只有私钥才能解密</p> </li><li> <p>私钥加密：私钥或者公钥都能解密</p> </li></ul></li><li> <p>优缺点：</p> 
+  <ul><li> <p>优点：安全、难以破解</p> </li><li> <p>缺点：耗时，但是为了安全，这是可以接受的</p> </li></ul></li></ol> 
+<h4 id="springsecurityjwtrsa分布式认证思路分析">SpringSecurity+JWT+RSA分布式认证思路分析</h4> 
+<p>通过之前的学习，我们知道了spring security主要是基于过滤器链来做认证的，因此，如何打造我们的单点登录，突破口就在于spring security中的认证过滤器。</p> 
+<p>用户认证</p> 
+<p>在分布式项目当中，现在大多数都是前后端分离架构设计的，因此，我们需要能够接收POST请求的认证参数，而不是传统的表单提交。因此，我们需要修改修<br> 改UsernamePasswordAuthenticationFilter过滤器中attemptAuthentication方法，让其能够接收请求体。</p> 
+<p>关于spring security的认证流程分析，大家可以参考我上一篇文章《<a href="https://juejin.im/post/6863693023314706446" rel="nofollow" title="Spring Security认证流程分析--练气后期">Spring Security认证流程分析--练气后期</a>》。</p> 
+<p>另外，默认情况下，successfulAuthentication 方法在通过认证后，直接将认证信息放到服务器的session当中就ok了。而我们分布式应用当中，前后端分离，禁用了session。因此，我们需要在认证通过后生成token（载荷内具有验证用户身份必要的信息）返回给用户。</p> 
+<p>身份校验</p> 
+<p>默认情况下，BasicAuthenticationFilter过滤器中doFilterInternal方法校验用户是否登录，就是看session中是否有用户信息。在分布式应用当中，我们要修改为，验证用户携带的token是否合法，并解析出用户信息，交给SpringSecurity，以便于后续的授权功能可以正常使用。</p> 
+<h3 id="实现步骤">实现步骤</h3> 
+<p>（默认大家一已经创建好了数据库）</p> 
+<h4 id="第一步创建一个springboot的project">第一步：创建一个springBoot的project</h4> 
+<p>这个父工程主要做依赖的版本管理。</p> 
+<p>其pom.xml文件如下</p> 
+<pre><code class="language-java">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd"&gt;
+    &lt;modelVersion&gt;4.0.0&lt;/modelVersion&gt;
+    &lt;modules&gt;
+        &lt;module&gt;common&lt;/module&gt;
+    &lt;/modules&gt;
+
+    &lt;parent&gt;
+        &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+        &lt;artifactId&gt;spring-boot-starter-parent&lt;/artifactId&gt;
+        &lt;version&gt;2.3.3.RELEASE&lt;/version&gt;
+        &lt;relativePath/&gt; &lt;!-- lookup parent from repository --&gt;
+    &lt;/parent&gt;
+    &lt;packaging&gt;pom&lt;/packaging&gt;
+    &lt;groupId&gt;pers.lbf&lt;/groupId&gt;
+    &lt;artifactId&gt;springboot-springSecurity-jwt-rsa&lt;/artifactId&gt;
+    &lt;version&gt;1.0.0-SNAPSHOT&lt;/version&gt;
+
+    &lt;properties&gt;
+        &lt;java.version&gt;1.8&lt;/java.version&gt;
+        &lt;jwt.version&gt;0.10.7&lt;/jwt.version&gt;
+        &lt;jackson.version&gt;2.11.2&lt;/jackson.version&gt;
+        &lt;springboot.version&gt;2.3.3.RELEASE&lt;/springboot.version&gt;
+        &lt;mybatis.version&gt;2.1.3&lt;/mybatis.version&gt;
+        &lt;mysql.version&gt;8.0.12&lt;/mysql.version&gt;
+        &lt;joda.version&gt;2.10.5&lt;/joda.version&gt;
+        &lt;springSecurity.version&gt;5.3.4.RELEASE&lt;/springSecurity.version&gt;
+        &lt;common.version&gt;1.0.0-SNAPSHOT&lt;/common.version&gt;
+    &lt;/properties&gt;
+
+    &lt;dependencyManagement&gt;
+        &lt;dependencies&gt;
+            &lt;dependency&gt;
+                &lt;groupId&gt;pers.lbf&lt;/groupId&gt;
+                &lt;artifactId&gt;common&lt;/artifactId&gt;
+                &lt;version&gt;${common.version}&lt;/version&gt;
+            &lt;/dependency&gt;
+            &lt;dependency&gt;
+                &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+                &lt;artifactId&gt;spring-boot-starter-security&lt;/artifactId&gt;
+                &lt;version&gt;${springboot.version}&lt;/version&gt;
+            &lt;/dependency&gt;
+            &lt;dependency&gt;
+                &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+                &lt;artifactId&gt;spring-boot-starter-web&lt;/artifactId&gt;
+                &lt;version&gt;${springboot.version}&lt;/version&gt;
+            &lt;/dependency&gt;
+            &lt;dependency&gt;
+                &lt;groupId&gt;org.mybatis.spring.boot&lt;/groupId&gt;
+                &lt;artifactId&gt;mybatis-spring-boot-starter&lt;/artifactId&gt;
+                &lt;version&gt;${mybatis.version}&lt;/version&gt;
+            &lt;/dependency&gt;
+            &lt;dependency&gt;
+                &lt;groupId&gt;mysql&lt;/groupId&gt;
+                &lt;artifactId&gt;mysql-connector-java&lt;/artifactId&gt;
+                &lt;version&gt;${mysql.version}&lt;/version&gt;
+            &lt;/dependency&gt;
+
+            &lt;!--jwt所需jar包--&gt;
+            &lt;dependency&gt;
+                &lt;groupId&gt;io.jsonwebtoken&lt;/groupId&gt;
+                &lt;artifactId&gt;jjwt-api&lt;/artifactId&gt;
+                &lt;version&gt;${jwt.version}&lt;/version&gt;
+            &lt;/dependency&gt;
+            &lt;dependency&gt;
+                &lt;groupId&gt;io.jsonwebtoken&lt;/groupId&gt;
+                &lt;artifactId&gt;jjwt-impl&lt;/artifactId&gt;
+                &lt;version&gt;${jwt.version}&lt;/version&gt;
+                &lt;scope&gt;runtime&lt;/scope&gt;
+            &lt;/dependency&gt;
+            &lt;dependency&gt;
+                &lt;groupId&gt;io.jsonwebtoken&lt;/groupId&gt;
+                &lt;artifactId&gt;jjwt-jackson&lt;/artifactId&gt;
+                &lt;version&gt;${jwt.version}&lt;/version&gt;
+                &lt;scope&gt;runtime&lt;/scope&gt;
+            &lt;/dependency&gt;
+&lt;!--            处理日期--&gt;
+            &lt;dependency&gt;
+                &lt;groupId&gt;joda-time&lt;/groupId&gt;
+                &lt;artifactId&gt;joda-time&lt;/artifactId&gt;
+                &lt;version&gt;${joda.version}&lt;/version&gt;
+            &lt;/dependency&gt;
+            &lt;!--处理json工具包--&gt;
+            &lt;dependency&gt;
+                &lt;groupId&gt;com.fasterxml.jackson.core&lt;/groupId&gt;
+                &lt;artifactId&gt;jackson-databind&lt;/artifactId&gt;
+                &lt;version&gt;${jackson.version}&lt;/version&gt;
+            &lt;/dependency&gt;
+            &lt;!--日志包--&gt;
+            &lt;dependency&gt;
+                &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+                &lt;artifactId&gt;spring-boot-starter-logging&lt;/artifactId&gt;
+                &lt;version&gt;${springboot.version}&lt;/version&gt;
+            &lt;/dependency&gt;
+            &lt;!--测试包--&gt;
+            &lt;dependency&gt;
+                &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+                &lt;artifactId&gt;spring-boot-starter-test&lt;/artifactId&gt;
+                &lt;version&gt;${springboot.version}&lt;/version&gt;
+            &lt;/dependency&gt;
+            &lt;dependency&gt;
+                &lt;groupId&gt;org.springframework.security&lt;/groupId&gt;
+                &lt;artifactId&gt;spring-security-test&lt;/artifactId&gt;
+                &lt;version&gt;${springSecurity.version}&lt;/version&gt;
+            &lt;/dependency&gt;
+        &lt;/dependencies&gt;
+    &lt;/dependencyManagement&gt;
+
+
+&lt;/project&gt;
+</code></pre> 
+<h4 id="第二步创建三个子模块">第二步：创建三个子模块</h4> 
+<p>其中，<strong>common</strong>模块作为公共模块存在，提供基础服务，包括token的生成、rsa加密密钥的生成与使用、Json序列化与反序列化。</p> 
+<p><strong>authentication-service</strong>模块提供单点登录服务（用户认证及授权）。</p> 
+<p><strong>product-service</strong>模块模拟一个子系统。它主要负责提供接口调用和校验用户身份。</p> 
+<p>创建<strong>common</strong>模块模块</p> 
+<p>修改pom.xml，添加jwt、json等依赖</p> 
+<p>pom.xml</p> 
+<pre><code class="language-java">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd"&gt;
+    &lt;parent&gt;
+        &lt;artifactId&gt;springboot-springSecurity-jwt-rsa&lt;/artifactId&gt;
+        &lt;groupId&gt;pers.lbf&lt;/groupId&gt;
+        &lt;version&gt;1.0.0-SNAPSHOT&lt;/version&gt;
+    &lt;/parent&gt;
+    &lt;modelVersion&gt;4.0.0&lt;/modelVersion&gt;
+
+    &lt;artifactId&gt;common&lt;/artifactId&gt;
+
+    &lt;dependencies&gt;
+        &lt;!--jwt所需jar包--&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;io.jsonwebtoken&lt;/groupId&gt;
+            &lt;artifactId&gt;jjwt-api&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;io.jsonwebtoken&lt;/groupId&gt;
+            &lt;artifactId&gt;jjwt-impl&lt;/artifactId&gt;
+            &lt;scope&gt;runtime&lt;/scope&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;io.jsonwebtoken&lt;/groupId&gt;
+            &lt;artifactId&gt;jjwt-jackson&lt;/artifactId&gt;
+            &lt;scope&gt;runtime&lt;/scope&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;joda-time&lt;/groupId&gt;
+            &lt;artifactId&gt;joda-time&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+        &lt;!--处理json工具包--&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;com.fasterxml.jackson.core&lt;/groupId&gt;
+            &lt;artifactId&gt;jackson-databind&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+        &lt;!--日志包--&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-boot-starter-logging&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+        &lt;!--测试包--&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-boot-starter-test&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+
+    &lt;/dependencies&gt;
+
+
+&lt;/project&gt;
+</code></pre> 
+<p> 创建一个JSON工具类</p> 
+<pre><code class="language-java">**json工具类
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/2 22:28
+ */
+public class JsonUtils {
+
+    public static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final Logger logger = LoggerFactory.getLogger(JsonUtils.class);
+
+
+    private JsonUtils() {
+
+    }
+
+    public static String toString(Object obj) {
+        if (obj == null) {
+            return null;
+        }
+        if (obj.getClass() == String.class) {
+            return (String) obj;
+        }
+        try {
+            return MAPPER.writeValueAsString(obj);
+        } catch (JsonProcessingException e) {
+            logger.error("json序列化出错：" + obj, e);
+            return null;
+        }
+    }
+
+    public static &lt;T&gt; T toBean(String json, Class&lt;T&gt; tClass) {
+        try {
+            return MAPPER.readValue(json, tClass);
+        } catch (IOException e) {
+            logger.error("json解析出错：" + json, e);
+            return null;
+        }
+    }
+
+    public static &lt;E&gt; List&lt;E&gt; toList(String json, Class&lt;E&gt; eClass) {
+        try {
+            return MAPPER.readValue(json, MAPPER.getTypeFactory().constructCollectionType(List.class, eClass));
+        } catch (IOException e) {
+            logger.error("json解析出错：" + json, e);
+            return null;
+        }
+    }
+
+    public static &lt;K, V&gt; Map&lt;K, V&gt; toMap(String json, Class&lt;K&gt; kClass, Class&lt;V&gt; vClass) {
+        try {
+            return MAPPER.readValue(json, MAPPER.getTypeFactory().constructMapType(Map.class, kClass, vClass));
+        } catch (IOException e) {
+            logger.error("json解析出错：" + json, e);
+            return null;
+        }
+    }
+
+    public static &lt;T&gt; T nativeRead(String json, TypeReference&lt;T&gt; type) {
+        try {
+            return MAPPER.readValue(json, type);
+        } catch (IOException e) {
+            logger.error("json解析出错：" + json, e);
+            return null;
+        }
+    }
+}
+
+</code></pre> 
+<p>创建RSA加密工具类，并生成公钥和密钥文件</p> 
+<p>​ RsaUtils.java</p> 
+<pre><code class="language-java">/**RSA非对称加密工具类
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/2 22:27
+ */
+public class RsaUtils {
+
+    private static final int DEFAULT_KEY_SIZE = 2048;
+    
+    /**从文件中读取公钥
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-04 13:10:15
+     * @param filename 公钥保存路径，相对于classpath
+     * @return java.security.PublicKey 公钥对象
+     * @throws Exception
+     * @version 1.0
+     */
+    public static PublicKey getPublicKey(String filename) throws Exception {
+       
+        byte[] bytes = readFile(filename);
+        return getPublicKey(bytes);
+    }
+
+    
+    /**从文件中读取密钥
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-04 13:12:01
+     * @param filename 私钥保存路径，相对于classpath
+     * @return java.security.PrivateKey 私钥对象
+     * @throws Exception
+     * @version 1.0
+     */
+    public static PrivateKey getPrivateKey(String filename) throws Exception {
+        byte[] bytes = readFile(filename);
+        return getPrivateKey(bytes);
+        
+    }
+
+    /**
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-04 13:12:59
+     * @param bytes 公钥的字节形式
+     * @return java.security.PublicKey 公钥对象
+     * @throws Exception
+     * @version 1.0
+     */
+    private static PublicKey getPublicKey(byte[] bytes) throws Exception {
+        bytes = Base64.getDecoder().decode(bytes);
+        X509EncodedKeySpec spec = new X509EncodedKeySpec(bytes);
+        KeyFactory factory = KeyFactory.getInstance("RSA");
+        return factory.generatePublic(spec);
+        
+    }
+
+   
+    /**获取密钥
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-04 13:14:02
+     * @param bytes 私钥的字节形式
+     * @return java.security.PrivateKey
+     * @throws Exception
+     * @version 1.0
+     */
+    private static PrivateKey getPrivateKey(byte[] bytes) throws InvalidKeySpecException, NoSuchAlgorithmException {
+        bytes = Base64.getDecoder().decode(bytes);
+        PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(bytes);
+        KeyFactory factory = KeyFactory.getInstance("RSA");
+        return factory.generatePrivate(spec);
+        
+    }
+
+    /**
+     * 根据密文，生存rsa公钥和私钥,并写入指定文件
+     *@author 赖柄沣 bingfengdev@aliyun.com
+     *@date 2020-09-04 13:14:02
+     * @param publicKeyFilename  公钥文件路径
+     * @param privateKeyFilename 私钥文件路径
+     * @param secret             生成密钥的密文
+     */
+    public static void generateKey(String publicKeyFilename, String privateKeyFilename, String secret, int keySize) throws Exception {
+        KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("RSA");
+        SecureRandom secureRandom = new SecureRandom(secret.getBytes());
+        keyPairGenerator.initialize(Math.max(keySize, DEFAULT_KEY_SIZE), secureRandom);
+        KeyPair keyPair = keyPairGenerator.genKeyPair();
+        // 获取公钥并写出
+        byte[] publicKeyBytes = keyPair.getPublic().getEncoded();
+        publicKeyBytes = Base64.getEncoder().encode(publicKeyBytes);
+        writeFile(publicKeyFilename, publicKeyBytes);
+        // 获取私钥并写出
+        byte[] privateKeyBytes = keyPair.getPrivate().getEncoded();
+        privateKeyBytes = Base64.getEncoder().encode(privateKeyBytes);
+        writeFile(privateKeyFilename, privateKeyBytes);
+    }
+
+    /**读文件
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-04 13:15:37
+     * @param fileName
+     * @return byte[]
+     * @throws
+     * @version 1.0
+     */
+    private static byte[] readFile(String fileName) throws Exception {
+        return Files.readAllBytes(new File(fileName).toPath());
+       
+    }
+
+    /**写文件
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-04 13:16:01
+     * @param destPath
+     * @param bytes
+     * @return void
+     * @throws
+     * @version 1.0
+     */
+    private static void writeFile(String destPath, byte[] bytes) throws IOException {
+        File dest = new File(destPath);
+        if (!dest.exists()) {
+            dest.createNewFile();
+        }
+        Files.write(dest.toPath(), bytes);
+        
+    }
+
+    /**构造器私有化
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-04 13:16:29
+     * @param
+     * @return
+     * @throws
+     * @version 1.0
+     */
+    private RsaUtils() {
+
+    }
+
+
+}
+</code></pre> 
+<p>生成私钥和公钥两个文件</p> 
+<pre><code class="language-java">/**
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/3 10:28
+ */
+
+public class RsaTest {
+    private String publicFile = "D:\\Desktop\\rsa_key.pub";
+    private String privateFile = "D:\\Desktop\\rsa_key";
+
+
+    /**生成公钥和私钥
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-03 10:32:16
+     * @throws Exception
+     * @version 1.0
+     */
+    @Test
+    public void generateKey() throws Exception{
+
+        RsaUtils.generateKey(publicFile,privateFile,"Java开发实践",2048);
+
+    }
+
+}
+</code></pre> 
+<p>私钥文件</p> 
+<p>##### 创建token有效载荷实体类和JWT工具类</p> 
+<pre><code class="language-java">/**为了方便后期获取token中的用户信息，
+ * 将token中载荷部分单独封装成一个对象
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/2 22:24
+ */
+public class Payload&lt;T&gt; implements Serializable {
+
+    /**
+     * token id
+     */
+    private String id;
+
+    /**
+     * 用户信息（用户名、角色...）
+     */
+    private T userInfo;
+
+    /**
+     * 令牌过期时间
+     */
+    private Date expiration;
+}
+</code></pre> 
+<p>JwtUtils</p> 
+<pre><code class="language-java">/**token工具类
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/2 22:28
+ */
+public class JwtUtils {
+
+    private static final String JWT_PAYLOAD_USER_KEY = "user";
+
+    /**
+     * 私钥加密token
+     *
+     * @param userInfo   载荷中的数据
+     * @param privateKey 私钥
+     * @param expire     过期时间，单位分钟
+     * @return JWT
+     */
+    public static String generateTokenExpireInMinutes(Object userInfo, PrivateKey privateKey, int expire) {
+        return Jwts.builder()
+                .claim(JWT_PAYLOAD_USER_KEY, JsonUtils.toString(userInfo))
+                .setId(createJTI())
+                .setExpiration(DateTime.now().plusMinutes(expire).toDate())
+                .signWith(privateKey, SignatureAlgorithm.RS256)
+                .compact();
+    }
+
+    /**
+     * 私钥加密token
+     *
+     * @param userInfo   载荷中的数据
+     * @param privateKey 私钥
+     * @param expire     过期时间，单位秒
+     * @return JWT
+     */
+    public static String generateTokenExpireInSeconds(Object userInfo, PrivateKey privateKey, int expire) {
+        return Jwts.builder()
+                .claim(JWT_PAYLOAD_USER_KEY, JsonUtils.toString(userInfo))
+                .setId(createJTI())
+                .setExpiration(DateTime.now().plusSeconds(expire).toDate())
+                .signWith(privateKey, SignatureAlgorithm.RS256)
+                .compact();
+    }
+
+    /**
+     * 公钥解析token
+     *
+     * @param token     用户请求中的token
+     * @param publicKey 公钥
+     * @return Jws&lt;Claims&gt;
+     */
+    private static Jws&lt;Claims&gt; parserToken(String token, PublicKey publicKey) throws ExpiredJwtException {
+        return Jwts.parser().setSigningKey(publicKey).parseClaimsJws(token);
+    }
+
+    private static String createJTI() {
+        return new String(Base64.getEncoder().encode(UUID.randomUUID().toString().getBytes()));
+    }
+
+    /**
+     * 获取token中的用户信息
+     *
+     * @param token     用户请求中的令牌
+     * @param publicKey 公钥
+     * @return 用户信息
+     */
+    public static &lt;T&gt; Payload&lt;T&gt; getInfoFromToken(String token, PublicKey publicKey, Class&lt;T&gt; userType) throws ExpiredJwtException {
+        Jws&lt;Claims&gt; claimsJws = parserToken(token, publicKey);
+        Claims body = claimsJws.getBody();
+        Payload&lt;T&gt; claims = new Payload&lt;&gt;();
+        claims.setId(body.getId());
+        claims.setUserInfo(JsonUtils.toBean(body.get(JWT_PAYLOAD_USER_KEY).toString(), userType));
+        claims.setExpiration(body.getExpiration());
+        return claims;
+    }
+
+    /**
+     * 获取token中的载荷信息
+     *
+     * @param token     用户请求中的令牌
+     * @param publicKey 公钥
+     * @return 用户信息
+     */
+    public static &lt;T&gt; Payload&lt;T&gt; getInfoFromToken(String token, PublicKey publicKey) {
+        Jws&lt;Claims&gt; claimsJws = parserToken(token, publicKey);
+        Claims body = claimsJws.getBody();
+        Payload&lt;T&gt; claims = new Payload&lt;&gt;();
+        claims.setId(body.getId());
+        claims.setExpiration(body.getExpiration());
+        return claims;
+    }
+
+    private JwtUtils() {
+
+    }
+}
+</code></pre> 
+<p>写完common模块后，将其打包安装，后面的两个服务都需要引用。</p> 
+<p>创建认证服务模块authentication-service</p> 
+<p>认证服务模块的关键点在于自定义用户认证过滤器和用户校验过滤器，并将其加载到spring security的过滤器链中，替代掉默认的。</p> 
+<p>##### 修改pom.xml文件，添加相关依赖</p> 
+<p>pom.xml</p> 
+<pre><code class="language-java">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd"&gt;
+    &lt;modelVersion&gt;4.0.0&lt;/modelVersion&gt;
+    &lt;parent&gt;
+        &lt;groupId&gt;pers.lbf&lt;/groupId&gt;
+        &lt;artifactId&gt;springboot-springSecurity-jwt-rsa&lt;/artifactId&gt;
+        &lt;version&gt;1.0.0-SNAPSHOT&lt;/version&gt;
+    &lt;/parent&gt;
+    &lt;artifactId&gt;authentication-service&lt;/artifactId&gt;
+    &lt;version&gt;1.0.0-SNAPSHOT&lt;/version&gt;
+    &lt;name&gt;authentication-service&lt;/name&gt;
+    &lt;description&gt;Demo project for Spring Boot&lt;/description&gt;
+
+    &lt;properties&gt;
+        &lt;java.version&gt;1.8&lt;/java.version&gt;
+    &lt;/properties&gt;
+
+    &lt;dependencies&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;pers.lbf&lt;/groupId&gt;
+            &lt;artifactId&gt;common&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-boot-starter-security&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-boot-starter-web&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.mybatis.spring.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;mybatis-spring-boot-starter&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+
+        &lt;dependency&gt;
+            &lt;groupId&gt;mysql&lt;/groupId&gt;
+            &lt;artifactId&gt;mysql-connector-java&lt;/artifactId&gt;
+            &lt;scope&gt;runtime&lt;/scope&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-boot-starter-test&lt;/artifactId&gt;
+            &lt;scope&gt;test&lt;/scope&gt;
+            &lt;exclusions&gt;
+                &lt;exclusion&gt;
+                    &lt;groupId&gt;org.junit.vintage&lt;/groupId&gt;
+                    &lt;artifactId&gt;junit-vintage-engine&lt;/artifactId&gt;
+                &lt;/exclusion&gt;
+            &lt;/exclusions&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework.security&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-security-test&lt;/artifactId&gt;
+            &lt;scope&gt;test&lt;/scope&gt;
+        &lt;/dependency&gt;
+    &lt;/dependencies&gt;
+
+    &lt;build&gt;
+        &lt;plugins&gt;
+            &lt;plugin&gt;
+                &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+                &lt;artifactId&gt;spring-boot-maven-plugin&lt;/artifactId&gt;
+            &lt;/plugin&gt;
+        &lt;/plugins&gt;
+    &lt;/build&gt;
+
+&lt;/project&gt;
+
+</code></pre> 
+<p>这个模块添加的依赖主要是springBoot整合spring security的相关依赖以及数据库相关的依赖，当然还有我们的common模块。</p> 
+<p>修改application.yml文件</p> 
+<p>这一步主要是设置数据库连接的信息以及公钥、私钥的位置信息</p> 
+<pre><code class="language-java">server:
+  port: 8081
+spring:
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/security_authority?useSSL=false&amp;serverTimezone=GMT
+    username: root
+    password: root1997
+    driver-class-name: com.mysql.cj.jdbc.Driver
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+logging:
+  level:
+    pers.lbf: debug
+lbf:
+  key:
+    publicKeyPath: 你的公钥路径
+    privateKeyPath: 你的私钥路径
+
+</code></pre> 
+<p>配置解析公钥和私钥</p> 
+<pre><code class="language-java">**解析公钥和私钥的配置类
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/3 10:42
+ */
+@ConfigurationProperties(prefix = "lbf.key")
+@ConstructorBinding
+public class AuthServerRsaKeyProperties {
+
+    private String publicKeyPath;
+    private String privateKeyPath;
+
+    private PublicKey publicKey;
+    private PrivateKey privateKey;
+
+
+    /**加载文件当中的公钥、私钥
+     * 被@PostConstruct修饰的方法会在服务器加载Servlet的时候运行，
+     * 并且只会被服务器执行一次。PostConstruct在构造函数之后执行，
+     * init（）方法之前执行。
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-03 12:07:35
+     * @throws Exception e
+     * @version 1.0
+     */
+    @PostConstruct
+    public void loadKey() throws Exception {
+        publicKey = RsaUtils.getPublicKey(publicKeyPath);
+        privateKey = RsaUtils.getPrivateKey(privateKeyPath);
+
+    }
+
+    public String getPublicKeyPath() {
+        return publicKeyPath;
+    }
+
+    public void setPublicKeyPath(String publicKeyPath) {
+        this.publicKeyPath = publicKeyPath;
+    }
+
+    public String getPrivateKeyPath() {
+        return privateKeyPath;
+    }
+
+    public void setPrivateKeyPath(String privateKeyPath) {
+        this.privateKeyPath = privateKeyPath;
+    }
+
+    public PublicKey getPublicKey() {
+        return publicKey;
+    }
+
+    public void setPublicKey(PublicKey publicKey) {
+        this.publicKey = publicKey;
+    }
+
+    public PrivateKey getPrivateKey() {
+        return privateKey;
+    }
+
+    public void setPrivateKey(PrivateKey privateKey) {
+        this.privateKey = privateKey;
+    }
+}
+</code></pre> 
+<p>修改启动类，添加token加密解析的配置和mapper扫描</p> 
+<pre><code class="language-java">/**
+ * @author Ferryman
+ */
+@SpringBootApplication
+@MapperScan(value = "pers.lbf.ssjr.authenticationservice.dao")
+@EnableConfigurationProperties(AuthServerRsaKeyProperties.class)
+public class AuthenticationServiceApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(AuthenticationServiceApplication.class, args);
+    }
+
+}
+</code></pre> 
+<p>创建用户登录对象UserLoginVO</p> 
+<p>我们将用户登录的请求参数封装到一个实体类当中，而不使用与数据库表对应的UserTO。</p> 
+<pre><code class="language-java">/**用户登录请求参数对象
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/3 16:16
+ */
+public class UserLoginVo implements Serializable {
+
+    private String username;
+    private String password;
+
+}
+</code></pre> 
+<p>创建用户凭证对象UserAuthVO</p> 
+<p>这个对象主要用于存储访问者认证成功后，其在token中的信息。这里我们是不存储密码等敏感数据的。</p> 
+<pre><code class="language-java">/**用户凭证对象
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/3 16:20
+ */
+public class UserAuthVO implements Serializable {
+
+    private String username;
+    private List&lt;SimpleGrantedAuthority&gt; authorities;
+
+}
+</code></pre> 
+<p>创建自定义认证过滤器</p> 
+<pre><code class="language-java">/**自定义认证过滤器
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/3 12:11
+ */
+public class TokenLoginFilter extends UsernamePasswordAuthenticationFilter {
+
+    /**
+     * 认证管理器
+     */
+
+    private AuthenticationManager authenticationManager;
+
+    private AuthServerRsaKeyProperties prop;
+
+    /**构造注入
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-03 12:17:54
+     * @param authenticationManager spring security的认证管理器
+     * @param prop 公钥 私钥 配置类
+     * @version 1.0
+     */
+    public TokenLoginFilter(AuthenticationManager authenticationManager, AuthServerRsaKeyProperties prop) {
+        this.authenticationManager = authenticationManager;
+        this.prop = prop;
+
+    }
+
+
+    /**接收并解析用户凭证，并返回json数据
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-03 12:19:29
+     * @param request req
+     * @param response resp
+     * @return Authentication
+     * @version 1.0
+     */
+    @Override
+    public Authentication attemptAuthentication(HttpServletRequest request, HttpServletResponse response){
+
+        //判断请求是否为POST,禁用GET请求提交数据
+        if (!"POST".equals(request.getMethod())) {
+            throw new AuthenticationServiceException(
+                    "只支持POST请求方式");
+        }
+
+
+        //将json数据转换为java bean对象
+        try {
+            UserLoginVo user = new ObjectMapper().readValue(request.getInputStream(), UserLoginVo.class);
+
+            if (user.getUsername()==null){
+                user.setUsername("");
+            }
+
+            if (user.getPassword() == null) {
+                user.setPassword("");
+            }
+            user.getUsername().trim();
+//将用户信息交给spring security做认证操作
+            return authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(
+                            user.getUsername(),
+                            user.getPassword()));
+        }catch (Exception e) {
+
+            throw new RuntimeException(e);
+        }
+
+    }
+
+    /**这个方法会在验证成功时被调用
+     *用户登录成功后，生成token,并且返回json数据给前端
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-03 13:00:23
+     * @param request
+     * @param response
+     * @param chain
+     * @param authResult
+     * @version 1.0
+     */
+    @Override
+    protected void successfulAuthentication(HttpServletRequest request,
+                                            HttpServletResponse response, FilterChain chain, Authentication authResult) {
+        //获取当前登录对象
+        UserAuthVO user = new UserAuthVO();
+        user.setUsername(authResult.getName());
+        user.setAuthorities((List&lt;SimpleGrantedAuthority&gt;) authResult.getAuthorities());
+
+        //使用jwt创建一个token，私钥加密
+        String token = JwtUtils.generateTokenExpireInMinutes(user,prop.getPrivateKey(),15);
+
+        //返回token
+       response.addHeader("Authorization","Bearer"+token);
+
+       //登录成功返回json数据提示
+        try {
+            //生成消息
+            Map&lt;String, Object&gt; map = new HashMap&lt;&gt;();
+            map.put("code",HttpServletResponse.SC_OK);
+            map.put("msg","登录成功");
+            //响应数据
+            response.setContentType("application/json;charset=utf-8");
+            response.setStatus(HttpServletResponse.SC_OK);
+            PrintWriter writer = response.getWriter();
+            writer.write(new ObjectMapper().writeValueAsString(map));
+            writer.flush();
+            writer.close();
+        }catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+
+}
+</code></pre> 
+<p>到了这一步，你或许会开始觉得难以理解，这需要你稍微了解spring security的认证流程</p> 
+<p>创建自定义校验过滤器</p> 
+<pre><code class="language-java">/**自定义身份验证器
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/3 15:02
+ */
+public class TokenVerifyFilter extends BasicAuthenticationFilter {
+
+    private AuthServerRsaKeyProperties prop;
+
+    public TokenVerifyFilter(AuthenticationManager authenticationManager, AuthServerRsaKeyProperties prop) {
+        super(authenticationManager);
+        this.prop = prop;
+    }
+
+    /**过滤请求
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-03 15:07:27
+     * @param request
+     * @param response
+     * @param chain
+     * @version 1.0
+     */
+    @Override
+    protected void doFilterInternal(HttpServletRequest request,
+                                    HttpServletResponse response, FilterChain chain) throws ServletException, IOException, AuthenticationException,ExpiredJwtException {
+
+       //判断请求体的头中是否包含Authorization
+       String authorization = request.getHeader("Authorization");
+       //Authorization中是否包含Bearer，不包含直接返回
+       if (authorization==null||!authorization.startsWith("Bearer")){
+           chain.doFilter(request, response);
+           return;
+       }
+
+       UsernamePasswordAuthenticationToken token;
+       try {
+           //解析jwt生成的token，获取权限
+            token = getAuthentication(authorization);
+
+       }catch (ExpiredJwtException e){
+          // e.printStackTrace();
+           chain.doFilter(request, response);
+           return;
+       }
+
+        //获取后，将Authentication写入SecurityContextHolder中供后序使用
+        SecurityContextHolder.getContext().setAuthentication(token);
+        chain.doFilter(request, response);
+
+
+    }
+
+
+
+    /**对jwt生成的token进行解析
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-03 15:21:04
+     * @param authorization auth
+     * @return org.springframework.security.authentication.UsernamePasswordAuthenticationToken
+     * @throws
+     * @version 1.0
+     */
+    public UsernamePasswordAuthenticationToken getAuthentication(String authorization) throws ExpiredJwtException{
+
+        if (authorization == null) {
+            return null;
+        }
+
+        Payload&lt;UserAuthVO&gt; payload;
+
+            //从token中获取有效载荷
+        payload = JwtUtils.getInfoFromToken(authorization.replace("Bearer", ""), prop.getPublicKey(), UserAuthVO.class);
+
+
+
+        //获取当前访问对象
+        UserAuthVO userInfo = payload.getUserInfo();
+        if (userInfo == null){
+            return null;
+        }
+
+        //将当前访问对象及其权限封装称spring security可识别的token
+        UsernamePasswordAuthenticationToken token = new UsernamePasswordAuthenticationToken(userInfo,null,userInfo.getAuthorities());
+        return token;
+    }
+}
+</code></pre> 
+<p>编写spring security的配置类</p> 
+<p>这一步主要是是完成对spring security的配置。唯一和单体版应用集成spring'security不同的是，在这一步需要加入我们自定义的用户认证和用户校验的过滤器，还有就是禁用session。</p> 
+<pre><code class="language-java">/**spring security配置类
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/3 15:41
+ */
+@Configuration
+@EnableWebSecurity
+@EnableGlobalMethodSecurity(prePostEnabled = true)
+public class SpringSecurityConfig extends WebSecurityConfigurerAdapter {
+
+    @Autowired
+    private UserDetailsService userService;
+
+    @Autowired
+    private AuthServerRsaKeyProperties properties;
+
+    @Bean
+    public BCryptPasswordEncoder myPasswordEncoder(){
+        return new BCryptPasswordEncoder();
+    }
+
+
+    /**配置自定义过滤器
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-03 15:53:45
+     * @param http
+     * @version 1.0
+     */
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+
+        //禁用跨域保护，取代它的是jwt
+        http.csrf().disable();
+
+        //允许匿名访问的方法
+        http.authorizeRequests().antMatchers("/login").anonymous();
+                //其他需要鉴权
+                //.anyRequest().authenticated();
+
+        //添加认证过滤器
+        http.addFilter(new TokenLoginFilter(authenticationManager(),properties));
+
+        //添加验证过滤器
+        http.addFilter(new TokenVerifyFilter(authenticationManager(),properties));
+
+
+        //禁用session,前后端分离是无状态的
+        http.sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS);
+
+
+    }
+
+
+
+    /**配置密码加密策略
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-03 15:50:46
+     * @param authenticationManagerBuilder
+     * @version 1.0
+     */
+    @Override
+    protected void configure(AuthenticationManagerBuilder authenticationManagerBuilder) throws Exception {
+
+        authenticationManagerBuilder.userDetailsService(userService).passwordEncoder(myPasswordEncoder());
+    }
+
+    @Override
+    public void configure(WebSecurity webSecurity) throws Exception{
+        //忽略静态资源
+        webSecurity.ignoring().antMatchers("/assents/**","/login.html");
+    }
+
+}
+</code></pre> 
+<p>添加对GrantedAuthority类型的自定义反序列化工具</p> 
+<p>因为我们的权限信息是加密存储于token中的，因此要对authorities进行序列化与反序列化，然后由于jackson并不支持对其进行反序列化，因此需要我们自己去做。</p> 
+<pre><code class="language-java">**
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/3 22:42
+ */
+public class CustomAuthorityDeserializer extends JsonDeserializer {
+
+    @Override
+    public Object deserialize(JsonParser jp, DeserializationContext ctxt) throws IOException {
+        ObjectMapper mapper = (ObjectMapper) jp.getCodec();
+        JsonNode jsonNode = mapper.readTree(jp);
+        List&lt;GrantedAuthority&gt; grantedAuthorities = new LinkedList&lt;&gt;();
+
+        Iterator&lt;JsonNode&gt; elements = jsonNode.elements();
+        while (elements.hasNext()) {
+            JsonNode next = elements.next();
+            JsonNode authority = next.get("authority");
+            grantedAuthorities.add(new SimpleGrantedAuthority(authority.asText()));
+        }
+        return grantedAuthorities;
+    }
+
+}
+</code></pre> 
+<p>在UserAuthVO上标记</p> 
+<pre><code class="language-java">/**用户凭证对象
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/3 16:20
+ */
+public class UserAuthVO implements Serializable {
+
+    @JsonDeserialize(using = CustomAuthorityDeserializer.class)
+    public void setAuthorities(List&lt;SimpleGrantedAuthority&gt; authorities) {
+        this.authorities = authorities;
+    }
+
+   //省略了其他无关的代码
+}
+
+</code></pre> 
+<p>实现UserDetailsService接口</p> 
+<p>实现loadUserByUsername方法，修改认证信息获取方式为：从数据库中获取权限信息。</p> 
+<pre><code class="language-java">/**
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/8/28 22:16
+ */
+@Service("userService")
+public class UserServiceImpl implements UserDetailsService {
+
+    @Autowired
+    private IUserDao userDao;
+    @Autowired
+    private IRoleDao roleDao;
+    @Autowired
+    private IPermissonDao permissonDao;
+
+
+    @Override
+    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+        if (username == null){
+            return null;
+        }
+
+        UserDO user = userDao.findByName(username);
+
+        List&lt;RoleDO&gt; roleList = roleDao.findByUserId(user.getId());
+
+        List&lt;SimpleGrantedAuthority&gt; list  = new ArrayList&lt;&gt; ();
+        for (RoleDO roleDO : roleList) {
+            List&lt;PermissionDO&gt; permissionListItems = permissonDao.findByRoleId(roleDO.getId());
+            for (PermissionDO permissionDO : permissionListItems) {
+                list.add(new SimpleGrantedAuthority(permissionDO.getPermissionUrl()));
+            }
+        }
+        user.setAuthorityList(list);
+        return user;
+    }
+}
+</code></pre> 
+<p><strong>提示：</strong>关于用户、角色、权限的数据库操作及其实体类到这里就省略了，不影响大家理解</p> 
+<p>自定义401和403异常处理</p> 
+<p><strong>Spring Security</strong> 中的异常主要分为两大类：一类是认证异常，另一类是授权相关的异常。并且，其抛出异常的地方是在过滤器链中，如果你使用@ControllerAdvice是没有办法处理的。</p> 
+<p>当然，像spring security这么优秀的框架，当然考虑到了这个问题。</p> 
+<p>spring security当中的HttpSecurity提供的exceptionHandling() 方法用来提供异常处理。该方法构造出 ExceptionHandlingConfigurer异常处理配置类。</p> 
+<p>然后该类呢有提供了两个接口用于我们自定义异常处理：</p> 
+<ul><li><strong>AuthenticationEntryPoint</strong> 该类用来统一处理 AuthenticationException异常（403异常）</li><li><strong>AccessDeniedHandler</strong> 该类用来统一处理 AccessDeniedException异常（401异常）<br> ​</li></ul> 
+<p>MyAuthenticationEntryPoint.java</p> 
+<pre><code class="language-java">/**401异常处理
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/3 22:08
+ */
+public class MyAuthenticationEntryPoint implements AuthenticationEntryPoint {
+
+    @Override
+    public void commence(HttpServletRequest request, HttpServletResponse response, AuthenticationException authException) throws IOException, ServletException {
+        response.setContentType("application/json;charset=utf-8");
+
+        response.setStatus(200);
+        Map&lt;String, Object&gt; map = new HashMap&lt;&gt;();
+        map.put("code", HttpServletResponse.SC_UNAUTHORIZED);
+        map.put("msg","令牌已过期请重新登录");
+
+        ServletOutputStream out = response.getOutputStream();
+        String s = new ObjectMapper().writeValueAsString(map);
+        byte[] bytes = s.getBytes();
+        out.write(bytes);
+    }
+}
+</code></pre> 
+<p>MyAccessDeniedHandler.java</p> 
+<pre><code class="language-java">/**403异常处理
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/3 22:11
+ */
+public class MyAccessDeniedHandler implements AccessDeniedHandler {
+
+    @Override
+    public void handle(HttpServletRequest request, HttpServletResponse response, AccessDeniedException accessDeniedException) throws IOException, ServletException {
+        response.setContentType("application/json;charset=utf-8");
+        response.setStatus(200);
+        Map&lt;String, Object&gt; map = new HashMap&lt;&gt;();
+        map.put("code", HttpServletResponse.SC_FORBIDDEN);
+        map.put("msg","未授权访问此资源，如有需要请联系管理员授权");
+        ServletOutputStream out = response.getOutputStream();
+        String s = new ObjectMapper().writeValueAsString(map);
+        byte[] bytes = s.getBytes();
+        out.write(bytes);
+    }
+}
+</code></pre> 
+<p>将这两个类添加到spring security的配置当中</p> 
+<pre><code class="language-java">/**spring security配置类
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/3 15:41
+ */
+@Configuration
+@EnableWebSecurity
+@EnableGlobalMethodSecurity(prePostEnabled = true)
+public class SpringSecurityConfig extends WebSecurityConfigurerAdapter {
+
+    @Autowired
+    private UserDetailsService userService;
+
+    @Autowired
+    private AuthServerRsaKeyProperties properties;
+
+    @Bean
+    public BCryptPasswordEncoder myPasswordEncoder(){
+        return new BCryptPasswordEncoder();
+    }
+
+
+    /**配置自定义过滤器
+     * @author 赖柄沣 bingfengdev@aliyun.com
+     * @date 2020-09-03 15:53:45
+     * @param http
+     * @version 1.0
+     */
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+
+        //其他代码。。。
+       
+        //添加自定义异常处理
+        http.exceptionHandling().authenticationEntryPoint(new MyAuthenticationEntryPoint());
+        http.exceptionHandling().accessDeniedHandler(new MyAccessDeniedHandler());
+
+        //其他代码1
+
+
+    }
+    }
+</code></pre> 
+<p>到这一步大家就可以运行启动类先进行测试一下。在本文当中就先将<strong>product-service</strong>模块也实现了再集中测试</p> 
+<p>创建子系统模块product-service</p> 
+<p>修改pom.xml文件</p> 
+<p>这一步和我们创建认证服务时相差无几。</p> 
+<pre><code class="language-java">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd"&gt;
+    &lt;modelVersion&gt;4.0.0&lt;/modelVersion&gt;
+    &lt;parent&gt;
+        &lt;groupId&gt;pers.lbf&lt;/groupId&gt;
+        &lt;artifactId&gt;springboot-springSecurity-jwt-rsa&lt;/artifactId&gt;
+        &lt;version&gt;1.0.0-SNAPSHOT&lt;/version&gt;
+    &lt;/parent&gt;
+
+    &lt;artifactId&gt;product-service&lt;/artifactId&gt;
+    &lt;version&gt;1.0.0-SNAPSHOT&lt;/version&gt;
+    &lt;name&gt;product-service&lt;/name&gt;
+    &lt;description&gt;Demo project for Spring Boot&lt;/description&gt;
+
+    &lt;properties&gt;
+        &lt;java.version&gt;1.8&lt;/java.version&gt;
+    &lt;/properties&gt;
+
+    &lt;dependencies&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;pers.lbf&lt;/groupId&gt;
+            &lt;artifactId&gt;common&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-boot-starter-security&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-boot-starter-web&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.mybatis.spring.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;mybatis-spring-boot-starter&lt;/artifactId&gt;
+        &lt;/dependency&gt;
+
+        &lt;dependency&gt;
+            &lt;groupId&gt;mysql&lt;/groupId&gt;
+            &lt;artifactId&gt;mysql-connector-java&lt;/artifactId&gt;
+            &lt;scope&gt;runtime&lt;/scope&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-boot-starter-test&lt;/artifactId&gt;
+            &lt;scope&gt;test&lt;/scope&gt;
+            &lt;exclusions&gt;
+                &lt;exclusion&gt;
+                    &lt;groupId&gt;org.junit.vintage&lt;/groupId&gt;
+                    &lt;artifactId&gt;junit-vintage-engine&lt;/artifactId&gt;
+                &lt;/exclusion&gt;
+            &lt;/exclusions&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.springframework.security&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-security-test&lt;/artifactId&gt;
+            &lt;scope&gt;test&lt;/scope&gt;
+        &lt;/dependency&gt;
+    &lt;/dependencies&gt;
+
+    &lt;build&gt;
+        &lt;plugins&gt;
+            &lt;plugin&gt;
+                &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+                &lt;artifactId&gt;spring-boot-maven-plugin&lt;/artifactId&gt;
+            &lt;/plugin&gt;
+        &lt;/plugins&gt;
+    &lt;/build&gt;
+
+&lt;/project&gt;
+
+</code></pre> 
+<p>修改application.yml配置文件</p> 
+<p>这里主要是配置数据库信息和加入公钥的地址信息</p> 
+<pre><code class="language-java">server:
+  port: 8082
+spring:
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/security_authority?useSSL=false&amp;serverTimezone=GMT
+    username: root
+    password: root1997
+    driver-class-name: com.mysql.cj.jdbc.Driver
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+logging:
+  level:
+    pers.lbf: debug
+lbf:
+  key:
+    publicKeyPath: 你的公钥地址
+
+</code></pre> 
+<p>创建读取公钥的配置类</p> 
+<pre><code class="language-java">/**读取公钥配置类
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/9/4 10:05
+ */
+@ConfigurationProperties(prefix = "lbf.key")
+@ConstructorBinding
+public class ProductRsaKeyProperties {
+
+    private String publicKeyPath;
+    private PublicKey publicKey;
+
+    @PostConstruct
+    public void loadKey() throws Exception {
+        publicKey = RsaUtils.getPublicKey(publicKeyPath);
+    }
+
+    @Override
+    public String toString() {
+        return "ProductRsaKeyProperties{" +
+                "pubKeyPath='" + publicKeyPath + '\'' +
+                ", publicKey=" + publicKey +
+                '}';
+    }
+
+    public String getPublicKeyPath() {
+        return publicKeyPath;
+    }
+
+    public void setPublicKeyPath(String publicKeyPath) {
+        this.publicKeyPath = publicKeyPath;
+    }
+
+    public PublicKey getPublicKey() {
+        return publicKey;
+    }
+
+    public void setPublicKey(PublicKey publicKey) {
+        this.publicKey = publicKey;
+    }
+}
+</code></pre> 
+<p>修改启动类</p> 
+<p>这一步和创建认证服务器时一样，如要是加入公钥配置和mapper扫描</p> 
+<pre><code class="language-java">/**
+ * @author Ferryman
+ */
+@SpringBootApplication
+@MapperScan(basePackages = "pers.lbf.ssjr.productservice.dao")
+@EnableConfigurationProperties(ProductRsaKeyProperties.class)
+public class ProductServiceApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(ProductServiceApplication.class, args);
+    }
+
+}
+</code></pre> 
+<p>复制</p> 
+<p>这一步主要是将UserAuthVo、自定义校验器、自定义异常处理器和自定义反序列化器从认证服务模块复制过来。（之所以不放入到公共模块common中是因为。不想直接在common模块中引入springBoot整合spring security的依赖）</p> 
+<p>创建子模块spring security配置类</p> 
+<p>这里也只需要在认证服务模块的配置上修改即可，去掉自定义认证过滤器的内容。资源模块只负责校验，不做认证。</p> 
+<p>创建一个测试接口</p> 
+<pre><code class="language-java">/**
+ * @author 赖柄沣 bingfengdev@aliyun.com
+ * @version 1.0
+ * @date 2020/8/27 20:02
+ */
+@RestController
+@RequestMapping("/product")
+public class ProductController {
+
+
+    @GetMapping("/get")
+    @PreAuthorize("hasAuthority('product:get')")
+    public String get() {
+        return "产品信息接口调用成功！";
+    }
+}
+</code></pre> 
+<h4 id="第三步启动项目进行测试">第三步：启动项目，进行测试</h4> 
+<p>登录（认证）操作</p> 
+<p>登录成功返回消息提示</p> 
+<p> <img alt="" height="742" src="https://images2.imgbox.com/cc/fa/Oi13azSx_o.png" width="1098"></p> 
+<p> </p> 
+<p></p> 
+<p>并且可以在请求头中看到token</p> 
+<p></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/40/ce/yqPtUdC5_o.png"></p> 
+<p> </p> 
+<p>登陆失败提示"用户名或密码错误"</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/11/b3/uv2vdbC7_o.png"></p> 
+<p>访问资源</p> 
+<p>携带令牌访问资源，且具备权限、令牌未过期</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/68/2a/4FDZUDcQ_o.png"></p> 
+<p>携带token访问资源。但是没有权限</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/5a/19/izqqhPRe_o.png"></p> 
+<p> </p> 
+<p></p> 
+<p>未携带token访问（未登录、未经过认证）</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/66/b0/lRXXYv4V_o.png"></p> 
+<p>携带过期令牌访问资源</p> 
+<p></p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/db/f0/32tAxKoA_o.png"></p> 
+<p> </p> 
+<h3 id="写在最后">写在最后</h3> 
+<p>springBoot整合security实现权限管理与认证分布式版（前后端分离版）的的核心在于三个问题</p> 
+<ol><li> <p>禁用了session，用户信息保存在哪？</p> </li><li> <p>如何实现对访问者的认证，或者说是根据token去认证访问者？</p> </li><li> <p>如何实现对访问者的校验，或者说是根据token去校验访问者身份？</p> </li></ol> 
+<p>基本上我们解决了上面三个问题之后，springBoot整合spring security实现前后端分离(分布式)场景下的权限管理与认证问题我们就可以说是基本解决了。</p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3a3e32376c8ce94306574d47af8ec104/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">关于Maven配置出现的问题</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/20d0c32848a63d6dcc06e69f08a3f7c4/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">2023年Java面试题及答案整理</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

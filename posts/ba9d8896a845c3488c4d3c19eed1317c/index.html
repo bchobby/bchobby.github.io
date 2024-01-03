@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>一个 Blink 小白的成长之路 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="一个 Blink 小白的成长之路" />
+<meta property="og:description" content="写在前面 写过blink sql的同学应该都有体会，明明写的时候就很顺滑，小手一抖，洋洋洒洒三百行代码，一气呵成。结果跑的时候，吞吐量就是上不去。导致数据延迟高，消息严重积压，被业务方疯狂吐槽。这时候，老鸟就会告诉你，同学，该优化优化你的代码了，再丢过来一个链接，然后留下一脸懵逼的你。笔者就是这么过来的，希望本文能帮助到跟我有过同样困惑，现在还一筹莫展的同学。
+背景故事 先说一下相关背景吧，笔者作为一个刚入职阿里的小白，还处在水土不服的阶段，就被临危受命，改造数据大屏。为什么说临危受命呢，首先是此时距双十一仅剩一个月，再者，去年的双十一，这个大屏刚过零点就出现问题，数据一动不动，几个小时后开始恢复，但仍然延迟严重。此前，笔者仅有的实时计算开发经验是storm，用的是stream API，对于blink这种sql式的API完全没接触过。接到这个需求的时候，脑子里是懵的，灵魂三问来了，我是谁？我即将经历什么？我会死得有多惨？不是“此时此刻，非我莫属”的价值观唤醒了我，是老大的一句话，在阿里，不是先让老板给你资源，你再证明你自己，而是你先证明你自己，再用结果赢得资源，一席话如醍醐灌顶。然后就开始了一段有趣的故事～
+压测血案 要找性能问题出在哪儿，最好的方法就是压测。这里默认大家都对节点反压有一定的了解，不了解的请先移步典型的节点反压案例及解法。
+一开始是跟着大部队进行压测的，压测的结果是不通过！！！一起参加压测的有三十多个项目组，就我被点名。双十一演练的初夜，就这样伤心地流走了(╯°□°）╯︵ ┻━┻。西湖的水，全是我的泪啊。不过痛定思痛，我也是通过这次压测终于定位到了瓶颈在哪里。
+瓶颈初现 数据倾斜
+在做单量统计的时候，很多时候都是按商家维度，行业维度在做aggregate，按商家维度，不可避免会出现热点问题。
+hbase写瓶颈
+当时我在调大source分片数，并且也无脑调大了各个算子的资源之后，发现输出RPS还是上不去，sink节点也出现了消息积压。当时就判断，hbase有写瓶颈，这个我是无能为力了。后来的事实证明我错了，hbase的确有写瓶颈，但原因是我们写的姿势不对。至于该换什么姿势，请继续看下去。
+神挡杀神 先来分析一下我们的数据结构(核心字段)
+biz_date, order_code, seller_id, seller_layer, order_status, industry_id
+我们group by的典型场景有
+CREATE VIEW order_day_view AS SELECT industry_id, seller_layer, biz_date, count(distinct order_code) AS salesCount FROM order_view GROUP BY industry_id,seller_id,seller_layer,biz_date ; 总结下来就是，按卖家维度，行业维度什么的，都非常容易出现数据倾斜。
+数据倾斜其实有很多解法，这里我不展开讨论，只讲我们这个案例的解法。
+倾斜的原因，无非就是group by的字段出现了热点，大量的消息都集中在了该字段少数几个取值上。通常的解法是，在消息中选择具备唯一性，或者预估会分布比较均匀的字段。如果这个字段是整型的，可以直接取模(模数一般是节点的并发数)，如果是字符串，可以先进行哈希计算，再取模，得到一个分片地址(本文取名为bucket_id)。在接下来的所有aggregate算子中，都要把他作为group by的key之一。
+在我们这个案例中，我们选择了order_code这个具备唯一性的字段。首先在源头把分片地址算出来，加到消息里面，代码如下：
+SELECT o.biz_date, o.order_code, o.seller_id, o.seller_layer, o.order_status, o.industry_id, o.bucket_id FROM (select *,MOD(hash_code(order_code), 32) AS bucket_id from order_stream) o 然后把这个bucket_id层层传递下去，在每一个需要group by的地方都在后面带上bucket_id，例如：
+CREATE VIEW order_day_view AS SELECT industry_id, seller_layer, biz_date, count(distinct order_code) AS salesCount, bucket_id FROM order_view GROUP BY industry_id,seller_id,seller_layer,biz_date,bucket_id ; 事实上，我一开始想到的是用下面tips里的方法，结果就杵进垃圾堆里了，性能问题是解了，但是计算出来的数据都翻倍了，明显是错的。至于我是怎么发现这个问题，并分析其原因，再换了解法，又是另一段故事了。可以提前预告一下，是踩了blink撤回计算的坑，后面会再出一个专题来讲述这个故事哒～" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/ba9d8896a845c3488c4d3c19eed1317c/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-12-30T11:42:35+08:00" />
+<meta property="article:modified_time" content="2019-12-30T11:42:35+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">一个 Blink 小白的成长之路</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h3 id="1" style="margin-left:0px;"><span style="color:#000000;">写在前面</span></h3> 
+<p style="margin-left:0px;"><span style="color:#24292e;">写过blink sql的同学应该都有体会，明明写的时候就很顺滑，小手一抖，洋洋洒洒三百行代码，一气呵成。结果跑的时候，吞吐量就是上不去。导致数据延迟高，消息严重积压，被业务方疯狂吐槽。这时候，老鸟就会告诉你，同学，该优化优化你的代码了，再丢过来一个链接，然后留下一脸懵逼的你。笔者就是这么过来的，希望本文能帮助到跟我有过同样困惑，现在还一筹莫展的同学。</span></p> 
+<h3 id="2" style="margin-left:0px;"><span style="color:#000000;">背景故事</span></h3> 
+<p style="margin-left:0px;"><span style="color:#24292e;">先说一下相关背景吧，笔者作为一个刚入职阿里的小白，还处在水土不服的阶段，就被临危受命，改造数据大屏。为什么说临危受命呢，首先是此时距双十一仅剩一个月，再者，去年的双十一，这个大屏刚过零点就出现问题，数据一动不动，几个小时后开始恢复，但仍然延迟严重。此前，笔者仅有的实时计算开发经验是storm，用的是stream API，对于blink这种sql式的API完全没接触过。接到这个需求的时候，脑子里是懵的，灵魂三问来了，我是谁？我即将经历什么？我会死得有多惨？不是“此时此刻，非我莫属”的价值观唤醒了我，是老大的一句话，在阿里，不是先让老板给你资源，你再证明你自己，而是你先证明你自己，再用结果赢得资源，一席话如醍醐灌顶。然后就开始了一段有趣的故事～</span></p> 
+<h3 id="3" style="margin-left:0px;"><span style="color:#000000;">压测血案</span></h3> 
+<p style="margin-left:0px;"><span style="color:#24292e;">要找性能问题出在哪儿，最好的方法就是压测。这里默认大家都对节点反压有一定的了解，不了解的请先移步<a href="https://help.aliyun.com/document_detail/139458.html?spm=a2c4g.11186623.6.617.65955550EeAhct" rel="nofollow">典型的节点反压案例及解法</a>。</span></p> 
+<p style="margin-left:0px;"><span style="color:#24292e;">一开始是跟着大部队进行压测的，压测的结果是不通过！！！一起参加压测的有三十多个项目组，就我被点名。双十一演练的初夜，就这样伤心地流走了(╯°□°）╯︵ ┻━┻。西湖的水，全是我的泪啊。不过痛定思痛，我也是通过这次压测终于定位到了瓶颈在哪里。</span></p> 
+<h3 id="4" style="margin-left:0px;"><span style="color:#000000;">瓶颈初现</span></h3> 
+<p style="margin-left:0px;"><span style="color:#24292e;"><strong>数据倾斜</strong><br> 在做单量统计的时候，很多时候都是按商家维度，行业维度在做aggregate，按商家维度，不可避免会出现热点问题。</span></p> 
+<p style="margin-left:0px;"><span style="color:#24292e;"><strong>hbase写瓶颈</strong><br> 当时我在调大source分片数，并且也无脑调大了各个算子的资源之后，发现输出RPS还是上不去，sink节点也出现了消息积压。当时就判断，hbase有写瓶颈，这个我是无能为力了。后来的事实证明我错了，hbase的确有写瓶颈，但原因是我们写的姿势不对。至于该换什么姿势，请继续看下去。</span></p> 
+<h3 id="5" style="margin-left:0px;"><span style="color:#000000;">神挡杀神</span></h3> 
+<p style="margin-left:0px;"><span style="color:#24292e;">先来分析一下我们的数据结构(核心字段)<br><code>biz_date, order_code, seller_id, seller_layer, order_status, industry_id</code></span></p> 
+<p style="margin-left:0px;"><span style="color:#24292e;">我们group by的典型场景有</span></p> 
+<pre style="margin-left:0px;"><span style="color:#f8f8f2;"><code><span style="color:#f92672;">CREATE</span> <span style="color:#f92672;">VIEW</span> order_day_view <span style="color:#f92672;">AS</span>
+    <span style="color:#f92672;">SELECT</span>
+        industry_id,
+        seller_layer,
+        biz_date,
+        <span style="color:#f92672;">count</span>(<span style="color:#f92672;">distinct</span> order_code) <span style="color:#f92672;">AS</span> salesCount
+    <span style="color:#f92672;">FROM</span>
+        order_view
+    <span style="color:#f92672;">GROUP</span> <span style="color:#f92672;">BY</span> industry_id,seller_id,seller_layer,biz_date
+;</code></span></pre> 
+<p style="margin-left:0px;"><span style="color:#24292e;">总结下来就是，按卖家维度，行业维度什么的，都非常容易出现数据倾斜。</span></p> 
+<p style="margin-left:0px;"><span style="color:#24292e;">数据倾斜其实有很多解法，这里我不展开讨论，只讲我们这个案例的解法。<br><strong>倾斜的原因，无非就是group by的字段出现了热点，大量的消息都集中在了该字段少数几个取值上。通常的解法是，在消息中选择具备唯一性，或者预估会分布比较均匀的字段。如果这个字段是整型的，可以直接取模(模数一般是节点的并发数)，如果是字符串，可以先进行哈希计算，再取模，得到一个分片地址(本文取名为bucket_id)。在接下来的所有aggregate算子中，都要把他作为group by的key之一。</strong></span></p> 
+<p style="margin-left:0px;"><span style="color:#24292e;">在我们这个案例中，我们选择了order_code这个具备唯一性的字段。首先在源头把分片地址算出来，加到消息里面，代码如下：</span></p> 
+<pre style="margin-left:0px;"><span style="color:#f8f8f2;"><code><span style="color:#f92672;">SELECT</span>
+<span style="color:#f92672;">o</span><span style="color:#a6e22e;">.biz_date</span>, <span style="color:#f92672;">o</span><span style="color:#a6e22e;">.order_code</span>, <span style="color:#f92672;">o</span><span style="color:#a6e22e;">.seller_id</span>, <span style="color:#f92672;">o</span><span style="color:#a6e22e;">.seller_layer</span>, <span style="color:#f92672;">o</span><span style="color:#a6e22e;">.order_status</span>, <span style="color:#f92672;">o</span><span style="color:#a6e22e;">.industry_id</span>, <span style="color:#f92672;">o</span><span style="color:#a6e22e;">.bucket_id</span>
+<span style="color:#f92672;">FROM</span> (<span style="color:#f92672;">select</span> *,<span style="color:#f92672;">MOD</span>(<span style="color:#f92672;">hash_code</span>(<span style="color:#f92672;">order_code</span>), 32) <span style="color:#f92672;">AS</span> <span style="color:#f92672;">bucket_id</span> <span style="color:#f92672;">from</span> <span style="color:#f92672;">order_stream</span>) <span style="color:#f92672;">o</span></code></span></pre> 
+<p style="margin-left:0px;"><span style="color:#24292e;">然后把这个bucket_id层层传递下去，在每一个需要group by的地方都在后面带上bucket_id，例如：</span></p> 
+<pre style="margin-left:0px;"><span style="color:#f8f8f2;"><code><span style="color:#f92672;">CREATE</span> <span style="color:#f92672;">VIEW</span> order_day_view <span style="color:#f92672;">AS</span>
+    <span style="color:#f92672;">SELECT</span>
+        industry_id,
+        seller_layer,
+        biz_date,
+        <span style="color:#f92672;">count</span>(<span style="color:#f92672;">distinct</span> order_code) <span style="color:#f92672;">AS</span> salesCount,
+        bucket_id
+    <span style="color:#f92672;">FROM</span>
+        order_view
+    <span style="color:#f92672;">GROUP</span> <span style="color:#f92672;">BY</span> industry_id,seller_id,seller_layer,biz_date,bucket_id
+;</code></span></pre> 
+<p style="margin-left:0px;"><span style="color:#24292e;">事实上，我一开始想到的是用下面tips里的方法，结果就杵进垃圾堆里了，性能问题是解了，但是计算出来的数据都翻倍了，明显是错的。至于我是怎么发现这个问题，并分析其原因，再换了解法，又是另一段故事了。可以提前预告一下，是踩了blink撤回计算的坑，后面会再出一个专题来讲述这个故事哒～</span></p> 
+<p style="margin-left:0px;"><span style="color:#24292e;">这里还想再延伸一下，讲讲我的学习方法。如果读者中有跟我一样的小白，可能会奇怪，同样是小白，为何你这么秀，一上来就搞压测，还能准确地分析出性能的瓶颈在哪里。其实有两方面的原因，一方面是我有过storm的开发经验，对实时计算中会遇到的坑还是有一定的认识；另一方面，是我没说出来的多少个日日夜夜苦逼学习充电的故事。我的学习习惯是喜欢追根溯源，就找了很多介绍flink基本概念，发展历史，以及跟流式和批处理计算框架横向对比的各类博客。而且带着kpi去学习和什么包袱都没有去学习，心态和学习效率是不一样的。前者虽然效率更高，但是是以损害身心健康为代价的，因为学习过程中不可避免的会产生急躁情绪，然后就会不可避免的加班，熬夜，咖啡，再然后他们的好朋友，黑眼圈，豆豆，感冒就全来了。后者虽然轻松，但是什么包袱都没有，反而会产生懈怠，没有压力就没有动力，这是人的天性，拗不过的。这就是矛盾的点，所以在阿里，经常提到“既要也要还要”，其实宣扬的是一种学会平衡的价值观。至于怎么平衡，嘻嘻，天知地知我知。对，只能自己去领悟怎么平衡，别人教不会的。</span></p> 
+<p style="margin-left:0px;"><span style="color:#24292e;">概念有了一定的认知，下面就开始实践了。整个实践的过程，其实就是在不断的试错。我是一开始连反压的概念都不知道的，一直在无脑的调大CU，调大内存，调高并发数，调整每两个节点之间的并发数比例。寄希望于这样能解决问题，结果当然是无论我怎么调，吞吐量都是都风雨不动安如山。现在想想还是太年轻呀，如果这样简单的做法能解决问题，那那个前辈就绝对不会搞砸了，还轮的到我今天来解决。后来也是在无尽的绝望中想通了，不能再这么无脑了，我要找其他法子。想到的就是在代码层面动刀子，当然试错的基本路线没有动摇，前面也提到过，我一开始是想到的“加盐”，也是在试错。</span></p> 
+<p style="margin-left:0px;"><span style="color:#24292e;">学习方式决定了我做什么事，都不可能一次成功。甚至有很多情况，我明知道这样做是错的，但我就是想弄明白为什么行不通，而故意去踩这个坑。不过也正是因为试了很多错，踩了很多坑，才挖出了更多的有价值的知识点，扩大了知识的边界。</span></p> 
+<p style="margin-left:0px;"><span style="color:#24292e;">此时无声胜有声，送上几句名言，与诸君共勉<br> 塞翁失马，焉知非福。---淮南子·人间训<br> 一切过往，皆为序章。---阿里巴巴·行癫<br> 学习就像跑步一样，每一步都算数。---百阿·南秋</span></p> 
+<p style="margin-left:0px;"><span style="color:#24292e;"><span style="color:#c0c0c0;">tips: 如果在消息本身中找不到分布均匀的字段，可以考虑给每一条消息加上一个时间戳，直接使用系统函数获取当前时间，然后再对时间戳进行哈希取模计算，得到分片地址。相当于强行在时间维度上对消息进行打散，这种做法也被形象的称为“加盐”。</span></span></p> 
+<h3 id="6" style="margin-left:0px;"><span style="color:#000000;">佛挡杀佛</span></h3> 
+<p style="margin-left:0px;"><span style="color:#24292e;">上一段看下来，似乎只解决了数据倾斜的问题。之前还提到有一个hbase写瓶颈问题，这个该如何解呢？</span></p> 
+<p style="margin-left:0px;"><span style="color:#24292e;">还是接着上面的思路继续走下去，当我们把bucket_id一路传递下去，到了sink任务的时候，假设我们要按商家维度来统计单量，但是别忘了，我们统计的结果还按订单号来分片了的，所以为了得到最终的统计值，还需要把所有分片下的值再sum一下才行，这大概也是大多数人能想到的常规做法。而且我们现有的hbase rowKey设计，也是每个维度的统计数据对应一个rowKey的，为了兼容现有的设计，必须在写hbase之前sum一下。</span></p> 
+<p style="margin-left:0px;"><span style="color:#24292e;"><strong>但是笔者当时突发奇想，偏偏要反其道而行之，我就不sum，对于rowKey，我也给它分个片，就是在原来rowKey的基础上，后面再追加一个bucket_id。就相当于原来写到一个rowKey上的数据，现在把他们分散写到64个分片上了。</strong><br> 具体实现代码如下：</span></p> 
+<pre style="margin-left:0px;"><span style="color:#f8f8f2;"><code><span style="color:#f92672;">INSERT</span> <span style="color:#f92672;">INTO</span> hbase_result_sink
+    <span style="color:#f92672;">SELECT</span>
+        <span style="color:#f92672;">CONCAT</span>(businessRowkey, <span style="color:#e6db74;">'|'</span>, bucket_id) <span style="color:#f92672;">AS</span> businessRowkey,
+        <span style="color:#f92672;">cast</span>(uopAcceptCount <span style="color:#f92672;">as</span> <span style="color:#e6db74;">DECIMAL</span>)
+    <span style="color:#f92672;">from</span> hashBucket_view</code></span></pre> 
+<p style="margin-left:0px;"><span style="color:#24292e;">这样一来，API也必须改造了，读的时候采用scan模式，把所有分片都读出来，然后求和，相当于把sum的工作转移到API端了。<br> 这样做的好处在于，一方面可以转移一部分计算压力，另一方面，因为rowKey只有一个，而我们写rowKey的任务(即sink节点)并发数可能有多个，Java开发者应该都深有体会，多线程并发对一个变量进行累加的时候，是需要加锁和释放锁的，会有性能损耗，可以猜测，hbase的写瓶颈就在于此。后来的事实也证明，这种做法将输出RPS提升了不止一个两个档次。</span></p> 
+<h3 id="7" style="margin-left:0px;"><span style="color:#000000;">赶考当天</span></h3> 
+<p style="margin-left:0px;"><span style="color:#24292e;">人事已尽，接下来就是关二爷的事了(￣∇￣)。双十一零点倒计时结束，大屏数字开始飙升起来，随之一起的，还有我的肾上腺素。再看看数据曲线，延迟正常，流量峰值达日常的10倍。其实结果完全是在预期之内的，因为从最后一次的压测表现来看，100W的输入峰值(日常的333倍)，5W的输出峰值(日常的400倍)，都能稳稳的扛下来。出于数(懒)据(癌)安(晚)全(期)的角度考虑，很多大屏和数据曲线的截图就不放出来了。</span></p> 
+<p style="margin-left:0px;"><span style="color:#24292e;">其实现在回过头再看，此时的内心是平静如水的。不是大获全胜后的傲娇，也不是退隐山林的怯懦。只是看待问题的心态变了。没有翻不过的山，没有迈不过的坎。遇事不急躁，走好当下的每一步就好，也不必思考是对是错，因为每一步都算数，最后总能到达终点。</span></p> 
+<h3 id="8" style="margin-left:0px;"><span style="color:#000000;">浮生后记</span></h3> 
+<p style="margin-left:0px;"><span style="color:#24292e;">笔者写文章习惯带一些有故事趣味性的章节在里面，因为我觉得纯讲技术，即使是技术人看起来也会相当乏味，再者纯讲技术的前提是作者具备真正透进骨髓去讲述的功底，笔者自认为还相差甚远，只能加点鱼目来混珠了。换个角度来看，纯技术性的文章，观赏性和权威性更强，每一句都是精华，这种咀嚼后的知识虽有营养饱满，但是不是那么容易消化，消化后能吸收多少，还有待确认。所以我力求展示我的咀嚼过程，更多是面向跟我一样的小白用户，如果觉得冗长，请各位读者姥爷见谅～</span></p> 
+<p><br><a href="https://yq.aliyun.com/articles/741097?utm_content=g_1000097154" rel="nofollow">原文链接</a><br> 本文为阿里云原创内容，未经允许不得转载。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e460a67356f75e498468b7a7bad00ca6/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">转：解决GitHub下载慢或下载失败问题</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a86fa1bdf80a14253bedb1a207cd89c3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">VS（visual studio）C&#43;&#43; console项目目录和其属性（送给小小白白），看懂VS目录。</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

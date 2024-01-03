@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>K8S实战笔记--7（容器损坏 &#43; 负载均衡原理简述 &#43; 线上Linux服务器优化经验） - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="K8S实战笔记--7（容器损坏 &#43; 负载均衡原理简述 &#43; 线上Linux服务器优化经验）" />
+<meta property="og:description" content="在学习K8S时，系统管理人员需要了解有哪些Disruption（损坏）可能发生在Pod上。
+1. 容器损坏 1.1 非自愿的损坏 包括：节点资源耗尽、管理员操作失误、集群硬件损坏等等。为了弥补此类损失，我们应当确保Pod申请合适的计算资源并为程序准备足够的副本数目，若想保证更高的高可用，需要将副本分布在多个机架上。
+1.2 自愿的损坏 集群中自愿的Pod损坏不同于我们常规意义上的“损坏”，它指的是由集群管理员或应用管理员主动执行的导致Pod删除、停止或重启的操作。这些操作包括：删除Pod的控制器、修改Pod定义致其重启、删除Pod（以便重新调度或单纯的删除）、排空节点（以便升级维护或集群收缩），这些操作可能是管理员执行的，也可能是由设定的脚本执行的。自愿发生的损坏频率不定，所以K8S提供了Disruption Budget用于在有可能高频次地发生自愿毁坏的情况下，仍能运行高可用的应用程序。
+1.3 Disruption Budget 管理员可以为每个应用创建一个PodDisruptionBudget对象，此对象限制了在应用程序发生自愿的损坏时，有多少个副本可以被同时停止。例如：一个前端应用程序应当保证在可用的副本数目不能低于总副本数目的一定比例，若某应用程序有5个副本，而该应用的PodDisruption对象规定了最小副本数目为4（副本期望值），则此时系统只会允许1个而不是更多的副本进行自愿损毁。鉴于此保护特性，管理员在集群维护时，应当使用兼容PodDisruptionBudget的工具，避免Pod或Deployment被直接删除。兼容PodDisruptionBudget的工具例如kubectl drain，该工具会尝试将节点上的所有Pod全部驱逐，在驱逐指令遭到拒绝时，将会周期性地请求直到该节点上的所有Pod都被终止或超出了设定的超时时间。
+那么PodDisruptionBudget如何完成此操作呢？PDB通过Pod的.metadata.ownerReferences查找到其对应的控制器；通过 控制器的.spec.replicas字段来确定期望的副本数；通过控制器的abel selector来确定哪些Pod属于同一个应用程序。但是PDB并不能阻止非自愿毁坏的发生，当这类毁坏发生时，会被计入当前毁坏数里，通过kubectl drain驱逐Pod时，Pod将被gracefull terminate。举个例子：假设某集群中共有三个节点，每个节点的资源可容纳两个Pod。node01上拥有Podpod-a与pod-x，node02上拥有pod-b，node03上拥有pod-c。其中，pod-a、pod-b与pod-c同属一个应用程序，且具有对应的PDB对象，限制了其最少Pod数目为2，pod-x为独立于此应用程序的Pod，没有PDB与之对应。在管理员想要进行集群维护升级时，需要排空节点中的Pod以便更新机器。首先排空node01，在使用kubectl drain进行节点的排空时，该节点上的Pod会被驱逐，pod-a与pod-x都进入了terminating状态。管理pod-a与pod-x的控制器检测到Pod正在停止，立刻做出决策分别创建新的Podpod-a1与pod-x1，由于当前节点资源已不可用，需要将Pod调度到集群中的其它节点，于是pod-a1被调度到了node02，pod-x1被调度到了node03。此时，考虑到节点资源限制，集群中剩余两台节点已无法支持调度更多的Pod。此时，若管理员继续选择排空node02，kubectl drain按照顺序依次驱逐pod-b与pod-a1。在驱逐pod-b时，操作将被接受，在驱逐pod-a1时，操作将被拒绝，因为该应用程序的PDB规定了同一时刻至少要有两个Pod可用，否则其可用Pod将只剩一个。在进行pod-b的驱逐操作中，控制器创建一个pod-b1来代替pod-b，但由于集群已无剩余可用资源，没有办法进行pod-b1的调度，所以此时的kubectl drain将再次被拒绝。如此，集群的维护操作将无法继续，除非管理员将更多的节点添加入集群。在此时，我们将不得不接受更新所导致的停机，或故障转移至另外的集群副本，但这样带来的代价将是极大的，所以我们最好编写容错的应用程序并使用PDB。
+在我们无法防止应用被自愿损坏时，我们应当思考如何应对应对此类损坏。对于常见的应用，可以分为：
+无状态的前端：最低可用不得低于90%；单实例有状态的应用：未经允许不得随意关闭应用程序，可以不使用PDB并容忍偶尔的停机；或使用PDB设置最大不可用为0，与集群管理员达成一致，做好应对后续处理的准备；多实例有状态的应用：不能将实例数降低至某个值，否则会写入失败，可以将最大不可用设为1，或设置最小可用数目为最低数目可以重新开始的批处理任务：在发生自愿损坏时，Job仍需要完成其任务，此时不需要设置PDB，Job会新建一个Pod用于替换已损坏的Pod。 在指定可用或不可用比例时，我们有时很难判断在计算结果不是整数时究竟应当如何取值，此时系统将选择向上取整。
+2. 集群的LVS负载均衡 系统扩展方式 向上扩展 升级机器向外扩展 增加机器 集群类型 LB 负载均衡HA 高可用HPC 高性能 均衡负载的实现 硬件 购买机器软件 LVS Nginx等 会话保持的负载均衡 session stickycookie绑定session replicationsession复制session serversession服务器 keepalived &#43; LVS用于避免会话调度器单点失败LVS由章文嵩博士开发 后来被Linux服务器集成至内核中 工作原理为 VS根据请求报文的目标IP和目标协议及端口将其调度转发至某RS 根据调度算法来选择RS VS 即virtual server 用于调度RS 即Real server 用于真正提供服务L4 四层路由器或交换机CIP 客户端IPVIP VS的外网IPDIP VS的内网IPRIP RS的IP访问流程 CIP &lt;–&gt; VIP == DIP &lt;–&gt; RIP LVS集群的类型 lvs-nat 修改请求报文的目标IP 多目标IP的DNAT(变目标IP)lvs-dr LVS默认模式 操纵封装新的MAC地址(变MAC)lvs-tun 在原请求IP报文之外新加一个IP首部lvs-fullnat 修改请求报文的原和目标IP LVS工作模式 VS/NAT 服务器类型 任意类型网络模式 私网地址服务器数量 10-20服务器网关 load balancer VS/TUN 服务器类型 支持Tunneling网络模式 LAN/WAN服务器数量 100服务器网关 自己的路由器 VS/DR 服务器类型 无ARP设备网络模式 LAN服务器数量 100服务器网关 自己的路由器 静态调度算法 RR 轮询WRR 加权调度SH 原哈希 用于实现session绑定 将来自于同一个IP的请求始终法网第一次挑中的RSDH 目标地址哈希 正向代理 将发往同一个目标地址的请求始终发往第一次挑中的RS　如宽带运营商 动态调度算法 考虑后端负载情况 overhead负载 activeconns活动连接数 inactiveconns非活动连接数 LC least connections 适用于长连接 ovh = act * 256 &#43; ina 值越小 调度越多WLC 加权的LC 根据性能为机器设置好权重 ovh(LC)/weight 值越小 调度越多SED shortest expection delay 初始权重高者优先 用于解决加权LC集群使用初期act为0的情况 ovh = (act &#43; 1) * 256 / weightNQ never queue 第一轮均匀分配 后续使用SEDLBLC locality-based LC 动态D 适用于根据负载状态实现正向代理LBLCR　LBLC with replication 带复制的LBLC 用于解决LBLC负载不均衡问题　从负载重的复制到负载轻的RS 3." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/bc10de50841e40d7e91504ea1b66e5ca/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-10-24T16:33:36+08:00" />
+<meta property="article:modified_time" content="2023-10-24T16:33:36+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">K8S实战笔记--7（容器损坏 &#43; 负载均衡原理简述 &#43; 线上Linux服务器优化经验）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>在学习K8S时，系统管理人员需要了解有哪些Disruption（损坏）可能发生在Pod上。</p> 
+<h2><a id="1__2"></a>1. 容器损坏</h2> 
+<h4><a id="11__3"></a>1.1 非自愿的损坏</h4> 
+<p>包括：节点资源耗尽、管理员操作失误、集群硬件损坏等等。为了弥补此类损失，我们应当确保Pod申请合适的计算资源并为程序准备足够的副本数目，若想保证更高的高可用，需要将副本分布在多个机架上。</p> 
+<h4><a id="12__5"></a>1.2 自愿的损坏</h4> 
+<p>集群中自愿的Pod损坏不同于我们常规意义上的“损坏”，它指的是由集群管理员或应用管理员主动执行的导致Pod删除、停止或重启的操作。这些操作包括：删除Pod的控制器、修改Pod定义致其重启、删除Pod（以便重新调度或单纯的删除）、排空节点（以便升级维护或集群收缩），这些操作可能是管理员执行的，也可能是由设定的脚本执行的。自愿发生的损坏频率不定，所以K8S提供了<code>Disruption Budget</code>用于在有可能高频次地发生自愿毁坏的情况下，仍能运行高可用的应用程序。</p> 
+<h4><a id="13_Disruption_Budget_8"></a>1.3 Disruption Budget</h4> 
+<p>管理员可以为每个应用创建一个<code>PodDisruptionBudget</code>对象，此对象限制了在应用程序发生自愿的损坏时，有多少个副本可以被同时停止。例如：一个前端应用程序应当保证在可用的副本数目不能低于总副本数目的一定比例，若某应用程序有5个副本，而该应用的<code>PodDisruption</code>对象规定了最小副本数目为4（副本期望值），则此时系统只会允许1个而不是更多的副本进行自愿损毁。鉴于此保护特性，管理员在集群维护时，应当使用兼容<code>PodDisruptionBudget</code>的工具，避免Pod或Deployment被直接删除。兼容<code>PodDisruptionBudget</code>的工具例如<code>kubectl drain</code>，该工具会尝试将节点上的所有Pod全部驱逐，在驱逐指令遭到拒绝时，将会周期性地请求直到该节点上的所有Pod都被终止或超出了设定的超时时间。</p> 
+<p>那么<code>PodDisruptionBudget</code>如何完成此操作呢？PDB通过Pod的<code>.metadata.ownerReferences</code>查找到其对应的控制器；通过 控制器的<code>.spec.replicas</code>字段来确定期望的副本数；通过控制器的<code>abel selector</code>来确定哪些Pod属于同一个应用程序。但是PDB并不能阻止非自愿毁坏的发生，当这类毁坏发生时，会被计入当前毁坏数里，通过<code>kubectl drain</code>驱逐Pod时，Pod将被<code>gracefull terminate</code>。举个例子：假设某集群中共有三个节点，每个节点的资源可容纳两个Pod。<code>node01</code>上拥有Pod<code>pod-a</code>与<code>pod-x</code>，<code>node02</code>上拥有<code>pod-b</code>，<code>node03</code>上拥有<code>pod-c</code>。其中，<code>pod-a</code>、<code>pod-b</code>与<code>pod-c</code>同属一个应用程序，且具有对应的PDB对象，限制了其最少Pod数目为2，<code>pod-x</code>为独立于此应用程序的Pod，没有PDB与之对应。在管理员想要进行集群维护升级时，需要排空节点中的Pod以便更新机器。首先排空<code>node01</code>，在使用<code>kubectl drain</code>进行节点的排空时，该节点上的Pod会被驱逐，<code>pod-a</code>与<code>pod-x</code>都进入了<code>terminating</code>状态。管理<code>pod-a</code>与<code>pod-x</code>的控制器检测到Pod正在停止，立刻做出决策分别创建新的Pod<code>pod-a1</code>与<code>pod-x1</code>，由于当前节点资源已不可用，需要将Pod调度到集群中的其它节点，于是<code>pod-a1</code>被调度到了<code>node02</code>，<code>pod-x1</code>被调度到了<code>node03</code>。此时，考虑到节点资源限制，集群中剩余两台节点已无法支持调度更多的Pod。此时，若管理员继续选择排空<code>node02</code>，<code>kubectl drain</code>按照顺序依次驱逐<code>pod-b</code>与<code>pod-a1</code>。在驱逐<code>pod-b</code>时，操作将被接受，在驱逐<code>pod-a1</code>时，操作将被拒绝，因为该应用程序的PDB规定了同一时刻至少要有两个Pod可用，否则其可用Pod将只剩一个。在进行<code>pod-b</code>的驱逐操作中，控制器创建一个<code>pod-b1</code>来代替<code>pod-b</code>，但由于集群已无剩余可用资源，没有办法进行<code>pod-b1</code>的调度，所以此时的<code>kubectl drain</code>将再次被拒绝。如此，集群的维护操作将无法继续，除非管理员将更多的节点添加入集群。在此时，我们将不得不接受更新所导致的停机，或故障转移至另外的集群副本，但这样带来的代价将是极大的，所以我们最好编写容错的应用程序并使用PDB。</p> 
+<p>在我们无法防止应用被自愿损坏时，我们应当思考如何应对应对此类损坏。对于常见的应用，可以分为：</p> 
+<ol><li>无状态的前端：最低可用不得低于90%；</li><li>单实例有状态的应用：未经允许不得随意关闭应用程序，可以不使用PDB并容忍偶尔的停机；或使用PDB设置最大不可用为0，与集群管理员达成一致，做好应对后续处理的准备；</li><li>多实例有状态的应用：不能将实例数降低至某个值，否则会写入失败，可以将最大不可用设为1，或设置最小可用数目为最低数目</li><li>可以重新开始的批处理任务：在发生自愿损坏时，Job仍需要完成其任务，此时不需要设置PDB，Job会新建一个Pod用于替换已损坏的Pod。</li></ol> 
+<p>在指定可用或不可用比例时，我们有时很难判断在计算结果不是整数时究竟应当如何取值，此时系统将选择向上取整。</p> 
+<h2><a id="2_LVS_22"></a>2. 集群的LVS负载均衡</h2> 
+<ol><li>系统扩展方式 
+  <ul><li>向上扩展 升级机器</li><li>向外扩展 增加机器</li></ul> </li><li>集群类型 
+  <ul><li>LB 负载均衡</li><li>HA 高可用</li><li>HPC 高性能</li></ul> </li><li>均衡负载的实现 
+  <ul><li>硬件 购买机器</li><li>软件 LVS Nginx等</li></ul> </li><li>会话保持的负载均衡 
+  <ul><li><code>session sticky</code>cookie绑定</li><li><code>session replication</code>session复制</li><li><code>session server</code>session服务器</li></ul> </li><li>keepalived + LVS用于避免会话调度器单点失败</li><li>LVS由章文嵩博士开发 后来被Linux服务器集成至内核中 工作原理为 VS根据请求报文的目标IP和目标协议及端口将其调度转发至某RS 根据调度算法来选择RS 
+  <ul><li>VS 即virtual server 用于调度</li><li>RS 即Real server 用于真正提供服务</li><li>L4 四层路由器或交换机</li><li>CIP 客户端IP</li><li>VIP VS的外网IP</li><li>DIP VS的内网IP</li><li>RIP RS的IP</li><li>访问流程 CIP &lt;–&gt; VIP == DIP &lt;–&gt; RIP</li></ul> </li><li>LVS集群的类型 
+  <ul><li>lvs-nat 修改请求报文的目标IP 多目标IP的DNAT(变目标IP)</li><li>lvs-dr LVS默认模式 操纵封装新的MAC地址(变MAC)</li><li>lvs-tun 在原请求IP报文之外新加一个IP首部</li><li>lvs-fullnat 修改请求报文的原和目标IP</li></ul> </li><li>LVS工作模式 
+  <ul><li>VS/NAT 
+    <ul><li>服务器类型 任意类型</li><li>网络模式 私网地址</li><li>服务器数量 10-20</li><li>服务器网关 load balancer</li></ul> </li><li>VS/TUN 
+    <ul><li>服务器类型 支持Tunneling</li><li>网络模式 LAN/WAN</li><li>服务器数量 100</li><li>服务器网关 自己的路由器</li></ul> </li><li>VS/DR 
+    <ul><li>服务器类型 无ARP设备</li><li>网络模式 LAN</li><li>服务器数量 100</li><li>服务器网关 自己的路由器</li></ul> </li></ul> </li><li>静态调度算法 
+  <ul><li>RR 轮询</li><li>WRR 加权调度</li><li>SH 原哈希 用于实现session绑定 将来自于同一个IP的请求始终法网第一次挑中的RS</li><li>DH 目标地址哈希 正向代理 将发往同一个目标地址的请求始终发往第一次挑中的RS　如宽带运营商</li></ul> </li><li>动态调度算法 考虑后端负载情况 overhead负载 activeconns活动连接数 inactiveconns非活动连接数 
+  <ul><li>LC least connections 适用于长连接 ovh = act * 256 + ina 值越小 调度越多</li><li>WLC 加权的LC 根据性能为机器设置好权重 ovh(LC)/weight 值越小 调度越多</li><li>SED shortest expection delay 初始权重高者优先 用于解决加权LC集群使用初期act为0的情况 ovh = (act + 1) * 256 / weight</li><li>NQ never queue 第一轮均匀分配 后续使用SED</li><li>LBLC locality-based LC 动态D 适用于根据负载状态实现正向代理</li><li>LBLCR　LBLC with replication 带复制的LBLC 用于解决LBLC负载不均衡问题　从负载重的复制到负载轻的RS</li></ul> </li></ol> 
+<h2><a id="3_Linux_80"></a>3. 线上Linux调优经验</h2> 
+<ol><li>磁盘策略 
+  <ul><li>系统盘 raid1</li><li>数据盘 多种选择 
+    <ul><li>raid0 两块数据盘在逻辑上组合成一块盘</li><li>raid1 两块盘形成主备关系 高可用 安全性</li><li>raid5 至少三块盘 奇偶校验模式 常用读写盘</li><li>raid10 在raid0基础上建设raid1 满足高可用 但浪费较大 适用对数据要求高的服务器 性能高 价格昂贵</li></ul> </li></ul> </li><li>分区策略 
+  <ul><li>系统分区于数据分区分离</li><li>不适用LVM(逻辑卷管理) LVM提供中间服务 磁盘修复概率低</li><li>多分区原则(/ /boot /var /usr…)</li></ul> </li><li>swap策略 
+  <ul><li>即便大内存服务器也有物理内存耗尽的风险 所以针对业务需求设置不同体量的swap是必要的</li></ul> </li><li>精简安装策略 仅安装需要的开发包 基本网络包 基本应用包 按需安装</li><li>服务器网络配置 
+  <ul><li>IP <code>/etc/sysconfig/network-scripts/</code></li><li>重启网卡 <code>service network restart</code></li><li>网关 主机名配置 <code>/etc/sysconfig/network</code>若IP配置文件中配置了网关 优先生效IP配置文件</li><li>DNS <code>/etc/resolv.conf</code></li><li>HOSTS <code>/etc/hosts</code></li></ul> </li><li>网络安全配置 
+  <ul><li>关闭selinux <code>setenforce 0</code></li><li>iptables配置示例 
+    <ul><li><code>/etc/sysconfig/iptables</code></li><li>清除所有规则和计数器 
+      <ul><li><code>iptables -F</code></li><li><code>iptables -X</code></li></ul> </li><li>设置默认策略拒绝所有传入传出流量 
+      <ul><li><code>iptables -P INPUT DROP</code></li><li><code>iptables -P FORWARD DROP</code></li><li><code>iptables -P OUTPUT DROP</code></li></ul> </li><li>允许回环接口用于本地通信 
+      <ul><li><code>iptables -A INPUT -i lo -j ACCEPT</code></li><li><code>iptables -A OUTPUT -o lo -j ACCEPT</code></li></ul> </li><li>允许SSH端口 
+      <ul><li><code>iptables -A INPUT -p tcp --dport 22 -j ACCEPT</code></li><li><code>iptables -A OUTPUT -p tcp --sport 22 -j ACCEPT</code></li></ul> </li><li>允许HTTP端口 
+      <ul><li><code>iptables -A INPUT -p tcp --dport 80 -j ACCEPT</code></li><li><code>iptables -A OUTPUT -p tcp --sport 80 -j ACCEPT</code></li></ul> </li></ul> </li><li>查看iptables策略 <code>iptables -L -n</code></li></ul> </li><li>登录安全与SSH 
+  <ul><li><code>/etc/sudoers</code> 
+    <ul><li>文件格式 <code>&lt;user list&gt;&lt;host list&gt; = &lt;operator list&gt;&lt;tag list&gt;&lt;command list&gt;</code></li><li>user list 用户列表</li><li>host list 主机列表</li><li>operator list 用户与用户组列表</li><li>tag list 决定是否需要密码</li><li>command list 命令列表</li></ul> </li><li>常见配置 
+    <ul><li><code>user1 ALL=(ALL) NOPASSWORD:ALL</code></li></ul> </li><li>SSH安全 
+    <ul><li>备份SSH配置 <code>cp /etc/ssh/sshd_config sshd_config_bak</code></li><li>关闭SSH反查 可提高SSH连接速度 <code>UseDNS no</code></li><li>关闭GSSAPI验证 可提高SSH连接速度 <code>GSSAPIAuthentication no</code></li><li>禁止root账号登录 防止暴力破解 <code>PermitRootLogin no</code></li><li>SSH 端口默认22且被注释 22端口暴露在公网中十分危险 防止被恶意扫描 设为4位以上的数字可降低被扫描的机率 <code>Port 2222</code></li></ul> </li></ul> </li><li>yum源 
+  <ul><li>更新yum源</li><li>升级内核 <code>yum update</code></li></ul> </li><li>服务器时间 
+  <ul><li>通过crontab设置时间同步</li><li>或通过ntp server校准时间</li></ul> </li><li>系统资源调优 
+  <ul><li><code>unlimit -a</code>列出资源信息</li><li><code>unlimit -n</code>配置系统打开的最大连接数 
+    <ul><li>常见问题<code>java.net.SocketException: Too many open files</code>打开太多文件 解决方法 
+      <ul><li>修改<code>/etc/security/limits.conf</code>(主配置文件) 与 <code>/etc/security/limits.d/90-nproc.conf</code>添加如下内容 
+        <ul><li><code>* soft nofile 65536</code></li><li><code>* hard nofile 65536</code></li><li>修改完成后需要重启当前终端观察是否生效 随后重启java进程</li></ul> </li></ul> </li></ul> </li><li><code>unlimit -u</code>最大用户数 
+    <ul><li>修改最大用户数 在上述两个文件中添加 
+      <ul><li><code>* soft nproc 65536</code></li><li><code>root soft nproc unlimited</code></li><li>系统最大连接数是系统根据资源计算得出的 若修改后的设置值低于该默认值才生效 否则不生效 观察该更改不需要重启终端</li></ul> </li><li>常见问题<code>kernel: ip_conntrack: table full, dropping packet</code>常出现于web线上服务器 解决方法 
+      <ul><li>调整<code>ip-conntrack max</code>参数 根据业务量调整为足够即可</li><li>修改完成后执行<code>sysctl -p</code>使其生效</li></ul> </li></ul> </li><li><code>swappiness</code> 
+    <ul><li>表示适用swap的概率 值越大适用swap的概率越大</li><li>推荐配置<code>/etc/sysctl.conf</code>中 <code>vm.swappiness = 10</code>表示内存超过100% - 10% = 90%时才适用swappiness</li><li>查看当前配置<code>cat /proc/sys/vm/swappiness</code>默认值为60</li><li>redis官方指明实用redis时 此值应当为0 否则redis效率低下</li></ul> </li></ul> </li><li>精简系统服务与开机进程 
+  <ul><li>建议开启的服务 
+    <ul><li>crond</li><li>netword</li><li>syslog</li><li>sshd</li><li>iptables</li><li>sshd</li><li>iptables</li><li>udev-post</li><li>sysstat</li></ul> </li><li>快捷开启的方法 
+    <ul><li>先关闭所有服务 
+      <ul><li><code>for serv in `chkconfig --list | grep 3: on | awk '{print $1}'`; do chkconfig --level 3 $serv off; done</code></li></ul> </li><li>再开启所有服务 
+      <ul><li><code>for serv in `crond network syslog sshd iptables udev-post sysstat`; do chkconfig --level 3 $serv on; done</code></li></ul> </li></ul> </li><li>可删除的系统用户和组 
+    <ul><li>删除不必要的用户<code>userdel</code>amd Ip sync shutdown halt news nncp video games gopher ftp</li><li>不必要的群组<code>groupdel</code>amd Ip news uucp games dip</li></ul> </li></ul> </li></ol>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/49f147a4b324184931d82f891a704d3c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Pytest（一）：pytest的使用简介、jenkins&#43;allure报告生成</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/10ba8533720c62f7adfc69ef818b6f91/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">STM32内存分配以及堆栈、变量、代码等的存储位置理解与分析</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

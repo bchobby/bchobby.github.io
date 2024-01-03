@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>深入浅出RabbitMQ：顺序消费、死信队列和延时队列 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="深入浅出RabbitMQ：顺序消费、死信队列和延时队列" />
+<meta property="og:description" content="大家好，我是小❤，一个漂泊江湖多年的 985 非科班程序员，曾混迹于国企、互联网大厂和创业公司的后台开发攻城狮。
+1. 引言 上篇文章（应对流量高峰的利器——消息中间件）中，我们已经介绍了消息中间件的用途，主要用作：解耦、削峰、异步通信、应用解耦，并介绍了业界常用的几种消息中间件，优劣对比和使用场景。
+在今天的文章中，我们来聊一聊 RabbitMQ，这是小 ❤ 在工作中用的最早的消息中间件，主要用于大量数据的异步消费。
+2. RabbitMQ 2.1 核心组件 RabbitMQ 是一个开源的消息中间件，它实现了高级消息队列协议（AMQP），同时提供了各种重要组件来支持消息的生产、传输和消费。
+Producer（生产者）： 生产者是消息的发送方，负责将消息发布到 RabbitMQ 服务器。消息可以包含任何内容，例如任务、日志、通知等。
+Channel（信道）：消息推送与接收时使用的通道。
+Exchange（交换机）： 交换机是消息的中转站，它接收来自生产者的消息并将其路由到一个或多个队列。不同类型的交换机，如 fanout，direct，topic，headers，支持不同的路由规则。
+Queue（队列）： 队列是消息的缓冲区，消息在发送到消费者之前存储在队列中，消费者从队列中获取消息并进行处理。
+Consumer（消费者）： 消费者是消息的接收方，它从队列中获取消息并进行处理。消费者可以是多个，它们可以在不同的应用程序或服务器上运行。
+2.2 工作流程 RabbitMQ 的工作方式是基于生产者、交换机和队列之间的协作。这是一个简单的消息传递过程：
+将队列与交换机绑定（Binding）起来，定义了消息的路由规则；
+生产者将消息发布到交换机，交换机根据绑定规则将消息路由到一个或多个队列；
+消费者从队列中获取消息并进行处理。
+这种模型具有高度的灵活性，可以轻松处理大量消息，同时确保消息的可靠传递。
+2.3 特性 说到消息中间件，很多人首先想到的就是 Kafka，但 RabbitMQ 也是许多金融或互联网公司构建可靠、可伸缩和高性能系统的首选。
+这是为什么呢？
+主要得从 RabbitMQ 的特性说起，主要有二：一个是功能强大，另一个是可靠性！
+RabbitMQ 注重消息的可靠性和灵活性，适合任务排队和消息传递。而 Kafka 是分布式流式平台，注重日志存储和数据分发。
+顺序消费也是可靠性的一种，RabbitMQ 可以使用单一队列或多个单一队列来确保顺序消费。
+除此之外，RabbitMQ 还提供持久性队列和消息，以确保消息在 RabbitMQ 服务器宕机后不会丢失。另外，生产者可以使用发布确认机制来确认消息是否被接收。
+RabbitMQ 相对 kafka 可靠性更好，数据更不易丢失，这对于一些数据敏感型的业务来说，显然更适合用前者。
+并且，RabbitMQ 中原生支持死信队列，可以更好地处理未完成的业务消息，以及实现延时队列等特性，接下来我们一一介绍。
+3. 保证顺序消费 RabbitMQ 提供了多个队列模型来保证消息的顺序消费。这对于某些应用程序非常重要，例如处理订单、支付和库存管理。
+消息错乱消费的场景 如上图所示，有三条业务消息分别是删除、增加和修改操作，但是 Consumer 没有按顺序消费，最终存储的顺序是增加、修改和删除，就会发生数据错乱。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/7a733ccd53f35854e4ba44ea15bf3e51/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-27T23:41:51+08:00" />
+<meta property="article:modified_time" content="2023-12-27T23:41:51+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">深入浅出RabbitMQ：顺序消费、死信队列和延时队列</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>大家好，我是小❤，一个漂泊江湖多年的 985 非科班程序员，曾混迹于国企、互联网大厂和创业公司的后台开发攻城狮。</p> 
+<h3>1. 引言</h3> 
+<p>上篇文章（<a href="http://mp.weixin.qq.com/s?__biz=MzI5Nzk2MDgwNg==&amp;mid=2247485140&amp;idx=1&amp;sn=62aa2a762363cc8c704fc427ef50a2b6&amp;chksm=ecac52dddbdbdbcb3f2aa1e0178e17acfa0357b3f945e15caf92f62a3cfbce4c28b3a143250c&amp;scene=21#wechat_redirect" rel="nofollow" title="应对流量高峰的利器——消息中间件">应对流量高峰的利器——消息中间件</a>）中，我们已经介绍了消息中间件的用途，主要用作：解耦、削峰、异步通信、应用解耦，并介绍了业界常用的几种消息中间件，优劣对比和使用场景。</p> 
+<p>在今天的文章中，我们来聊一聊 <code>RabbitMQ</code>，这是小 ❤ 在工作中用的最早的消息中间件，主要用于大量数据的异步消费。</p> 
+<p></p> 
+<h3>2. RabbitMQ</h3> 
+<h4>2.1 核心组件</h4> 
+<p>RabbitMQ 是一个开源的消息中间件，它实现了高级消息队列协议（AMQP），同时提供了各种重要组件来支持消息的生产、传输和消费。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="323" src="https://images2.imgbox.com/ae/34/EYQlKxPL_o.png" width="1080"></p> 
+<ol><li> <p><strong>Producer（生产者）：</strong> 生产者是消息的发送方，负责将消息发布到 RabbitMQ 服务器。消息可以包含任何内容，例如任务、日志、通知等。</p> </li><li> <p><strong>Channel（信道）：</strong>消息推送与接收时使用的通道。</p> </li><li> <p><strong>Exchange（交换机）：</strong> 交换机是消息的中转站，它接收来自生产者的消息并将其路由到一个或多个队列。不同类型的交换机，如 <code>fanout，direct，topic，headers</code>，支持不同的路由规则。</p> </li><li> <p><strong>Queue（队列）：</strong> 队列是消息的缓冲区，消息在发送到消费者之前存储在队列中，消费者从队列中获取消息并进行处理。</p> </li><li> <p><strong>Consumer（消费者）：</strong> 消费者是消息的接收方，它从队列中获取消息并进行处理。消费者可以是多个，它们可以在不同的应用程序或服务器上运行。</p> </li></ol> 
+<p></p> 
+<h4>2.2 工作流程</h4> 
+<p>RabbitMQ 的工作方式是基于生产者、交换机和队列之间的协作。这是一个简单的消息传递过程：</p> 
+<ol><li> <p>将队列与交换机绑定（<code>Binding</code>）起来，定义了消息的路由规则；</p> </li><li> <p>生产者将消息发布到交换机，交换机根据绑定规则将消息路由到一个或多个队列；</p> </li><li> <p>消费者从队列中获取消息并进行处理。</p> </li></ol> 
+<p>这种模型具有高度的灵活性，可以轻松处理大量消息，同时确保消息的可靠传递。</p> 
+<p></p> 
+<h4>2.3 特性</h4> 
+<p>说到消息中间件，很多人首先想到的就是 <code>Kafka</code>，但 <code>RabbitMQ</code> 也是许多金融或互联网公司构建可靠、可伸缩和高性能系统的首选。</p> 
+<p>这是为什么呢？</p> 
+<p>主要得从 RabbitMQ 的特性说起，主要有二：一个是功能强大，另一个是可靠性！</p> 
+<p>RabbitMQ 注重消息的可靠性和灵活性，适合任务排队和消息传递。而 Kafka 是分布式流式平台，注重日志存储和数据分发。</p> 
+<p><strong>顺序消费也是可靠性的一种，RabbitMQ 可以使用单一队列或多个单一队列来确保顺序消费。</strong></p> 
+<p>除此之外，RabbitMQ 还提供持久性队列和消息，以确保消息在 RabbitMQ 服务器宕机后不会丢失。另外，生产者可以使用发布确认机制来确认消息是否被接收。</p> 
+<p>RabbitMQ 相对 kafka 可靠性更好，数据更不易丢失，这对于一些数据敏感型的业务来说，显然更适合用前者。</p> 
+<p>并且，RabbitMQ 中原生支持<strong>死信队列</strong>，可以更好地处理未完成的业务消息，以及实现<strong>延时队列</strong>等特性，接下来我们一一介绍。</p> 
+<p></p> 
+<h3>3. 保证顺序消费</h3> 
+<p>RabbitMQ 提供了多个队列模型来保证消息的顺序消费。这对于某些应用程序非常重要，例如处理订单、支付和库存管理。</p> 
+<h5>消息错乱消费的场景</h5> 
+<p><img alt="" height="445" src="https://images2.imgbox.com/b4/bf/3wAPN4bZ_o.png" width="1200"></p> 
+<p>如上图所示，有三条业务消息分别是<code>删除、增加和修改</code>操作，但是 <code>Consumer</code> 没有按顺序消费，最终存储的顺序是<code>增加、修改和删除</code>，就会发生数据错乱。</p> 
+<p>针对消息有序性的问题，RabbitMQ 的解决方法是分三个阶段来保证。</p> 
+<p></p> 
+<h5>1、发送消息：入队列</h5> 
+<p>消息发送时，需要业务来保证顺序性，就是保证生产者入队的顺序是有序的。</p> 
+<p>在分布式的场景下如果难以保证各个服务器的入队顺序，则可以加分布式锁的方式来解决。或者在业务生产方的消息里带上<code>消息递增 ID</code>，以及消息产生的时间戳。</p> 
+<p></p> 
+<h5>2、队列中的消息</h5> 
+<p>在 RabbitMQ 的消息会保存在队列（Queue）中，在同一个队列里的消息是<code>先进先出（FIFO）</code>的，这个<strong>由 RabbitMQ 来帮我们保证顺序</strong>。</p> 
+<p>而不同队列中的消息，RabbitMQ 无法保证其顺序性，就像我们在食堂打饭一样，站在不同的排队队列，我们也无法保证会比其他队列的人先打上饭。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="264" src="https://images2.imgbox.com/da/0c/Z4HUeRUT_o.jpg" width="500"></p> 
+<p></p> 
+<h5>3、消费消息：出队</h5> 
+<p>一般来说，出队后的顺序消费交给消费者去保证。我们说的保证消费顺序，通常也是指消费者消费消息的顺序。</p> 
+<p><strong>有多个消费者的情况下，通常是无法保证消息顺序的。</strong></p> 
+<p>这就相当于我们在排队打饭时，有多个打饭阿姨，但是每个阿姨打饭的速度不一致，对应我们消费者的消费能力也不同。</p> 
+<p>所以，为了保证消息的顺序性，我们可以只使用一个消费者来接收业务消息。</p> 
+<p>就好比只有一个阿姨在打饭，来得早就一定能早点打上饭。但很明显，这样效率不是很高，所以在使用时我们需要权衡利弊：<strong>看业务更需要顺序性，还是更需要消费效率</strong>。</p> 
+<p></p> 
+<h4>优先级队列</h4> 
+<p>在保证顺序消费时，另一个迂回策略是可以使用优先级队列（Priority Queue）。</p> 
+<p>在 RabbitMQ3.5 之后，<strong>当消费者数量较少，如果服务器检测到消费者不能及时消费消息的情况下，优先级队列就会生效。</strong></p> 
+<p>具体有两种优先级策略：</p> 
+<ol><li> <p>设置队列的优先级</p> </li><li> <p>设置消息的优先级</p> </li></ol> 
+<p>在声明队列时，我们可以通过 <code>x-max-priority</code> 属性来设置队列的最大优先级，或通过 <code>Priority</code> 属性来设置消息的优先级，从 1~10。</p> 
+<p>Golang 实现代码如下：</p> 
+<pre>// 队列属性
+props := make(map[string]interface{})
+// 设置队列最大优先级
+props["x-max-priority"] = 10
+
+ch.Publish(
+   "tizi365",     // 交换机
+   "", // 路由参数
+   false,
+   false,
+   amqp.Publishing{
+       Priority:5, // 设置消息优先级
+       DeliveryMode:2,  // 消息投递模式，1代表非持久化，2代表持久化，
+       ContentType: "text/plain",
+       Body:       []byte(body),
+  })</pre> 
+<p>当优先级队列消费生效时，<strong>会首先消费高优先级队列中的优先级高的消息，以此来实现顺序消费</strong>。</p> 
+<p>但需要注意的是，优先级队列触发的条件比较苛刻，在需要严格保证业务消息顺序的情况下最好不要使用！</p> 
+<p></p> 
+<h3>4. 死信队列</h3> 
+<p>RabbitMQ 里，当消息在队列中变成死信（<code>消费者无法正常处理的消息</code>）之后，它会被重新投递到一个交换机上（即死信交换机），<strong>死信交换机上绑定的消费队列就是死信队列</strong>。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="233" src="https://images2.imgbox.com/56/16/o7F7Hpgo_o.png" width="1080"></p> 
+<p></p> 
+<h4>死信的产生</h4> 
+<p>死信产生需要满足如下条件：</p> 
+<ol><li> <p>消息被消费者手动拒绝接收，并且 <code>requeue</code>（重新加入队列）策略为 False；</p> </li><li> <p>消息已经过期（TTL）；</p> </li><li> <p>队列达到最大长度，消息装不下了。</p> </li></ol> 
+<p></p> 
+<h4>死信的处理步骤</h4> 
+<p>当死信产生时，如果我们定义了一个<code>死信交换机</code>（其实就是一个普通的交换机，只是用于处理死信，所以叫死信交换机），然后在死信交换机上绑定了一个队列（称作<code>死信队列</code>）。</p> 
+<p>最后，如果死信队列有消费者监听时，死信消息的处理就会和正常业务消息一样，从交换机到队列，再由<code>死信消费者</code>（监听死信队列的消费者）正常消费。</p> 
+<p></p> 
+<h3>5. 延时队列</h3> 
+<p>RabbitMQ 本身不支持延时队列，但是我们可以通过 RabbitMQ 的插件 <code>rabbitmq-delayed-message-exchange</code>，或者使用 <code>死信队列 + 消息过期</code> 的方式来实现。</p> 
+<p></p> 
+<h4>5.1 应用场景</h4> 
+<p>当我们在电商里购物，或者在 12306 买票时，大概都会遇到这样一个场景：每次下订单后，到支付订单中间有一段商品锁定时间，<strong>超过时间后未支付订单就会关闭</strong>。</p> 
+<p>状态转换图如下：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="372" src="https://images2.imgbox.com/d2/7e/SttCRNCq_o.png" width="1080"></p> 
+<h4>5.2 插件实现</h4> 
+<h5>1.安装插件</h5> 
+<p><code>Github</code> 地址：</p> 
+<pre>https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/releases</pre> 
+<p>从 github 的 release 页面的 assets, 下载 <code>rabbitmq_delayed_message_exchange-3.8.9-0199d11c.ez</code> 文件，把文件放到 rabbitmq 插件目录（plugins目录）</p> 
+<blockquote> 
+ <p>提示：版本号可能跟本教程不一样，如果你的 rabbitmq 就是最新版本，插件也选择最新版本就行。</p> 
+</blockquote> 
+<p></p> 
+<h5>2.激活插件</h5> 
+<pre>rabbitmq-plugins enable rabbitmq_delayed_message_exchange</pre> 
+<p></p> 
+<h5>3.定义交换机</h5> 
+<p>通过 <code>x-delayed-type</code> 设置自定义交换机属性，支持发送延迟消息：</p> 
+<pre>   props := make(map[string]interface{})
+   //关键参数，支持发送延迟消息
+   props["x-delayed-type"] = "direct"
+
+   // 声明交换机
+   err = ch.ExchangeDeclare(
+       "delay.queue",   // 交换机名字
+       "fanout", // 交换机类型
+       true,     // 是否持久化
+       false,    
+       false,
+       false,
+       props,      // 设置属性
+  )</pre> 
+<p></p> 
+<h5>4.发送延迟消息</h5> 
+<p>通过消息头（x-delay），设置消息延迟时间。</p> 
+<pre>       msgHeaders := make(map[string]interface{})
+       // 通过消息头，设置消息延迟时间，单位毫秒
+       msgHeaders["x-delay"] = 6000
+
+       err = ch.Publish(
+           "delay.queue",     // 交换机名字
+           "", // 路由参数
+           false,
+           false,
+           amqp.Publishing{
+               Headers:msgHeaders, // 设置消息头
+               ContentType: "text/plain",
+               Body:       []byte(body),
+          })</pre> 
+<p></p> 
+<h4>5.3 死信队列 + 消息过期方案</h4> 
+<p>该方案的核心思想是，先创建死信交换机、队列和消费者，来监听死信消息。</p> 
+<p>然后创建定时过期的消息，比如订单支付的时间为 30min，则将消息的 <code>TTL</code>（最大存活时间）设置为 30min，<strong>将消息放到一个没有消费者消费的队列中，当消息过期后就会成为死信。</strong></p> 
+<p>死信消息被重新发送到死信交换机，然后我们在死信队列中消费该消息，根据商品 ID 判断该商品是否被支付。</p> 
+<p>如果没有支付，就取消订单，修改订单状态为<code>待下单</code>。如果已经支付，就将商品状态修改为<code>已完成</code>，并丢掉这条死信消息。</p> 
+<p></p> 
+<h3>5. 小结</h3> 
+<p>RabbitMQ 是一个功能强大的消息中间件，它在许多互联网应用中扮演了关键角色，比如华为摄像机 SDK 的监控图像数据上报，大部分电商系统的异步消费等等。</p> 
+<p>希望今天的文章能帮助你更深入地了解 RabbitMQ，并在工作中运用它来构建可靠的消息传递系统，下一篇文章小❤将带来 Kafka 的核心工作流程、底层原理及常见面试题，敬请期待！</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="119" src="https://images2.imgbox.com/f7/ab/00uMqZOZ_o.gif" width="640"></p> 
+<p>如果觉得文章有所启发或收获，不妨点赞、分享，加入在看，这对我是最大的鼓励！ღ( ´･ᴗ･` )比心</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="" height="272" src="https://images2.imgbox.com/93/6f/iUmucqeK_o.png" width="272"></p> 
+<p><strong id="js_a11y_wx_profile_nickname">xin猿意码</strong></p> 
+<p>山回路转不见君，雪上空留码行处</p> 
+<p></p> 
+<p>如果你有任何问题或想了解更多，也随时在评论区提问，谢谢你的阅读！</p> 
+<p>我是小❤，我们下期再见。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/d34e42695aa6fdf77c92f2f9cdf4691b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">flask文件夹列表前文修订版</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/fd0ac9470e463793385337732ad467f5/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">SpringbootActuator监控与管理</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

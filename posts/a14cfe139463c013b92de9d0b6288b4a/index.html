@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>mysql索引详解 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="mysql索引详解" />
+<meta property="og:description" content="一、MySQL三层逻辑架构 MySQL的存储引擎架构将查询处理与数据的存储/提取相分离。下面是MySQL的逻辑架构图:
+1、第一层负责连接管理、授权认证、安全等等。 每个客户端的连接都对应着服务器上的一个线程。服务器上维护了一个线程池，避免为每个连接都创建销毁一个线程。当客户端连接到MySQL服务器时，服务器对其进行认证。可以通过用户名和密码的方式进行认证，也可以通过SSL证书进行认证。登录认证通过后，服务器还会验证该客户端是否有执行某个查询的权限。
+2、第二层负责解析查询 编译SQL，并对其进行优化(如调整表的读取顺序，选择合适的索引等)。对于SELECT语句，在解析查询前，服务器会先检查查询缓存，如果能在其中找到对应的查询结果，则无需再进行查询解析、优化等过程，直接返回查询结果。存储过程、触发器、视图等都在这一层实现。
+3、第三层是存储引擎 存储引擎负责在MySQL中存储数据、提取数据、开启一个事务等等。存储引擎通过API与上层进行通信，这些API屏蔽了不同存储引擎之间的差异，使得这些差异对上层查询过程透明。存储引擎不会去解析SQL。
+二、对比InnoDB与MyISAM 1、存储结构 MyISAM:每个MyISAM在磁盘上存储成三个文件。分别为:表定义文件、数据文件、索引文件。第一个文件的名字以表的名字开始，扩展名指出文件类型。.frm文件存储表定义。数据文件的扩展名为.MYD(MYData)。索引文件的扩展名是.MYI(MYIndex)。
+InnoDB:所有的表都保存在同一个数据文件中（也可能是多个文件，或者是独立的表空间文件)，InnoDB表的大小只受限于操作系统文件的大小，一般为2GB。
+2、存储空间 MylSAM: MyISAM支持支持三种不同的存储格式∶静态表(默认，但是注意数据末尾不能有空格，会被去掉)、动态表、压缩表。当表在创建之后并导入数据之后，不会再进行修改操作，可以使用压缩表，极大的减少磁盘的空间占用。
+InnoDB:需要更多的内存和存储，它会在主内存中建立其专用的缓冲池用于高速缓冲数据和索引。
+3、可移植性、备份及恢复 MyISAM:数据是以文件的形式存储，所以在跨平台的数据转移中会很方便。在备份和恢复时可单独针对某个表进行操作。InnoDB:免费的方案可以是拷贝数据文件、备份binlog，或者用mysqldump，在数据量达到几十G的时候就相对痛苦了。
+4、事务支持 MyISAM:强调的是性能，每次查询具有原子性,其执行数度比InnoDB类型更快，但是不提供事务支持。
+InnoDB:提供事务支持事务，外部键等高级数据库功能。具有事务(commit)、回滚(rollack)和崩溃修复能力(crash recovery capabilities)的事务安全(transaction-safe (ACID compliant))型表。
+5、AUTO_INCREMENT MyISAM:可以和其他字段一起建立联合索引。引擎的自动增长列必须是索引，如果是组合索引，自动增长可以不是第一列，他可以根据前面几列进行排序后递增。
+InoDB: InnoDB中必须包含只有该字段的索引。引擎的自动增长列必须是索引，如果是组合索引也必须是组合索引的第一列。
+6、表锁差异 MyISAM:只支持表级锁，用户在操作myisam表时,select,update，delete，insert语句都会给表自动锁，如果加锁以后的表满足insert并发的情况下，可以在表的尾部插入新的数据。
+InnoDB:支持事务和行级锁，是inodb的最大特色。行锁大幅度提高了多用户并发操作的新能。但是InnoDB的行锁，只是在WHERE的主键是有效的，非主键的WHERE都会锁全表的。
+7、全文索引 MylSAM:支持FULLTEXT类型的全文索引
+InnoDB:不支持FULLTEXT类型的全文索引，但是innodb可以使用sphinx插件支持全文索引，并且效果更好。
+8、表主键 MylSAM:允许没有任何索引和主键的表存在，索引都是保存行的地址。
+InnoDB:如果没有设定主键或者非空唯一索引，就会自动生成一个6字节的主键(用户不可见)，数据是主索引的一部分，附加索引保存的是主索引的值。
+9、表的具体行数 MyISAM:保存有表的总行数，如果select count() from table;会直接取出出该值。
+InnoDB:没有保存表的总行数，如果使用select count(*) from table;就会遍历整个表，消耗相当大，但是在加了wehre条件后，myisam和innodb处理的方式都一样。
+10、CRUD操作 MyISAM:如果执行大量的SELECT，MyISAM是更好的选择。
+InnoDB:如果你的数据执行大量的INSERT或UPDATE，出于性能方面的考虑，应该使用InnoDB表。
+11、外键 MylSAM:不支持
+InnoDB:支持
+三、sql优化简介 1、什么情况下进行sql优化 性能低、执行时间太长、等待时间太长、连接查询、索引失效。
+2、sql语句执行过程 （1）编写过程
+select distinct ... from ... join ... on ... where ... group by ." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/a14cfe139463c013b92de9d0b6288b4a/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-09-04T17:16:10+08:00" />
+<meta property="article:modified_time" content="2023-09-04T17:16:10+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">mysql索引详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>一、MySQL三层逻辑架构</h2> 
+<p>MySQL的存储引擎架构将查询处理与数据的存储/提取相分离。下面是MySQL的逻辑架构图:</p> 
+<p></p> 
+<p class="img-center"><img alt="image.png" height="429" src="https://images2.imgbox.com/55/23/1N0YvPuv_o.png" width="341"></p> 
+<h3>1、第一层负责连接管理、授权认证、安全等等。</h3> 
+<p>每个客户端的连接都对应着服务器上的一个线程。服务器上维护了一个线程池，避免为每个连接都创建销毁一个线程。当客户端连接到MySQL服务器时，服务器对其进行认证。可以通过用户名和密码的方式进行认证，也可以通过SSL证书进行认证。登录认证通过后，服务器还会验证该客户端是否有执行某个查询的权限。</p> 
+<h3>2、第二层负责解析查询</h3> 
+<p>编译SQL，并对其进行优化(如调整表的读取顺序，选择合适的索引等)。对于SELECT语句，在解析查询前，服务器会先检查查询缓存，如果能在其中找到对应的查询结果，则无需再进行查询解析、优化等过程，直接返回查询结果。存储过程、触发器、视图等都在这一层实现。</p> 
+<h3>3、第三层是存储引擎</h3> 
+<p>存储引擎负责在MySQL中存储数据、提取数据、开启一个事务等等。存储引擎通过API与上层进行通信，这些API屏蔽了不同存储引擎之间的差异，使得这些差异对上层查询过程透明。存储引擎不会去解析SQL。</p> 
+<h2>二、对比InnoDB与MyISAM</h2> 
+<h3>1、存储结构</h3> 
+<p>MyISAM:每个MyISAM在磁盘上存储成三个文件。分别为:表定义文件、数据文件、索引文件。第一个文件的名字以表的名字开始，扩展名指出文件类型。.frm文件存储表定义。数据文件的扩展名为.MYD(MYData)。索引文件的扩展名是.MYI(MYIndex)。</p> 
+<p>InnoDB:所有的表都保存在同一个数据文件中（也可能是多个文件，或者是独立的表空间文件)，InnoDB表的大小只受限于操作系统文件的大小，一般为2GB。</p> 
+<h3>2、存储空间</h3> 
+<p>MylSAM: MyISAM支持支持三种不同的存储格式∶静态表(默认，但是注意数据末尾不能有空格，会被去掉)、动态表、压缩表。当表在创建之后并导入数据之后，不会再进行修改操作，可以使用压缩表，极大的减少磁盘的空间占用。</p> 
+<p>InnoDB:需要更多的内存和存储，它会在主内存中建立其专用的缓冲池用于高速缓冲数据和索引。</p> 
+<h3>3、可移植性、备份及恢复</h3> 
+<p>MyISAM:数据是以文件的形式存储，所以在跨平台的数据转移中会很方便。在备份和恢复时可单独针对某个表进行操作。InnoDB:免费的方案可以是拷贝数据文件、备份binlog，或者用mysqldump，在数据量达到几十G的时候就相对痛苦了。</p> 
+<h3>4、事务支持</h3> 
+<p>MyISAM:强调的是性能，每次查询具有原子性,其执行数度比InnoDB类型更快，但是不提供事务支持。</p> 
+<p>InnoDB:提供事务支持事务，外部键等高级数据库功能。具有事务(commit)、回滚(rollack)和崩溃修复能力(crash recovery capabilities)的事务安全(transaction-safe (ACID compliant))型表。</p> 
+<h3>5、AUTO_INCREMENT</h3> 
+<p>MyISAM:可以和其他字段一起建立联合索引。引擎的自动增长列必须是索引，如果是组合索引，自动增长可以不是第一列，他可以根据前面几列进行排序后递增。</p> 
+<p>InoDB: InnoDB中必须包含只有该字段的索引。引擎的自动增长列必须是索引，如果是组合索引也必须是组合索引的第一列。</p> 
+<h3>6、表锁差异</h3> 
+<p>MyISAM:只支持表级锁，用户在操作myisam表时,select,update，delete，insert语句都会给表自动锁，如果加锁以后的表满足insert并发的情况下，可以在表的尾部插入新的数据。</p> 
+<p>InnoDB:支持事务和行级锁，是inodb的最大特色。行锁大幅度提高了多用户并发操作的新能。但是InnoDB的行锁，只是在WHERE的主键是有效的，非主键的WHERE都会锁全表的。</p> 
+<h3>7、全文索引</h3> 
+<p>MylSAM:支持FULLTEXT类型的全文索引</p> 
+<p>InnoDB:不支持FULLTEXT类型的全文索引，但是innodb可以使用sphinx插件支持全文索引，并且效果更好。</p> 
+<h3>8、表主键</h3> 
+<p>MylSAM:允许没有任何索引和主键的表存在，索引都是保存行的地址。</p> 
+<p>InnoDB:如果没有设定主键或者非空唯一索引，就会自动生成一个6字节的主键(用户不可见)，数据是主索引的一部分，附加索引保存的是主索引的值。</p> 
+<h3>9、表的具体行数</h3> 
+<p>MyISAM:保存有表的总行数，如果select count() from table;会直接取出出该值。</p> 
+<p>InnoDB:没有保存表的总行数，如果使用select count(*) from table;就会遍历整个表，消耗相当大，但是在加了wehre条件后，myisam和innodb处理的方式都一样。</p> 
+<h3>10、CRUD操作</h3> 
+<p>MyISAM:如果执行大量的SELECT，MyISAM是更好的选择。</p> 
+<p>InnoDB:如果你的数据执行大量的INSERT或UPDATE，出于性能方面的考虑，应该使用InnoDB表。</p> 
+<h3>11、外键</h3> 
+<p>MylSAM:不支持</p> 
+<p>InnoDB:支持</p> 
+<h2>三、sql优化简介</h2> 
+<h3>1、什么情况下进行sql优化</h3> 
+<p>性能低、执行时间太长、等待时间太长、连接查询、索引失效。</p> 
+<h3>2、sql语句执行过程</h3> 
+<p>（1）编写过程</p> 
+<blockquote> 
+ <p><code>select distinct ... from ... join ... on ... where ... group by ... having ... order by ... limit ... </code></p> 
+</blockquote> 
+<p>（2）解析过程</p> 
+<blockquote> 
+ <p><code>from ... on ... join ... where ... group by ... having ... select distinct ... order by ... limit ... </code></p> 
+</blockquote> 
+<h3>3、sql优化就是优化索引</h3> 
+<p>索引相当于书的目录。</p> 
+<p>索引的数据结构是B+树。</p> 
+<h2>四、索引</h2> 
+<h3>1、索引的优势</h3> 
+<p>(1)提高查询效率(降低IO使用率)</p> 
+<p>(2)降低CPU使用率</p> 
+<p>比如查询order by age desc，因为B+索引树本身就是排好序的，所以再查询如果触发索引，就不用再重新查询了。</p> 
+<h3>2、索引的弊端</h3> 
+<p>(1)索引本身很大，可以存放在内存或硬盘上，通常存储在硬盘上。</p> 
+<p>(2)索引不是所有情况都使用，比如①少量数据②频繁变化的字段③很少使用的字段</p> 
+<p>(3)索引会降低增删改的效率</p> 
+<h3>3、索引的分类</h3> 
+<p>(1)单值索引</p> 
+<p>(2)唯一索引</p> 
+<p>(3)联合索引</p> 
+<p>(4)主键索引</p> 
+<p>备注:唯─索引和主键索引唯一的区别:主键索引不能为null</p> 
+<h3>4、创建索引</h3> 
+<blockquote> 
+ <p><code>alter table user add INDEX `user_index_username_password` (`username`,`password`) </code></p> 
+</blockquote> 
+<p></p> 
+<p class="img-center"><img alt="image.png" height="442" src="https://images2.imgbox.com/23/bc/WJrZXCsy_o.png" width="1200"></p> 
+<h3>5、MySQL索引原理-&gt;B+树</h3> 
+<p>MySQL索引的底层数据结构是B+树</p> 
+<p>B+Tree是在B-Tree基础上的一种优化，使其更适合实现外存储索引结构，InnoDB存储引擎就是用B+Tree实现其索引结构。</p> 
+<p>B-Tree结构图中每个节点中不仅包含数据的key值，还有data值。而每一个页的存储空间是有限的，如果data数据较大时将会导致每个节点(即一个页)能存储的key的数量很小，当存储的数据量很大时同样会导致B-Tree的深度较大，增大查询时的磁盘O次数，进而影响查询效率。在B+Tree中，所有数据记录节点都是按照键值大小顺序存放在同一层的叶子节点上，而非叶子节点上只存储key值信息，这样可以大大加大每个节点存储的key值数量，降低B+Tree的高度。</p> 
+<p>B+Tree相对于B-Tree有几点不同:</p> 
+<ul><li> <p>非叶子节点只存储键值信息。</p> </li><li> <p>所有叶子节点之间都有一个链指针。</p> </li><li> <p>数据记录都存放在叶子节点中。</p> </li></ul> 
+<p>将上一节中的B-Treel优化，由于B+Tree的非叶子节点只存储键值信息，假设每个磁盘块能存储4个键值及指针信息，则变成B+Tree后其结构如下图所示:</p> 
+<p></p> 
+<p class="img-center"><img alt="image.png" height="567" src="https://images2.imgbox.com/62/58/pCVkOqXN_o.png" width="1200"></p> 
+<p>通常在B+Tree上有两个头指针，一个指向根节点，另一个指向关键字最小的叶子节点，而且所有叶子节点（即数据节点)之间是一种链式环结构。因此可以对B+Tree进行两种查找运算:一种是对于主键的范围查找和分页查找，另一种是从根节点开始，进行随机查找。可能上面例子中只有22条数据记录，看不出B+Tree的优点，下面做一个推算:</p> 
+<p>InnoDB存储引擎中页的大小为16KB，一般表的主键类型为INT(占用4个字节）或BIGINT(占用8个字节)，指针类型也一般为4或8个字节，也就是说一个页(B+Tree中的一个节点)中大概存储16KB/(8B+8B)=1K个键值（因为是估值，为方便计算，这里的K取值为【10]13)。也就是说一个深度为3的B+Tree索引可以维护10^3* 10^3*10^3=10亿条记录。</p> 
+<p>实际情况中每个节点可能不能填充满，因此在数据库中，B+Tree的高度一般都在2-4层。MySQL的JInoDB存储引擎在设计时是将根节点常驻内存的，也就是说查找某─键值的行记录时最多只需要1~3次磁盘I/O操作。</p> 
+<p>数据库中的B+Tree索引可以分为聚集索引(clustered index)和辅助索引(secondary index)。上面的B+Tree示例图在数据库中的实现即为聚集索引，聚集索引的B+Tree中的叶子节点存放的是整张表的行记录数据。辅助索引与聚集索引的区别在于辅助索引的叶子节点并不包含行记录的全部数据，而是存储相应行数据的聚集索引键，即主键。当通过辅助索引来查询数据时，InoDB存储引擎会遍历辅助索引找到主键，然后再通过主键在聚集索引中找到完整的行记录数据。</p> 
+<h2>五、如何触发联合索引</h2> 
+<h3>1、对user表建立联合索引username、password</h3> 
+<p></p> 
+<p class="img-center"><img alt="image.png" height="439" src="https://images2.imgbox.com/20/28/MNAkyCwI_o.png" width="1200"></p> 
+<h3>2、触发联合索引</h3> 
+<p>(1)使用联合索引的全部索引键可触发联合索引</p> 
+<p></p> 
+<p class="img-center"><img alt="image.png" height="603" src="https://images2.imgbox.com/9e/92/NGs6Vc8n_o.png" width="1200"></p> 
+<p>(2)使用联合索引的全部索引键，但是用or连接的，不可触发联合索引</p> 
+<p>(3)单独使用联合索引的左边第一个字段时，可触发联合索引</p> 
+<p></p> 
+<p class="img-center"><img alt="image.png" height="620" src="https://images2.imgbox.com/dd/08/s3Le2sqs_o.png" width="1200"></p> 
+<p>(4）单独使用联合索引的其它字段时，不可触发联合索引</p> 
+<p></p> 
+<p class="img-center"><img alt="image.png" height="582" src="https://images2.imgbox.com/fc/80/zcJsxFIq_o.png" width="1200"></p> 
+<h2>六、分析sql的执行计划---explain</h2> 
+<p>explain可以模拟sql优化执行sql语句。</p> 
+<h3>1、explan使用简介</h3> 
+<p>(1)用户表</p> 
+<p></p> 
+<p class="img-center"><img alt="image.png" height="223" src="https://images2.imgbox.com/aa/f1/JRBFegAb_o.png" width="1200"></p> 
+<p>(2)部门表</p> 
+<p></p> 
+<p class="img-center"><img alt="image.png" height="298" src="https://images2.imgbox.com/a9/22/BrywBUeV_o.png" width="553"></p> 
+<p>(3)未触发索引</p> 
+<p></p> 
+<p class="img-center"><img alt="image.png" height="550" src="https://images2.imgbox.com/ed/77/H11oIYxl_o.png" width="1200"></p> 
+<p>(4)触发索引</p> 
+<p></p> 
+<p class="img-center"><img alt="image.png" height="522" src="https://images2.imgbox.com/b9/b9/LFIiwqfG_o.png" width="1200"></p> 
+<p>(5)结果分析</p> 
+<p><strong>explain中第一行出现的表是驱动表。</strong></p> 
+<ol><li> <p>指定了联接条件时，满足查询条件的记录行数少的表为[驱动表]</p> </li><li> <p>未指定联接条件时，行数少的表为[驱动表]</p> </li></ol> 
+<p>对驱动表直接进行排序就会触发索引，对非驱动表进行排序不会触发索引。</p> 
+<h3>2、explain查询结果简介</h3> 
+<p>(1) id: SELECT识别符。这是SELECT的查询序列号。</p> 
+<p>(2) select_type: SELECT类型:</p> 
+<ol><li>SIMPLE:简单SELECT(不使用UNION或子查询)</li><li>PRIMARY:最外面的SELECT</li><li>UNION: UNION中的第二个或后面的SELECT语句</li><li>DEPENDENT UNION: UNION中的第二个或后面的SELECT语句，取决于外面的查询</li><li>UNION RESULT: UNION的结果</li><li>SUBQUERY:子查询中的第一个SELECT</li><li>DEPENDENT SUBQUERY:子查询中的第一个SELECT，取决于外面的查询</li><li>DERIVED:导出表的SELECT(FROM子句的子查询)</li></ol> 
+<p>(3) table:表名</p> 
+<p>(4) type:联接类型</p> 
+<ol><li>system:表仅有一行(=系统表)。这是const联接类型的一个特例。</li><li>const:表最多有一个匹配行，它将在查询开始时被读取。因为仅有一行，在这行的列值可被优化器剩余部分认为是常数。const用于用常数值比较PRIMARY KEY或UNIQUE索引的所有部分时。</li><li>eq_ref:对于每个来自于前面的表的行组合，从该表中读取一行。这可能是最好的联接类型，除了const类型。它用在一个索引的所有部分被联接使用并且索引是UNIQUE或PRIMARYKEY。eq_ref可以用于使用=操作符比较的带索引的列。比较值可以为常量或一个使用在该表前面所读取的表的列的表达式。</li><li>ref:对于每个来自于前面的表的行组合，所有有匹配索引值的行将从这张表中读取。如果联接只使用键的最左边的前缀，或如果键不是UNIQUE或PRIMARYKEY(换句话说，如果联接不能基于关键字选择单个行的话)，则使用ref。如果使用的键仅仅匹配少量行,该联接类型是不错的。ref可以用于使用=或&lt;=&gt;操作符的带索引的列。</li><li>ref_or_null:该联接类型如同ref，但是添加了MySQL可以专门搜索包含NULL值的行。在解决子查询中经常使用该联接类型的优化。</li><li>index_merge:该联接类型表示使用了索引合并优化方法。在这种情况下，key列包含了使用的索引的清单，key.len包含了使用的索引的最长的关键元素。</li><li>unique_subquery:该类型替换了下面形式的IN子查询的ref: value IN(SELECT primary_key FROMsingle_table WHERE some_expr);unique_subquery是一个索引查找函数，可以完全替换子查询，效率更高。</li><li>index_subquery:该联接类型类似于unique_subquery。可以替换IN子查询，但只适合下列形式的子查询中的非唯一索引: value lN(SELECT key_column FROM single_table WHERE some_expr)9.range:只检索给定范围的行，使用一个索引来选择行。key列显示使用了哪个索引。key_len包含所使用索引的最长关键元素。在该类型中re冽列为NULL。当使用=、&lt;&gt;、&gt;、=、&lt;、&lt;=、IS NULL、&lt;=&gt;、BETWEEN或者IN操作符，用常量比较关键字列时，可以使用range</li><li>index:该联接类型与ALL相同，除了只有索引树被扫描。这通常比ALL快，因为索引文件通常比数据文件小</li><li>all:对于每个来自于先前的表的行组合，进行完整的表扫描。如果表是第一个没标记const的表，这通常不好，并且通常在它情况下很差。通常可以增加更多的索引而不要使用ALL，使得行能基于前面的表中的常数值或列值被检索出。</li></ol> 
+<p>(5) possible_keys: possible_keys列指出MySQL能使用哪个索引在该表中找到行。注意，该列完全独立于EXPLAIN输出所示的表的次序。这意味着在possible_keys中的某些键实际上不能按生成的表次序使用。</p> 
+<p>(6) key: key列显示MySQL实际决定使用的键(索引)。如果没有选择索引，键是NULL。要想强制MySQL使用或忽衩possible_keys列中的索引，在查询中使用FORCE INDEX、USE INDEX或者IGNORE INDEX。</p> 
+<p>(7) key_len: key_len列显示MySQL决定使用的键长度。如果键是NULL，则长度为NULL。注意通过key_len值我们可以确定MySQL将实际使用一个多部关键字的几个部分。</p> 
+<p>(8) ref: ref列显示使用哪个列或常数与key一起从表中选择行。</p> 
+<p>(9) rows: rows列显示MySQL认为它执行查询时必须检查的行数。</p> 
+<p>(10)Extra:该列包含MySQL解决查询的详细信息。</p> 
+<ol><li>Distinct: MySQL发现第1个匹配行后，停止为当前的行组合搜索更多的行。</li><li>Not exists: MySQL能够对查询进行LEFTJOIN优化，发现1个匹配LEFTJOIN标准的行后，不再为前面的的行组合在该表内检查更多的行。</li><li>range checked for each record (index map: #): MySQL没有发现好的可以使用的索引，但发现如果来自前面的表的列值已知，可能部分索引可以使用。对前面的表的每个行组合，MySQL检查是否可以使用range或index_merge访问方法来索取行。</li><li>Using flesort:MySQL需要额外的一次传递，以找出如何按排序顺序检索行。通过根据联接类型浏览所有行并为所有匹配WHERE子句的行保存排序关键字和行的指针来完成排序。然后关键字被排序，并按排序顺序检索行。</li><li>Using index:从只使用索引树中的信息而不需要进一步搜索读取实际的行来检索表中的列信息。当查询只使用作为单一索引一部分的列时，可以使用该策略。</li><li>Using temporary:为了解决查询，MySQL需要创建一个临时表来容纳结果。典型情况如查询包含可以按不同情况列出列的GROUPBY和ORDER BY子句时。</li><li>Using where: WHERE子句用于限制哪一个行匹配下一个表或发送到客户。除非你专门从表中索取或检查所有行，如果Extra值不为Using where并且表联接类型为ALL或index，查询可能会有一些错误。</li><li>Using sort_union...), Using union ...), Uusing intersect(..):这些函数说明如何为index_merge联接类型合并索引扫描。</li><li>Using index for group-by:类似于访问表的Using index方式，Using index for group-by表示MySQL发现了一个索引，可以用来查询GROUP BY或DISTINCT查询的所有列，而不要额外搜索硬盘访问实际的表。并且，按最有效的方式使用索引，以便对于每个组，只读取少量索引条目。</li></ol> 
+<p>通过相乘EXPLAIN输出的rows列的所有值，你能得到一个关于一个联接如何的提示。这应该粗略地告诉你MySQL必须检查多少行以执行查询。当你使用max_join_size变量限制查询时，也用这个乘积来确定执行哪个多表SELECT语句</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c0a97626d975144d5befdb766030dab7/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Redisson——联合锁和红锁</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/bd21206b2f415f61226ffc1af9ec8382/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Flink基础实操-计算单词出现次数</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

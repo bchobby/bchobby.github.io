@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Android-启动模式task-lunchmodle-intent flag 总结 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Android-启动模式task-lunchmodle-intent flag 总结" />
+<meta property="og:description" content="总结： 同一task内的activity可以是来自不同进程的activity栈内的activity不会重新排序，只能push或者popstandard模式允许多实例，可以在不同的tasksingleTask的activity只会存在一个实例singleTask的activity如果设置了独立的taskAffinity属性值，启动时就会在新的task中，否则会在已有task中singleTask的activity启动时，它会在目标task（新的task或者已有task）中查看是否已经存在相应的activity实例，如果存在，就会把位于这个activity实例上面的activity全部销毁（pop, destroy）掉，即最终这个activity实例会位于任务的堆栈顶端中 task task是一个从用户角度出发的概念，它是一些activity的组合，它们组合起来是为了让用户完成某一件工作（或者说操作）。
+task内的activity们以栈的形式组织起来，也就是back stack了。栈内的activity不会重新排序，只能push或者pop。栈内的activity可以来自不同的app，因此可以是运行在不同的进程，但是它们都属于同一个task内。
+安卓系统是实时多task系统，用户可以随意在多个task之间切换。当一个task的栈内所有activity都pop之后，task也就销毁了。有时系统为了回收内存，会销毁activity，但是task不会销毁。
+activity在manifest中有launchMode选项，可以配置其启动的模式。标准模式下，允许一个activity同时存在多个实例，既可以在同一个task，也可以在不同task。manifest可以指定launchMode，intent可以指定intent flag，前者供被启动者使用，后者供启动者使用，同时使用时后者会覆盖前者。
+launchMode standard，默认模式，允许多实例singleTop，相比于standard，有新的启动请求时，只有在目标activity处于当前栈顶时，才会调用onNewIntent()而不创建新实例，其他情况都和standard一致singleTask，（这段摘自老罗的博客）设置了”singleTask”启动模式的Activity，它在启动的时候，会先在系统中查找属性值affinity等于它的属性值taskAffinity的任务存在；如果存在这样的任务，它就会在这个任务中启动，否则就会在新任务中启动。因此，如果我们想要设置了”singleTask”启动模式的Activity在新的任务中启动，就要为它设置一个独立的taskAffinity属性值。如果设置了”singleTask”启动模式的Activity不是在新的任务中启动时，它会在已有的任务中查看是否已经存在相应的Activity实例，如果存在，就会把位于这个Activity实例上面的Activity全部结束掉，即最终这个Activity实例会位于任务的堆栈顶端中。singleInstance，和singleTask相比，不同点在于singleInstance activity所在的task只会有这一个activity返回导航：singleTask和singleInstance启动的activity，尽管可能不在同一个task，但是仍然会回到原来的activity；但是singleTask可能会存在back stack“拼接”的情况 launchMode验证测试 主要测试的是singleTask这一属性，其他的文档描述都比较清楚，也不容易产生误解。两组实验，不设置taskAffinity和设置taskAffinity时，singleTask的行为。对比两者“最近任务”，dumpsys，logcat，返回导航的差异。
+测试1 不设置taskAffinity，MainActivity -&gt; SingleTaskFirstActivity -&gt; SimpleActivity -&gt; SingleTaskSecondActivity -&gt; 选择图片Intent，再一路返回。
+最近任务内只能看到一个TaskDemo的任务，dumpsys的结果如下：
+所有的activity均在同一个task内，验证了老罗的结论。另外注意标红的两处，它们的ProcessRecord对象不同，ImageGallery和SingleTaskActivity处于不同的进程，也验证了前文所述“可以运行在不同的进程”。
+logcat日志如下：
+一路返回依次回到SingleTaskSecondActivity, SimpleActivity, SingleTaskFirstActivity,MainActivity, 桌面。
+测试2 设置SingleTaskFirstActivity的taskAffinity为单独的值，MainActivity -&gt; SingleTaskFirstActivity。
+通过最近任务可以看到，有了两个TaskDemo的任务。而dumpsys结果如下：
+可以看到，MainActivity和SingleTaskFirstActivity运行在了两个不同的task里面（栈底为MainActivity的t225, 栈底为SingleTaskFirstActivity的t226），但是他们仍属于同一进程。
+我们接着启动SimpleActivity，再通过最近任务切换回t225，并且也启动SimpleActivity，这时通过dumpsys结果如下：
+SimpleActivity同时存在两个实例，他们的hashCode是不同的，目前处于resumed状态的是在t225中的实例。
+而通过查看logcat：
+我们同样发现SimpleActivity被创建了两个实例。
+此时我们通过最近任务切换回t226，并在此启动SingleTaskSecondActivity，查看dumpsys，然后再切换回t225也启动SingleTaskSecondActivity，查看dumpsys和logcat：
+我们可以看到尽管第一次启动SingleTaskSecondActivity是在t226，但是SingleTaskSecondActivity实例却运行在t225中，为什么呢？因为SingleTaskSecondActivity并没有设置taskAffinity属性，所以它和MainActivity将会运行在同一个task中！和老罗的分析一致。而第二次启动时，并未创建新的SingleTaskSecondActivity实例，而是调用了它的onNewIntent方法，和文档描述一致。
+现在我们测试一下返回导航，依次按下返回键，观察每次回到的activity，以及每次dumpsys的结果，以及logcat的结果：
+第一次回到了t225的SimpleActivity，dumpsys：
+第二次回到了t225的MainActivity，dumpsys：
+第三次回到了t226的SimpleActivity，dumpsys：
+第四次回到了t226的SingleTaskFirstActivity，dumpsys：
+最后一次返回就回到了桌面。
+logcat日志如下：
+从上面的返回路径来看，确实验证了developer文档上关于back stack“拼接”的情况的描述，即：并不是按照most recent first的顺序返回的，而是优先把一个task的back stack（t225） pop完毕之后，再pop下一个task的back stack（t226）。
+测试3 基于测试2的版本，MainActivity -&gt; SingleTaskFirstActivity -&gt; SimpleActivity，再切换回MainActivity，再启动SingleTaskFirstActivity。
+查看最近任务，仍然有两个task，但是查看dumpsys以及logcat：
+我们可以看到，第一次启动的SimpleActivity就被pop（destroy）了，从而把未在栈顶的SingleTaskFirstActivity提到了栈顶。这也验证了back stack内的activity不会重新排序，最会pop和push的事实。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/7ec4c09f3a5a3408bac58558bd96cc47/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2016-06-20T15:36:08+08:00" />
+<meta property="article:modified_time" content="2016-06-20T15:36:08+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Android-启动模式task-lunchmodle-intent flag 总结</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> <br> </p> 
+<h3 id="tl-dr" style="line-height:1.1; color:rgb(64,64,64); margin:30px 0px 10px; font-size:30px"> 总结：<a target="_blank" class="anchorjs-link " href="http://blog.piasy.com/2016/03/19/Android-Task-And-Back-Stack/#tl-dr" rel="nofollow noopener noreferrer" style=""></a></h3> 
+<ul style="margin-top:0px; margin-bottom:40px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"><li style="">同一task内的activity可以是来自不同进程的activity</li><li style="">栈内的activity不会重新排序，只能push或者pop</li><li style="">standard模式允许多实例，可以在不同的task</li><li style="">singleTask的activity只会存在一个实例</li><li style="">singleTask的activity如果设置了独立的taskAffinity属性值，启动时就会在新的task中，否则会在已有task中</li><li style="">singleTask的activity启动时，它会在目标task（新的task或者已有task）中查看是否已经存在相应的activity实例，如果存在，就会把位于这个activity实例上面的activity全部销毁（pop, destroy）掉，即最终这个activity实例会位于任务的堆栈顶端中</li></ul> 
+<h3 id="task" style="line-height:1.1; color:rgb(64,64,64); margin:30px 0px 10px; font-size:30px"> task<a target="_blank" class="anchorjs-link " href="http://blog.piasy.com/2016/03/19/Android-Task-And-Back-Stack/#task" rel="nofollow noopener noreferrer" style=""></a></h3> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> task是一个从用户角度出发的概念，它是一些activity的组合，它们组合起来是为了让用户完成某一件工作（或者说操作）。</p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> task内的activity们以栈的形式组织起来，也就是back stack了。栈内的activity不会重新排序，只能push或者pop。栈内的activity可以来自不同的app，因此可以是运行在不同的进程，但是它们都属于同一个task内。</p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 安卓系统是实时多task系统，用户可以随意在多个task之间切换。当一个task的栈内所有activity都pop之后，task也就销毁了。有时系统为了回收内存，会销毁activity，但是task不会销毁。</p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> activity在manifest中有launchMode选项，可以配置其启动的模式。标准模式下，允许一个activity同时存在多个实例，既可以在同一个task，也可以在不同task。manifest可以指定launchMode，intent可以指定intent flag，前者供被启动者使用，后者供启动者使用，同时使用时后者会覆盖前者。</p> 
+<h3 id="launchmode" style="line-height:1.1; color:rgb(64,64,64); margin:30px 0px 10px; font-size:30px"> launchMode<a target="_blank" class="anchorjs-link " href="http://blog.piasy.com/2016/03/19/Android-Task-And-Back-Stack/#launchmode" rel="nofollow noopener noreferrer" style=""></a></h3> 
+<ul style="margin-top:0px; margin-bottom:40px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"><li style="">standard，默认模式，允许多实例</li><li style="">singleTop，相比于standard，有新的启动请求时，只有在目标activity处于当前栈顶时，才会调用<code class="highlighter-rouge" style='font-family:Menlo,Monaco,Consolas,"Courier New",monospace; font-size:14.4px; padding:2px 4px; color:rgb(199,37,78); background-color:rgb(249,242,244)'>onNewIntent()</code>而不创建新实例，其他情况都和standard一致</li><li style="">singleTask，（这段摘自<a target="_blank" href="http://blog.csdn.net/luoshengyang/article/details/6714543" style="color:rgb(51,122,183); text-decoration:none; background-color:transparent" rel="noopener noreferrer">老罗的博客</a>）设置了”singleTask”启动模式的Activity，它在启动的时候，会先在系统中查找属性值affinity等于它的属性值taskAffinity的任务存在；如果存在这样的任务，它就会在这个任务中启动，否则就会在新任务中启动。因此，如果我们想要设置了”singleTask”启动模式的Activity在新的任务中启动，就要为它设置一个独立的taskAffinity属性值。如果设置了”singleTask”启动模式的Activity不是在新的任务中启动时，它会在已有的任务中查看是否已经存在相应的Activity实例，如果存在，就会把位于这个Activity实例上面的Activity全部结束掉，即最终这个Activity实例会位于任务的堆栈顶端中。</li><li style="">singleInstance，和singleTask相比，不同点在于singleInstance activity所在的task只会有这一个activity</li><li style="">返回导航：singleTask和singleInstance启动的activity，尽管可能不在同一个task，但是仍然会回到原来的activity；但是singleTask可能会存在<a target="_blank" href="http://developer.android.com/images/fundamentals/diagram_backstack_singletask_multiactivity.png" rel="nofollow noopener noreferrer" style="color:rgb(51,122,183); text-decoration:none; background-color:transparent">back stack“拼接”的情况</a></li></ul> 
+<h3 id="launchmode-1" style="line-height:1.1; color:rgb(64,64,64); margin:30px 0px 10px; font-size:30px"> launchMode验证测试<a target="_blank" class="anchorjs-link " href="http://blog.piasy.com/2016/03/19/Android-Task-And-Back-Stack/#launchmode-1" rel="nofollow noopener noreferrer" style=""></a></h3> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 主要测试的是singleTask这一属性，其他的文档描述都比较清楚，也不容易产生误解。两组实验，不设置taskAffinity和设置taskAffinity时，singleTask的行为。对比两者“最近任务”，dumpsys，logcat，返回导航的差异。</p> 
+<h4 id="section" style="line-height:1.1; color:rgb(64,64,64); margin:30px 0px 10px; font-size:24px"> 测试1<a target="_blank" class="anchorjs-link " href="http://blog.piasy.com/2016/03/19/Android-Task-And-Back-Stack/#section" rel="nofollow noopener noreferrer" style=""></a></h4> 
+<blockquote style="padding:10px 20px; margin:20px 0px; font-size:0.95em; border-left-width:5px; border-left-style:solid; border-left-color:rgb(238,238,238); color:gray; font-style:italic"> 
+ <p style="margin-top:0px; margin-bottom:0px">不设置taskAffinity，MainActivity -&gt; SingleTaskFirstActivity -&gt; SimpleActivity -&gt; SingleTaskSecondActivity -&gt; 选择图片Intent，再一路返回。</p> 
+</blockquote> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 最近任务内只能看到一个TaskDemo的任务，dumpsys的结果如下：</p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> <img src="https://images2.imgbox.com/dd/00/Vby12e7u_o.jpg" alt="dumpsys的结果" style="border:0px; vertical-align:middle; display:block; max-width:100%; height:auto; margin:1.5em auto 1.6em"></p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 所有的activity均在同一个task内，验证了老罗的结论。另外注意标红的两处，它们的ProcessRecord对象不同，ImageGallery和SingleTaskActivity处于不同的进程，也验证了前文所述“可以运行在不同的进程”。</p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> logcat日志如下：</p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> <img src="https://images2.imgbox.com/4a/d9/FPZpiJCt_o.png" alt="logcat的结果" style="border:0px; vertical-align:middle; display:block; max-width:100%; height:auto; margin:1.5em auto 1.6em"></p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 一路返回依次回到SingleTaskSecondActivity, SimpleActivity, SingleTaskFirstActivity,MainActivity, 桌面。</p> 
+<h4 id="section-1" style="line-height:1.1; color:rgb(64,64,64); margin:30px 0px 10px; font-size:24px"> 测试2<a target="_blank" class="anchorjs-link " href="http://blog.piasy.com/2016/03/19/Android-Task-And-Back-Stack/#section-1" rel="nofollow noopener noreferrer" style=""></a></h4> 
+<blockquote style="padding:10px 20px; margin:20px 0px; font-size:0.95em; border-left-width:5px; border-left-style:solid; border-left-color:rgb(238,238,238); color:gray; font-style:italic"> 
+ <p style="margin-top:0px; margin-bottom:0px">设置SingleTaskFirstActivity的taskAffinity为单独的值，MainActivity -&gt; SingleTaskFirstActivity。</p> 
+</blockquote> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 通过最近任务可以看到，有了两个TaskDemo的任务。而dumpsys结果如下：</p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> <img src="https://images2.imgbox.com/08/3e/y1e9JM9X_o.jpg" alt="dumpsys的结果2" style="border:0px; vertical-align:middle; display:block; max-width:100%; height:auto; margin:1.5em auto 1.6em"></p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 可以看到，MainActivity和SingleTaskFirstActivity运行在了两个不同的task里面（栈底为MainActivity的t225, 栈底为SingleTaskFirstActivity的t226），但是他们仍属于同一进程。</p> 
+<blockquote style="padding:10px 20px; margin:20px 0px; font-size:0.95em; border-left-width:5px; border-left-style:solid; border-left-color:rgb(238,238,238); color:gray; font-style:italic"> 
+ <p style="margin-top:0px; margin-bottom:0px">我们接着启动SimpleActivity，再通过最近任务切换回t225，并且也启动SimpleActivity，这时通过dumpsys结果如下：</p> 
+</blockquote> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> <img src="https://images2.imgbox.com/81/c7/EP7UPdES_o.jpg" alt="dumpsys的结果3" style="border:0px; vertical-align:middle; display:block; max-width:100%; height:auto; margin:1.5em auto 1.6em"></p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> SimpleActivity同时存在两个实例，他们的hashCode是不同的，目前处于resumed状态的是在t225中的实例。</p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 而通过查看logcat：</p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> <img src="https://images2.imgbox.com/e7/a4/gcrnMKaU_o.png" alt="logcat的结果2" style="border:0px; vertical-align:middle; display:block; max-width:100%; height:auto; margin:1.5em auto 1.6em"></p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 我们同样发现SimpleActivity被创建了两个实例。</p> 
+<blockquote style="padding:10px 20px; margin:20px 0px; font-size:0.95em; border-left-width:5px; border-left-style:solid; border-left-color:rgb(238,238,238); color:gray; font-style:italic"> 
+ <p style="margin-top:0px; margin-bottom:0px">此时我们通过最近任务切换回t226，并在此启动SingleTaskSecondActivity，查看dumpsys，然后再切换回t225也启动SingleTaskSecondActivity，查看dumpsys和logcat：</p> 
+</blockquote> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> <img src="https://images2.imgbox.com/d9/c3/fSe09IuY_o.jpg" alt="dumpsys的结果4" style="border:0px; vertical-align:middle; display:block; max-width:100%; height:auto; margin:1.5em auto 1.6em"><img src="https://images2.imgbox.com/d0/fa/VIm8Ncjs_o.jpg" alt="dumpsys的结果5" style="border:0px; vertical-align:middle; display:block; max-width:100%; height:auto; margin:1.5em auto 1.6em"><img src="https://images2.imgbox.com/73/a5/tjqxxFwa_o.png" alt="logcat的结果3" style="border:0px; vertical-align:middle; display:block; max-width:100%; height:auto; margin:1.5em auto 1.6em"></p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 我们可以看到尽管第一次启动SingleTaskSecondActivity是在t226，但是SingleTaskSecondActivity实例却运行在t225中，为什么呢？因为SingleTaskSecondActivity并没有设置taskAffinity属性，所以它和MainActivity将会运行在同一个task中！和老罗的分析一致。而第二次启动时，并未创建新的SingleTaskSecondActivity实例，而是调用了它的onNewIntent方法，和文档描述一致。</p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 现在我们测试一下返回导航，依次按下返回键，观察每次回到的activity，以及每次dumpsys的结果，以及logcat的结果：</p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 第一次回到了t225的SimpleActivity，dumpsys：<img src="https://images2.imgbox.com/80/f5/Ep3jHwbY_o.jpg" alt="第1次dumpsys的结果" style="border:0px; vertical-align:middle; display:block; max-width:100%; height:auto; margin:1.5em auto 1.6em"></p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 第二次回到了t225的MainActivity，dumpsys：<img src="https://images2.imgbox.com/91/c5/J61tdAsj_o.jpg" alt="第2次dumpsys的结果" style="border:0px; vertical-align:middle; display:block; max-width:100%; height:auto; margin:1.5em auto 1.6em"></p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 第三次回到了t226的SimpleActivity，dumpsys：<img src="https://images2.imgbox.com/a2/77/XUim1lhw_o.jpg" alt="第3次dumpsys的结果" style="border:0px; vertical-align:middle; display:block; max-width:100%; height:auto; margin:1.5em auto 1.6em"></p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 第四次回到了t226的SingleTaskFirstActivity，dumpsys：<img src="https://images2.imgbox.com/8e/63/O8I34b5G_o.jpg" alt="第4次dumpsys的结果" style="border:0px; vertical-align:middle; display:block; max-width:100%; height:auto; margin:1.5em auto 1.6em"></p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 最后一次返回就回到了桌面。</p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> logcat日志如下：<img src="https://images2.imgbox.com/8f/41/mZ7BC8Xo_o.jpg" alt="依次返回logcat的结果" style="border:0px; vertical-align:middle; display:block; max-width:100%; height:auto; margin:1.5em auto 1.6em"></p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 从上面的返回路径来看，确实验证了<a target="_blank" href="http://developer.android.com/images/fundamentals/diagram_backstack_singletask_multiactivity.png" rel="nofollow noopener noreferrer" style="color:rgb(51,122,183); text-decoration:none; background-color:transparent">developer文档上关于back stack“拼接”的情况</a>的描述，即：并不是按照most recent first的顺序返回的，而是优先把一个task的back stack（t225） pop完毕之后，再pop下一个task的back stack（t226）。</p> 
+<h4 id="section-2" style="line-height:1.1; color:rgb(64,64,64); margin:30px 0px 10px; font-size:24px"> 测试3<a target="_blank" class="anchorjs-link " href="http://blog.piasy.com/2016/03/19/Android-Task-And-Back-Stack/#section-2" rel="nofollow noopener noreferrer" style=""></a></h4> 
+<blockquote style="padding:10px 20px; margin:20px 0px; font-size:0.95em; border-left-width:5px; border-left-style:solid; border-left-color:rgb(238,238,238); color:gray; font-style:italic"> 
+ <p style="margin-top:0px; margin-bottom:0px">基于测试2的版本，MainActivity -&gt; SingleTaskFirstActivity -&gt; SimpleActivity，再切换回MainActivity，再启动SingleTaskFirstActivity。</p> 
+</blockquote> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 查看最近任务，仍然有两个task，但是查看dumpsys以及logcat：<img src="https://images2.imgbox.com/ec/58/lr0HRFC3_o.jpg" alt="测试3 dumpsys的结果" style="border:0px; vertical-align:middle; display:block; max-width:100%; height:auto; margin:1.5em auto 1.6em"><img src="https://images2.imgbox.com/ff/64/q78xWbPS_o.jpg" alt="测试3 logcat的结果" style="border:0px; vertical-align:middle; display:block; max-width:100%; height:auto; margin:1.5em auto 1.6em"></p> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 我们可以看到，第一次启动的SimpleActivity就被pop（destroy）了，从而把未在栈顶的SingleTaskFirstActivity提到了栈顶。这也验证了back stack内的activity不会重新排序，最会pop和push的事实。</p> 
+<h3 id="intent-flag" style="line-height:1.1; color:rgb(64,64,64); margin:30px 0px 10px; font-size:30px"> Intent flag<a target="_blank" class="anchorjs-link " href="http://blog.piasy.com/2016/03/19/Android-Task-And-Back-Stack/#intent-flag" rel="nofollow noopener noreferrer" style=""></a></h3> 
+<p style="margin-top:30px; margin-bottom:30px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"> 只要搞清楚了launchMode中容易产生误解的地方，对于intent flag来说，只需要记住一点即可：intent flag可以覆盖launchMode的设置。为了避免内容过于冗长，本文就不对intent flag进行详细的测试分析了。</p> 
+<h3 id="section-3" style="line-height:1.1; color:rgb(64,64,64); margin:30px 0px 10px; font-size:30px"> 总结<a target="_blank" class="anchorjs-link " href="http://blog.piasy.com/2016/03/19/Android-Task-And-Back-Stack/#section-3" rel="nofollow noopener noreferrer" style=""></a></h3> 
+<ul style="margin-top:0px; margin-bottom:40px; color:rgb(64,64,64); font-size:16px; line-height:27.2px"><li style="">同一task内的activity可以是来自不同进程的activity</li><li style="">栈内的activity不会重新排序，只能push或者pop</li><li style="">standard模式允许多实例，可以在不同的task</li><li style="">singleTask的activity只会存在一个实例</li><li style="">singleTask的activity如果设置了独立的taskAffinity属性值，启动时就会在新的task中，否则会在已有task中</li><li style="">singleTask的activity启动时，它会在目标task（新的task或者已有task）中查看是否已经存在相应的activity实例，如果存在，就会把位于这个activity实例上面的activity全部销毁（pop, destroy）掉，即最终这个activity实例会位于任务的堆栈顶端中</li><li></ul>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/405a3492b41ef832b57e3d12097735fa/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">变量名的命名规则</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/3299125dde501015380fb2cc462a6753/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Android Studio检测内存泄露和性能</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

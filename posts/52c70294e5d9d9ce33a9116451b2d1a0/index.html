@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Kubernetes 学习总结（41）—— 云原生容器网络详解 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Kubernetes 学习总结（41）—— 云原生容器网络详解" />
+<meta property="og:description" content="背景 随着网络技术的发展，网络的虚拟化程度越来越高，特别是云原生网络，叠加了物理网络、虚机网络和容器网络，数据包在网络 OSI 七层网络模型、TCP/IP 五层网络模型的不同网络层进行封包、转发和解包。网络数据包跨主机网络、容器网络、虚机网络和物理网络到达对端，期间必然带来网络性能损耗。
+场景 （1）低延时交易场景 证券交易系统具有交易时间相对集中、交易指令和数据密集的特点，对交易系统处理速度具有极高的要求。近年来，全球各大交易所都在不断对交易系统升级改造，其中“低时延”成为各大交易所竞争的核心，交易系统延时竞争已经进入微秒量级。用户通过客户端委托交易下单经过交易所外的交易软件、主机网络和物理网络，进入交易所内软硬件网络撮合交易，然后将委托回报和成交回报通过反向网络数据链路发送给用户。
+（2）视频和云游戏等流媒体场景 在多媒体领域，直播流媒体、在线视频和云游戏等场景都存在对网络性能、传输速度有极高的要求。单纯从软件或者操作系统虚拟化出来的网络设备，无法达到网络收发处理、转发和传输的性能要求，以及保证低丢包率和低时延。
+（3）流量隔离场景 在银行、证券、保险等金融行业，因金融政策、监管政策的要求，需要实现对管理流量、存储流量和业务流量进行隔离，做到网络运维管理，数据存储、数据备份和数据交互同步与业务流量分离，保障数据交互同步与正常网络访问的相互隔离，提高网络并发能力和降低网络延迟。
+以上应用场景，无法通过单纯的应用网络、主机网络和硬件网络来解决微妙级低延时要求。如何提升云原生时代整体网络性能，降低网络时延呢？我们可以从传统网络和容器网络路径分析哪些可以优化的点或片段，针对这些点或片段提供可行的容器网络加速方案。
+术语 CNI：Container Network Interface，容器运行时和网络实现之间的容器网络 API 接口。
+IPAM：专门用于管理容器的IP地址管理，包含对容器分配 IP 地址、网关、路由和 DNS 等管理。
+SR-IOV：Single Root I/O Virtualization，单根虚拟化，允许在虚拟机之间高效共享 PCIe 设备。
+PF：Physical Function，包含 SR-IOV 功能结构主要用于 SR-IOV 功能管理。PF 通过分配 VF 来配置和管理 SR-IOV 功能。
+VF：Virtual Function，轻量级 PCIE 功能（I/O 处理）的 PCIE 设备，每个VF 都是通过 PF 来生成管理，VF 的具体数量限制受限于 PCIE 设备、自身配置和驱动程序的支持。
+RDMA：Remote Direct Memory Access，远程直接内存访问，将网络协议栈下沉到网卡硬件，网卡硬件收发包并进行协议栈封装和解析，然后将数据存放到指定内存地址，而不需要 CPU 干预。
+DPDK：Data Plane Development Kit，数据平面开发套件，工作在用户态用于快速数据包处理，使用轮询 Polling 来处理数据包。
+VPP：Vector Packet Processing，矢量数据包处理，工作在用户态的高性能数据包处理协议栈。通常与 DPDK 结合使用，提供多种收发数据包、交换和路由能力。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/52c70294e5d9d9ce33a9116451b2d1a0/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-28T10:25:04+08:00" />
+<meta property="article:modified_time" content="2023-12-28T10:25:04+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Kubernetes 学习总结（41）—— 云原生容器网络详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2><strong>背景</strong></h2> 
+<p>随着网络技术的发展，网络的虚拟化程度越来越高，特别是<strong>云原生网络</strong>，叠加了物理网络、虚机网络和容器网络，数据包在网络 OSI 七层网络模型、TCP/IP 五层网络模型的不同网络层进行封包、转发和解包。网络数据包跨主机网络、容器网络、虚机网络和物理网络到达对端，期间必然带来网络性能损耗。</p> 
+<h2><strong>场景</strong></h2> 
+<h4>（1）低延时交易场景</h4> 
+<p>证券交易系统具有交易时间相对集中、交易指令和数据密集的特点，<strong>对交易系统处理速度具有极高的要求</strong>。近年来，全球各大交易所都在不断对交易系统升级改造，其中“低时延”成为各大交易所竞争的核心，交易系统延时竞争已经进入微秒量级。用户通过客户端委托交易下单经过交易所外的交易软件、主机网络和物理网络，进入交易所内软硬件网络撮合交易，然后将委托回报和成交回报通过反向网络数据链路发送给用户。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="398" src="https://images2.imgbox.com/f7/da/IT4OF6z4_o.jpg" width="996"></p> 
+<h4>（2）视频和云游戏等流媒体场景</h4> 
+<p>在多媒体领域，<strong>直播流媒体、在线视频和云游戏等场景</strong>都存在对网络性能、传输速度有极高的要求。单纯从软件或者操作系统虚拟化出来的网络设备，无法达到网络收发处理、转发和传输的性能要求，以及保证低丢包率和低<strong>时延</strong>。</p> 
+<h4>（3）流量隔离场景</h4> 
+<p>在银行、证券、保险等金融行业，因<strong>金融政策、监管政策</strong>的要求，需要实现对管理流量、存储流量和业务流量进行隔离，做到网络运维管理，数据存储、数据备份和数据交互同步与业务流量分离，保障<strong>数据交互同步与正常网络访问的相互隔离</strong>，提高网络并发能力和降低网络延迟。</p> 
+<p><span style="color:#ff9900;"><strong>以上应用场景，无法通过单纯的应用网络、主机网络和硬件网络来解决微妙级低延时要求。如何提升云原生时代整体网络性能，降低网络时延呢？我们可以从传统网络和容器网络路径分析哪些可以优化的点或片段，针对这些点或片段提供可行的容器网络加速方案。</strong></span></p> 
+<h2><strong>术语</strong></h2> 
+<blockquote> 
+ <p><strong>CNI：</strong>Container Network Interface，容器运行时和网络实现之间的容器网络 API 接口。</p> 
+ <p><strong>IPAM</strong>：专门用于管理容器的IP地址管理，包含对容器分配 IP 地址、网关、路由和 DNS 等管理。</p> 
+ <p><strong>SR-IOV</strong>：Single Root I/O Virtualization，单根虚拟化，允许在虚拟机之间高效共享 PCIe 设备。</p> 
+ <p><strong>PF</strong>：Physical Function，包含 SR-IOV 功能结构主要用于 SR-IOV 功能管理。PF 通过分配 VF 来配置和管理 SR-IOV 功能。</p> 
+ <p><strong>VF</strong>：Virtual Function，轻量级 PCIE 功能（I/O 处理）的 PCIE 设备，每个VF 都是通过 PF 来生成管理，VF 的具体数量限制受限于 PCIE 设备、自身配置和驱动程序的支持。</p> 
+ <p><strong>RDMA</strong>：Remote Direct Memory Access，远程直接内存访问，将网络协议栈下沉到网卡硬件，网卡硬件收发包并进行协议栈封装和解析，然后将数据存放到指定内存地址，而不需要 CPU 干预。</p> 
+ <p><strong>DPDK</strong>：Data Plane Development Kit，数据平面开发套件，工作在用户态用于快速数据包处理，使用轮询 Polling 来处理数据包。</p> 
+ <p><strong>VPP</strong>：Vector Packet Processing，矢量数据包处理，工作在用户态的高性能数据包处理协议栈。通常与 DPDK 结合使用，提供多种收发数据包、交换和路由能力。</p> 
+ <p><strong>VCL</strong>：VPP Communication Library，高性能 VPP 数据包处理协议栈类库。</p> 
+ <p><strong>eBPF</strong>：Extended Berkeley Packet Filter，可扩展的伯克利包过滤器，在操作系统内核中运行沙盒程序，安全有效地扩展内核功能，而不需要更改内核源代码或加载内核模块。主要提供主机网络通信、安全管理和可观测的能力。</p> 
+ <p><strong>Cilium</strong>：基于 eBPF 技术实现的网络插件，用于提供网络、安全和观测容器工作负载之间的云原生网络。</p> 
+ <p><strong>XDP</strong>：eXpress Data Path，快速数据路径，XDP 是 Linux 网络处理流程中的一个 eBPF 钩子，能够挂载 eBPF 程序，能够在网络数据包到达网卡驱动层时对其进行处理。</p> 
+</blockquote> 
+<h2><strong>传统网络数据包处理路径</strong></h2> 
+<p>在传统的 Linux 主机网络中，源应用程序通过系统调用与内核中 Socket 层进行网络数据交互，网络数据包分别依次进入 <strong>Socket 层、传输层、网络层和网络接口层</strong>，最后通过网卡驱动、CPU 和物理网卡到达目标应用程序所在的物理网卡，期间 CPU 和网卡驱动频繁进行硬中断、软中断与轮询来通知操作系统进行收发收据包。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="657" src="https://images2.imgbox.com/f9/e1/bEjm5Ttz_o.jpg" width="1000"></p> 
+<p>接下来，我们具体分析一下网络数据包发送流程：首先，在<strong>用户态网络协议栈</strong>中，源应用程序会调用 Socket 发送数据包的接口，数据包从用户态进入到内核态中的 <strong>Socket 层</strong>，Socket 层会将应用层数据拷贝到 Socket 发送缓冲区中。然后，<strong>在内核态网络协议栈</strong>中，从 Socket 发送缓冲区中取出数据包，并按照 TCP/IP 协议栈从上到下逐层处理。如果使用的是 TCP 传输协议发送数据，那么会在传输层增加 TCP 包头，然后交给网络层，网络层会给数据包增加IP包，然后通过查询路由表确认下一跳的 IP，并按照 MTU 大小进行分片。分片后的网络包，就会被送到网络接口层，通过 ARP 协议获得下一跳的 MAC 地址，然后增加帧头和帧尾，放到发包队列中。最后，等队列准备就绪后，会<strong>触发软中断</strong>告诉网卡驱动程序有新的网络包需要发送，最后驱动程序通过 <strong>DMA</strong>，从发包队列中读取网络包，将其放入到硬件网卡的队列中，随后在物理网络中，物理网卡再将它发送出去，通过交换机或者网桥等到达目标应用所在主机物理网卡。</p> 
+<p>网络数据包接收流程与网络数据包发送的流程<strong>正好相反</strong>，其中，发送流程执行数据包的封包处理，而接收过程则执行数据包的解包处理。基于以上网络数据包通信和处理过程，在高性能网络通信场景下，频繁的网络收发数据包，数据包在内核中不同网络路协议栈之间的封装和解包处理，以及软硬件中断与轮询，导致<strong>网络通信延迟较高</strong>。</p> 
+<h2><strong>容器网络数据包处理路径</strong></h2> 
+<p>在容器网络环境下，网络数据包的处理流程较传统网络数据包的<strong>处理路径更加长，网络环境更加复杂</strong>。容器网络数据包的发送和接收经过<strong>七层</strong>，分别是：容器用户态编程协议、容器内核态网络协议栈、容器与主机网卡对、主机用户态容器网络 CNI、虚拟主机网络、主机网卡驱动，主机网卡和物理网络。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="548" src="https://images2.imgbox.com/10/ca/JT3UOfoI_o.jpg" width="1000"></p> 
+<p>相对于普通的容器化应用，<strong>微服务服务网格应用的容器网络最具代表性</strong>，主要多了边车 Sidecar 对应用的流量劫持和转发，其他的流量数据包处理过程与普通应用一样。下面以服务网格中应用与边车 Sidecar 之间的网络数据包发送和接收路径为例说明。</p> 
+<p>容器源应用程序访问目标应用程序的数据路径，在容器内与传统网络数据包收发处理流程类似，但是会增加<strong>容器主机网络路径</strong>。容器内源应用程序通过 Socket 调用，网络数据包由容器用户态进入容器内核态以太网协议栈，然后通过 Loopback 回环进入 Sidecar 边车的内核态和用户态协议栈。经由 Sidecar 流量劫持之后，通过应用 Sidecar 调用内核态 Socket 进入容器内核态以太网协议栈。最后经由主机用户态容器网络 CNI，通过虚拟主机网络，进入物理网卡和物理网络，转发至目标应用程序所在的主机和容器环境。目标应用程序所在的主机网络和容器网络的数据包处理路径与源应用程序数据包处理路径一样，但收发数据包的方向相反。</p> 
+<p>云原生背景下的容器网络，会在物理网络、主机网络、容器网络和容器主机网络等多个层面网络类型的网络性能瓶颈，可以从下表多维度分析潜在的网络加速方向：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="462" src="https://images2.imgbox.com/d7/1b/YMRP1lI2_o.jpg" width="1080"></p> 
+<p>基于以上容器网络数据路径的分析，可以从几个方面进行网络规划和建设：</p> 
+<p>1、<strong>智能硬件网络方面</strong>，可以通过 Offload 下沉网卡驱动和数据包至智能硬件（SRIOV/DPU/RDMA）实现加速。</p> 
+<p>2、<strong>软件网络方面</strong>，操作系统网络层分为内核态网络和用户态网络，通过 ByPass 操作系统内核态网络协议栈，进入用户态网络协议栈，在用户态借助工具套件 DPDK，以及用户态 VPP、 VCL 和 QUIC 等协议进行编程，解决用户态网络性能问题，实现内核态和用户态网络加速。</p> 
+<h2><strong>容器网络加速方案</strong></h2> 
+<h4>1. 智能网络加速</h4> 
+<p>借助于<strong>支持 SR-IOV 的智能硬件</strong>，把网卡驱动卸载至物理网卡。通过调用 Netlink 包将 VF 修改到容器的 Namespace 下，使得物理机中 PF 扩展出来的 VF 可以被容器直接调用。基于 Multus、SR-IOV Device Plugin 和 SR-IOV CNI （Kubernetes 1.24 之前的版本，CNI 的管理由 Kubelet 负责，新版 Kubernetes 版本 CNI 管理由 CRI 负责）实现网络 IO 卸载至物理网卡上的 VF，同时把 VF 另一端插入容器，作为容器的以太网网卡。容器网络数据包从容器用户态协议栈，经过容器内核态协议栈，通过 VF 卸载至物理网卡 PF，ByPass 容器主机内核和主机内核驱动从而实现网络加速。同时，在 <strong>Underlay 网络场景</strong>中，通过 IPAM 可以管理集群域的<strong>固定 IP 分配、释放和回收，以及防止 IP 泄漏和 IP 冲突检测</strong>等。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="920" src="https://images2.imgbox.com/46/cc/KkKN3duu_o.jpg" width="1000"></p> 
+<p>目前常见的支持容器 SR-IOV 技术的网卡有 Intel X710/X722/X520/540、Mellanox ConnectX-4/5/6 等，同时支持 NUMA、RDMA 和 DPU 等技术。</p> 
+<h4>2. 内核态网络加速</h4> 
+<p>基于<strong>支持 eBPF 的高内核版本</strong>（Kernel 4.19.57+，推荐5.10+ ）的 Linux 操作系统，在 XDP 原生驱动模式（Native-Routing）或卸载模式（Offload，需要智能网卡支持）下 ByPass 内核协议栈，通过 <strong>Cilium CNI</strong> 将容器网卡一端植入 eBPF 程序，另一端插入容器内作为容器以太网网卡，实现通信和容器网络加速。可以<strong>基于 Multus、Cilium CNI 和 SpiderPool 实现内核网络加速</strong>。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="964" src="https://images2.imgbox.com/31/15/68UUAsT1_o.jpg" width="1000"></p> 
+<h4>3. 用户态网络加速</h4> 
+<p>用户态的网络加速有多种实现方式，可以通过 <strong>SRIOV+DPDK 方式</strong>，把内核态网卡驱动切换成用户态网卡驱动，实现“用户态网卡 -&gt; DPDK 轮询 Pool 模式-&gt; DPDK 库 -&gt; 应用程序” 跳过容器内核态网络协议栈，基于用户态 UIO Bypass 数据链路实现加速。或可以 DPDK +VPP/VCL 协议栈自编程模式的用户态网络极速。在服务网格场景下，借助于 Linux 高内核版本通过 <strong>eBPF Sockops/Sockmap 技术</strong>，实现应用服务与服务网格边车 Sidecar 之间的加速。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="662" src="https://images2.imgbox.com/41/dd/AW9VBvpq_o.jpg" width="1000"></p> 
+<p>以上三种网络方案，各有其有特定使用场景，智能网络加速方案<strong>加速性能最好</strong>，需要有智能硬件网卡的支持，对操作系统没有特殊的要求。内核态网络加速方案加速性能居中，仅需要操作系统满足一定的内核版本要求，有较好的通用适配性，<strong>适应于大多数网络加速场景</strong>的要求。用户态网络加速方案作为智能网络加速和用户态网络加速在 ByPass 系统内核之外的互补方案，用于用户态域的的网络加速，可以帮助用户<strong>实现全场景的网络加速方案</strong>，适应于用户应用程序的在 DPDK 工具、VPP/VCL 协议族、gRPC/QUIC 低延迟协议等自编程。</p> 
+<h2>参考链接：</h2> 
+<blockquote> 
+ <p>https://docs.kernel.org/networking/index.html </p> 
+ <p>https://docs.cilium.io/en/stable/overview/component-overview/ </p> 
+ <p>https://docs.cilium.io/en/stable/network/servicemesh/ </p> 
+ <p>https://cilium.io/use-cases/service-mesh/ </p> 
+ <p>https://ebpf.io/what-is-ebpf/ </p> 
+ <p>https://docs.openvswitch.org/en/latest/intro/install/afxdp/ </p> 
+ <p>https://github.com/k8snetworkplumbingwg/ovs-cni/blob/main/docs/ovs-offload.md </p> 
+ <p>https://xie.infoq.cn/article/6ba14b756c3019cc737ed48a6 </p> 
+ <p>https://upload.wikimedia.org/wikipedia/commons/3/37/Netfilter-packet-flow.svg</p> 
+</blockquote>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/cbbcd8e270b4140e58605282cc9dc9dd/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">堆叠降噪自动编码机</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/263074691478477857cc9e71a63c8142/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">shell之objdump命令</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

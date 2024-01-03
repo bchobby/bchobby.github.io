@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>TCC分布式事务的实现原理（补偿机制） - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="TCC分布式事务的实现原理（补偿机制）" />
+<meta property="og:description" content="核心思想 是：针对每个操作，都要注册一个与其对应的确认和补偿（撤销）操作。分为三个阶段：
+Try 阶段:主要是对业务系统做检测（一致性）及资源预留（准隔离性）Confirm 阶段:主要是对业务系统做确认提交，Try阶段执行成功并开始执行 Confirm阶段时，默认Confirm阶段是不会出错的。即：只要Try成功，Confirm一定成功。(Confirm 操作满足幂等性。要求具备幂等设计，Confirm 失败后需要进行重试。
+)Cancel 阶段主要是在业务执行错误，需要回滚的状态下执行的业务取消，预留资源释放。(Cancel 操作满足幂等性) 解决了协调者单点，由主业务方发起并完成这个业务活动。业务活动管理器也变成多点，引入集群。
+同步阻塞： 引入超时，超时后进行补偿，并且不会锁定整个资源，将资源转换为业务逻辑形式，粒度变小。
+数据一致性，有了补偿机制之后，由业务活动管理器控制一致性。
+缺点：在Confirm,Cancel中都有可能失败。TCC属于应用层的一种补偿方式，所以需要程序员在实现的时候多写很多补偿的代码，在一些场景中，一些业务流程可能用TCC不太好定义及处理。
+以下转自：拜托，面试请不要再问我TCC分布式事务的实现原理！【石杉的架构笔记】
+一、写在前面 这篇文章，就用大白话&#43;手工绘图，并结合一个电商系统的案例实践，来给大家讲清楚到底什么是TCC分布式事务。
+首先说一下，这里可能会牵扯到一些Spring Cloud的原理，如果有不太清楚的同学，可以参考之前的文章：《拜托，面试请不要再问我Spring Cloud底层原理！》。
+二、业务场景介绍 咱们先来看看业务场景，假设你现在有一个电商系统，里面有一个支付订单的场景。
+那对一个订单支付之后，我们需要做下面的步骤：
+更改订单的状态为“已支付”扣减商品库存给会员增加积分创建销售出库单通知仓库发货
+三、进一步思考 实现一个TCC分布式事务的效果。
+订单服务-修改订单状态，库存服务-扣减库存，积分服务-增加积分，仓储服务-创建销售出库单。 上述这几个步骤，要么一起成功，要么一起失败，必须是一个整体性的事务。
+举个例子，现在订单的状态都修改为“已支付”了，结果库存服务扣减库存失败。那个商品的库存原来是100件，现在卖掉了2件，本来应该是98件了。
+结果呢？由于库存服务操作数据库异常，导致库存数量还是100。这不是在坑人么，当然不能允许这种情况发生了！
+但是如果你不用TCC分布式事务方案的话，就用个Spring Cloud开发这么一个微服务系统，很有可能会干出这种事儿来。
+我们来看看下面的这个图，直观的表达了上述的过程。
+所以说，我们 有必要使用TCC分布式事务机制来保证各个服务形成一个整体性的事务。
+上面那几个步骤，要么全部成功，如果任何一个服务的操作失败了，就全部一起回滚，撤销已经完成的操作。
+比如说库存服务要是扣减库存失败了，那么订单服务就得撤销那个修改订单状态的操作，然后得停止执行增加积分和通知出库两个操作。
+四、落地实现TCC分布式事务 如何来实现一个TCC分布式事务，使得各个服务，要么一起成功？要么一起失败呢？
+我们这就来一步一步的分析一下。以一个Spring Cloud开发系统作为背景来解释。
+1、TCC实现阶段一：Try 首先，订单服务那儿，他的代码大致来说应该是这样子的：
+其实就是订单服务完成本地数据库操作之后，通过Spring Cloud的Feign来调用其他的各个服务罢了。但是光是凭借这段代码，是不足以实现TCC分布式事务的啊？！
+首先，上面那个订单服务先把自己的状态修改为：OrderStatus.UPDATING。
+在pay()方法里，把订单状态（已支付）修改为UPDATING（修改中）。仅代表有人正在修改这个状态。
+库存服务直接提供的那个reduceStock()接口里，也别直接扣减库存啊，你可以是冻结掉库存。
+举个例子，本来你的库存数量是100，你别直接100 - 2 = 98，扣减这个库存！
+你可以把可销售的库存：100 - 2 = 98，设置为98没问题，然后在一个单独的冻结库存的字段里，设置一个2。也就是说，有2个库存是给冻结了。
+积分服务的addCredit()接口也是同理，别直接给用户增加会员积分。你可以先在积分表里的一个预增加积分字段加入积分。
+比如：用户积分原本是1190，现在要增加10个积分，别直接1190 &#43; 10 = 1200个积分啊！
+你可以保持积分为1190不变，在一个预增加字段里，比如说prepare_add_credit字段，设置一个10，表示有10个积分准备增加。
+仓储服务的saleDelivery()接口也是同理啊，你可以先创建一个销售出库单，但是这个销售出库单的状态是“UNKNOWN”。
+也就是说，刚刚创建这个销售出库单，此时还不确定他的状态是什么呢！" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/cf7475e6aa0d132f9f669b264f1b7c46/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-11-09T02:14:45+08:00" />
+<meta property="article:modified_time" content="2021-11-09T02:14:45+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">TCC分布式事务的实现原理（补偿机制）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><strong><code>核心思想</code></strong> 是：针对每个操作，都要注册一个与其对应的确认和补偿（撤销）操作。分为三个阶段：</p> 
+<ul><li>Try 阶段:主要是对业务系统做检测（一致性）及资源预留（准隔离性）</li><li>Confirm 阶段:主要是对业务系统做确认提交，Try阶段执行成功并开始执行 Confirm阶段时，默认Confirm阶段是不会出错的。即：只要Try成功，Confirm一定成功。(Confirm 操作满足幂等性。要求具备幂等设计，Confirm 失败后需要进行重试。<br> )</li><li>Cancel 阶段主要是在业务执行错误，需要回滚的状态下执行的业务取消，预留资源释放。(Cancel 操作满足幂等性)</li></ul> 
+<p style="text-align:center;"><img alt="TCC分布式事务" src="https://images2.imgbox.com/b3/98/tU71V9iF_o.png"></p> 
+<p><br><strong>解决了协调者单点</strong>，由主业务方发起并完成这个业务活动。业务活动管理器也变成多点，引入集群。<br><strong>同步阻塞：</strong> 引入超时，超时后进行补偿，并且不会锁定整个资源，将资源转换为业务逻辑形式，粒度变小。<br><strong>数据一致性</strong>，有了补偿机制之后，由业务活动管理器控制一致性。</p> 
+<p><strong>缺点</strong>：在Confirm,Cancel中都有可能失败。TCC属于<strong>应用层</strong>的一种补偿方式，所以需要程序员在实现的时候多写很多补偿的代码，在一些场景中，一些业务流程可能用TCC不太好定义及处理。</p> 
+<hr> 
+<p>以下转自：<a href="https://mp.weixin.qq.com/s/mIW1_K5fAoa2OlSLdXSHpQ" rel="nofollow" title="拜托，面试请不要再问我TCC分布式事务的实现原理！【石杉的架构笔记】">拜托，面试请不要再问我TCC分布式事务的实现原理！【石杉的架构笔记】</a></p> 
+<h3><a name="t0" title=""></a><a id="_18" title=""></a>一、写在前面</h3> 
+<p>这篇文章，就用大白话+手工绘图，并结合一个电商系统的案例实践，来给大家讲清楚到底什么是TCC分布式事务。</p> 
+<p>首先说一下，这里可能会牵扯到一些Spring Cloud的原理，如果有不太清楚的同学，可以参考之前的文章：《<a href="https://mp.weixin.qq.com/s/mOk0KuEWQUiugyRA3-FXwg" rel="nofollow" title="拜托，面试请不要再问我Spring Cloud底层原理！">拜托，面试请不要再问我Spring Cloud底层原理！</a>》。</p> 
+<h3><a name="t1" title=""></a><a id="_24" title=""></a>二、业务场景介绍</h3> 
+<p>咱们先来看看业务场景，假设你现在有一个电商系统，里面有一个支付订单的场景。</p> 
+<p>那对一个订单支付之后，我们需要做下面的步骤：</p> 
+<ul><li>更改订单的状态为“已支付”</li><li>扣减商品库存</li><li>给会员增加积分</li><li>创建销售出库单通知仓库发货<br><img alt="在这里插入图片描述" src="https://images2.imgbox.com/61/09/n2A7fXL2_o.png"></li></ul> 
+<h3><a name="t2" title=""></a><a id="_36" title=""></a>三、进一步思考</h3> 
+<p>实现一个TCC分布式事务的效果。</p> 
+<ul><li>订单服务-修改订单状态，</li><li>库存服务-扣减库存，</li><li>积分服务-增加积分，</li><li>仓储服务-创建销售出库单。</li></ul> 
+<p>上述这几个步骤，<strong>要么一起成功，要么一起失败，必须是一个整体性的事务。</strong></p> 
+<p>举个例子，现在订单的状态都修改为“已支付”了，结果库存服务扣减库存失败。那个商品的库存原来是100件，现在卖掉了2件，本来应该是98件了。</p> 
+<p>结果呢？由于库存服务操作数据库异常，导致库存数量还是100。这不是在坑人么，当然不能允许这种情况发生了！</p> 
+<p>但是如果你不用TCC分布式事务方案的话，就用个Spring Cloud开发这么一个微服务系统，很有可能会干出这种事儿来。</p> 
+<p>我们来看看下面的这个图，直观的表达了上述的过程。<br><img alt="在这里插入图片描述" src="https://images2.imgbox.com/05/5f/xAdLWHzg_o.png"><br> 所以说，我们 <strong><code>有必要使用TCC分布式事务机制来保证各个服务形成一个整体性的事务。</code></strong></p> 
+<p>上面那几个步骤，要么全部成功，<strong>如果任何一个服务的操作失败了，就全部一起回滚，撤销已经完成的操作</strong>。</p> 
+<p>比如说库存服务要是扣减库存失败了，那么订单服务就得撤销那个修改订单状态的操作，然后得停止执行增加积分和通知出库两个操作。<br><img alt="在这里插入图片描述" src="https://images2.imgbox.com/93/2f/O3bkK9kb_o.png"></p> 
+<h3><a name="t3" title=""></a><a id="TCC_62" title=""></a>四、落地实现TCC分布式事务</h3> 
+<p>如何来实现一个TCC分布式事务，使得各个服务，要么一起成功？要么一起失败呢？</p> 
+<p>我们这就来一步一步的分析一下。以一个Spring Cloud开发系统作为背景来解释。</p> 
+<h4><a name="t4" title=""></a><a id="1TCCTry_69" title=""></a>1、TCC实现阶段一：Try</h4> 
+<p>首先，订单服务那儿，他的代码大致来说应该是这样子的：<br><img alt="在这里插入图片描述" src="https://images2.imgbox.com/40/f8/05a4OdoR_o.png"></p> 
+<p>其实就是订单服务完成本地数据库操作之后，通过Spring Cloud的Feign来调用其他的各个服务罢了。但是光是凭借这段代码，是不足以实现TCC分布式事务的啊？！</p> 
+<p>首先，上面那个<code>订单服务</code>先把自己的状态修改为：<strong>OrderStatus.UPDATING</strong>。<br> 在pay()方法里，把订单状态（已支付）修改为UPDATING（<code>修改中</code>）。仅代表有人正在修改这个状态。</p> 
+<p><code>库存服务</code>直接提供的那个reduceStock()接口里，也别直接扣减库存啊，你可以是<strong>冻结掉库存</strong>。<br> 举个例子，本来你的库存数量是100，你别直接100 - 2 = 98，扣减这个库存！<br> 你可以把可销售的库存：100 - 2 = 98，设置为98没问题，然后在一个单独的冻结库存的字段里，设置一个2。也就是说，有2个库存是给冻结了。</p> 
+<p><code>积分服务</code>的addCredit()接口也是同理，别直接给用户增加会员积分。你可以先在积分表里的一个<strong>预增加积分字段</strong>加入积分。<br> 比如：用户积分原本是1190，现在要增加10个积分，别直接1190 + 10 = 1200个积分啊！<br> 你可以保持积分为1190不变，在一个预增加字段里，比如说prepare_add_credit字段，设置一个10，表示有10个积分准备增加。</p> 
+<p><code>仓储服务</code>的saleDelivery()接口也是同理啊，你可以先创建一个销售出库单，但是这个销售出库单的状态是“<strong>UNKNOWN</strong>”。<br> 也就是说，刚刚创建这个销售出库单，此时还不确定他的状态是什么呢！</p> 
+<p>上面这套改造接口的过程，其实就是所谓的TCC分布式事务中的第一个T字母代表的阶段，也就是Try阶段。</p> 
+<p>总结上述过程，<strong><code>如果你要实现一个TCC分布式事务，首先你的业务的主流程以及各个接口提供的业务含义，不是说直接完成那个业务操作，而是完成一个Try的操作。</code></strong></p> 
+<p><strong>这个操作，一般都是锁定某个资源，设置一个预备的状态，冻结部分数据，等等，大概都是这类操作。</strong><br><img alt="在这里插入图片描述" src="https://images2.imgbox.com/0b/b3/khPNMUlz_o.png"><br> 然后就分成两种情况了：</p> 
+<h4><a name="t5" title=""></a><a id="2TCCConfirm_97" title=""></a>2、TCC实现阶段二：Confirm</h4> 
+<p>第一种情况是比较理想的，那就是各个服务执行自己的那个Try操作，都执行成功了。此时，就需要依靠<code>TCC分布式事务框架</code>来推动后续的执行了。</p> 
+<p>这里简单提一句，如果你要玩儿TCC分布式事务，必须引入一款TCC分布式事务框架，比如<strong>国内开源的ByteTCC、himly、tcc-transaction。</strong> 否则的话，感知各个阶段的执行情况以及推进执行下一个阶段的这些事情，不太可能自己手写实现，太复杂了。</p> 
+<p>如果你在各个服务里引入了一个TCC分布式事务的框架，订单服务里内嵌的那个<strong>TCC分布式事务框架可以感知到，各个服务的Try操作</strong>都成功了。</p> 
+<p>此时，TCC分布式事务框架会控制进入TCC下一个阶段，第一个C阶段，也就是Confirm阶段。为了实现这个阶段，你需要在各个服务里再加入一些代码。</p> 
+<p>比如说， <code>订单服务</code>里，你可以加入一个Confirm的逻辑，就是正式把订单的状态设置为“已支付”了，大概是类似下面这样子：<br><img alt="在这里插入图片描述" src="https://images2.imgbox.com/17/a0/arKBpvlh_o.png"><br><code>库存服务</code>也是类似的，你可以有一个InventoryServiceConfirm类，里面提供一个reduceStock()接口的Confirm逻辑，这里就是将之前冻结库存字段的2个库存扣掉变为0。<br> 这样的话，可销售库存之前就已经变为98了，现在冻结的2个库存也没了，那就正式完成了库存的扣减。</p> 
+<p><code>积分服务</code>也是类似的，可以在积分服务里提供一个CreditServiceConfirm类，里面有一个addCredit()接口的Confirm逻辑，就是将预增加字段的10个积分扣掉，然后加入实际的会员积分字段中，从1190变为1120。</p> 
+<p><code>仓储服务</code>也是类似，可以在仓储服务中提供一个WmsServiceConfirm类，提供一个saleDelivery()接口的Confirm逻辑，将销售出库单的状态正式修改为“已创建”，可以供仓储管理人员查看和使用，而不是停留在之前的中间状态“UNKNOWN”了。</p> 
+<p>好了，上面各种服务的Confirm的逻辑都实现好了，一旦订单服务里面的TCC分布式事务框架<strong>感知到各个服务的Try阶段都成功了以后，就会执行各个服务的Confirm逻辑</strong>。</p> 
+<p>订单服务内的TCC事务框架会负责跟其他各个服务内的TCC事务框架进行通信，依次调用各个服务的Confirm逻辑。然后，正式完成各个服务的所有业务逻辑的执行。<br><img alt="在这里插入图片描述" src="https://images2.imgbox.com/2d/eb/Z1Gdiiw7_o.png"></p> 
+<h4><a name="t6" title=""></a><a id="3TCCCancel_121" title=""></a>3、TCC实现阶段三：Cancel</h4> 
+<p>如果是异常的一种情况呢？举个例子：在Try阶段，比如积分服务吧，他执行出错了，此时会怎么样？<br> 那订单服务内的TCC事务框架是可以感知到的，然后他会决定对整个TCC分布式事务进行回滚。</p> 
+<p>也就是说，会执行各个服务的 <strong><code>第二个C阶段，Cancel阶段。</code></strong></p> 
+<p>同样，为了实现这个Cancel阶段，各个服务还得加一些代码。</p> 
+<p>首先<code>订单服务</code>，他得提供一个OrderServiceCancel的类，在里面有一个pay()接口的Cancel逻辑，就是可以将订单的状态设置为“CANCELED”，也就是这个订单的状态是已取消。</p> 
+<p><code>库存服务</code>也是同理，可以提供reduceStock()的Cancel逻辑，就是将冻结库存扣减掉2，加回到可销售库存里去，98 + 2 = 100。</p> 
+<p><code>积分服务</code>也需要提供addCredit()接口的Cancel逻辑，将预增加积分字段的10个积分扣减掉。</p> 
+<p><code>仓储服务</code>也需要提供一个saleDelivery()接口的Cancel逻辑，将销售出库单的状态修改为“CANCELED”设置为已取消。</p> 
+<p>然后这个时候，订单服务的TCC分布式事务框架只要感知到了任何一个服务的Try逻辑失败了，就会跟各个服务内的TCC分布式事务框架进行通信，然后调用各个服务的Cancel逻辑。<br><img alt="在这里插入图片描述" src="https://images2.imgbox.com/31/11/x4T8REY8_o.png"></p> 
+<h3><a name="t7" title=""></a><a id="_141" title=""></a>五、总结与思考</h3> 
+<p>你要玩儿TCC分布式事务的话：</p> 
+<p>首先需要选择某种TCC分布式事务框架，各个服务里就会有这个TCC分布式事务框架在运行。</p> 
+<p>然后你原本的一个接口，要改造为3个逻辑，Try-Confirm-Cancel。</p> 
+<ol><li>先是服务调用链路依次执行Try逻辑</li><li>如果都正常的话，TCC分布式事务框架推进执行Confirm逻辑，完成整个事务如果都正常的话，TCC分布式事务框架推进执行Confirm逻辑，完成整个事务</li><li>如果某个服务的Try逻辑有问题，TCC分布式事务框架感知到之后就会推进执行各个服务的Cancel逻辑，撤销之前执行的各种操作</li></ol> 
+<p>这就是所谓的TCC分布式事务。</p> 
+<p>TCC分布式事务的核心思想，说白了，就是当遇到下面这些情况时，</p> 
+<ul><li>某个服务的数据库宕机了</li><li>某个服务自己挂了</li><li>那个服务的redis、elasticsearch、MQ等基础设施故障了</li><li>某些资源不足了，比如说库存不够这些</li></ul> 
+<p>1.先来Try一下，不要把业务逻辑完成，先试试看，看各个服务能不能基本正常运转，能不能先冻结我需要的资源。</p> 
+<p>2.如果Try都ok，也就是说，底层的数据库、redis、elasticsearch、MQ都是可以写入数据的，并且你保留好了需要使用的一些资源（比如冻结了一部分库存）。</p> 
+<p>3.接着，再执行各个服务的Confirm逻辑，基本上Confirm就可以很大概率保证一个分布式事务的完成了。</p> 
+<p>4.那如果Try阶段某个服务就失败了，比如说底层的数据库挂了，或者redis挂了，等等。<br> 此时就自动执行各个服务的Cancel逻辑，把之前的Try逻辑都回滚，所有服务都不要执行任何设计的业务逻辑。保证大家要么一起成功，要么一起失败。</p> 
+<h3><a name="t8" title=""></a><a id="_173" title=""></a>六.其他问题</h3> 
+<p>如果有一些意外的情况发生了，比如说订单服务突然挂了，然后再次重启，TCC分布式事务框架是如何保证之前没执行完的分布式事务继续执行的呢？</p> 
+<p>所以，TCC事务框架 <strong><code>都是要记录一些分布式事务的活动日志的</code></strong>，可以在磁盘上的日志文件里记录，也可以在数据库里记录。保存下来分布式事务运行的各个阶段和状态。</p> 
+<p>问题还没完，万一某个服务的Cancel或者Confirm逻辑执行一直失败怎么办呢？</p> 
+<p>那也很简单，TCC事务框架会通过活动日志记录各个服务的状态。</p> 
+<p>举个例子，比如发现某个服务的Cancel或者Confirm一直没成功，会不停的重试调用他的Cancel或者Confirm逻辑，务必要他成功！</p> 
+<p>当然了，如果你的代码没有写什么bug，有充足的测试，而且Try阶段都基本尝试了一下，那么其实一般Confirm、Cancel都是可以成功的！</p> 
+<p>最后，再给大家来一张图，来看看给我们的业务，加上分布式事务之后的整个执行流程：<br><img alt="在这里插入图片描述" src="https://images2.imgbox.com/9b/ed/cU5JLRqX_o.png"><br> 不少大公司里，其实都是自己研发TCC分布式事务框架的，专门在公司内部使用。</p> 
+<p>不过如果自己公司没有研发TCC分布式事务框架的话，那一般就会选用开源的框架。</p> 
+<p>这里笔者给大家推荐几个比较不错的框架，都是咱们国内自己开源出去的：ByteTCC，tcc-transaction，himly。</p> 
+<p>大家有兴趣的可以去他们的github地址，学习一下如何使用，以及如何跟Spring Cloud、Dubbo等服务框架整合使用。</p> 
+<p>只要把那些框架整合到你的系统里，很容易就可以实现上面那种奇妙的TCC分布式事务的效果了。</p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/53e81c076c2b3a09185272932906d8c0/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Java核心技术----反 射</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/5913c2be8a37f1691ec5304f4a59ae07/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">2021-11-09 FANUC 机器形态</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

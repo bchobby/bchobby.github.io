@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>浅谈对Rabbitmq失败通知和生产者确认的理解 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="浅谈对Rabbitmq失败通知和生产者确认的理解" />
+<meta property="og:description" content="Rabbitmq的失败通知和生产者确认机制，对于初学者来说总是不那么好理解，咱们先看一下消息发布时候的权衡
+从图中可以看出投递速度由快到慢，消息安全由低到高的权衡，我们可以看到失败通知和生产者确认在其中的位置，先总的了解下，接下来我们通过代码来理解下什么是失败通知，什么是生产者确认。
+1.先创建配置类
+import com.controller.MyAckReceiver; import org.springframework.amqp.core.*; import org.springframework.amqp.rabbit.connection.CachingConnectionFactory; import org.springframework.amqp.rabbit.connection.ConnectionFactory; import org.springframework.amqp.rabbit.core.RabbitTemplate; import org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer; import org.springframework.amqp.rabbit.support.CorrelationData; import org.springframework.beans.factory.annotation.Autowired; import org.springframework.context.annotation.Bean; import org.springframework.context.annotation.Configuration; @Configuration public class DirectRabbitConfig { @Autowired private CachingConnectionFactory connectionFactory; @Autowired private MyAckReceiver myAckReceiver;//消息接收处理类 //队列 起名：TestDirectQueue @Bean public Queue TestDirectQueue() { // durable:是否持久化,默认是false,持久化队列：会被存储在磁盘上，当消息代理重启时仍然存在，暂存队列：当前连接有效 // exclusive:默认也是false，只能被当前创建的连接使用，而且当连接关闭后队列即被删除。此参考优先级高于durable // autoDelete:是否自动删除，当没有生产者或者消费者使用此队列，该队列会自动删除。 // return new Queue(&#34;TestDirectQueue&#34;,true,true,false); //一般设置一下队列的持久化就好,其余两个就是默认false return new Queue(&#34;TestDirectQueue&#34;,true); } //Direct交换机 起名：TestDirectExchange @Bean DirectExchange TestDirectExchange() { // return new DirectExchange(&#34;TestDirectExchange&#34;,true,true); return new DirectExchange(&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/e61321fc9c6cd9118681a5d2c06cc5be/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-06-18T12:13:36+08:00" />
+<meta property="article:modified_time" content="2021-06-18T12:13:36+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">浅谈对Rabbitmq失败通知和生产者确认的理解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>Rabbitmq的失败通知和生产者确认机制，对于初学者来说总是不那么好理解，咱们先看一下消息发布时候的权衡</p> 
+<p> </p> 
+<p><img alt="" height="565" src="https://images2.imgbox.com/f7/a4/uclxasK9_o.png" width="1200"></p> 
+<p>从图中可以看出投递速度由快到慢，消息安全由低到高的权衡，我们可以看到失败通知和生产者确认在其中的位置，先总的了解下，接下来我们通过代码来理解下什么是失败通知，什么是生产者确认。</p> 
+<p>1.先创建配置类</p> 
+<pre><code>import com.controller.MyAckReceiver;
+import org.springframework.amqp.core.*;
+import org.springframework.amqp.rabbit.connection.CachingConnectionFactory;
+import org.springframework.amqp.rabbit.connection.ConnectionFactory;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer;
+import org.springframework.amqp.rabbit.support.CorrelationData;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class DirectRabbitConfig {
+
+    @Autowired
+    private CachingConnectionFactory connectionFactory;
+    @Autowired
+    private MyAckReceiver myAckReceiver;//消息接收处理类
+
+
+    //队列 起名：TestDirectQueue
+    @Bean
+    public Queue TestDirectQueue() {
+        // durable:是否持久化,默认是false,持久化队列：会被存储在磁盘上，当消息代理重启时仍然存在，暂存队列：当前连接有效
+        // exclusive:默认也是false，只能被当前创建的连接使用，而且当连接关闭后队列即被删除。此参考优先级高于durable
+        // autoDelete:是否自动删除，当没有生产者或者消费者使用此队列，该队列会自动删除。
+        //   return new Queue("TestDirectQueue",true,true,false);
+
+        //一般设置一下队列的持久化就好,其余两个就是默认false
+        return new Queue("TestDirectQueue",true);
+    }
+
+    //Direct交换机 起名：TestDirectExchange
+    @Bean
+    DirectExchange TestDirectExchange() {
+        //  return new DirectExchange("TestDirectExchange",true,true);
+        return new DirectExchange("TestDirectExchange",true,false);
+    }
+
+    //绑定  将队列和交换机绑定, 并设置用于匹配键：TestDirectRouting
+    @Bean
+    Binding bindingDirect() {
+        return BindingBuilder.bind(TestDirectQueue()).to(TestDirectExchange()).with("TestDirectRouting");
+    }
+
+    @Bean
+    DirectExchange lonelyDirectExchange() {
+        return new DirectExchange("lonelyDirectExchange");
+    }
+
+    @Bean
+    public RabbitTemplate createRabbitTemplate(ConnectionFactory connectionFactory) {
+        RabbitTemplate rabbitTemplate = new RabbitTemplate();
+        rabbitTemplate.setConnectionFactory(connectionFactory);
+        //设置开启Mandatory,才能触发回调函数,无论消息推送结果怎么样都强制调用回调函数
+        rabbitTemplate.setMandatory(true);
+        
+        //生产者确认配置
+        rabbitTemplate.setConfirmCallback(new RabbitTemplate.ConfirmCallback() {
+            @Override
+            public void confirm(CorrelationData correlationData, boolean b, String s) {
+                System.out.println("ConfirmCallback:     " + "相关数据：" + correlationData);
+                System.out.println("ConfirmCallback:     " + "确认情况：" + b);
+                System.out.println("ConfirmCallback:     " + "原因：" + s);
+            }
+        });
+        
+        //失败通知配置
+        rabbitTemplate.setReturnCallback(new RabbitTemplate.ReturnCallback() {
+            @Override
+            public void returnedMessage(Message message, int replyCode, String replyText, String exchange, String routingKey) {
+                System.out.println("ReturnCallback:     " + "消息：" + message);
+                System.out.println("ReturnCallback:     " + "回应码：" + replyCode);
+                System.out.println("ReturnCallback:     " + "回应信息：" + replyText);
+                System.out.println("ReturnCallback:     " + "交换机：" + exchange);
+                System.out.println("ReturnCallback:     " + "路由键：" + routingKey);
+            }
+        });
+        return rabbitTemplate;
+    }
+
+    @Bean
+    public SimpleMessageListenerContainer simpleMessageListenerContainer() {
+        SimpleMessageListenerContainer container = new SimpleMessageListenerContainer(connectionFactory);
+        container.setConcurrentConsumers(1);
+        container.setMaxConcurrentConsumers(1);
+        container.setAcknowledgeMode(AcknowledgeMode.MANUAL); // RabbitMQ默认是自动确认，这里改为手动确认消息
+        //设置一个队列
+        container.setQueueNames("TestDirectQueue");
+        //如果同时设置多个如下： 前提是队列都是必须已经创建存在的
+        //  container.setQueueNames("TestDirectQueue","TestDirectQueue2","TestDirectQueue3");
+
+
+        //另一种设置队列的方法,如果使用这种情况,那么要设置多个,就使用addQueues
+        //container.setQueues(new Queue("TestDirectQueue",true));
+        //container.addQueues(new Queue("TestDirectQueue2",true));
+        //container.addQueues(new Queue("TestDirectQueue3",true));
+        container.setMessageListener(myAckReceiver);
+
+        return container;
+    }
+}
+</code></pre> 
+<p>以上是rabbitmq的配置类，定义了队列 TestDirectQueue，交换器TestDirectExchange，通过TestDirectRouting将队列和交换器绑定，然后定义了RabbitTemplate的失败通知和生产者确认，最后定义了消费者myAckReceiver</p> 
+<p>2.创建生产者</p> 
+<pre><code>import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/mail")
+public class SendMessageController {
+
+    @Autowired
+    RabbitTemplate rabbitTemplate;  //使用RabbitTemplate,这提供了接收/发送等等方法
+
+    @GetMapping("/sendDirectMessage")
+    public String sendMessage(){
+        String messageId = String.valueOf(UUID.randomUUID());
+        String messageData = "test message, hello!";
+        String createTime = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        Map&lt;String,Object&gt; map=new HashMap&lt;&gt;();
+        map.put("messageId",messageId);
+        map.put("messageData",messageData);
+        map.put("createTime",createTime);
+        //将消息携带绑定键值：TestDirectRouting 发送到交换机TestDirectExchange
+        rabbitTemplate.convertAndSend("TestDirectExchange", "TestDirectRouting", map);
+        return "ok";
+    }
+
+    /**
+     * 消息推送到server,但是server里没有交换器
+     * @return
+     */
+    @GetMapping("/testMessageAck")
+    public String TestMessageAck() {
+        String messageId = String.valueOf(UUID.randomUUID());
+        String messageData = "message: non-existent-exchange test message ";
+        String createTime = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        Map&lt;String, Object&gt; map = new HashMap&lt;&gt;();
+        map.put("messageId", messageId);
+        map.put("messageData", messageData);
+        map.put("createTime", createTime);
+        rabbitTemplate.convertAndSend("non-existent-exchange", "TestDirectRouting", map);
+        return "ok";
+    }
+
+    /**
+     * 消息推送到server,server里有交换器,但是没有队列绑定
+     * lonelyDirectExchange这个交换器没有队列绑定
+     * @return
+     */
+    @GetMapping("/testMessageAck2")
+    public String TestMessageAck2() {
+        String messageId = String.valueOf(UUID.randomUUID());
+        String messageData = "message: lonelyDirectExchange test message ";
+        String createTime = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        Map&lt;String, Object&gt; map = new HashMap&lt;&gt;();
+        map.put("messageId", messageId);
+        map.put("messageData", messageData);
+        map.put("createTime", createTime);
+        rabbitTemplate.convertAndSend("lonelyDirectExchange", "TestDirectRouting", map);
+        return "ok";
+    }
+}
+</code></pre> 
+<p>这里解释下这几个都是什么意思，/sendDirectMessage表示能正常投递和消费，/testMessageAck表示将消息投递到rabbitmq里没有的交换器，/testMessageAck2表示server里有交换器,但是没有队列绑定</p> 
+<p>3.创建消费者</p> 
+<pre><code>import com.rabbitmq.client.Channel;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.rabbit.core.ChannelAwareMessageListener;
+import org.springframework.stereotype.Component;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Component
+public class MyAckReceiver implements ChannelAwareMessageListener {
+    @Override
+    public void onMessage(Message message, Channel channel) throws Exception {
+        long deliveryTag = message.getMessageProperties().getDeliveryTag();
+        try {
+            //因为传递消息的时候用的map传递,所以将Map从Message内取出需要做些处理
+            String msg = message.toString();
+            String[] msgArray = msg.split("'");//可以点进Message里面看源码,单引号直接的数据就是我们的map消息数据
+            Map&lt;String, String&gt; msgMap = mapStringToMap(msgArray[1].trim(),3);
+            String messageId=msgMap.get("messageId");
+            String messageData=msgMap.get("messageData");
+            String createTime=msgMap.get("createTime");
+            System.out.println("  MyAckReceiver  messageId:"+messageId+"  messageData:"+messageData+"  createTime:"+createTime);
+            System.out.println("消费的主题消息来自："+message.getMessageProperties().getConsumerQueue());
+            //第二个参数，手动确认可以被批处理，当该参数为 true 时，则可以一次性确认 delivery_tag 小于等于传入值的所有消息
+            channel.basicAck(deliveryTag, true);
+            //第二个参数是指是否针对多条消息；如果是true，也就是说一次性针对当前通道的消息的tagID小于当前这条消息的，都拒绝确认。
+            //第三个参数是指是否重新入列，也就是指不确认的消息是否重新丢回到队列里面去。
+//            channel.basicNack(deliveryTag,true,true);
+//			channel.basicReject(deliveryTag, true);//第二个参数，true会重新放回队列，所以需要自己根据业务逻辑判断什么时候使用拒绝
+//            int a = 9/0;
+        } catch (Exception e) {
+            channel.basicReject(deliveryTag, false);
+            e.printStackTrace();
+        }
+    }
+
+    //{key=value,key=value,key=value} 格式转换成map
+    private Map&lt;String, String&gt; mapStringToMap(String str,int entryNum ) {
+        str = str.substring(1, str.length() - 1);
+        String[] strs = str.split(",",entryNum);
+        Map&lt;String, String&gt; map = new HashMap&lt;String, String&gt;();
+        for (String string : strs) {
+            String key = string.split("=")[0].trim();
+            String value = string.split("=")[1];
+            map.put(key, value);
+        }
+        return map;
+    }
+}
+</code></pre> 
+<p>4.见证奇迹的时候</p> 
+<p>我们先调用第一个方法，即能被正常的投递和消费</p> 
+<p><img alt="" height="141" src="https://images2.imgbox.com/9f/06/lbDl7FOq_o.png" width="1200"></p> 
+<p>可以看到消息被正确的投递和消费了，同时生产者确认即ConfirmCallback可以看到，确认情况为true。</p> 
+<p>我们再调第二个方法 ，即rabbitmq里没有该交换器</p> 
+<p><img alt="" height="122" src="https://images2.imgbox.com/76/02/WByeJRJB_o.png" width="1200"></p> 
+<p>我们可以看到生产者确认情况为false。</p> 
+<p>我们再调第三个方法，即server里有交换器,但是没有队列绑定</p> 
+<p><img alt="" height="223" src="https://images2.imgbox.com/a7/de/efGTym9B_o.png" width="1200"></p> 
+<p>我们可以看到失败通知即 ReturnCallback的相应信息为没有路由，因为我们没有绑定队列。</p> 
+<p>同时生产者确认ConfirmCallback的确认情况为true</p> 
+<p>5.总结</p> 
+<p>由此看出生产者确认是针对生产者有没有将消息正确的投递进交换器，如果正确投递了那就是true，没有没有正确投递那就是false，他这根交换器有关，跟队列和消费者没有一点关系。</p> 
+<p>而失败通知则是如果这条消息没有被投递进队列，或者在队列里消费失败了就会触发失败通知，失败通知的对象是队列，只跟有没有被队列正确的消费有关。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/787d0d81e2f637ef29bc50ffb07d585a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">计算机专业是武大冷门吗,武汉大学最不好的专业是什么？附武汉大学的弱势专业名单...</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/29fbec3cd8c950611e6cc3f918a61d22/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">计算机一级office选择题必背知识点,2017年计算机一级MSOffice考试复习知识点</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>DNS服务解析与原理笔记 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="DNS服务解析与原理笔记" />
+<meta property="og:description" content="引言DNS介绍DNS原理与解析DNS查询DNS服务搭建DNS劫持和污染计算机面试 or 真题DNS应用扩展参考与推荐 引言 我想很多人遇到过这样一种情况，电脑突然上不了网了，或者说可以登陆QQ，但是进不了网页，任何网页都会出现如下的类似截图：
+有些浏览器可能还要再多一层，会弹出故障检测，然后再是DNS配置选项错误，这时候的解决方案，可以是用本地安装的电脑管家的工具箱里，找到“网页打不开”的故障维修功能，大概率是能修复的，当然，也可以手动去更新配置，见百度知道里的DNS修改步骤：
+全部过程链接为：https://baijiahao.baidu.com/s?id=1726267633457240930&amp;wfr=spider&amp;for=pc
+那么本篇就是想探究一下DNS的相关原理，更加系统的记录一下DNS从查询，搭建到扩展的应用，如下内容将主要使用Linux演示。
+DNS介绍 DNS 是 Domain Name System（域名系统）的简称，DNS 是一个分层的分布式命名系统，用于连接到互联网或专用网络的计算机，服务或其他资源。它将各种信息与分配给每个参与实体的域名关联起来。
+简单来说其最大的功能就是将域名翻译成 IP 地址，例如bilibili的 IP 地址就是一串毫无规则的数字，其中之一为110.43.33.47，或者ping www.bilibili.com后查询到的IP为157.148.134.11，这不利于记忆，且因为有CDN等因素外，并不唯一，同样，同个IP，也可以具有多个DNS，这个后续会解释原因，所以，还是直接输入B站的com域名更加方便。
+域名是由多个部分构成的，跟人的名字一样，由姓氏与名字组合而成，构成域名的每个部分称为一个区域（zone），主要是这样分级的：主机名.二级域名.顶级域名. 这样通常就代表了一个IP，而域名的集合成的系统，可以看成是一个IP地址和域名相互映射的分布式数据库，就像一本家族的族谱。
+如果需要查询得更快，本地会有一个local DNS服务器，Windows中的位置位于C:\Windows\System32\drivers\etc下的hosts文件：
+而在Linux中，可直接用vim打开/etc/hosts文件查看所添加的DNS情况，比如我就在原来基础上加了一些我需要的，一般该文件存放常用的 DNS 记录与开发中测试使用的服务器记录：
+127.0.0.1 localhost 140.82.114.4 github.com 199.232.69.194 github.global.ssl.fastly.net 140.82.112.10 codeload.Github.com 23.64.114.78 ngc.download.nvidia.cn # The following lines are desirable for IPv6 capable hosts ::1 ip6-localhost ip6-loopback fe00::0 ip6-localnet ff00::0 ip6-mcastprefix ff02::1 ip6-allnodes ff02::2 ip6-allrouters 可以看到，hosts文件中分为了两部分，IP地址 &#43; 域名的部分即为访问时会优先查询的一些链接，第二部分主要是ipv4或ipv6对应的地址，比如这里的::1是 IPv6 的本地地址表示方式，后面的类似。
+以上就是本地添加DNS映射的操作，这里再列举一些常用的DNS服务选择：
+首选DNS 备用DNS百度180.76.76.76124.251.124.251114114.114.114.114114.114.115.115腾讯119.29.29.29182.254.116.116阿里云223.5.5.5223.6.6.6谷歌8.8.8.88.8.4.4openDNS208.67.222.222208.67.220.220FreeDJS37.235.1.17437.235.1.177 一般来讲，较大的厂都设置了自己的DNS服务器，该添加哪个，哪个更好这些其实因人而异，作为远程的服务器，速度受到距离、请求方式等等制约，也有可能今天我添加Google的DNS感觉速度很快，明天发现就很慢了，emmm。。。那就是时空的第四维度了，说不得准，不过这个跟网速一样是有测试工具的，我在查找资料的时候，找到在Windows平台下的一个工具为：
+DNSspeeder，这里Mark一下，但我没找到官网，感觉是作者闲着无聊时写得一个小工具吧，Linux下应该也有，不过我没有详细找了，测速能比较清晰的看到DNS速度的可视化，但平常也不会将很多的地址往里加，麻烦不说也意义不大，下面将分析DNS解析的原理与结构。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/76f65b6eebcdf8c42db487d5f7fb8e5d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-02-02T22:23:24+08:00" />
+<meta property="article:modified_time" content="2023-02-02T22:23:24+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">DNS服务解析与原理笔记</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4> </h4> 
+ <ul><li><a href="#_1" rel="nofollow">引言</a></li><li><a href="#DNS_13" rel="nofollow">DNS介绍</a></li><li><a href="#DNS_59" rel="nofollow">DNS原理与解析</a></li><li><a href="#DNS_114" rel="nofollow">DNS查询</a></li><li><a href="#DNS_301" rel="nofollow">DNS服务搭建</a></li><li><a href="#DNS_575" rel="nofollow">DNS劫持和污染</a></li><li><a href="#_or__601" rel="nofollow">计算机面试 or 真题</a></li><li><a href="#DNS_680" rel="nofollow">DNS应用扩展</a></li><li><a href="#_686" rel="nofollow">参考与推荐</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>引言</h2> 
+<p>我想很多人遇到过这样一种情况，电脑突然上不了网了，或者说可以登陆QQ，但是进不了网页，任何网页都会出现如下的类似截图：</p> 
+<center> 
+ <img src="https://images2.imgbox.com/64/13/Do1am7ck_o.png" width="50%"> 
+</center> 
+<p>有些浏览器可能还要再多一层，会弹出故障检测，然后再是DNS配置选项错误，这时候的解决方案，可以是用本地安装的电脑管家的工具箱里，找到“网页打不开”的故障维修功能，大概率是能修复的，当然，也可以手动去更新配置，见百度知道里的DNS修改步骤：<br> <img src="https://images2.imgbox.com/ab/1f/0kv6Dz3Q_o.png" alt="在这里插入图片描述"><br> 全部过程链接为：https://baijiahao.baidu.com/s?id=1726267633457240930&amp;wfr=spider&amp;for=pc</p> 
+<p>那么本篇就是想探究一下DNS的相关原理，更加系统的记录一下DNS从查询，搭建到扩展的应用，如下内容将主要使用Linux演示。</p> 
+<h2><a id="DNS_13"></a>DNS介绍</h2> 
+<p>DNS 是 Domain Name System（域名系统）的简称，DNS 是一个分层的分布式命名系统，用于连接到互联网或专用网络的计算机，服务或其他资源。它将各种信息与分配给每个参与实体的域名关联起来。</p> 
+<p>简单来说其最大的功能就是将域名翻译成 IP 地址，例如bilibili的 IP 地址就是一串毫无规则的数字，其中之一为<code>110.43.33.47</code>，或者<code>ping www.bilibili.com</code>后查询到的IP为<code>157.148.134.11</code>，这不利于记忆，且因为有CDN等因素外，并不唯一，同样，同个IP，也可以具有多个DNS，这个后续会解释原因，所以，还是直接输入B站的<code>com</code>域名更加方便。</p> 
+<p>域名是由多个部分构成的，跟人的名字一样，由姓氏与名字组合而成，构成域名的每个部分称为一个区域（zone），主要是这样分级的：<code>主机名.二级域名.顶级域名.</code> 这样通常就代表了一个IP，而域名的集合成的系统，可以看成是一个<code>IP地址和域名相互映射的分布式数据库</code>，就像一本家族的族谱。</p> 
+<p>如果需要查询得更快，本地会有一个<code>local DNS</code>服务器，Windows中的位置位于<code>C:\Windows\System32\drivers\etc</code>下的hosts文件：<br> <img src="https://images2.imgbox.com/7c/ed/LYTh7Hki_o.png" alt="在这里插入图片描述"><br> 而在Linux中，可直接用vim打开<code>/etc/hosts</code>文件查看所添加的DNS情况，比如我就在原来基础上加了一些我需要的，一般该文件存放常用的 DNS 记录与开发中测试使用的服务器记录：</p> 
+<pre><code class="prism language-python"><span class="token number">127.0</span><span class="token number">.0</span><span class="token number">.1</span>       localhost
+
+<span class="token number">140.82</span><span class="token number">.114</span><span class="token number">.4</span>    github<span class="token punctuation">.</span>com
+<span class="token number">199.232</span><span class="token number">.69</span><span class="token number">.194</span>  github<span class="token punctuation">.</span><span class="token keyword">global</span><span class="token punctuation">.</span>ssl<span class="token punctuation">.</span>fastly<span class="token punctuation">.</span>net
+<span class="token number">140.82</span><span class="token number">.112</span><span class="token number">.10</span>   codeload<span class="token punctuation">.</span>Github<span class="token punctuation">.</span>com
+
+<span class="token number">23.64</span><span class="token number">.114</span><span class="token number">.78</span>    ngc<span class="token punctuation">.</span>download<span class="token punctuation">.</span>nvidia<span class="token punctuation">.</span>cn
+
+<span class="token comment"># The following lines are desirable for IPv6 capable hosts</span>
+<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">1</span>     ip6<span class="token operator">-</span>localhost ip6<span class="token operator">-</span>loopback
+fe00<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">0</span> ip6<span class="token operator">-</span>localnet
+ff00<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">0</span> ip6<span class="token operator">-</span>mcastprefix
+ff02<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">1</span> ip6<span class="token operator">-</span>allnodes
+ff02<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">2</span> ip6<span class="token operator">-</span>allrouters
+</code></pre> 
+<p>可以看到，hosts文件中分为了两部分，IP地址 + 域名的部分即为访问时会优先查询的一些链接，第二部分主要是ipv4或ipv6对应的地址，比如这里的<code>::1</code>是 IPv6 的本地地址表示方式，后面的类似。</p> 
+<p>以上就是本地添加DNS映射的操作，这里再列举一些常用的DNS服务选择：</p> 
+<table><thead><tr><th align="center"></th><th align="center"><font color="Blue"> 首选DNS</font></th><th align="center"><font color="Blue"> 备用DNS</font></th></tr></thead><tbody><tr><td align="center">百度</td><td align="center">180.76.76.76</td><td align="center">124.251.124.251</td></tr><tr><td align="center">114</td><td align="center">114.114.114.114</td><td align="center">114.114.115.115</td></tr><tr><td align="center">腾讯</td><td align="center">119.29.29.29</td><td align="center">182.254.116.116</td></tr><tr><td align="center">阿里云</td><td align="center">223.5.5.5</td><td align="center">223.6.6.6</td></tr><tr><td align="center">谷歌</td><td align="center">8.8.8.8</td><td align="center">8.8.4.4</td></tr><tr><td align="center">openDNS</td><td align="center">208.67.222.222</td><td align="center">208.67.220.220</td></tr><tr><td align="center">FreeDJS</td><td align="center">37.235.1.174</td><td align="center">37.235.1.177</td></tr></tbody></table> 
+<p>一般来讲，较大的厂都设置了自己的DNS服务器，该添加哪个，哪个更好这些其实因人而异，作为远程的服务器，速度受到距离、请求方式等等制约，也有可能今天我添加Google的DNS感觉速度很快，明天发现就很慢了，emmm。。。那就是时空的第四维度了，说不得准，不过这个跟网速一样是有测试工具的，我在查找资料的时候，找到在Windows平台下的一个工具为：</p> 
+<p><img src="https://images2.imgbox.com/15/f1/B42z94DS_o.png" alt="在这里插入图片描述"><br> DNSspeeder，这里Mark一下，但我没找到官网，感觉是作者闲着无聊时写得一个小工具吧，Linux下应该也有，不过我没有详细找了，测速能比较清晰的看到DNS速度的可视化，但平常也不会将很多的地址往里加，麻烦不说也意义不大，下面将分析DNS解析的原理与结构。</p> 
+<h2><a id="DNS_59"></a>DNS原理与解析</h2> 
+<p>在上节中，DNS这种IP与域名的映射关系是可以不断往hosts里面添加的，但我们不可能把所有想要看的映射找到加入local DNS中，所以大部分情况下，我们会先绕一层，先去请求表格中我列出的比较知名的大厂所搭建的DNS服务器，然后它返回想看域名的IP再进行跳转，那么依DNS介绍里说的，该服务就像一个分布式数据库，管理了大量各种用户能请求到的DNS。</p> 
+<p>举个例子，当想在学校里的图书馆查询想要的那一本书，那根据传统方法，首先进入图书馆后，先在大厅了解各层的图书大类分布，比如数学类在某楼，然后进入数学分区后，发现有小学、中学、大学、数学论文、期刊等等，找到大学数学，还有数学专业和非数学专业，或者按科目分，为高等数学、代数、数理概率、运筹与博弈论等等，最后，才找到了《数学模型》姜启源注（emmm，第一时间想到的是这。。。），当然，手机时代已经大大简化操作了，公众号平台直接搜就行了。。。所有这些的原理，还是用索引加树，在本节里更具体点，就是域名结构树。</p> 
+<p><strong>域名结构树</strong><br> <img src="https://images2.imgbox.com/ff/20/k9ZhuMFi_o.png" alt="在这里插入图片描述"></p> 
+<p>这里直接以bilibil为例，结构如图（为最后参考链接中的视频截图），从最下层开始，到 <code>.</code>root根域名服务器，相当于四层结构，从下往上分析：</p> 
+<ul><li> <p><strong>权限（权威，authoritative）域名服务器（主机名）</strong>：一般代表公司或者组织的主机名或者某个服务名，这些域名服务器负责管理某个区的域名。每一个主机的域名都必须在某个权限域名服务器处注册登记。因此权限域名服务器知道其管辖的域名与IP地址的映射关系。另外，权限域名服务器还知道其下级域名服务器的地址。比如这里的<code>www</code>我们知道是访问主站的，而<code>mail/member/space</code>分别为邮箱、会员和空间，它都管理着各自的功能。</p> </li><li> <p><strong>二级域名（second-level domains）</strong>：一般代表公司或者组织的名字，二级域名是网站的特定部分，页面域名或URL地址，可补充顶级域名。定义二级域的最简单方法之一是它由“.com”左侧的域名部分或其他类似的扩展组成，比如这里的bilibili，对顶级域和下级域的分析有助于分析URL或页面地址。</p> </li><li> <p><strong>顶级域名服务器（top-level domains，TLDS）</strong> ：一般代表的是该公司或者组织在社会中的某个领域，或者所说的国家，这些域名服务器负责管理在该顶级域名服务器注册的所有二级域名。在顶级域名中包含两种：</p> 
+  <ol><li><strong>通用顶级域名（generic top-level domains，gTLDs）</strong>：通用的顶级域名代表的便是在社会中的某个领域，例如 <code>com</code> 表示的是商业，<code>edu</code> 表示的教育机构，<code>gov</code> 表示的政府机构，<code>org</code> 表示的组织机构</li><li><strong>国家代码顶级域名（country code top-level domains，ccTLDs）</strong>：国家代码顶级域名代表国家代表，例如 <code>cn</code> 代表的是中国，<code>jp</code> 代表的是日本，<code>ca</code> 代表的是加拿大等等<br> <br>当然gTDLS 与 ccTLDs 是可以混用的，比如我<br> <img src="https://images2.imgbox.com/8a/f3/fdhA4Fdu_o.png" alt="在这里插入图片描述"></li></ol> </li><li> <p><strong>根域名服务器（root）</strong>：是最高层次的域名服务器。每个根域名服务器都知道所有的顶级域名服务器的域名及其IP地址。在ipv4时期，因特网上共有13个不同IP地址的根域名服务器，分别为10个在美国，一个在日本，两个在欧洲。而ipv6时期，ip地址已经变成128位，整个dns也更加分布式，但主要的根服务器有三台，分别为中美日。<br> <img src="https://images2.imgbox.com/52/a2/oQhwmmxe_o.png" alt="在这里插入图片描述"><br> 根域名服务器的原理是，当本地域名服务器向根域名服务器发出查询请求时，路由器就把查询请求报文转发到离这个DNS客户最近的一个根域名服务器。这就加快了DNS的查询过程，同时也更合理地利用了因特网的资源，同时，它采用了任播技术：将任播报文至少传输到一个具有任播地址的主机，最好仅仅传输到一个主机，改善网络负载拓扑，较好地分摊网络负载，提高网络服务的范围和服务质量，使网络资源得到合理利用。</p> </li></ul> 
+<p>那么到此，就将域名结构树的层级关系说明白了。这里回答最开始的问题：当我们访问网页时，出现故障，无法浏览查看任何地址，而QQ或者其它软件是没有影响的，这是因为QQ在内部已经设置好了相关的DNS，或者说默认代理模式，保证了安全传输，这里以我正在听的QQ音乐为例，在我之前公司净网的时候，将很多提高我敲代码效率的软件加入了黑名单，但我又想听歌，那怎么办？emmm，现在腾讯云、阿里云什么的云服务器很便宜，搭个代理让QQ音乐走我的云服务器流量就好了。</p> 
+<center> 
+ <img src="https://images2.imgbox.com/2e/d5/DYbdIHH6_o.png" width="70%"> 
+</center> 
+<p>当我设置代理后，网络便会先走我设置的代理，同样，DNS也是有优先级的。一个大致的流程顺序为：<br> <img src="https://images2.imgbox.com/36/f1/YZOHbcrK_o.png" alt="在这里插入图片描述"><br> 过程可以简单概括为：</p> 
+<pre><code>1、主机首先向其本地域名服务器进行递归查询。
+
+2、本地域名服务器采用迭代查询，它先向某个根域名服务器查询。
+
+3、根域名服务器告诉本地域名服务器，下一次应查询的顶级域名服务器的IP地址。
+
+4、本地域名服务器向顶级域名服务器进行迭代查询。
+
+5、顶级域名服务器告诉本地域名服务器，下一次应查询的权限域名服务器的IP地址。
+
+6、本地域名服务器向权限域名服务器进行迭代查询。
+
+7、权限域名服务器告诉本地域名服务器所查询的域名的IP地址。
+
+8、本地域名服务器最后把查询的结果告诉主机。
+</code></pre> 
+<p>下面将用一个例子论述这个过程。</p> 
+<h2><a id="DNS_114"></a>DNS查询</h2> 
+<p>在Linux下，有nslookup命令查询DNS的一个路径方式，比如我们首先查询根域名服务器：</p> 
+<pre><code class="prism language-python">desktop<span class="token punctuation">:</span><span class="token operator">~</span>$ nslookup
+<span class="token operator">&gt;</span> <span class="token builtin">set</span> <span class="token builtin">type</span><span class="token operator">=</span>ns
+<span class="token operator">&gt;</span> <span class="token punctuation">.</span>
+Server<span class="token punctuation">:</span>         <span class="token number">127.0</span><span class="token number">.0</span><span class="token number">.53</span>
+Address<span class="token punctuation">:</span>        <span class="token number">127.0</span><span class="token number">.0</span><span class="token number">.53</span><span class="token comment">#53</span>
+
+Non<span class="token operator">-</span>authoritative answer<span class="token punctuation">:</span>
+<span class="token punctuation">.</span>       nameserver <span class="token operator">=</span> k<span class="token punctuation">.</span>root<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+<span class="token punctuation">.</span>       nameserver <span class="token operator">=</span> g<span class="token punctuation">.</span>root<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+<span class="token punctuation">.</span>       nameserver <span class="token operator">=</span> c<span class="token punctuation">.</span>root<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+<span class="token punctuation">.</span>       nameserver <span class="token operator">=</span> b<span class="token punctuation">.</span>root<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+<span class="token punctuation">.</span>       nameserver <span class="token operator">=</span> h<span class="token punctuation">.</span>root<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+<span class="token punctuation">.</span>       nameserver <span class="token operator">=</span> i<span class="token punctuation">.</span>root<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+<span class="token punctuation">.</span>       nameserver <span class="token operator">=</span> e<span class="token punctuation">.</span>root<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+<span class="token punctuation">.</span>       nameserver <span class="token operator">=</span> j<span class="token punctuation">.</span>root<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+<span class="token punctuation">.</span>       nameserver <span class="token operator">=</span> l<span class="token punctuation">.</span>root<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+<span class="token punctuation">.</span>       nameserver <span class="token operator">=</span> d<span class="token punctuation">.</span>root<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+<span class="token punctuation">.</span>       nameserver <span class="token operator">=</span> m<span class="token punctuation">.</span>root<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+<span class="token punctuation">.</span>       nameserver <span class="token operator">=</span> f<span class="token punctuation">.</span>root<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+<span class="token punctuation">.</span>       nameserver <span class="token operator">=</span> a<span class="token punctuation">.</span>root<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+
+Authoritative answers can be found <span class="token keyword">from</span><span class="token punctuation">:</span>
+
+</code></pre> 
+<p>我们会看到目前的13个a-m的根域名服务器地址，<code>.</code>就是查询根域名方式，最上面的是使用的DNS服务器，我这是自己搭建的，DNS 协议也是应用层的协议，使用TCP和UDP端口53，大多都采用udp传输。下行的<code>Non-authoritative</code>表示非权威，非权威的结果一般来说就是缓存的结果，而不是管控的相应服务器返回的结果。</p> 
+<p>那继续，从13个服务器中选择一个查看下级，选择root b：</p> 
+<pre><code class="prism language-python"><span class="token operator">&gt;</span> <span class="token builtin">set</span> <span class="token builtin">type</span><span class="token operator">=</span>a
+<span class="token operator">&gt;</span> b<span class="token punctuation">.</span>root<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+Server<span class="token punctuation">:</span>         <span class="token number">198.41</span><span class="token number">.0</span><span class="token number">.4</span>
+Address<span class="token punctuation">:</span>        <span class="token number">198.41</span><span class="token number">.0</span><span class="token number">.4</span><span class="token comment">#53</span>
+
+Name<span class="token punctuation">:</span>   b<span class="token punctuation">.</span>root<span class="token operator">-</span>servers<span class="token punctuation">.</span>net
+Address<span class="token punctuation">:</span> <span class="token number">199.9</span><span class="token number">.14</span><span class="token number">.201</span>
+<span class="token operator">&gt;</span> server <span class="token number">199.9</span><span class="token number">.14</span><span class="token number">.201</span>
+Default server<span class="token punctuation">:</span> <span class="token number">199.9</span><span class="token number">.14</span><span class="token number">.201</span>
+Address<span class="token punctuation">:</span> <span class="token number">199.9</span><span class="token number">.14</span><span class="token number">.201</span><span class="token comment">#53</span>
+<span class="token operator">&gt;</span> <span class="token builtin">set</span> <span class="token builtin">type</span><span class="token operator">=</span>ns
+<span class="token operator">&gt;</span> com<span class="token punctuation">.</span>
+Server<span class="token punctuation">:</span>         <span class="token number">199.9</span><span class="token number">.14</span><span class="token number">.201</span>
+Address<span class="token punctuation">:</span>        <span class="token number">199.9</span><span class="token number">.14</span><span class="token number">.201</span><span class="token comment">#53</span>
+
+Non<span class="token operator">-</span>authoritative answer<span class="token punctuation">:</span>
+<span class="token operator">**</span><span class="token operator">*</span> Can't find com<span class="token punctuation">.</span><span class="token punctuation">:</span> No answer
+
+Authoritative answers can be found <span class="token keyword">from</span><span class="token punctuation">:</span>
+com     nameserver <span class="token operator">=</span> a<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+com     nameserver <span class="token operator">=</span> b<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+com     nameserver <span class="token operator">=</span> c<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+com     nameserver <span class="token operator">=</span> d<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+com     nameserver <span class="token operator">=</span> e<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+com     nameserver <span class="token operator">=</span> f<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+com     nameserver <span class="token operator">=</span> g<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+com     nameserver <span class="token operator">=</span> h<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+com     nameserver <span class="token operator">=</span> i<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+com     nameserver <span class="token operator">=</span> j<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+com     nameserver <span class="token operator">=</span> k<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+com     nameserver <span class="token operator">=</span> l<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+com     nameserver <span class="token operator">=</span> m<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net<span class="token punctuation">.</span>
+a<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net      internet address <span class="token operator">=</span> <span class="token number">192.5</span><span class="token number">.6</span><span class="token number">.30</span>
+a<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net      has AAAA address <span class="token number">2001</span><span class="token punctuation">:</span><span class="token number">503</span><span class="token punctuation">:</span>a83e<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">2</span><span class="token punctuation">:</span><span class="token number">30</span>
+b<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net      internet address <span class="token operator">=</span> <span class="token number">192.33</span><span class="token number">.14</span><span class="token number">.30</span>
+b<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net      has AAAA address <span class="token number">2001</span><span class="token punctuation">:</span><span class="token number">503</span><span class="token punctuation">:</span>231d<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">2</span><span class="token punctuation">:</span><span class="token number">30</span>
+c<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net      internet address <span class="token operator">=</span> <span class="token number">192.26</span><span class="token number">.92</span><span class="token number">.30</span>
+c<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net      has AAAA address <span class="token number">2001</span><span class="token punctuation">:</span><span class="token number">503</span><span class="token punctuation">:</span>83eb<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">30</span>
+d<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net      internet address <span class="token operator">=</span> <span class="token number">192.31</span><span class="token number">.80</span><span class="token number">.30</span>
+d<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net      has AAAA address <span class="token number">2001</span><span class="token punctuation">:</span><span class="token number">500</span><span class="token punctuation">:</span>856e<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">30</span>
+e<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net      internet address <span class="token operator">=</span> <span class="token number">192.12</span><span class="token number">.94</span><span class="token number">.30</span>
+e<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net      has AAAA address <span class="token number">2001</span><span class="token punctuation">:</span><span class="token number">502</span><span class="token punctuation">:</span>1ca1<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">30</span>
+f<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net      internet address <span class="token operator">=</span> <span class="token number">192.35</span><span class="token number">.51</span><span class="token number">.30</span>
+f<span class="token punctuation">.</span>gtld<span class="token operator">-</span>servers<span class="token punctuation">.</span>net      has AAAA address <span class="token number">2001</span><span class="token punctuation">:</span><span class="token number">503</span><span class="token punctuation">:</span>d414<span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">30</span>
+<span class="token operator">&gt;</span> server <span class="token number">192.33</span><span class="token number">.14</span><span class="token number">.30</span>
+Default server<span class="token punctuation">:</span> <span class="token number">192.33</span><span class="token number">.14</span><span class="token number">.30</span>
+Address<span class="token punctuation">:</span> <span class="token number">192.33</span><span class="token number">.14</span><span class="token number">.30</span><span class="token comment">#53</span>
+<span class="token operator">&gt;</span>
+
+</code></pre> 
+<p>这里的操作是通过root b找到它对应的IP，然后再根据它的IP地址，找到它管控下的顶级域名，我们可以发现，answer从<code>Non-authoritative</code>变为了<code>Authoritative</code>，查找方式为<code>com.</code>，返回的两段式跟上节DNS介绍的结构一样，这里不再论述。</p> 
+<pre><code class="prism language-python"><span class="token operator">&gt;</span> server <span class="token number">192.33</span><span class="token number">.14</span><span class="token number">.30</span>
+Default server<span class="token punctuation">:</span> <span class="token number">192.33</span><span class="token number">.14</span><span class="token number">.30</span>
+Address<span class="token punctuation">:</span> <span class="token number">192.33</span><span class="token number">.14</span><span class="token number">.30</span><span class="token comment">#53</span>
+<span class="token operator">&gt;</span>
+<span class="token operator">&gt;</span>
+<span class="token operator">&gt;</span> <span class="token builtin">set</span> <span class="token builtin">type</span><span class="token operator">=</span>ns
+<span class="token operator">&gt;</span> bilibili<span class="token punctuation">.</span>com<span class="token punctuation">.</span>
+Server<span class="token punctuation">:</span>         <span class="token number">192.33</span><span class="token number">.14</span><span class="token number">.30</span>
+Address<span class="token punctuation">:</span>        <span class="token number">192.33</span><span class="token number">.14</span><span class="token number">.30</span><span class="token comment">#53</span>
+
+Non<span class="token operator">-</span>authoritative answer<span class="token punctuation">:</span>
+<span class="token operator">**</span><span class="token operator">*</span> Can't find bilibili<span class="token punctuation">.</span>com<span class="token punctuation">.</span><span class="token punctuation">:</span> No answer
+
+Authoritative answers can be found <span class="token keyword">from</span><span class="token punctuation">:</span>
+bilibili<span class="token punctuation">.</span>com    nameserver <span class="token operator">=</span> ns3<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com<span class="token punctuation">.</span>
+bilibili<span class="token punctuation">.</span>com    nameserver <span class="token operator">=</span> ns4<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com<span class="token punctuation">.</span>
+ns3<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">1.12</span><span class="token number">.0</span><span class="token number">.17</span>
+ns3<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">1.12</span><span class="token number">.0</span><span class="token number">.18</span>
+ns3<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">1.12</span><span class="token number">.0</span><span class="token number">.20</span>
+ns3<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">18.194</span><span class="token number">.2</span><span class="token number">.137</span>
+ns3<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">223.166</span><span class="token number">.151</span><span class="token number">.16</span>
+ns3<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   has AAAA address <span class="token number">2402</span><span class="token punctuation">:</span><span class="token number">4e00</span><span class="token punctuation">:</span><span class="token number">1430</span><span class="token punctuation">:</span><span class="token number">1102</span><span class="token punctuation">:</span><span class="token number">0</span><span class="token punctuation">:</span><span class="token number">9136</span><span class="token punctuation">:</span>2b2b<span class="token punctuation">:</span>ba61
+ns3<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">36.155</span><span class="token number">.149</span><span class="token number">.211</span>
+ns3<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">49.234</span><span class="token number">.175</span><span class="token number">.103</span>
+ns3<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">52.220</span><span class="token number">.136</span><span class="token number">.67</span>
+ns3<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">61.151</span><span class="token number">.180</span><span class="token number">.51</span>
+ns4<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">1.12</span><span class="token number">.0</span><span class="token number">.16</span>
+ns4<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">1.12</span><span class="token number">.0</span><span class="token number">.19</span>
+ns4<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">106.55</span><span class="token number">.82</span><span class="token number">.76</span>
+ns4<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">117.89</span><span class="token number">.178</span><span class="token number">.200</span>
+ns4<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">183.192</span><span class="token number">.164</span><span class="token number">.119</span>
+ns4<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">183.47</span><span class="token number">.126</span><span class="token number">.155</span>
+ns4<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">223.166</span><span class="token number">.151</span><span class="token number">.126</span>
+ns4<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   has AAAA address <span class="token number">2402</span><span class="token punctuation">:</span><span class="token number">4e00</span><span class="token punctuation">:</span><span class="token number">1020</span><span class="token punctuation">:</span><span class="token number">1264</span><span class="token punctuation">:</span><span class="token number">0</span><span class="token punctuation">:</span><span class="token number">9136</span><span class="token punctuation">:</span>29b6<span class="token punctuation">:</span>fc32
+ns4<span class="token punctuation">.</span>dnsv5<span class="token punctuation">.</span>com   internet address <span class="token operator">=</span> <span class="token number">52.198</span><span class="token number">.159</span><span class="token number">.146</span>
+<span class="token operator">&gt;</span>
+
+</code></pre> 
+<p>这里选择一个顶级域名进行探针，然后直接查询<code>bilibili.com.</code>所在的IP地址，就相当于到了二级域名的位置，而查询到的bilibili的dns服务器为两台，分别为<code>ns3</code>和<code>ns4</code>，那我们可以从这两台中的ip地址中继续往下查询：</p> 
+<pre><code class="prism language-python"><span class="token operator">&gt;</span> server <span class="token number">1.12</span><span class="token number">.0</span><span class="token number">.17</span>
+Default server<span class="token punctuation">:</span> <span class="token number">1.12</span><span class="token number">.0</span><span class="token number">.17</span>
+Address<span class="token punctuation">:</span> <span class="token number">1.12</span><span class="token number">.0</span><span class="token number">.17</span><span class="token comment">#53</span>
+<span class="token operator">&gt;</span> <span class="token builtin">set</span> <span class="token builtin">type</span><span class="token operator">=</span>a
+<span class="token operator">&gt;</span> www<span class="token punctuation">.</span>bilibili<span class="token punctuation">.</span>com<span class="token punctuation">.</span>
+Server<span class="token punctuation">:</span>         <span class="token number">1.12</span><span class="token number">.0</span><span class="token number">.17</span>
+Address<span class="token punctuation">:</span>        <span class="token number">1.12</span><span class="token number">.0</span><span class="token number">.17</span><span class="token comment">#53</span>
+
+www<span class="token punctuation">.</span>bilibili<span class="token punctuation">.</span>com        canonical name <span class="token operator">=</span> a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com<span class="token punctuation">.</span>
+
+<span class="token operator">&gt;</span> a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com<span class="token punctuation">.</span>
+<span class="token punctuation">;</span><span class="token punctuation">;</span> Got SERVFAIL reply <span class="token keyword">from</span> <span class="token number">127.0</span><span class="token number">.0</span><span class="token number">.53</span><span class="token punctuation">,</span> trying <span class="token builtin">next</span> server
+Server<span class="token punctuation">:</span>         <span class="token number">223.5</span><span class="token number">.5</span><span class="token number">.5</span>
+Address<span class="token punctuation">:</span>        <span class="token number">223.5</span><span class="token number">.5</span><span class="token number">.5</span><span class="token comment">#53</span>
+
+Non<span class="token operator">-</span>authoritative answer<span class="token punctuation">:</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">183.232</span><span class="token number">.239</span><span class="token number">.19</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">183.232</span><span class="token number">.239</span><span class="token number">.22</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">120.240</span><span class="token number">.75</span><span class="token number">.132</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">120.240</span><span class="token number">.75</span><span class="token number">.133</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">120.240</span><span class="token number">.75</span><span class="token number">.131</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">120.240</span><span class="token number">.75</span><span class="token number">.134</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">120.240</span><span class="token number">.75</span><span class="token number">.130</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">183.232</span><span class="token number">.239</span><span class="token number">.21</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">183.232</span><span class="token number">.239</span><span class="token number">.20</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">183.232</span><span class="token number">.239</span><span class="token number">.18</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">2409</span><span class="token punctuation">:</span>8c54<span class="token punctuation">:</span><span class="token number">2810</span><span class="token punctuation">:</span><span class="token number">9105</span><span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">18</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">2409</span><span class="token punctuation">:</span>8c54<span class="token punctuation">:</span><span class="token number">1841</span><span class="token punctuation">:</span><span class="token number">2002</span><span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">20</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">2409</span><span class="token punctuation">:</span>8c54<span class="token punctuation">:</span><span class="token number">2810</span><span class="token punctuation">:</span><span class="token number">9105</span><span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">15</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">2409</span><span class="token punctuation">:</span>8c54<span class="token punctuation">:</span><span class="token number">2810</span><span class="token punctuation">:</span><span class="token number">9105</span><span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">17</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">2409</span><span class="token punctuation">:</span>8c54<span class="token punctuation">:</span><span class="token number">2810</span><span class="token punctuation">:</span><span class="token number">9105</span><span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">16</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">2409</span><span class="token punctuation">:</span>8c54<span class="token punctuation">:</span><span class="token number">1841</span><span class="token punctuation">:</span><span class="token number">2002</span><span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">22</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">2409</span><span class="token punctuation">:</span>8c54<span class="token punctuation">:</span><span class="token number">2810</span><span class="token punctuation">:</span><span class="token number">9105</span><span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">19</span>
+Name<span class="token punctuation">:</span>   a<span class="token punctuation">.</span>w<span class="token punctuation">.</span>bilicdn1<span class="token punctuation">.</span>com
+Address<span class="token punctuation">:</span> <span class="token number">2409</span><span class="token punctuation">:</span>8c54<span class="token punctuation">:</span><span class="token number">1841</span><span class="token punctuation">:</span><span class="token number">2002</span><span class="token punctuation">:</span><span class="token punctuation">:</span><span class="token number">17</span>
+<span class="token operator">&gt;</span>
+
+</code></pre> 
+<p>切换到二级域名，输入<code>www.bilibili.com.</code>，输出了一个cdn，然后再输入该cdn，就会进行跳转，输出最终的IP地址以及DNS信息了，上述过程可以用下图总结。<br> <img src="https://images2.imgbox.com/28/07/6tlBoCGL_o.png" alt="在这里插入图片描述"><br> DNS查询通常从请求主机到本地域名服务器的查询是递归查询，而其余的查询是迭代查询。</p> 
+<h2><a id="DNS_301"></a>DNS服务搭建</h2> 
+<p>本节会简单搭建，因为个人也不是做运维，找到了一些资料想Mark一下。DNS 的使用方案有许多，常见的开源软件有：</p> 
+<ul><li><strong>BIND</strong>：全名为 Berkeley Internet Name Domain，是早在 1980 年左右有 Berkeley 大学公开出来的 DNS 服务实现，也是使用最为广泛的方案。后由 ISC 基于 BIND 重写发布 BIND9</li><li><strong>PowerDNS</strong>：PowerDNS 由 C++ 实现于 1990 年末，起源一个商业软件于 2002 年开源，相对于 BIND 在数据库选用上与集群上功能更多更灵活</li><li><strong>CoreDNS</strong>：由 SkyDNS 进化而来，主要作为一种可插拔的中间件</li><li><strong>DNSpod-sr</strong>：一款由国内服务商开源的一套 DNS 的实现</li></ul> 
+<p>这里选用比较成熟的BIND9 来搭建DNS服务器，另外虽然DNS一般会设置两个服务器，作为主从，但这里一切从简，只是熟悉熟悉过程，我感觉一些搭建比较好的会放最后的参考与推荐中，所以只做主服务器，先安装bind：</p> 
+<pre><code class="prism language-python">sudo apt<span class="token operator">-</span>get update  
+
+sudo apt<span class="token operator">-</span>get install <span class="token operator">-</span>y bind9 bind9utils bind9<span class="token operator">-</span>doc
+
+vi <span class="token operator">/</span>etc<span class="token operator">/</span>default<span class="token operator">/</span>bind9
+</code></pre> 
+<p>这里修改bind参数，激活 IPv4 Mode：<br> <img src="https://images2.imgbox.com/4b/42/jQNFlzWR_o.png" alt="在这里插入图片描述"><br> BIND 的配置由多个文件组成，这些文件包含在主配置文件中named.conf。这些文件名以“named”开头，因为这是 BIND 运行的进程的名称，可以查看为：</p> 
+<pre><code class="prism language-python">$ cat <span class="token operator">/</span>etc<span class="token operator">/</span>bind<span class="token operator">/</span>named<span class="token punctuation">.</span>conf
+
+<span class="token operator">//</span> This <span class="token keyword">is</span> the primary configuration <span class="token builtin">file</span> <span class="token keyword">for</span> the BIND DNS server named<span class="token punctuation">.</span>
+<span class="token operator">//</span>
+<span class="token operator">//</span> Please read <span class="token operator">/</span>usr<span class="token operator">/</span>share<span class="token operator">/</span>doc<span class="token operator">/</span>bind9<span class="token operator">/</span>README<span class="token punctuation">.</span>Debian<span class="token punctuation">.</span>gz <span class="token keyword">for</span> information on the
+<span class="token operator">//</span> structure of BIND configuration files <span class="token keyword">in</span> Debian<span class="token punctuation">,</span> <span class="token operator">*</span>BEFORE<span class="token operator">*</span> you customize
+<span class="token operator">//</span> this configuration <span class="token builtin">file</span><span class="token punctuation">.</span>
+<span class="token operator">//</span>
+<span class="token operator">//</span> If you are just adding zones<span class="token punctuation">,</span> please do that <span class="token keyword">in</span> <span class="token operator">/</span>etc<span class="token operator">/</span>bind<span class="token operator">/</span>named<span class="token punctuation">.</span>conf<span class="token punctuation">.</span>local
+
+include <span class="token string">"/etc/bind/named.conf.options"</span><span class="token punctuation">;</span>
+include <span class="token string">"/etc/bind/named.conf.local"</span><span class="token punctuation">;</span>
+include <span class="token string">"/etc/bind/named.conf.default-zones"</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>增加了ipv4后，我们首先修改配置选项文件，在<code>named.conf.options</code>最开头加入本地ip地址，并以一个新的 ACL 块命名 “trusted”，我们把之前找到的内网 ip 添加到可信客户端列表里，并称为 ns1 ，只允许它们查询 DNS 服务器，提高安全性：</p> 
+<pre><code class="prism language-python">$ vi <span class="token operator">/</span>etc<span class="token operator">/</span>bind<span class="token operator">/</span>named<span class="token punctuation">.</span>conf<span class="token punctuation">.</span>options
+
+acl <span class="token string">"trusted"</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token number">192.168</span><span class="token number">.1</span><span class="token number">.215</span><span class="token punctuation">;</span> <span class="token comment"># ns1 信任的名单</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+options <span class="token punctuation">{<!-- --></span>
+        directory <span class="token string">"/var/cache/bind"</span><span class="token punctuation">;</span>
+
+        <span class="token operator">//</span> If there <span class="token keyword">is</span> a firewall between you <span class="token keyword">and</span> nameservers you want
+        <span class="token operator">//</span> to talk to<span class="token punctuation">,</span> you may need to fix the firewall to allow multiple
+        <span class="token operator">//</span> ports to talk<span class="token punctuation">.</span>  See http<span class="token punctuation">:</span><span class="token operator">//</span>www<span class="token punctuation">.</span>kb<span class="token punctuation">.</span>cert<span class="token punctuation">.</span>org<span class="token operator">/</span>vuls<span class="token operator">/</span><span class="token builtin">id</span><span class="token operator">/</span><span class="token number">800113</span>
+
+        <span class="token operator">//</span> If your ISP provided one <span class="token keyword">or</span> more IP addresses <span class="token keyword">for</span> stable
+        <span class="token operator">//</span> nameservers<span class="token punctuation">,</span> you probably want to use them <span class="token keyword">as</span> forwarders<span class="token punctuation">.</span>
+        <span class="token operator">//</span> Uncomment the following block<span class="token punctuation">,</span> <span class="token keyword">and</span> insert the addresses replacing
+        <span class="token operator">//</span> the <span class="token builtin">all</span><span class="token operator">-</span><span class="token number">0</span>'s placeholder<span class="token punctuation">.</span>
+
+        <span class="token operator">//</span> forwarders <span class="token punctuation">{<!-- --></span>
+        <span class="token operator">//</span>      <span class="token number">0.0</span><span class="token number">.0</span><span class="token number">.0</span><span class="token punctuation">;</span>
+        <span class="token operator">//</span> <span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+        <span class="token operator">//=</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">=</span>
+        <span class="token operator">//</span> If BIND logs error messages about the root key being expired<span class="token punctuation">,</span>
+        <span class="token operator">//</span> you will need to update your keys<span class="token punctuation">.</span>  See https<span class="token punctuation">:</span><span class="token operator">//</span>www<span class="token punctuation">.</span>isc<span class="token punctuation">.</span>org<span class="token operator">/</span>bind<span class="token operator">-</span>keys
+        <span class="token operator">//=</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">==</span><span class="token operator">=</span>
+        dnssec<span class="token operator">-</span>validation auto<span class="token punctuation">;</span>
+
+        auth<span class="token operator">-</span>nxdomain no<span class="token punctuation">;</span>    <span class="token comment"># conform to RFC1035</span>
+        listen<span class="token operator">-</span>on<span class="token operator">-</span>v6 <span class="token punctuation">{<!-- --></span> <span class="token builtin">any</span><span class="token punctuation">;</span> <span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>关于此文件的一些配置项说明，可以去bind官网查看：<a href="https://ftp.isc.org/isc/bind/9.9.4/doc/arm/Bv9ARM.ch06.html" rel="nofollow">Chapter 6. BIND 9 Configuration Reference</a></p> 
+<p>这里还有非常多的东西没有开启，我这里记录一下named 服务运行的安全问题：</p> 
+<table><thead><tr><th>配置项</th><th>作用</th></tr></thead><tbody><tr><td>allow-query</td><td>指定可以查询主解析记录的服务器地址</td></tr><tr><td>dnssec-enable</td><td>是否开启 DNS 安全模块</td></tr><tr><td>dnssec-validation</td><td>是否进行 DNS 安全确认</td></tr><tr><td>bindkeys-file</td><td>配置 DNS 安全模块所使用的密钥</td></tr><tr><td>managed-keys-directory</td><td>配置 DNS 安全模块管理密钥的目录</td></tr><tr><td>session-keyfile</td><td>更新策略的 key 文件名</td></tr></tbody></table> 
+<p>加入了<code>trust</code>后，接着配置本地文件，这里需要写明正向解析与反向的地址，比如我以我的博客名加sample组成我想改的dns名：</p> 
+<pre><code class="prism language-python">$ vi <span class="token operator">/</span>etc<span class="token operator">/</span>bind<span class="token operator">/</span>named<span class="token punctuation">.</span>conf<span class="token punctuation">.</span>local
+
+<span class="token operator">//</span>
+<span class="token operator">//</span> Do <span class="token builtin">any</span> local configuration here
+<span class="token operator">//</span>
+
+<span class="token operator">//</span> Consider adding the <span class="token number">1918</span> zones here<span class="token punctuation">,</span> <span class="token keyword">if</span> they are <span class="token keyword">not</span> used <span class="token keyword">in</span> your
+<span class="token operator">//</span> organization
+<span class="token operator">//</span>include <span class="token string">"/etc/bind/zones.rfc1918"</span><span class="token punctuation">;</span>
+
+zone <span class="token string">"submarineas.example.com"</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token builtin">type</span> master<span class="token punctuation">;</span>
+    <span class="token builtin">file</span> <span class="token string">"/etc/bind/zones/db.submarineas.example.com"</span><span class="token punctuation">;</span> <span class="token comment"># zone file path</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+zone <span class="token string">"168.192.in-addr.arpa"</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token builtin">type</span> master<span class="token punctuation">;</span>
+    <span class="token builtin">file</span> <span class="token string">"/etc/bind/zones/db.192.168"</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+</code></pre> 
+<p>正向与反向，就是字面意思，IP地址与域名间的互转。更加详细的解释，参考：<a href="https://blog.csdn.net/guyue35/article/details/50464495">DNS中的正向解析与反向解析 及 nslookup命令使用</a></p> 
+<p>这里总结一个表为：</p> 
+<table><thead><tr><th>记录类型</th><th>作用</th></tr></thead><tbody><tr><td>A 记录</td><td>正向解析记录，域名到 IP 地址的映射</td></tr><tr><td>NS 记录</td><td>域名服务器记录（NS 为 NameServer）</td></tr><tr><td>MX 记录</td><td>邮件记录</td></tr><tr><td>PTR 记录</td><td>反向解析记录，IP 地址到域名的映射</td></tr><tr><td>CNAME 记录</td><td>别名记录，为主机添加别名</td></tr><tr><td>SOA 记录</td><td>域权威记录，说明本服务器为域管理服务器</td></tr><tr><td>AAAA 记录</td><td>正向解析记录，域名到 IPv6 地址的映射</td></tr></tbody></table> 
+<p>其中每一种都有相应的语法格式，比如说这里要用到的SOA，PTR、NS中的SOA，其记录表示的是域管理服务器，解析文件中除了一些命令放在 zone file 的开头，所有记录的第一条记录应该为 SOA 记录，格式为：</p> 
+<pre><code class="prism language-python">@  IN  SOA  primary<span class="token operator">-</span>name<span class="token operator">-</span>server hostmaster<span class="token operator">-</span>email <span class="token punctuation">(</span>
+       serial<span class="token operator">-</span>number
+       time<span class="token operator">-</span>to<span class="token operator">-</span>refresh
+       time<span class="token operator">-</span>to<span class="token operator">-</span>retry
+       time<span class="token operator">-</span>to<span class="token operator">-</span>expire
+       minimum<span class="token operator">-</span>TTL <span class="token punctuation">)</span>
+</code></pre> 
+<p>其中 <code>@</code> 表示的是本机意思，等同于 <code>$ORIGIN</code> 命令，而 <code>$ORIGIN</code> 代表的值为我们在声明中所自定义域的名字。<code>serial-number </code>是指定的一个同步序列号，每当 zone file 变化的时候该值便会递增，slave 便知道该同步，该重新加载 zone file 了。其它四个参数都跟时间有关，这里就不再详述了。</p> 
+<p>所以根据上述的规则，我们可以分别写出正向解析与反向解析：</p> 
+<p><strong>正向解析：</strong></p> 
+<pre><code class="prism language-python">mkdir <span class="token operator">/</span>etc<span class="token operator">/</span>bind<span class="token operator">/</span>zones
+sudo cp <span class="token operator">/</span>etc<span class="token operator">/</span>bind<span class="token operator">/</span>db<span class="token punctuation">.</span>local <span class="token operator">/</span>etc<span class="token operator">/</span>bind<span class="token operator">/</span>zones<span class="token operator">/</span>db<span class="token punctuation">.</span>submarineas<span class="token punctuation">.</span>example<span class="token punctuation">.</span>com
+sudo vi <span class="token operator">/</span>etc<span class="token operator">/</span>bind<span class="token operator">/</span>zones<span class="token operator">/</span>db<span class="token punctuation">.</span>submarineas<span class="token punctuation">.</span>example<span class="token punctuation">.</span>com
+</code></pre> 
+<p>然后对<code>db.local</code>的复制域名·submarineas.sample·文件进行修改：</p> 
+<pre><code class="prism language-python"><span class="token punctuation">;</span>
+<span class="token punctuation">;</span> BIND data <span class="token builtin">file</span> <span class="token keyword">for</span> local loopback interface
+$TTL    <span class="token number">604800</span>
+@       IN      SOA     ns1<span class="token punctuation">.</span>submarineas<span class="token punctuation">.</span>example<span class="token punctuation">.</span>com<span class="token punctuation">.</span> admin<span class="token punctuation">.</span>submarineas<span class="token punctuation">.</span>example<span class="token punctuation">.</span>com<span class="token punctuation">.</span> <span class="token punctuation">(</span>
+                  <span class="token number">3</span>       <span class="token punctuation">;</span> Serial
+             <span class="token number">604800</span>     <span class="token punctuation">;</span> Refresh
+              <span class="token number">86400</span>     <span class="token punctuation">;</span> Retry
+            <span class="token number">2419200</span>     <span class="token punctuation">;</span> Expire
+             <span class="token number">604800</span> <span class="token punctuation">)</span>   <span class="token punctuation">;</span> Negative Cache TTL
+<span class="token punctuation">;</span>
+<span class="token punctuation">;</span>
+<span class="token punctuation">;</span> name servers <span class="token operator">-</span> NS records
+     IN      NS      ns1<span class="token punctuation">.</span>submarineas<span class="token punctuation">.</span>example<span class="token punctuation">.</span>com<span class="token punctuation">.</span>
+<span class="token punctuation">;</span> name servers <span class="token operator">-</span> A records
+ns1<span class="token punctuation">.</span>submarineas<span class="token punctuation">.</span>example<span class="token punctuation">.</span>com<span class="token punctuation">.</span>          IN      A       <span class="token number">192.168</span><span class="token number">.1</span><span class="token number">.215</span>
+
+host1<span class="token punctuation">.</span>submarineas<span class="token punctuation">.</span>example<span class="token punctuation">.</span>com<span class="token punctuation">.</span>        IN      A      <span class="token number">192.168</span><span class="token number">.1</span><span class="token number">.216</span>
+</code></pre> 
+<br> 
+<p><strong>反向解析：</strong></p> 
+<p>与正向类似，在之前的 <code>named.conf.local</code> 的文件里有写了一个反向域名解析的文件名<code>db.192.168</code>，现在重新改写：</p> 
+<pre><code class="prism language-python">sudo cp <span class="token operator">/</span>etc<span class="token operator">/</span>bind<span class="token operator">/</span>db<span class="token punctuation">.</span><span class="token number">127</span> <span class="token operator">/</span>etc<span class="token operator">/</span>bind<span class="token operator">/</span>zones<span class="token operator">/</span>db<span class="token punctuation">.</span><span class="token number">192.168</span>
+sudo vi <span class="token operator">/</span>etc<span class="token operator">/</span>bind<span class="token operator">/</span>zones<span class="token operator">/</span>db<span class="token punctuation">.</span><span class="token number">192.168</span>
+</code></pre> 
+<p>文件的具体内容如下：</p> 
+<pre><code class="prism language-python"><span class="token punctuation">;</span>
+<span class="token punctuation">;</span> BIND reverse data <span class="token builtin">file</span> <span class="token keyword">for</span> local loopback interface
+<span class="token punctuation">;</span>
+$TTL    <span class="token number">604800</span>
+@       IN      SOA     submarineas<span class="token punctuation">.</span>example<span class="token punctuation">.</span>com<span class="token punctuation">.</span> admin<span class="token punctuation">.</span>submarineas<span class="token punctuation">.</span>example<span class="token punctuation">.</span>com<span class="token punctuation">.</span> <span class="token punctuation">(</span>
+                              <span class="token number">3</span>         <span class="token punctuation">;</span> Serial
+                         <span class="token number">604800</span>         <span class="token punctuation">;</span> Refresh
+                          <span class="token number">86400</span>         <span class="token punctuation">;</span> Retry
+                        <span class="token number">2419200</span>         <span class="token punctuation">;</span> Expire
+                         <span class="token number">604800</span> <span class="token punctuation">)</span>       <span class="token punctuation">;</span> Negative Cache TTL
+<span class="token punctuation">;</span> name servers
+      IN      NS      ns1<span class="token punctuation">.</span>submarineas<span class="token punctuation">.</span>example<span class="token punctuation">.</span>com<span class="token punctuation">.</span>
+
+<span class="token punctuation">;</span> PTR Records
+<span class="token number">5.42</span>   IN      PTR     ns1<span class="token punctuation">.</span>submarineas<span class="token punctuation">.</span>example<span class="token punctuation">.</span>com<span class="token punctuation">.</span>    <span class="token punctuation">;</span> <span class="token number">192.168</span><span class="token number">.1</span><span class="token number">.215</span>
+<span class="token number">1.42</span>   IN      PTR     host1<span class="token punctuation">.</span>submarineas<span class="token punctuation">.</span>example<span class="token punctuation">.</span>com<span class="token punctuation">.</span>  <span class="token punctuation">;</span> <span class="token number">192.168</span><span class="token number">.1</span><span class="token number">.216</span>
+
+</code></pre> 
+<p>两个文件编写完成后，bind9有检测语法函数，跟nginx -t一样，它的检测函数是<code>named-checkconf</code>，为：</p> 
+<pre><code class="prism language-python">named<span class="token operator">-</span>checkzone submarineas<span class="token punctuation">.</span>example<span class="token punctuation">.</span>com <span class="token operator">/</span>etc<span class="token operator">/</span>bind<span class="token operator">/</span>zones<span class="token operator">/</span>db<span class="token punctuation">.</span>submarineas<span class="token punctuation">.</span>example<span class="token punctuation">.</span>com
+named<span class="token operator">-</span>checkzone <span class="token number">168.192</span><span class="token punctuation">.</span><span class="token keyword">in</span><span class="token operator">-</span>addr<span class="token punctuation">.</span>arpa <span class="token operator">/</span>etc<span class="token operator">/</span>bind<span class="token operator">/</span>zones<span class="token operator">/</span>db<span class="token punctuation">.</span><span class="token number">192.168</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/5d/8b/3oBOpzDl_o.png" alt="在这里插入图片描述"></p> 
+<p>无误后，将DNS添加进系统设置，打开文件<code>resolv.conf</code>，添加为：</p> 
+<pre><code class="prism language-python">options timeout<span class="token punctuation">:</span><span class="token number">1</span> attempts<span class="token punctuation">:</span><span class="token number">1</span> rotate
+nameserver  <span class="token number">192.168</span><span class="token number">.1</span><span class="token number">.215</span>  
+</code></pre> 
+<p>最后重启bind9，就可以看到搭建的DNS服务器啦：</p> 
+<pre><code class="prism language-python">service bind9 restart
+</code></pre> 
+<p><img src="https://images2.imgbox.com/c8/1d/ZyUSuQ3K_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="DNS_575"></a>DNS劫持和污染</h2> 
+<p>这里参考<a href="https://blog.csdn.net/weixin_44446626/article/details/124606688">计算机网络之DNS</a>，因为我感觉描述加图已经很清晰明了了：</p> 
+<br> 
+<p><strong>DNS劫持：</strong></p> 
+<p><img src="https://images2.imgbox.com/5b/11/zrwl5fYS_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>什么是DNS劫持？DNS劫持指DNS服务器被控制，攻击者利用其他攻击手段，篡改了某个域名的解析结果，使得指向该域名的IP变成了另一个IP，导致对相应网址的访问被劫持到另一个不可达的或者假冒的网址，从而实现非法窃取用户信息或者破坏正常网络服务的目的。</p> 
+</blockquote> 
+<p>一般来说，DNS劫持大多会出现两种情况：</p> 
+<ol><li><strong>广告劫持：</strong> 跳转到灰色页面，或者指定页面广告上</li><li><strong>恶意劫持：</strong> 伪造一个跟目标页面相关的布局，将DNS修改后引流，从而达到盗取账号，或者钱财的目的。</li></ol> 
+<p><strong>DNS污染：</strong></p> 
+<p><img src="https://images2.imgbox.com/f6/af/5NLcSp70_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>由于域名查询没有任何认证机制，且通常是基于无连接不可靠的UDP协议，查询者只接受最先到达且格式正确的查询结果（后来的查询结果均被丢弃），因此可以通过对UDP的53端口上的域名查询进行IDS入侵检测，一旦发现相匹配的域名查询请求，就立刻伪装成目标域名的解析服务器返回虚假的查询结果，不过由于缓存过期时间的限制，污染的域名不是一成不变的，若某个污染过的域名缓存记录过了缓存过期时间后没有对其进行再污染，则该域名的污染就会消失。</p> 
+</blockquote> 
+<p>其实上述两种bug到现在，已经很难在发生很大的影响了，先从DNS污染说起，这种只要不是自己搭建的，或者说没有加安全验证方式的，比如说秘钥，ssh等等，大厂的DNS服务器已经足够完善了，因为阿里云在几年前就防御了全世界范围的DDos攻击，那攻都攻不进来，谈何污染。另外就是DNS挟持，攻击者想要重定向，但可能很快就会被异常识别，代理商也加入了混淆 or 加密代理，吃力不讨好，不如去ctf 插旗，emmm。。。</p> 
+<h2><a id="_or__601"></a>计算机面试 or 真题</h2> 
+<p>1.<font color="#dd0000">（2016年真题）</font>假设所有域名服务器均采用迭代查询方式进行域名解析。当H4访问规范域名为www.abc.xyz.com的网站时，域名服务器201.1.1.1在完成该域名解析过程中，可能发出DNS查询的最少和最多次数分别是__<font color="#00dddd">0,4</font> __</p> 
+<p><font color="#dd0000">解析：</font> 最少情况下：当本机 DNS高速缓存中存有该域名的DNS信息时，则不需要查询任何域名服务器，这样最少发出0次DNS查询。最多情况下：因为均采用迭代查询的方式，在最坏的情况下，需要依次迭代地向本地域名服务器、根域名服务器(.com)、顶级域名服务器(xyz.com)、权限域名服务器(abc.xyz.com)发出DNS查询请求，因此最多发出4次DNS查询。</p> 
+<br> 
+<p>2.<font color="#dd0000">（2018年真题）</font>下列 TCP/IP应用层协议中，可以使用传输层无连接服务的是（）</p> 
+<p>A) FTP<br> B) DNS<br> C) SMTP<br> D) HTTP</p> 
+<p><font color="#dd0000">解析：</font> FTP用来传输文件，SMTP用来发送电子邮件，HTTP用来传输网页文件，都对可靠性的要求较高，因此都用传输层有连接的TCP 服务。无连接的UDP服务效率更高、开销小，DNS在传输层采用无连接的UDP服务。</p> 
+<p>3.<font color="#dd0000">（2020年真题）</font>假设下图所示网络中的本地域名服务器只提供递归查询服务，其他域名服务器均只提供迭代查询服务;局域网内主机访问Internet上各服务器的往返时间(RTT)均为10ms，忽略其他各种时延。若主机H通过超链接http://www.abc.com/index.html请求浏览纯文本Web页index.html,则从单击超链接开始到浏览器接收到index.html页面为止，所需的最短时间与最长时间分别是（）。</p> 
+<p><font color="#dd0000">解析：</font> 题中RTT均为局域网内主机（主机H、本地域名服务器）访问Internet上各服务器的往返时间，且忽略其他时延，因此主机H向本地域名服务器的查询时延忽略不计。</p> 
+<p><font color="#006666">最短时间：</font>本地主机中有该域名到IP地址对应的记录，因此不需要DNS查询时延，直接和www.abc.com服务器建立TCP连接再进行资源访问，TCP连接建立需要1个RTT，接着发送访问请求并收到服务器资源响应需要1个RTT，共计2个RTT，即 20ms;</p> 
+<p><font color="#006666">最长时间︰</font>本地主机递归查询本地域名服务器（延时忽略)，本地服务器依次迭代查询根域名服务器、com顶级域名服务器、abc.com域名服务器，共3个RT’,查询到IP地址后，将该映射返回给主机H，主机H和 www.abc.com服务器建立TCP连接再进行资源访问，共2个RTT，因此最长时间需要3＋2=5个RTT，即50ms。</p> 
+<br> 
+<p>4.DNS的报文结构：</p> 
+<p><img src="https://images2.imgbox.com/31/ec/F15yU739_o.png" alt="在这里插入图片描述"><br> 没啥说的，因为我也不会，emmm，计网里没得，而且也不会去开发DNS协议，只是看到<a href="https://baijiahao.baidu.com/s?id=1667934625842583593&amp;wfr=spider&amp;for=pc" rel="nofollow">万字长文！搞定逃不脱的 DNS 面试题</a> 写得很详细，关于这些字段详细的解释可以参考。</p> 
+<br> 
+<p><strong>5.说一下浏览器输入URL发生了什么？</strong></p> 
+<p>这里有两个角度，<strong>一个是从面试官想听到的回答角度</strong>，为：</p> 
+<p>1.解析URL——&gt;2.查找缓存——&gt;3.DNS解析——&gt;4.TCP握手——&gt;5.HTTP请求——&gt;6.TCP挥手——&gt;7.HTML渲染</p> 
+<p>更详细的解释为：</p> 
+<p>【1、URL解析】：判断浏览器输入的是搜索内容还是URL<br> 【2、查找缓存】：如果能找到缓存则直接返回页面，如果没有缓存则需要发送网络请求页面<br> 【3、DNS域名解析】：将域名转换为IP地址的过程，得到了服务器具体的IP地址，才可以进行TCP链接以及数据的传输。<br> 【4、三次握手建立TCP连接】：<br> • 第一次握手：客户端主动链接服务器，发送初始序列号seq=x与SYN=1同步请求标志，并进入同步已发送SYN_SENT状态，等待服务器确认。<br> • 第二次握手：服务端收到消息后发送确认标志ACK=1与同步请求标志SYN=1，发送自己的序列号seq=y以及客户端确认序号ack=x+1，此时服务器进入同步收到SYN_RECV状态。<br> • 第三次握手：客户端收到消息后发送确认标志ACK=1，发送自己的序列号seq=x+1与服务器确认号ack=y+1，发送过后即确认链接已建立状态ESTABLISHED，服务端接收确认信息后进入链接已建立状态ESTABLISHED。<br> 【5、发起HTTP请求】：浏览器构建HTTP请求报文，并通过TCP协议传送到服务器的指定端口，HTTP请求报文一共有三个部分<br> • 报文首部，通常包含请求行与各种请求头字段等；<br> • 空行，告诉服务器请求头部到此为止<br> • 报文主体，即发送的数据信息，通常并不一定要有报文主体。<br> 【6、服务器响应并返回结果】：服务端响应HTTP请求，返回响应报文，HTTP响应报文由四部分组成：响应行、响应头、空行、响应体。<br> 【7、通过四次握手释放TCP连接】<br> 【8、浏览器渲染】<br> 【9、js引擎解析】</p> 
+<p>参考牛客，为：<a href="https://www.nowcoder.com/questionTerminal/22dd75bca1864620b2fe61575287ea27?orderByHotValue=1&amp;mutiTagIds=644&amp;page=1" rel="nofollow">说一下浏览器输入URL发生了什么？</a></p> 
+<p><strong>另一个是从网络原理的角度：</strong></p> 
+<p>1.输入的URL会先触发DNS，先查浏览器缓存，再查hosts文件，再查DNS服务器。<br> 2.构造HTTP协议数据包，方法get，输入的URL，浏览器会自动加上报头，接下来这个数据报就是交给传输层。<br> 3.TCP就会把这个数据构造成TCP数据报，经历三次握手。<br> 4.IP协议构造一个IP数据报，此处根据数据报长度，以及MTU限制，考虑是否分包。并查路由表，决定从哪个端口转发，数据交给数据链路层。<br> 5.构造以太网数据帧，源Mac就是本机，目的Mac就是根据上面的IP确定的转发端口决定的。<br> 6.物理层转换成光信号或者电信号，就行传输。<br> 7.先传输到下一台路由器上，路由器进行解析和分用。解析到传输层。，把数据进行封装，往下一个路由器上转发。<br> 8.中间经历若干路由器转发，最后到达目标服务器。<br> 9.服务器进行分用，物理层吧光电信号转换成bit流，交给数据链路层。<br> 10.数据链路层解析出IP数据报，交给网络层<br> 11.网络层解析数据给传输层。<br> 12.TCP解析出应用层数据，交给应用程序，返回ack。<br> 13.服务器的应用程序读取数据根据请求计算响应，得到一个HTML页面。吧页面构造成一个HTTP响应报文，进过封装分用传输最终返回到客户端。</p> 
+<p>参考：<a href="https://blog.csdn.net/AIJXB/article/details/107226087">IP，DNS，经典面试题：从一个浏览器上输入URL，最终看到页面内容，这中间经历了哪些过程？</a></p> 
+<h2><a id="DNS_680"></a>DNS应用扩展</h2> 
+<h2><a id="_686"></a>参考与推荐</h2> 
+<ol><li>https://www.bilibili.com/video/BV1uL4y1B7aE/</li><li><a href="https://en.wikipedia.org/wiki/Domain_Name_System" rel="nofollow">wiki：Domain Name System</a></li><li>https://www.lanqiao.cn/courses/601</li><li><a href="https://ftp.isc.org/isc/bind/9.9.4/doc/arm/Bv9ARM.ch06.html" rel="nofollow">Chapter 6. BIND 9 Configuration Reference</a></li><li><a href="https://blog.csdn.net/weixin_44446626/article/details/124606688">计算机网络之DNS</a></li><li><a href="https://baijiahao.baidu.com/s?id=1667934625842583593&amp;wfr=spider&amp;for=pc" rel="nofollow">万字长文！搞定逃不脱的 DNS 面试题</a></li><li><a href="https://blog.csdn.net/weixin_52746128/article/details/121717982">CentOS8.4 Bind服务配置（DNS解析）</a></li><li><a href="https://cloud.tencent.com/developer/article/2212242" rel="nofollow">抓包理解 DNS 流程和 CDN 原理</a></li></ol>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/234b65e396faddc1e2b5d2ddb7257b6c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">15【简单】删除有序数组中的重复项</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d2eaa3078411fa01cc87813b354dd63d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">三极管恒流源LED驱动电路（Proteus）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

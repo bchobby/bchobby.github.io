@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>PySpark源码分析之Driver端基于Py4j的通信详解 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="PySpark源码分析之Driver端基于Py4j的通信详解" />
+<meta property="og:description" content="文章目录 概述服务端启动Python客户端编程示例 概述 接上文 PySpark源码分析之AM端运行流程（Driver） 的最后部分可知，PySpark是通过Py4j来实现与Scala端JVM通信交互的（注：Py4j只用于Driver端Python调用JVM中方法；Executor端是直接通过socket通信的。），PySpark主要提供一层Python API的封装。其过程主要是JVM会开启一个Socket端口提供RPC服务，Python需要调用Spark API时，它会作为客户端将调用指令序列化成字节流发送到Socket服务端口，JVM接受字节流后解包成对应的指令，然后找到目标对象和代码进行执行，然后将执行结果序列化成字节流通过Socket返回给客户端，客户端收到字节流后再解码成Python对象，于是Python客户端就成功拿到了远程调用的结果（注：Py4j同时支持【Python -&gt; JVM】和【JVM -&gt; Python】，本文仅仅分析前者，后者在Spark Streaming中有适用场景，以后有时间再分析）。
+官方文档：https://www.py4j.org/index.html
+github：https://github.com/bartdag/py4j
+Py4j内存模型：
+Every time a Java object is sent to the Python side, a reference to the object is kept on the Java side (in the Gateway class). Once the object is garbage collected on the Python VM (reference count == 0), the reference is removed on the Java VM: if this was the last reference, the object will likely be garbage collected too." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/39ee45b83e9c2f601251df24192306d6/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-05-27T10:58:24+08:00" />
+<meta property="article:modified_time" content="2020-05-27T10:58:24+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">PySpark源码分析之Driver端基于Py4j的通信详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-github-gist">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">概述</a></li><li><a href="#_17" rel="nofollow">服务端启动</a></li><li><a href="#Python_310" rel="nofollow">Python客户端</a></li><li><a href="#_338" rel="nofollow">编程示例</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>概述</h2> 
+<p>接上文 <a href="https://blog.csdn.net/oTengYue/article/details/105379628">PySpark源码分析之AM端运行流程（Driver）</a> 的最后部分可知，PySpark是通过Py4j来实现与Scala端JVM通信交互的（<strong>注：Py4j只用于Driver端Python调用JVM中方法；Executor端是直接通过socket通信的。</strong>），PySpark主要提供一层Python API的封装。其过程主要是JVM会开启一个Socket端口提供RPC服务，Python需要调用Spark API时，它会作为客户端将调用指令序列化成字节流发送到Socket服务端口，JVM接受字节流后解包成对应的指令，然后找到目标对象和代码进行执行，然后将执行结果序列化成字节流通过Socket返回给客户端，客户端收到字节流后再解码成Python对象，于是Python客户端就成功拿到了远程调用的结果（注：Py4j同时支持【Python -&gt; JVM】和【JVM -&gt; Python】，本文仅仅分析前者，后者在Spark Streaming中有适用场景，以后有时间再分析）。</p> 
+<p>官方文档：<a href="https://www.py4j.org/index.html" rel="nofollow">https://www.py4j.org/index.html</a><br> github：<a href="https://github.com/bartdag/py4j">https://github.com/bartdag/py4j</a></p> 
+<p><strong>Py4j内存模型：</strong></p> 
+<blockquote> 
+ <p>Every time a Java object is sent to the Python side, a reference to the object is kept on the Java side (in the Gateway class). Once the object is garbage collected on the Python VM (reference count == 0), the reference is removed on the Java VM: if this was the last reference, the object will likely be garbage collected too. When a gateway is shut down, the remaining references are also removed on the Java VM.<br> Because Java objects on the Python side are involved in a circular reference (<strong>JavaObject</strong> and <strong>JavaMember</strong> reference each other), these objects are not immediately garbage collected once the last reference to the object is removed (but they are guaranteed to be eventually collected if the Python garbage collector runs before the Python program exits).<br> In doubt, users can always call the detach function on the Python gateway to explicitly delete a reference on the Java side. A call to gc.collect() also usually works.<br> 每次将Java对象发送到Python端时，对该对象的引用都保存在Java端(在Gateway类中)。一旦对象在Python VM上被垃圾收集(引用计数== 0)，该引用在Java的VM上也会被删除：如果这是最后一个引用，那么该对象也很可能被垃圾收集。当gateway关闭时，剩余的引用也会在Java VM上删除。<br> 因为Python端的Java对象间循环引用（<code>JavaObject</code>和<code>JavaMember</code>相互引用），所以在删除最后一个对象引用后并不会立即进行垃圾回收（但能够保证在Python程序最终退出之前，进行Python的垃圾回收)。<br> 毫无疑问，用户也可通过在Python端调用<code>detach</code>函数的来显式的删除Java端上的引用。也可调用<code>gc.collect()</code>实现。<br> 参考：<a href="https://www.py4j.org/advanced_topics.html#py4j-memory-model" rel="nofollow">https://www.py4j.org/advanced_topics.html#py4j-memory-model</a></p> 
+</blockquote> 
+<h2><a id="_17"></a>服务端启动</h2> 
+<p>首先我们先看Py4j的原理图，如下图：<br> <img src="https://images2.imgbox.com/2e/d6/B4QhSBbf_o.png" alt="在这里插入图片描述"><br> 如上图，Spark的Driver运行PythonRunner启动Py4j服务端，当服务启动后GatewayServer开始循环监听端口接受socket连接，针对每个socket连接开启一个子线程，创建对应的GatewayConnect，并根据客户端传递的消息指令选择命令类进行执行，处理后的结果同样通过封装socket返回给Python客户端。<br> 命令类包含：</p> 
+<ul><li><strong>ArrayCommand</strong>：处理Array的相关操作。</li><li><strong>CallCommand</strong>：在已实例化类上反射调用函数。</li><li><strong>ConstructorCommand</strong>：通过反射实例化类。</li><li><strong>FieldCommand</strong>：通过反射设置或获取实例化类变量值。</li><li><strong>HelpPageCommand</strong>：为Java对象生成帮助文档。</li><li><strong>ListCommand</strong>：处理List的相关操作。</li><li><strong>MemoryCommand</strong>：用于垃圾回收过程中删除服务端对象。</li><li><strong>ReflectionCommand</strong>：用于反射package、class和静态成员。</li><li><strong>ShutdownGatewayServerCommand</strong>：接受处理关闭GatewayServer的指令。</li><li><strong>JVMViewCommand</strong>：管理JVMView的操作，包含：创建新的JVMView（提供了默认的defaultJVMView，但也支持创建新的）、添加imports和搜索拼接类完全限定名。</li><li><strong>ExceptionCommand</strong>：处理异常类的操作。</li><li><strong>DirCommand</strong>：用于获取类的相关属性，包含：public字段名、public方法名、public static属性（包含：字段名、方法名和类名）和JVMView中的import</li><li><strong>StreamCommand</strong>：同CallCommand，区别是CallCommand直接返回结果，StreamCommand以流的方式返回结果。</li></ul> 
+<p>然后我们看核心类 <a href="https://github.com/bartdag/py4j/blob/master/py4j-java/src/main/java/py4j/Gateway.java">Gateway</a> （分析见注释，只截取部分关键代码）：</p> 
+<pre><code class="prism language-scala">/**
+ *
+ * &lt;p&gt;
+ * A Gateway manages various states: entryPoint, references to objects returned
+ * to a Python program, etc.
+ * &lt;/p&gt;
+ *
+ * &lt;p&gt;
+ * This class is not intended to be directly accessed by users.
+ * &lt;/p&gt;
+ *
+ * @author Barthelemy Dagenais
+ *
+ */
+public class Gateway {
+
+    /** Server创建的任意对象都会保存在bindings变量 */
+    private final Map&lt;String, Object&gt; bindings = new ConcurrentHashMap&lt;String, Object&gt;();
+    private final AtomicInteger objCounter = new AtomicInteger();
+    private final AtomicInteger argCounter = new AtomicInteger();
+    private final static String OBJECT_NAME_PREFIX = "o";
+    private final Object entryPoint;
+    /** 反射工具类 */
+    private final ReflectionEngine rEngine = new ReflectionEngine();
+    private Py4JPythonClient cbClient;
+    /** 默认JVM视图，主要保存import package */
+    private final JVMView defaultJVMView;
+
+    private final Logger logger = Logger.getLogger(Gateway.class.getName());
+
+    private boolean isStarted = false;
+
+    public Gateway(Object entryPoint) {
+        this(entryPoint, null);
+    }
+
+    public Gateway(Object entryPoint, Py4JPythonClient cbClient) {
+        this.entryPoint = entryPoint;
+        this.cbClient = cbClient;
+        this.defaultJVMView = new JVMView("default", Protocol.DEFAULT_JVM_OBJECT_ID);
+    }
+    public void deleteObject(String objectId) {
+        bindings.remove(objectId);
+    }
+
+    public JVMView getDefaultJVMView() {
+        return this.defaultJVMView;
+    }
+    protected String getNextObjectId() {
+        return OBJECT_NAME_PREFIX + objCounter.getAndIncrement();
+    }
+    ...
+
+    /**
+     * 所有Server创建的对象返回给client前都会调用该方法，主要功能包含：
+     * 1、新创建的对象都通过putNewObject函数生成objectId，并把对象添加到bindings变量（Map类型），注：基础数据类型、BigDecimal和无返回的对象无需添加到bindings变量
+     * 2、根据创建的对象类型组织返回给Client的对象ReturnObject，注：一般最终调用Protocol.getOutputCommand(returnObject)拼接成返回的字符串
+     */
+    @SuppressWarnings("rawtypes")
+    public ReturnObject getReturnObject(Object object) {
+        ReturnObject returnObject;
+        if (object != null) {
+            if (isPrimitiveObject(object)) {
+                returnObject = ReturnObject.getPrimitiveReturnObject(object);
+            } else if (object == ReflectionEngine.RETURN_VOID) {
+                returnObject = ReturnObject.getVoidReturnObject();
+            } else if (isDecimalObject(object)) {
+                returnObject = ReturnObject.getDecimalReturnObject(object);
+            } else if (isList(object)) {
+                String objectId = putNewObject(object);
+                returnObject = ReturnObject.getListReturnObject(objectId, ((List) object).size());
+            } else if (isMap(object)) {
+                String objectId = putNewObject(object);
+                returnObject = ReturnObject.getMapReturnObject(objectId, ((Map) object).size());
+            } else if (isArray(object)) {
+                String objectId = putNewObject(object);
+                returnObject = ReturnObject.getArrayReturnObject(objectId, Array.getLength(object));
+            } else if (isSet(object)) {
+                String objectId = putNewObject(object);
+                returnObject = ReturnObject.getSetReturnObject(objectId, ((Set) object).size());
+            } else if (isIterator(object)) {
+                String objectId = putNewObject(object);
+                returnObject = ReturnObject.getIteratorReturnObject(objectId);
+            } else {
+                String objectId = putNewObject(object);
+                returnObject = ReturnObject.getReferenceReturnObject(objectId);
+            }
+        } else {
+            returnObject = ReturnObject.getNullReturnObject();
+        }
+        return returnObject;
+    }
+
+    /**
+     * &lt;p&gt;
+     * Invokes a constructor and returned the constructed object.
+     * 根据类的全限定名（例如：package1.package2.className）和构造参数反射实例化类
+     * &lt;/p&gt;
+     *
+     * @param fqn
+     *            The fully qualified name of the class.
+     * @param args
+     * @return
+     */
+    public ReturnObject invoke(String fqn, List&lt;Object&gt; args) {
+        if (args == null) {
+            args = new ArrayList&lt;Object&gt;();
+        }
+        ReturnObject returnObject = null;
+        try {
+            logger.finer("Calling constructor: " + fqn);
+            Object[] parameters = args.toArray();
+
+            MethodInvoker method = rEngine.getConstructor(fqn, parameters);
+            Object object = rEngine.invoke(null, method, parameters);
+            returnObject = getReturnObject(object);
+        } catch (Py4JJavaException je) {
+            String id = putNewObject(je.getCause());
+            returnObject = ReturnObject.getErrorReferenceReturnObject(id);
+        } catch (Py4JException pe) {
+            throw pe;
+        } catch (Exception e) {
+            throw new Py4JException(e);
+        }
+
+        return returnObject;
+    }
+
+    /**
+     * &lt;p&gt;
+     * Invokes a method.
+     * 调用方法
+     * &lt;/p&gt;
+     *
+     * @param methodName 函数名
+     * @param targetObjectId 已实例化过的对象key
+     * @param args 参数
+     * @return
+     */
+    public ReturnObject invoke(String methodName, String targetObjectId, List&lt;Object&gt; args) {
+        if (args == null) {
+            args = new ArrayList&lt;Object&gt;();
+        }
+        ReturnObject returnObject = null;
+        try {
+            Object targetObject = getObjectFromId(targetObjectId);
+            logger.finer("Calling: " + methodName);
+            Object[] parameters = args.toArray();
+
+            MethodInvoker method = null;
+            if (targetObject != null) {
+                method = rEngine.getMethod(targetObject, methodName, parameters);
+            } else if (targetObjectId.startsWith(Protocol.STATIC_PREFIX)) {
+                method = rEngine.getMethod(targetObjectId.substring(Protocol.STATIC_PREFIX.length()), methodName,
+                        parameters);
+            } else {
+                throw new Py4JException("Target Object ID does not exist for this gateway :" + targetObjectId);
+            }
+
+            Object object = rEngine.invoke(targetObject, method, parameters);
+            returnObject = getReturnObject(object);
+        } catch (Py4JJavaException je) {
+            String id = putNewObject(je.getCause());
+            returnObject = ReturnObject.getErrorReferenceReturnObject(id);
+        } catch (Py4JException pe) {
+            throw pe;
+        } catch (Exception e) {
+            throw new Py4JException(e);
+        }
+
+        return returnObject;
+    }
+    /**
+     * &lt;p&gt;
+     * Adds a new object to the gateway bindings and return the generated ID.
+     * Should NEVER be called by other classes except subclasses and testing
+     * classes.
+     * &lt;/p&gt;
+     *
+     * @param object
+     * @return
+     */
+    public String putNewObject(Object object) {
+        String id = getNextObjectId();
+        bindings.put(id, object);
+        return id;
+    }
+
+    public Object putObject(String id, Object object) {
+        return bindings.put(id, object);
+    }
+
+    public void setStarted(boolean isStarted) {
+        this.isStarted = isStarted;
+    }
+
+    /**
+     * &lt;p&gt;
+     * Creates a proxy implementing the provided interfaces with the provided class loader.
+     * &lt;/p&gt;
+     * &lt;p&gt;
+     * This method is part of the Gateway instance to allow overriding or customizing per Gateway instance.
+     * &lt;/p&gt;
+     * @param classLoader
+     * @param interfacesToImplement
+     * @param objectId
+     * @return
+     */
+    public Object createProxy(ClassLoader classLoader, @SuppressWarnings("rawtypes") Class[] interfacesToImplement,
+            String objectId) {
+        return Proxy.newProxyInstance(classLoader, interfacesToImplement, createPythonProxyHandler(objectId));
+    }
+
+    protected PythonProxyHandler createPythonProxyHandler(String id) {
+        return new PythonProxyHandler(id, this);
+    }
+
+    /**
+     * &lt;p&gt;
+     * Releases all objects that were referenced by this Gateway and shuts
+     * down the CallbackClient.
+     * &lt;p&gt;
+     */
+    public void shutdown() {
+        this.shutdown(true);
+    }
+
+    /**
+     * &lt;p&gt;
+     * Releases all objects that were referenced by this Gateway and
+     * optionally shut down the callback client.
+     * 关闭释放内存
+     * &lt;p&gt;
+     *
+     * @param shutdownCallbackClient Shuts down the CallbackClient instance
+     *                                  if true.
+     */
+    public void shutdown(boolean shutdownCallbackClient) {
+        isStarted = false;
+        bindings.clear();
+        if (cbClient != null &amp;&amp; shutdownCallbackClient) {
+            cbClient.shutdown();
+        }
+    }
+
+    /**
+     * 启动，把defaultJVMView添加到bindings中
+     */
+    public void startup() {
+        isStarted = true;
+        if (entryPoint != null) {
+            bindings.put(Protocol.ENTRY_POINT_OBJECT_ID, entryPoint);
+        }
+        bindings.put(Protocol.DEFAULT_JVM_OBJECT_ID, defaultJVMView);
+    }
+
+}
+</code></pre> 
+<p>分析上面代码可知，Gateway Server创建的任意对象都会携带由服务端生成的唯一的对象id，服务端会将生成的所有对象装在一个Map结构里。当Python客户端需要操纵远程对象时，会将对象id和操纵指令以及参数一起传递到服务端，服务端根据对象id找到对应的对象，然后使用反射方法执行指令。</p> 
+<p>通过 <a href="https://blog.csdn.net/oTengYue/article/details/105379628">PySpark源码分析之AM端运行流程（Driver）</a> 我们知道，Spark启动Py4j服务端的类是 <a href="https://github.com/apache/spark/blob/master/core/src/main/scala/org/apache/spark/deploy/PythonRunner.scala">org.apache.spark.deploy.PythonRunner</a> ，我们看服务端的源码启动流程如下图：<br> <img src="https://images2.imgbox.com/48/70/yzAA7kx7_o.png" alt="在这里插入图片描述"><br> 如上图，在PythonRunner中初始化gatewayServer后启动一个守护线程用于启动服务，在守护线程中先创建一个sSocket监听端口（传入的端口号为0，则系统会选择一个空闲端口进行监听），选择的端口会传递给Python进程来连接此gatewayServer，然后再新开启一个线程循环接受socket消息，此时服务端就启动完成了。当服务端监听到有socket连接来到时候，通过<code>processSocket(socket)</code>分发处理连接消息，流程如下：<br> <img src="https://images2.imgbox.com/ca/bb/XCb2RYZF_o.png" alt="在这里插入图片描述"><br> 从上图可以看出，<code>processSocket()</code>函数使用锁保证线程安全，分别对每个socket连接都创建GatewayConnection，在构造函数中重点关注从socket初始化了<code>reader</code>流和<code>writer</code>流，然后在<code>GatewayConnection.startConnection()</code>开辟一个线程处理消息，这样针对每个socket开辟一个线程的方式能够保证了<code>processSocket()</code>线程的并发性。在消息处理过程会根据消息指令选择不同的命令类处理消息，而commands（命令类Map）的构建同样是在创建GatewayConnection时候完成的，如下图：<br> <img src="https://images2.imgbox.com/7c/21/qJ2S25zM_o.png" alt="在这里插入图片描述"><br> 我们继续看线程中具体的消息处理过程：<br> <img src="https://images2.imgbox.com/eb/a6/4W5lqIuZ_o.png" alt="在这里插入图片描述"><br> 如上图，在线程中会按行读取指令，根据指令选择对应的命令类进行后续处理（上图右侧是调用ConstructorCommand实例化类的示例），结果返回是在命令类中通过<code>write</code>函数以socket方式返回给Python客户端。</p> 
+<h2><a id="Python_310"></a>Python客户端</h2> 
+<p>PySpark中Py4j客户端的初始化是在SparkContext构造函数中完成的，初始化流程如下图：<br> <img src="https://images2.imgbox.com/ea/48/DYLYfgG1_o.png" alt="在这里插入图片描述"><br> 如上图可知，最终初始化关键代码在<code>_launch_gateway()</code>函数，获取gateway_port端口（运行在Yarn集群上是PythonRunner启动Py4j服务端后把写入到启动Python进程的环境变量中；如果直接本地启动PySpark则会调用命令拉起一个JVM启动Py4j服务端后获得端口），创建JavaGateway网关，然后调用<code>java_import()</code>函数把spark提供的api的package导入，最后赋值给SparkContext的<code>_gateway</code>变量（JavaGateway对象）和<code>_jvm</code>变量（JVMView对象），在PySpark中对JVM的调用实质都是通过<code>_jvm</code>变量来进行的，至此就完成了Py4j客户端的初始化。我们下面先看下如何使用<code>_jvm</code>创建SparkContext对象，如下：</p> 
+<pre><code class="prism language-python">    <span class="token keyword">def</span> <span class="token function">_do_init</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> master<span class="token punctuation">,</span> appName<span class="token punctuation">,</span> sparkHome<span class="token punctuation">,</span> pyFiles<span class="token punctuation">,</span> environment<span class="token punctuation">,</span> batchSize<span class="token punctuation">,</span> serializer<span class="token punctuation">,</span>
+                 conf<span class="token punctuation">,</span> jsc<span class="token punctuation">,</span> profiler_cls<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        <span class="token comment"># Create the Java SparkContext through Py4J</span>
+        self<span class="token punctuation">.</span>_jsc <span class="token operator">=</span> jsc <span class="token operator">or</span> self<span class="token punctuation">.</span>_initialize_context<span class="token punctuation">(</span>self<span class="token punctuation">.</span>_conf<span class="token punctuation">.</span>_jconf<span class="token punctuation">)</span>
+        <span class="token comment"># Reset the SparkConf to the one actually used by the SparkContext in JVM.</span>
+        self<span class="token punctuation">.</span>_conf <span class="token operator">=</span> SparkConf<span class="token punctuation">(</span>_jconf<span class="token operator">=</span>self<span class="token punctuation">.</span>_jsc<span class="token punctuation">.</span>sc<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>conf<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+     <span class="token keyword">def</span> <span class="token function">_initialize_context</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> jconf<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token triple-quoted-string string">"""
+        Initialize SparkContext in function to allow subclass specific initialization
+        """</span>
+        <span class="token keyword">return</span> self<span class="token punctuation">.</span>_jvm<span class="token punctuation">.</span>JavaSparkContext<span class="token punctuation">(</span>jconf<span class="token punctuation">)</span>   
+</code></pre> 
+<p>上面介绍完了PySpark中Py4j客户端的初始化，下面我们看下客户端调用流程（由于下图已很清晰，不再分析源码，大家可以参照查阅源码）：<br> <img src="https://images2.imgbox.com/98/4d/aC9MHNJ9_o.png" alt="在这里插入图片描述"><br> 说明：</p> 
+<ul><li>1、Python客户端的源码相对集中，以上流程分析 <a href="https://github.com/bartdag/py4j/blob/master/py4j-python/src/py4j/java_gateway.py">py4j/java_gateway.py</a> 即可得出。</li><li>2、<code>JavaObject</code>是JVM中实例化的对象在Python中的影子（其<code>target_id</code>变量是JVM实例化后对象对象的Key值）。</li><li>3、<code>JavaMember</code>是对<code>JavaObject</code>中成员的封装，目前<code>JavaMember</code>只支持函数，不支持变量值（字段）。调用类变量值需创建JavaGateway时候设置<code>gateway = JavaGateway(auto_field=True)</code>（启用后<code>JavaObject.__getattr__()</code>函数会优先调用字段，可能会隐藏同名的类方法），PySpark默认未启用，因此PySpark不支持反射调用类变量。</li><li>4、Python通过调用<code>__getattr__</code>和<code>__call__</code>来实现对Java对象创建、属性访问和方法调用。</li></ul> 
+<h2><a id="_338"></a>编程示例</h2> 
+<p>1、简单示例（一般可用于本地代码调试使用）：<br> 1.1、通过entryPoint方式调用<br> Java服务端</p> 
+<pre><code class="prism language-Java">package org.apache.spark.examples;
+import py4j.GatewayServer;
+
+public class Py4jTest {
+
+    public String name = "张三";
+
+    public int addition(int first, int second) {
+        return first + second;
+    }
+
+    public static void main(String[] args) {
+        Py4jTest app = new Py4jTest();
+        // 如果服务端未设置监听端口，默认是25333
+        GatewayServer server = new GatewayServer(app);
+        server.start();
+    }
+}
+</code></pre> 
+<p>Python客户端</p> 
+<pre><code class="prism language-python"><span class="token keyword">from</span> py4j<span class="token punctuation">.</span>java_gateway <span class="token keyword">import</span> java_import<span class="token punctuation">,</span> JavaGateway
+
+<span class="token comment"># 函数调用</span>
+gateway <span class="token operator">=</span> JavaGateway<span class="token punctuation">(</span><span class="token punctuation">)</span>
+result <span class="token operator">=</span> gateway<span class="token punctuation">.</span>entry_point<span class="token punctuation">.</span>addition<span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span>
+<span class="token keyword">print</span><span class="token punctuation">(</span>result<span class="token punctuation">)</span>  <span class="token comment"># 输出：3</span>
+
+<span class="token comment"># 如果需反射获取类字段值，需设置auto_field=True</span>
+gateway <span class="token operator">=</span> JavaGateway<span class="token punctuation">(</span>auto_field<span class="token operator">=</span><span class="token boolean">True</span><span class="token punctuation">)</span>
+name <span class="token operator">=</span> gateway<span class="token punctuation">.</span>entry_point<span class="token punctuation">.</span>name
+<span class="token keyword">print</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span>  <span class="token comment"># 输出：张三</span>
+</code></pre> 
+<p>1.2、通过完全限定名类方式调用<br> Java服务端</p> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>spark<span class="token punctuation">.</span>examples<span class="token punctuation">;</span>
+<span class="token keyword">import</span> py4j<span class="token punctuation">.</span>GatewayServer<span class="token punctuation">;</span>
+
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">Py4jTest</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">public</span> String name <span class="token operator">=</span> <span class="token string">"张三"</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">int</span> <span class="token function">addition</span><span class="token punctuation">(</span><span class="token keyword">int</span> first<span class="token punctuation">,</span> <span class="token keyword">int</span> second<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> first <span class="token operator">+</span> second<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span>String<span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 如果服务端未设置监听端口，默认是25333；如果通过反射类方式，则无需设置entryPoint</span>
+        GatewayServer server <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">GatewayServer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        server<span class="token punctuation">.</span><span class="token function">start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>Python客户端</p> 
+<pre><code class="prism language-python"><span class="token keyword">from</span> py4j<span class="token punctuation">.</span>java_gateway <span class="token keyword">import</span> java_import<span class="token punctuation">,</span> JavaGateway
+
+<span class="token comment"># 如果服务端未设置监听端口，默认是25333</span>
+gateway <span class="token operator">=</span> JavaGateway<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+<span class="token comment"># 1、通过完全限定名反射类</span>
+py4jTest <span class="token operator">=</span> gateway<span class="token punctuation">.</span>jvm<span class="token punctuation">.</span>org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>spark<span class="token punctuation">.</span>examples<span class="token punctuation">.</span>Py4jTest<span class="token punctuation">(</span><span class="token punctuation">)</span>
+result <span class="token operator">=</span> py4jTest<span class="token punctuation">.</span>addition<span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span>
+<span class="token keyword">print</span><span class="token punctuation">(</span>result<span class="token punctuation">)</span>  <span class="token comment"># 输出：3</span>
+
+<span class="token comment"># 2、通过java_import导入package后反射类</span>
+java_import<span class="token punctuation">(</span>gateway<span class="token punctuation">.</span>jvm<span class="token punctuation">,</span> <span class="token string">"org.apache.spark.examples.*"</span><span class="token punctuation">)</span>
+py4jTest <span class="token operator">=</span> gateway<span class="token punctuation">.</span>jvm<span class="token punctuation">.</span>Py4jTest<span class="token punctuation">(</span><span class="token punctuation">)</span>
+result <span class="token operator">=</span> py4jTest<span class="token punctuation">.</span>addition<span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span>
+<span class="token keyword">print</span><span class="token punctuation">(</span>result<span class="token punctuation">)</span>  <span class="token comment"># 输出：3</span>
+</code></pre> 
+<p>2、PySpark示例</p> 
+<pre><code class="prism language-python"><span class="token keyword">from</span> py4j<span class="token punctuation">.</span>java_gateway <span class="token keyword">import</span> java_import<span class="token punctuation">,</span> JavaGateway
+<span class="token keyword">from</span> pyspark<span class="token punctuation">.</span>context <span class="token keyword">import</span> SparkContext
+
+sc <span class="token operator">=</span> SparkContext<span class="token punctuation">(</span><span class="token string">'local[*]'</span><span class="token punctuation">,</span> <span class="token string">'test'</span><span class="token punctuation">)</span>
+local_dir <span class="token operator">=</span> sc<span class="token punctuation">.</span>_jvm<span class="token punctuation">.</span>org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>spark<span class="token punctuation">.</span>util<span class="token punctuation">.</span>Utils<span class="token punctuation">.</span>getLocalDir<span class="token punctuation">(</span>sc<span class="token punctuation">.</span>_jsc<span class="token punctuation">.</span>sc<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>conf<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token keyword">print</span><span class="token punctuation">(</span>local_dir<span class="token punctuation">)</span>
+
+java_import<span class="token punctuation">(</span>sc<span class="token punctuation">.</span>_jvm<span class="token punctuation">,</span> <span class="token string">"java.util.*"</span><span class="token punctuation">)</span>
+random <span class="token operator">=</span> sc<span class="token punctuation">.</span>_jvm<span class="token punctuation">.</span>Random<span class="token punctuation">(</span><span class="token punctuation">)</span>
+random_num <span class="token operator">=</span> random<span class="token punctuation">.</span>nextInt<span class="token punctuation">(</span><span class="token number">100</span><span class="token punctuation">)</span>
+<span class="token keyword">print</span><span class="token punctuation">(</span>random_num<span class="token punctuation">)</span>
+</code></pre> 
+<p>3、PySpark调用自定义jar<br> Java代码（编译生成包spark-examples_2.11-2.4.3.jar）</p> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>spark<span class="token punctuation">.</span>examples<span class="token punctuation">;</span>
+
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">Py4jServerTest</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">public</span> <span class="token keyword">int</span> <span class="token function">addition</span><span class="token punctuation">(</span><span class="token keyword">int</span> first<span class="token punctuation">,</span> <span class="token keyword">int</span> second<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> first <span class="token operator">+</span> second<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>PySpark代码（py4j_client_test.py）</p> 
+<pre><code class="prism language-python"><span class="token comment"># -*- encoding: utf-8 -*-</span>
+<span class="token keyword">from</span> pyspark<span class="token punctuation">.</span>context <span class="token keyword">import</span> SparkContext
+sc <span class="token operator">=</span> SparkContext<span class="token punctuation">(</span>appName<span class="token operator">=</span><span class="token string">"Py4jTest"</span><span class="token punctuation">)</span>
+
+py4jTest <span class="token operator">=</span> sc<span class="token punctuation">.</span>_jvm<span class="token punctuation">.</span>org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>spark<span class="token punctuation">.</span>examples<span class="token punctuation">.</span>Py4jTest<span class="token punctuation">(</span><span class="token punctuation">)</span>
+result <span class="token operator">=</span> py4jTest<span class="token punctuation">.</span>addition<span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span>
+<span class="token keyword">print</span><span class="token punctuation">(</span>result<span class="token punctuation">)</span>  <span class="token comment"># 输出：3</span>
+</code></pre> 
+<p>提交命令</p> 
+<pre><code class="prism language-shell">spark-submit --master yarn --deploy-mode cluster --conf spark.pyspark.python<span class="token operator">=</span>python3 --driver-class-path spark-examples_2.11-2.4.3.jar --jars spark-examples_2.11-2.4.3.jar py4j_client_test.py
+</code></pre> 
+<p>注：由于Py4j只在Driver端有效，Executor端无法使用（例如：在算子中的函数无效）。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/280a71d8c94412f04f2fed6cc2a43118/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">ES系列：查看ES数据目录、日志目录、配置参数等API</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/da872677ccb5574ca5cac771fa71e088/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">WPf   使用KeyDown后屏蔽方向键导致的焦点移动</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

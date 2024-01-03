@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Nginx结合Lua——Nginx通过Lua&#43;Redis实现自动封禁访问频率高的IP - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Nginx结合Lua——Nginx通过Lua&#43;Redis实现自动封禁访问频率高的IP" />
+<meta property="og:description" content="文章目录 实验背景实验一、安装使用 OpenResty二、安装Redis三、在Nginx中使用Lua脚本访问Redis四、Nginx&#43;Lua&#43;Redis 实验背景 为了防止某恶意用户多次对服务器端口进行攻击，我们需要建立一个动态的 IP 黑名单。对于黑名单之内的 IP ，拒绝提供服务。
+实现 IP 黑名单的功能有很多途径：
+在操作系统层面，配置 iptables，拒绝指定 IP 的网络请求；在 Web Server 层面，通过 Nginx 自身的 deny 选项 或者 lua 插件 配置 IP 黑名单；在应用层面，在请求服务之前检查一遍客户端 IP 是否在黑名单。 为了方便管理和共享，我们通过 Nginx&#43;Lua&#43;Redis 的架构实现 IP 黑名单的功能，架构图如下：
+实验 一、安装使用 OpenResty OpenResty是一个集成了各种 Lua 模块的 Nginx 服务器，是一个以Nginx为核心同时包含很多第三方模块的Web应用服务器，使用Nginx的同时又能使用lua等模块实现复杂的控制
+1、安装OpenResty
+[root@server1 local]# yum -y install readline-devel pcre-devel openssl-devel gcc 2、下载openresty-1.13.6.1.tar.gz 源码包，并解压；下载ngx_cache_purge模块，该模块用于清理nginx缓存；下载nginx_upstream_check_module模块，该模块用于ustream健康检查
+[root@server1 ~]# cd /usr/local [root@server1 local]# wget https://openresty.org/download/openresty-1.13.6.1.tar.gz [root@server1 local]# tar -zxvf openresty-1.13.6.1.tar.gz [root@server1 local]# cd openresty-1." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/328adb55b4495dc1cdef068096703a44/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-10-12T13:31:50+08:00" />
+<meta property="article:modified_time" content="2020-10-12T13:31:50+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Nginx结合Lua——Nginx通过Lua&#43;Redis实现自动封禁访问频率高的IP</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">实验背景</a></li><li><a href="#_12" rel="nofollow">实验</a></li><li><ul><li><a href="#_OpenResty_13" rel="nofollow">一、安装使用 OpenResty</a></li><li><a href="#Redis_99" rel="nofollow">二、安装Redis</a></li><li><a href="#NginxLuaRedis_173" rel="nofollow">三、在Nginx中使用Lua脚本访问Redis</a></li><li><a href="#NginxLuaRedis_226" rel="nofollow">四、Nginx+Lua+Redis</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>实验背景</h2> 
+<p>为了防止某恶意用户多次对服务器端口进行攻击，我们需要建立一个动态的 IP 黑名单。对于黑名单之内的 IP ，拒绝提供服务。</p> 
+<p>实现 IP 黑名单的功能有很多途径：</p> 
+<ul><li>在操作系统层面，配置 iptables，拒绝指定 IP 的网络请求；</li><li>在 Web Server 层面，通过 Nginx 自身的 deny 选项 或者 lua 插件 配置 IP 黑名单；</li><li>在应用层面，在请求服务之前检查一遍客户端 IP 是否在黑名单。</li></ul> 
+<p>为了方便管理和共享，我们通过 Nginx+Lua+Redis 的架构实现 IP 黑名单的功能，架构图如下：<br> <img src="https://images2.imgbox.com/c2/45/4tSkO75M_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_12"></a>实验</h2> 
+<h3><a id="_OpenResty_13"></a>一、安装使用 OpenResty</h3> 
+<p><strong>OpenResty是一个集成了各种 Lua 模块的 Nginx 服务器，是一个以Nginx为核心同时包含很多第三方模块的Web应用服务器，使用Nginx的同时又能使用lua等模块实现复杂的控制</strong></p> 
+<p>1、安装OpenResty</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 local<span class="token punctuation">]</span># yum <span class="token operator">-</span>y install readline<span class="token operator">-</span>devel pcre<span class="token operator">-</span>devel openssl<span class="token operator">-</span>devel gcc
+</code></pre> 
+<p><img src="https://images2.imgbox.com/9f/f4/y7qZ7WvH_o.png" alt="在这里插入图片描述"></p> 
+<p>2、下载openresty-1.13.6.1.tar.gz 源码包，并解压；下载ngx_cache_purge模块，该模块用于清理nginx缓存；下载nginx_upstream_check_module模块，该模块用于ustream健康检查</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 <span class="token operator">~</span><span class="token punctuation">]</span># cd <span class="token operator">/</span>usr<span class="token operator">/</span>local
+<span class="token punctuation">[</span>root@server1 local<span class="token punctuation">]</span># wget https<span class="token punctuation">:</span><span class="token operator">/</span><span class="token operator">/</span>openresty<span class="token punctuation">.</span>org<span class="token operator">/</span>download<span class="token operator">/</span>openresty<span class="token operator">-</span><span class="token number">1.13</span><span class="token number">.6</span><span class="token number">.1</span><span class="token punctuation">.</span>tar<span class="token punctuation">.</span>gz
+<span class="token punctuation">[</span>root@server1 local<span class="token punctuation">]</span># tar <span class="token operator">-</span>zxvf openresty<span class="token operator">-</span><span class="token number">1.13</span><span class="token number">.6</span><span class="token number">.1</span><span class="token punctuation">.</span>tar<span class="token punctuation">.</span>gz
+<span class="token punctuation">[</span>root@server1 local<span class="token punctuation">]</span># cd openresty<span class="token operator">-</span><span class="token number">1.13</span><span class="token number">.6</span><span class="token number">.1</span><span class="token operator">/</span>bundle
+<span class="token punctuation">[</span>root@server1 local<span class="token punctuation">]</span># wget http<span class="token punctuation">:</span><span class="token operator">/</span><span class="token operator">/</span>labs<span class="token punctuation">.</span>frickle<span class="token punctuation">.</span>com<span class="token operator">/</span>files<span class="token operator">/</span>ngx_cache_purge<span class="token operator">-</span><span class="token number">2.3</span><span class="token punctuation">.</span>tar<span class="token punctuation">.</span>gz
+<span class="token punctuation">[</span>root@server1 local<span class="token punctuation">]</span># tar <span class="token operator">-</span>zxvf ngx_cache_purge<span class="token operator">-</span><span class="token number">2.3</span><span class="token punctuation">.</span>tar<span class="token punctuation">.</span>gz
+<span class="token punctuation">[</span>root@server1 local<span class="token punctuation">]</span># wget https<span class="token punctuation">:</span><span class="token operator">/</span><span class="token operator">/</span>github<span class="token punctuation">.</span>com<span class="token operator">/</span>yaoweibin<span class="token operator">/</span>nginx_upstream_check_module<span class="token operator">/</span>archive<span class="token operator">/</span>v0<span class="token punctuation">.</span><span class="token number">3.0</span><span class="token punctuation">.</span>tar<span class="token punctuation">.</span>gz
+<span class="token punctuation">[</span>root@server1 local<span class="token punctuation">]</span># tar <span class="token operator">-</span>zxvf v0<span class="token punctuation">.</span><span class="token number">3.0</span><span class="token punctuation">.</span>tar<span class="token punctuation">.</span>gz
+</code></pre> 
+<p><img src="https://images2.imgbox.com/be/c1/MvA9G57T_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/44/11/aNi7GJdz_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/bf/27/Jp2QieZW_o.png" alt="在这里插入图片描述"></p> 
+<p>3、配置需安装的模块</p> 
+<pre><code class="prism language-c"># <span class="token punctuation">.</span><span class="token operator">/</span>configure <span class="token operator">--</span>help可查询需要安装的模块并编译安装
+<span class="token punctuation">[</span>root@server1 openresty<span class="token operator">-</span><span class="token number">1.13</span><span class="token number">.6</span><span class="token number">.1</span><span class="token punctuation">]</span># <span class="token punctuation">.</span><span class="token operator">/</span>configure <span class="token operator">--</span>prefix<span class="token operator">=</span><span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>openresty <span class="token operator">--</span>with<span class="token operator">-</span>luajit <span class="token operator">--</span>with<span class="token operator">-</span>http_ssl_module <span class="token operator">--</span>user<span class="token operator">=</span>root <span class="token operator">--</span>group<span class="token operator">=</span>root <span class="token operator">--</span>with<span class="token operator">-</span>http_realip_module <span class="token operator">--</span>add<span class="token operator">-</span>module<span class="token operator">=</span><span class="token punctuation">.</span><span class="token operator">/</span>bundle<span class="token operator">/</span>ngx_cache_purge<span class="token operator">-</span><span class="token number">2.3</span><span class="token operator">/</span> <span class="token operator">--</span>add<span class="token operator">-</span>module<span class="token operator">=</span><span class="token punctuation">.</span><span class="token operator">/</span>bundle<span class="token operator">/</span>nginx_upstream_check_module<span class="token operator">-</span><span class="token number">0.3</span><span class="token number">.0</span><span class="token operator">/</span> <span class="token operator">--</span>with<span class="token operator">-</span>http_stub_status_module
+<span class="token punctuation">[</span>root@server1 openresty<span class="token operator">-</span><span class="token number">1.13</span><span class="token number">.6</span><span class="token number">.1</span><span class="token punctuation">]</span># make <span class="token operator">&amp;&amp;</span> make install
+</code></pre> 
+<p><img src="https://images2.imgbox.com/db/b4/ijjxV8ZT_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/51/a2/osCqdQTi_o.png" alt="在这里插入图片描述"></p> 
+<p>4、创建一个软链接方便启动停止</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 openresty<span class="token operator">-</span><span class="token number">1.13</span><span class="token number">.6</span><span class="token number">.1</span><span class="token punctuation">]</span># ln <span class="token operator">-</span>s <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>openresty<span class="token operator">/</span>nginx<span class="token operator">/</span>sbin<span class="token operator">/</span>nginx   <span class="token operator">/</span>bin<span class="token operator">/</span>nginx
+</code></pre> 
+<p><img src="https://images2.imgbox.com/14/08/ilbLdqZf_o.png" alt="在这里插入图片描述"></p> 
+<p>5、启动nginx</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 <span class="token operator">~</span><span class="token punctuation">]</span># nginx
+</code></pre> 
+<p>如果启动时候报错找不到PID的话就用以下命令解决（如果没有更改过目录的话，让它去读nginx的配置文件就好了）</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 <span class="token operator">~</span><span class="token punctuation">]</span># <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>openresty<span class="token operator">/</span>nginx<span class="token operator">/</span>sbin<span class="token operator">/</span>nginx  <span class="token operator">-</span>c <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>openresty<span class="token operator">/</span>nginx<span class="token operator">/</span>conf<span class="token operator">/</span>nginx<span class="token punctuation">.</span>conf 
+</code></pre> 
+<p>6、查看端口</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 <span class="token operator">~</span><span class="token punctuation">]</span># netstat <span class="token operator">-</span>antuple <span class="token operator">|</span> grep <span class="token number">80</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/87/ae/wUhHmoIE_o.png" alt="在这里插入图片描述"></p> 
+<p>7、测试：浏览器访问这台机器的地址<br> 出现下图的页面就是成功了</p> 
+<p><img src="https://images2.imgbox.com/26/2f/P57lWSzr_o.png" alt="在这里插入图片描述"></p> 
+<p>8、在Nginx上测试一下能否使用Lua脚本</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 <span class="token operator">~</span><span class="token punctuation">]</span># vim <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>openresty<span class="token operator">/</span>nginx<span class="token operator">/</span>conf<span class="token operator">/</span>nginx<span class="token punctuation">.</span>conf
+        location <span class="token operator">/</span>lua <span class="token punctuation">{<!-- --></span>
+            default_type text<span class="token operator">/</span>plain<span class="token punctuation">;</span>
+            content_by_lua <span class="token string">'ngx.say("hello,lua!")'</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/b1/39/gDQM06wD_o.png" alt="在这里插入图片描述"></p> 
+<p>加完后重启nginx</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 <span class="token operator">~</span><span class="token punctuation">]</span># nginx  <span class="token operator">-</span>s reload
+</code></pre> 
+<p>在浏览器里输入 ip地址/lua<br> 出现下面的字就表示Nginx能够成功使用lua了<br> <img src="https://images2.imgbox.com/45/1a/s7KpBVLS_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="Redis_99"></a>二、安装Redis</h3> 
+<p>1、下载、解压、编译安装</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 <span class="token operator">~</span><span class="token punctuation">]</span># cd <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>
+<span class="token punctuation">[</span>root@server1 local<span class="token punctuation">]</span># wget http<span class="token punctuation">:</span><span class="token operator">/</span><span class="token operator">/</span>download<span class="token punctuation">.</span>redis<span class="token punctuation">.</span>io<span class="token operator">/</span>releases<span class="token operator">/</span>redis<span class="token operator">-</span><span class="token number">3.2</span><span class="token number">.5</span><span class="token punctuation">.</span>tar<span class="token punctuation">.</span>gz
+<span class="token punctuation">[</span>root@server1 local<span class="token punctuation">]</span># tar <span class="token operator">-</span>zxvf redis<span class="token operator">-</span><span class="token number">3.2</span><span class="token number">.5</span><span class="token punctuation">.</span>tar<span class="token punctuation">.</span>gz
+<span class="token punctuation">[</span>root@server1 local<span class="token punctuation">]</span># cd redis<span class="token operator">-</span><span class="token number">3.2</span><span class="token number">.5</span>
+<span class="token punctuation">[</span>root@server1 redis<span class="token operator">-</span><span class="token number">3.2</span><span class="token number">.5</span><span class="token punctuation">]</span># make
+<span class="token punctuation">[</span>root@server1 redis<span class="token operator">-</span><span class="token number">3.2</span><span class="token number">.5</span><span class="token punctuation">]</span># make install
+</code></pre> 
+<p><img src="https://images2.imgbox.com/6e/d8/6cVYHsFO_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/d8/dd/EvIcCsQ1_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/23/f0/dUdw4zpZ_o.png" alt="在这里插入图片描述"></p> 
+<p>2、查看是否安装成功</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 redis<span class="token operator">-</span><span class="token number">3.2</span><span class="token number">.5</span><span class="token punctuation">]</span># ls <span class="token operator">-</span>lh <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>bin<span class="token operator">/</span>
+<span class="token punctuation">[</span>root@server1 redis<span class="token operator">-</span><span class="token number">3.2</span><span class="token number">.5</span><span class="token punctuation">]</span># redis<span class="token operator">-</span>server <span class="token operator">-</span>v
+</code></pre> 
+<p><img src="https://images2.imgbox.com/bb/fe/rLuuw5Vf_o.png" alt="在这里插入图片描述"></p> 
+<p>3、配置redis 创建dump file、进程pid、log目录</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 redis<span class="token operator">-</span><span class="token number">3.2</span><span class="token number">.5</span><span class="token punctuation">]</span># cd <span class="token operator">/</span>etc<span class="token operator">/</span>
+<span class="token punctuation">[</span>root@server1 etc<span class="token punctuation">]</span># mkdir redis
+<span class="token punctuation">[</span>root@server1 etc<span class="token punctuation">]</span># cd <span class="token operator">/</span>var<span class="token operator">/</span>
+<span class="token punctuation">[</span>root@server1 var<span class="token punctuation">]</span># mkdir redis
+<span class="token punctuation">[</span>root@server1 var<span class="token punctuation">]</span># cd redis<span class="token operator">/</span>
+<span class="token punctuation">[</span>root@server1 redis<span class="token punctuation">]</span># mkdir  data log  run
+</code></pre> 
+<p><img src="https://images2.imgbox.com/80/93/h0Up6XsW_o.png" alt="在这里插入图片描述"></p> 
+<p>4、修改配置文件</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 redis<span class="token punctuation">]</span># cd <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>redis<span class="token operator">-</span><span class="token number">3.2</span><span class="token number">.5</span><span class="token operator">/</span>
+<span class="token punctuation">[</span>root@server1 redis<span class="token operator">-</span><span class="token number">3.2</span><span class="token number">.5</span><span class="token punctuation">]</span># cp redis<span class="token punctuation">.</span>conf <span class="token operator">/</span>etc<span class="token operator">/</span>redis<span class="token operator">/</span><span class="token number">6379.</span>conf
+<span class="token punctuation">[</span>root@server1 redis<span class="token operator">-</span><span class="token number">3.2</span><span class="token number">.5</span><span class="token punctuation">]</span># vim <span class="token operator">/</span>etc<span class="token operator">/</span>redis<span class="token operator">/</span><span class="token number">6379.</span>conf
+  <span class="token number">61</span> bind <span class="token number">172.25</span><span class="token number">.1</span><span class="token number">.1</span>  #绑定的主机地址
+  <span class="token number">84</span> port <span class="token number">6379</span>  #端口
+ <span class="token number">271</span> #requirepass  #认证密码（方便测试不设密码，注释掉）
+ <span class="token number">150</span> pidfile <span class="token operator">/</span>var<span class="token operator">/</span>run<span class="token operator">/</span>redis_6379<span class="token punctuation">.</span>pid  #pid目录
+ <span class="token number">163</span> logfile <span class="token operator">/</span>var<span class="token operator">/</span>redis<span class="token operator">/</span>log<span class="token operator">/</span>redis<span class="token punctuation">.</span>log  #log存储目录
+ <span class="token number">247</span> dir <span class="token operator">/</span>var<span class="token operator">/</span>redis<span class="token operator">/</span>data   #dump目录
+ <span class="token number">128</span> daemonize yes   #Redis默认不是以守护进程的方式运行，可以通过该配置项修改，使用yes启用守护进程
+</code></pre> 
+<p>5、设置启动方式</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 redis<span class="token operator">-</span><span class="token number">3.2</span><span class="token number">.5</span><span class="token punctuation">]</span># cd <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>redis<span class="token operator">-</span><span class="token number">3.2</span><span class="token number">.5</span><span class="token operator">/</span>utils<span class="token operator">/</span>
+<span class="token punctuation">[</span>root@server1 utils<span class="token punctuation">]</span># cp redis_init_script <span class="token operator">/</span>etc<span class="token operator">/</span>init<span class="token punctuation">.</span>d<span class="token operator">/</span>redis
+<span class="token punctuation">[</span>root@server1 utils<span class="token punctuation">]</span># vim <span class="token operator">/</span>etc<span class="token operator">/</span>init<span class="token punctuation">.</span>d<span class="token operator">/</span>redis   #根据自己实际情况修改，我在这里没有改
+<span class="token punctuation">[</span>root@server1 utils<span class="token punctuation">]</span># chmod a<span class="token operator">+</span>x <span class="token operator">/</span>etc<span class="token operator">/</span>init<span class="token punctuation">.</span>d<span class="token operator">/</span>redis   #所有用户增加执行权限
+<span class="token punctuation">[</span>root@server1 utils<span class="token punctuation">]</span># service redis start     #启动redis
+</code></pre> 
+<p><img src="https://images2.imgbox.com/b2/6f/hHxVbMlp_o.png" alt="在这里插入图片描述"></p> 
+<p>6、查看redis是否启动</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 utils<span class="token punctuation">]</span># redis<span class="token operator">-</span>cli <span class="token operator">-</span>h <span class="token number">172.25</span><span class="token number">.1</span><span class="token number">.1</span> <span class="token operator">-</span>p <span class="token number">6379</span>
+<span class="token number">172.25</span><span class="token number">.1</span><span class="token number">.1</span><span class="token punctuation">:</span><span class="token number">6379</span><span class="token operator">&gt;</span> set hello <span class="token string">"hi,redis"</span>
+OK
+<span class="token number">172.25</span><span class="token number">.1</span><span class="token number">.1</span><span class="token punctuation">:</span><span class="token number">6379</span><span class="token operator">&gt;</span> KEYS <span class="token operator">*</span>
+<span class="token number">1</span><span class="token punctuation">)</span> <span class="token string">"hello"</span>
+<span class="token number">172.25</span><span class="token number">.1</span><span class="token number">.1</span><span class="token punctuation">:</span><span class="token number">6379</span><span class="token operator">&gt;</span> get <span class="token string">"hello"</span>
+<span class="token string">"hi,redis"</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/f3/71/kEiIU7l0_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="NginxLuaRedis_173"></a>三、在Nginx中使用Lua脚本访问Redis</h3> 
+<p>1、连接redis，然后添加一些测试参数</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 utils<span class="token punctuation">]</span># redis<span class="token operator">-</span>cli <span class="token operator">-</span>h <span class="token number">172.25</span><span class="token number">.1</span><span class="token number">.1</span> <span class="token operator">-</span>p <span class="token number">6379</span>
+<span class="token number">172.25</span><span class="token number">.1</span><span class="token number">.1</span><span class="token punctuation">:</span><span class="token number">6379</span><span class="token operator">&gt;</span> set <span class="token string">"123"</span> <span class="token string">"456"</span>
+OK
+<span class="token number">172.25</span><span class="token number">.1</span><span class="token number">.1</span><span class="token punctuation">:</span><span class="token number">6379</span><span class="token operator">&gt;</span> 
+</code></pre> 
+<p><img src="https://images2.imgbox.com/74/67/a2Y1DbhV_o.png" alt="在这里插入图片描述"></p> 
+<p>2、编写连接Redis的Lua脚本</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 utils<span class="token punctuation">]</span># vim <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>openresty<span class="token operator">/</span>nginx<span class="token operator">/</span>conf<span class="token operator">/</span>lua<span class="token operator">/</span>redis<span class="token punctuation">.</span>lua
+local redis <span class="token operator">=</span> require <span class="token string">"resty.redis"</span>
+local conn <span class="token operator">=</span> redis<span class="token punctuation">.</span><span class="token function">new</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+conn<span class="token punctuation">.</span><span class="token function">connect</span><span class="token punctuation">(</span>conn<span class="token punctuation">,</span> <span class="token string">'172.25.1.1'</span><span class="token punctuation">,</span> <span class="token string">'6379'</span><span class="token punctuation">)</span>   #根据自己情况写ip和端口号 
+local res <span class="token operator">=</span> conn<span class="token punctuation">:</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token string">"123"</span><span class="token punctuation">)</span>
+<span class="token keyword">if</span> res<span class="token operator">==</span>ngx<span class="token punctuation">.</span>null then
+    ngx<span class="token punctuation">.</span><span class="token function">say</span><span class="token punctuation">(</span><span class="token string">"redis集群中不存在KEY——'123'"</span><span class="token punctuation">)</span>
+    <span class="token keyword">return</span>
+end
+ngx<span class="token punctuation">.</span><span class="token function">say</span><span class="token punctuation">(</span>res<span class="token punctuation">)</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/5a/da/dY4FWqyP_o.png" alt="在这里插入图片描述"></p> 
+<p>3、在nginx配置文件中添加以下location</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 utils<span class="token punctuation">]</span># vim <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>openresty<span class="token operator">/</span>nginx<span class="token operator">/</span>conf<span class="token operator">/</span>nginx<span class="token punctuation">.</span>conf
+        location <span class="token operator">/</span>lua_redis <span class="token punctuation">{<!-- --></span>
+            default_type text<span class="token operator">/</span>plain<span class="token punctuation">;</span>
+            content_by_lua_file <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>openresty<span class="token operator">/</span>nginx<span class="token operator">/</span>conf<span class="token operator">/</span>lua<span class="token operator">/</span>redis<span class="token punctuation">.</span>lua<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/11/2f/lOxMlemf_o.png" alt="在这里插入图片描述"></p> 
+<p>4、重启nginx</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 utils<span class="token punctuation">]</span># nginx  <span class="token operator">-</span>s reload 
+</code></pre> 
+<p>5、验证<br> 在浏览器输入ip/lua_redis<br> 看能不能获取到刚才在redis添加的"123" 这个key 并获取到他的值<br> 如果能看到下图的内容表示可以访问redis<br> <img src="https://images2.imgbox.com/5e/8f/v05b7oZC_o.png" alt="在这里插入图片描述"></p> 
+<p>好的,准备工作已经准备好了,现在要来最终的Nginx+Lua+Redis自动封禁并解封IP了</p> 
+<h3><a id="NginxLuaRedis_226"></a>四、Nginx+Lua+Redis</h3> 
+<p>1、添加访问控制的Lua脚本<br> （此脚本需要改的只有下面的这一句，把redis的ip和端口替换一下即可<br> ok, err = conn:connect(“172.25.1.1”, 6379)<br> 温馨提示：如果在nginx的上层有用到SLB负载均衡的话需要修改一下脚本里的所有…ngx.var.remote_addr<br> 把remote_addr替换成从SLB获取真实IP的字段即可,不然获取到的IP全都是SLB发过来处理过的IP,全都是一个网段的,根本没有办法起到封禁的效果）</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 lua<span class="token punctuation">]</span># vim <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>openresty<span class="token operator">/</span>nginx<span class="token operator">/</span>conf<span class="token operator">/</span>lua<span class="token operator">/</span>access<span class="token punctuation">.</span>lua
+local ip_block_time<span class="token operator">=</span><span class="token number">300</span>  #封禁IP时间（秒）
+local ip_time_out<span class="token operator">=</span><span class="token number">30</span>     #指定ip访问频率时间段（秒）
+local ip_max_count<span class="token operator">=</span><span class="token number">20</span>   #指定ip访问频率计数最大值（秒）
+local BUSINESS <span class="token operator">=</span> ngx<span class="token punctuation">.</span>var<span class="token punctuation">.</span>business   ##nginx的location中定义的业务标识符，也可以不加，不过加了后方便区分
+
+#连接redis
+local redis <span class="token operator">=</span> require <span class="token string">"resty.redis"</span>  
+local conn <span class="token operator">=</span> redis<span class="token punctuation">:</span><span class="token function">new</span><span class="token punctuation">(</span><span class="token punctuation">)</span>  
+ok<span class="token punctuation">,</span> err <span class="token operator">=</span> conn<span class="token punctuation">:</span><span class="token function">connect</span><span class="token punctuation">(</span><span class="token string">"192.168.1.222"</span><span class="token punctuation">,</span> <span class="token number">6379</span><span class="token punctuation">)</span>  
+conn<span class="token punctuation">:</span><span class="token function">set_timeout</span><span class="token punctuation">(</span><span class="token number">2000</span><span class="token punctuation">)</span>   #超时时间<span class="token number">2</span>秒
+
+#如果连接失败，跳转到脚本结尾
+<span class="token keyword">if</span> not ok then
+    <span class="token keyword">goto</span> FLAG
+end
+
+#查询ip是否被禁止访问，如果存在则返回<span class="token number">403</span>错误代码
+is_block<span class="token punctuation">,</span> err <span class="token operator">=</span> conn<span class="token punctuation">:</span><span class="token function">get</span><span class="token punctuation">(</span>BUSINESS<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token string">"-BLOCK-"</span><span class="token punctuation">.</span><span class="token punctuation">.</span>ngx<span class="token punctuation">.</span>var<span class="token punctuation">.</span>remote_addr<span class="token punctuation">)</span>  
+<span class="token keyword">if</span> is_block <span class="token operator">==</span> <span class="token string">'1'</span> then
+    ngx<span class="token punctuation">.</span><span class="token function">exit</span><span class="token punctuation">(</span><span class="token number">403</span><span class="token punctuation">)</span>
+    <span class="token keyword">goto</span> FLAG
+end
+
+#查询redis中保存的ip的计数器
+ip_count<span class="token punctuation">,</span> err <span class="token operator">=</span> conn<span class="token punctuation">:</span><span class="token function">get</span><span class="token punctuation">(</span>BUSINESS<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token string">"-COUNT-"</span><span class="token punctuation">.</span><span class="token punctuation">.</span>ngx<span class="token punctuation">.</span>var<span class="token punctuation">.</span>remote_addr<span class="token punctuation">)</span>
+
+<span class="token keyword">if</span> ip_count <span class="token operator">==</span> ngx<span class="token punctuation">.</span>null then   #如果不存在，则将该IP存入redis，并将计数器设置为<span class="token number">1</span>、该KEY的超时时间为ip_time_out
+    res<span class="token punctuation">,</span> err <span class="token operator">=</span> conn<span class="token punctuation">:</span><span class="token function">set</span><span class="token punctuation">(</span>BUSINESS<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token string">"-COUNT-"</span><span class="token punctuation">.</span><span class="token punctuation">.</span>ngx<span class="token punctuation">.</span>var<span class="token punctuation">.</span>remote_addr<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span>
+	res<span class="token punctuation">,</span> err <span class="token operator">=</span> conn<span class="token punctuation">:</span><span class="token function">expire</span><span class="token punctuation">(</span>BUSINESS<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token string">"-COUNT-"</span><span class="token punctuation">.</span><span class="token punctuation">.</span>ngx<span class="token punctuation">.</span>var<span class="token punctuation">.</span>remote_addr<span class="token punctuation">,</span> ip_time_out<span class="token punctuation">)</span>
+<span class="token keyword">else</span>
+    ip_count <span class="token operator">=</span> ip_count <span class="token operator">+</span> <span class="token number">1</span>   #存在则将单位时间内的访问次数加<span class="token number">1</span>
+  
+    <span class="token keyword">if</span> ip_count <span class="token operator">&gt;=</span> ip_max_count then   #如果超过单位时间限制的访问次数，则添加限制访问标识，限制时间为ip_block_time
+        res<span class="token punctuation">,</span> err <span class="token operator">=</span> conn<span class="token punctuation">:</span><span class="token function">set</span><span class="token punctuation">(</span>BUSINESS<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token string">"-BLOCK-"</span><span class="token punctuation">.</span><span class="token punctuation">.</span>ngx<span class="token punctuation">.</span>var<span class="token punctuation">.</span>remote_addr<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span>
+        res<span class="token punctuation">,</span> err <span class="token operator">=</span> conn<span class="token punctuation">:</span><span class="token function">expire</span><span class="token punctuation">(</span>BUSINESS<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token string">"-BLOCK-"</span><span class="token punctuation">.</span><span class="token punctuation">.</span>ngx<span class="token punctuation">.</span>var<span class="token punctuation">.</span>remote_addr<span class="token punctuation">,</span> ip_block_time<span class="token punctuation">)</span>
+	<span class="token keyword">else</span>
+        res<span class="token punctuation">,</span> err <span class="token operator">=</span> conn<span class="token punctuation">:</span><span class="token function">set</span><span class="token punctuation">(</span>BUSINESS<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token string">"-COUNT-"</span><span class="token punctuation">.</span><span class="token punctuation">.</span>ngx<span class="token punctuation">.</span>var<span class="token punctuation">.</span>remote_addr<span class="token punctuation">,</span>ip_count<span class="token punctuation">)</span>
+		res<span class="token punctuation">,</span> err <span class="token operator">=</span> conn<span class="token punctuation">:</span><span class="token function">expire</span><span class="token punctuation">(</span>BUSINESS<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token string">"-COUNT-"</span><span class="token punctuation">.</span><span class="token punctuation">.</span>ngx<span class="token punctuation">.</span>var<span class="token punctuation">.</span>remote_addr<span class="token punctuation">,</span> ip_time_out<span class="token punctuation">)</span>
+    end
+end
+
+#结束标记
+<span class="token punctuation">:</span><span class="token punctuation">:</span>FLAG<span class="token punctuation">:</span><span class="token punctuation">:</span>
+local ok<span class="token punctuation">,</span> err <span class="token operator">=</span> conn<span class="token punctuation">:</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>2、在需要做访问限制的location里加两段代码即可，这里用刚才的/lua做演示</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 utils<span class="token punctuation">]</span># vim <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>openresty<span class="token operator">/</span>nginx<span class="token operator">/</span>conf<span class="token operator">/</span>nginx<span class="token punctuation">.</span>conf
+        location <span class="token operator">/</span>lua <span class="token punctuation">{<!-- --></span>
+            set $business <span class="token string">"lua"</span><span class="token punctuation">;</span>  #加这个的目的是为了知道存在redis的数据是哪个location的，也可以不加
+            access_by_lua_file <span class="token operator">/</span>usr<span class="token operator">/</span>local<span class="token operator">/</span>openresty<span class="token operator">/</span>nginx<span class="token operator">/</span>conf<span class="token operator">/</span>lua<span class="token operator">/</span>access<span class="token punctuation">.</span>lua<span class="token punctuation">;</span>
+            default_type text<span class="token operator">/</span>plain<span class="token punctuation">;</span>
+            content_by_lua <span class="token string">'ngx.say("hello,lua!")'</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/93/71/FlrAhXtG_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>主要添加：</strong><br> access_by_lua_file /usr/local/openresty/nginx/conf/lua/access.lua;<br> 让每一个请求都去调用这个lua脚本,注意路径和名字不要写错<br> set $business “lua” 是为了把IP放进redis的时候标明是哪个location的,可以不加</p> 
+<p>3、重启nginx</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 utils<span class="token punctuation">]</span># nginx <span class="token operator">-</span>s reload
+</code></pre> 
+<p>4、去访问172.25.1.1/lua 并一直刷新界面<br> <img src="https://images2.imgbox.com/f0/9b/dvXlkxUQ_o.png" alt="在这里插入图片描述"></p> 
+<p>5、连接redis</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 utils<span class="token punctuation">]</span># redis<span class="token operator">-</span>cli <span class="token operator">-</span>h <span class="token number">172.25</span><span class="token number">.1</span><span class="token number">.1</span> <span class="token operator">-</span>p <span class="token number">6379</span>
+<span class="token number">172.25</span><span class="token number">.1</span><span class="token number">.1</span><span class="token punctuation">:</span><span class="token number">6379</span><span class="token operator">&gt;</span> KEYS <span class="token operator">*</span>
+<span class="token number">1</span><span class="token punctuation">)</span> <span class="token string">"lua-COUNT-172.25.1.250"</span>
+<span class="token number">172.25</span><span class="token number">.1</span><span class="token number">.1</span><span class="token punctuation">:</span><span class="token number">6379</span><span class="token operator">&gt;</span> GET <span class="token string">"lua-COUNT-172.25.1.250"</span>
+<span class="token string">"9"</span>
+<span class="token number">172.25</span><span class="token number">.1</span><span class="token number">.1</span><span class="token punctuation">:</span><span class="token number">6379</span><span class="token operator">&gt;</span> 
+</code></pre> 
+<p><img src="https://images2.imgbox.com/1b/bf/ggZfT9RK_o.png" alt="在这里插入图片描述"></p> 
+<p>这个key的过期时间是30秒,如果30秒没有重复访问20次这个key就会消失,所以说正常用户一般不会触发这个封禁的脚本</p> 
+<pre><code class="prism language-c"><span class="token punctuation">[</span>root@server1 utils<span class="token punctuation">]</span># redis<span class="token operator">-</span>cli <span class="token operator">-</span>h <span class="token number">172.25</span><span class="token number">.1</span><span class="token number">.1</span> <span class="token operator">-</span>p <span class="token number">6379</span>
+<span class="token number">172.25</span><span class="token number">.1</span><span class="token number">.1</span><span class="token punctuation">:</span><span class="token number">6379</span><span class="token operator">&gt;</span> GET <span class="token string">"lua-COUNT-172.25.1.250"</span>
+<span class="token punctuation">(</span>nil<span class="token punctuation">)</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/16/03/kUqANKl6_o.png" alt="在这里插入图片描述"></p> 
+<p>当30秒内访问超过了20次<br> 发现触发脚本了,变成了403<br> <img src="https://images2.imgbox.com/20/94/MGGcQiVI_o.png" alt="在这里插入图片描述"></p> 
+<p>进到redis里发现多了一个lua-block-192.168.1.158<br> 过期时间是300秒,就是说在300秒内这个ip无法继续访问192.168.1.222/lua这个页面了</p> 
+<p><img src="https://images2.imgbox.com/2a/a8/0IAB8Jrz_o.png" alt="在这里插入图片描述"></p> 
+<p>过五分钟后再去访问这个页面,又可以访问了<br> <img src="https://images2.imgbox.com/55/0c/VY401Kvv_o.png" alt="在这里插入图片描述"></p> 
+<p>这个脚本的目的很简单：一个IP如果在30秒内其访问次数达到20次则表明该IP访问频率太快了，因此将该IP封禁5分钟。同时由于计数的KEY在Redis中的超时时间设置成了30秒，所以如果两次访问间隔时间大于30秒将会重新开始计数</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4fe6a88c1f93216cfd5e1a70f90118c7/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">TeamViewer可免费用于个人用途，但所使用的设备数量受限。您已达到设备数量上限</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d9c1031a7b21f092b7ce8108b2eddf5b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C语言编译找不到lua.h  --luaLoad.c:2:17: fatal error: lua.h: 没有那个文件或目录</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

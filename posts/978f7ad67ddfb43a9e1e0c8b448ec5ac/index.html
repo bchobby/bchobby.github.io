@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>mysql事务隔离级别实现原理全面解读？ - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="mysql事务隔离级别实现原理全面解读？" />
+<meta property="og:description" content="本文目录 2022-10-17 修正版～2023-02-16 新增～夺命6连call，本文高能全是干货！！！！莫慌本文一一来探究～～～～～来自大三时候码的文章解决不可重复读演示Readview可见性算法规避幻读的演示及解读特殊情况下发生的幻读 探究完了幻读，顺便提一嘴mysql中的锁机制，mysql中的锁有很多大体如下：间隙锁区间详解思考**面试专栏**小咸鱼的技术窝 2022-10-17 修正版～ 修正内容（工作后修正的内容）：
+可重复度没有解决幻读，只是极大程度避免了快照读下会发生的幻读情况增加 Mvcc Readview、版本控制链条内容的诠释，帮助读者更好的理解可重复度与幻读的关系增加实验，验证RR隔离级别下，幻读还是有可能发生的，以及诠释发生的原因 2023-02-16 新增～ 更新点：结合自己阅读源码的经验，新增面试专栏，后续会一直更新，如果回答的造成了误解，望斧正。看到并采纳会及时修成。
+夺命6连call，本文高能全是干货！！！！ 天天用事务可是你知道事务是怎么来实现的吗？什么叫做事务？事务是什么？mysql中的锁了解嘛？mysql中有哪些锁？mysql中的锁和事务有什么联系？事务有什么特性呢？事务隔离级别有哪几种？不同事务隔离级别解决了什么问题？spring中的事务与mysql中的事务有什么区别？开启事务的方式有哪几种？ 莫慌本文一一来探究～～～～～来自大三时候码的文章 什么叫做事务？事务是什么？
+事务： java硬编码角度：保证代码片段伪原子性执行的一种手段sql角度：保证sql语句伪原子执行的一种手段 事务有什么特性？（基本概念不过多解读）
+原子性、持久性、一致性、 隔离性 事务隔离级别有哪些？（基本概念不过多解读）
+读已经提交、读未提交、可重复读（mysql默认隔离级别）、串行化 不同事务隔离级别解决了什么问题？（先搞清楚有什么问题！下文着重有研究）
+事务能解决的问题 脏读：一个事务读取到另一个事务未提交的数据幻读：情况一：开启一个事务，第一次查 name =1 的数据查不到，第二次查到了。情况二：开启一个事务：第一次查 name =1 的数据只有一条，第二次查到了多条。情况三：开启一个事务：第一次查所有数据只有一条，第二次查到了一条以上的数据不可重复读：一个事务内，对于同一条数据的读取，读取 内容 前后不一致（mvcc解决了） 读未提交：啥问题都没解决，不愧是地主家的傻儿子啊💩读已提交：解决了脏读可重复读：极大的避免了 当前读 下幻读的发生、解决了脏读、不可重复读串行化：解决了幻读、脏读、不可重复读 可能很多读者很疑惑，到底可重复度解决了幻读还是没解决呢？我在刚入坑mysql的时候也为此疑惑过，毕竟当初也是看着网上的教程一步步走过来的（网上的资源鱼龙混杂）。要搞明白这个问题首先就要知道什么是幻读？如上事务能解决的问题二
+为什么说可重复读隔离级别下极大的避免当前读下幻读的发生、解决了不可重复读呢？（严谨点来说是这一切都是针对mysql下的innodb存储引擎来说的）
+解决不可重复读演示 先后开启事务一、事务二，事务一查询 id 为 3 的数据，查到结果如下图一，然后切换事务二查 id 为 3 的数据，查到的结果和下图一一致，紧接着事务一执行下图一中的更新操作，并且提交事务一，事务二接着查 id 为 3 的数据，查到的结果依然和下图一一致。
+事务一
+事务二
+剖析上述图片是如何：解决不可重复读的： 可重复读隔离级别是基于MVCC（版本控制链）解决了不可重复读的问题，而所谓的MVCC即版本控制链，可以这么来理解这个版本控制链：某条数据的各个历史版本的链条，且内部根据修改时间排序。可重复读只会在第一次 select 的时候生成一个 Readview，后续的快照读，都要做判断，是否满足 Readview 可见性，满足才读取反之不读取，这其中的Readview 算法保证了可重复读，解决了不可重复读的问题 不知道读者思考过：快照读、拍快照 Readview 是个什么东西？其实不管是什么高深抽象的名字，在开发上一定都是有他自己的一套运作逻辑的，其实 Readview 就是一个类，里面装载了：Readview 生成时刻的活跃事务id列表、Readview 生成时刻的活跃事务最小id、Readview 生成时刻的已出现过的事务id&#43;1、生成 Readview 的事务id，然后根据这些条件，去版本控制链上依次去做条件判断，找出当前事务可见的数据" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/978f7ad67ddfb43a9e1e0c8b448ec5ac/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-11-24T15:18:17+08:00" />
+<meta property="article:modified_time" content="2023-11-24T15:18:17+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">mysql事务隔离级别实现原理全面解读？</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night-eighties">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>本文目录</h4> 
+ <ul><li><ul><li><a href="#20221017__2" rel="nofollow">2022-10-17 修正版～</a></li><li><a href="#20230216__9" rel="nofollow">2023-02-16 新增～</a></li><li><a href="#6call_12" rel="nofollow">夺命6连call，本文高能全是干货！！！！</a></li><li><a href="#_21" rel="nofollow">莫慌本文一一来探究～～～～～来自大三时候码的文章</a></li><li><a href="#_51" rel="nofollow">解决不可重复读演示</a></li><li><a href="#Readview_69" rel="nofollow">Readview可见性算法</a></li><li><a href="#_81" rel="nofollow">规避幻读的演示及解读</a></li><li><a href="#_120" rel="nofollow">特殊情况下发生的幻读</a></li></ul> 
+  </li><li><a href="#mysqlmysql_147" rel="nofollow">探究完了幻读，顺便提一嘴mysql中的锁机制，mysql中的锁有很多大体如下：</a></li><li><ul><li><a href="#_228" rel="nofollow">间隙锁区间详解</a></li><li><a href="#_287" rel="nofollow">思考</a></li><li><a href="#font_colorredfont_291" rel="nofollow"><font color="red">**面试专栏**</font></a></li><li><a href="#_307" rel="nofollow">小咸鱼的技术窝</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="20221017__2"></a>2022-10-17 修正版～</h3> 
+<p>修正内容（工作后修正的内容）：</p> 
+<ol><li><font color="red">可重复度没有解决幻读，只是极大程度避免了快照读下会发生的幻读情况</font></li><li><font color="red">增加 Mvcc Readview、版本控制链条内容的诠释，帮助读者更好的理解可重复度与幻读的关系</font></li><li><font color="red">增加实验，验证RR隔离级别下，幻读还是有可能发生的，以及诠释发生的原因</font></li></ol> 
+<h3><a id="20230216__9"></a>2023-02-16 新增～</h3> 
+<p>更新点：结合自己阅读源码的经验，<font color="red"><strong>新增面试专栏</strong></font>，后续会一直更新，如果回答的造成了误解，望斧正。看到并采纳会及时修成。</p> 
+<h3><a id="6call_12"></a>夺命6连call，本文高能全是干货！！！！</h3> 
+<ul><li>天天用事务可是你知道事务是怎么来实现的吗？</li><li>什么叫做事务？事务是什么？</li><li>mysql中的锁了解嘛？mysql中有哪些锁？mysql中的锁和事务有什么联系？</li><li>事务有什么特性呢？事务隔离级别有哪几种？不同事务隔离级别解决了什么问题？</li><li>spring中的事务与mysql中的事务有什么区别？</li><li>开启事务的方式有哪几种？</li></ul> 
+<h3><a id="_21"></a>莫慌本文一一来探究～～～～～来自大三时候码的文章</h3> 
+<p><strong>什么叫做事务？事务是什么？</strong></p> 
+<ul><li>事务： 
+  <ol><li>java硬编码角度：保证代码片段伪原子性执行的一种手段</li><li>sql角度：保证sql语句伪原子执行的一种手段</li></ol> </li></ul> 
+<p><strong>事务有什么特性？</strong>（基本概念不过多解读）</p> 
+<ul><li>原子性、持久性、一致性、 隔离性</li></ul> 
+<p><strong>事务隔离级别有哪些？</strong>（基本概念不过多解读）</p> 
+<ul><li>读已经提交、读未提交、可重复读（mysql默认隔离级别）、串行化</li></ul> 
+<p><strong>不同事务隔离级别解决了什么问题？</strong>（先搞清楚有什么问题！下文着重有研究）</p> 
+<ul><li><strong>事务能解决的问题</strong> 
+  <ol><li>脏读：一个事务读取到另一个事务未提交的数据</li><li><font color="red">幻读：情况一：开启一个事务，第一次查 name =1 的数据查不到，第二次查到了。情况二：开启一个事务：第一次查 name =1 的数据只有一条，第二次查到了多条。情况三：开启一个事务：第一次查所有数据只有一条，第二次查到了一条以上的数据</font></li><li><font color="red">不可重复读：一个事务内，对于同一条数据的读取，读取 <strong>内容</strong> 前后不一致（mvcc解决了）</font></li></ol> </li><li>读未提交：啥问题都没解决，不愧是地主家的傻儿子啊💩</li><li>读已提交：解决了脏读</li><li>可重复读：极大的避免了<font color="gren"> <strong>当前读</strong> </font>下幻读的发生、解决了脏读、不可重复读</li><li>串行化：解决了幻读、脏读、不可重复读</li></ul> 
+<blockquote> 
+ <p>可能很多读者很疑惑，到底可重复度解决了幻读还是没解决呢？我在刚入坑mysql的时候也为此疑惑过，毕竟当初也是看着网上的教程一步步走过来的（网上的资源鱼龙混杂）。要搞明白这个问题首先就要知道什么是幻读？如上事务能解决的问题二</p> 
+</blockquote> 
+<p><strong>为什么说可重复读隔离级别下极大的避免当前读下幻读的发生、解决了不可重复读呢？</strong>（严谨点来说是这一切都是针对mysql下的innodb存储引擎来说的）</p> 
+<h3><a id="_51"></a>解决不可重复读演示</h3> 
+<p>先后开启事务一、事务二，事务一查询 id 为 3 的数据，查到结果如下图一，然后切换事务二查 id 为 3 的数据，查到的结果和下图一一致，紧接着事务一执行下图一中的更新操作，并且提交事务一，事务二接着查 id 为 3 的数据，查到的结果依然和下图一一致。</p> 
+<p>事务一</p> 
+<p><img src="https://images2.imgbox.com/42/a3/YvMO5txp_o.png" alt="在这里插入图片描述"><br> 事务二</p> 
+<p><img src="https://images2.imgbox.com/a0/9e/hI6UJ5V7_o.png" alt="在这里插入图片描述"></p> 
+<ul><li><font color="red"><strong>剖析上述图片是如何：解决不可重复读的</strong></font>： 
+  <ol><li>可重复读隔离级别是基于MVCC（版本控制链）解决了不可重复读的问题，而所谓的MVCC即版本控制链，可以这么来理解这个版本控制链：某条数据的各个历史版本的链条，且内部根据修改时间排序。</li><li>可重复读只会在第一次 select 的时候生成一个 Readview，后续的快照读，都要做判断，是否满足 Readview 可见性，满足才读取反之不读取，这其中的Readview 算法保证了可重复读，解决了不可重复读的问题</li></ol> </li></ul> 
+<blockquote> 
+ <p>不知道读者思考过：快照读、拍快照 Readview 是个什么东西？其实不管是什么高深抽象的名字，在开发上一定都是有他自己的一套运作逻辑的，其实 Readview 就是一个类，里面装载了：Readview 生成时刻的活跃事务id列表、Readview 生成时刻的活跃事务最小id、Readview 生成时刻的已出现过的事务id+1、生成 Readview 的事务id，然后根据这些条件，去版本控制链上依次去做条件判断，找出当前事务可见的数据</p> 
+</blockquote> 
+<h3><a id="Readview_69"></a>Readview可见性算法</h3> 
+<p>先来说下版本控制链可以比作是一个 List ，由不同事务按照先后顺序修改同一条数据形成的记录依次链接组成，而且每一条记录都有一个事务id对应，表明此记录是哪个事务修改的。</p> 
+<pre><code class="prism language-javascript">LinkedList<span class="token operator">&lt;</span>Object<span class="token operator">&gt;</span>
+</code></pre> 
+<p>版本控制链 里面装载了一个个相同 id 的行数据（内含了一些隐藏列，譬如事务 id 等），当我们开启事务第一次快照读：查某个 id 或者 id 区间的数据的时候，就根据 Readview 做条件判断然后从版本控制链中取得对当前事务可见得数据，逻辑如下<br> 1：获取版本控制链条中最新数据的事务id，与 Readview 中最小活跃事务 id 逐个进行比较，如果小于，则这条数据对当前事务可见。<br> 2：如果大于等于，会接着与 <strong>Readview 中的出现过的最大事务 id+1</strong> 进行比较，如果大于等于，那么这条数据对当前事务不可见(说明生成 Readview 之前是没有这个版本的数据的)，如果小于的话，判断 Readview 中最新的这条数据有无 commit（Readview 中维护着一个活跃事务 id 的数组（排自己），活跃事务数据包含此事务 id就表示未 commit，反之 commit），commit 了的就是可见，没提交就是不可见。</p> 
+<h3><a id="_81"></a>规避幻读的演示及解读</h3> 
+<p>表初始数据</p> 
+<p><img src="https://images2.imgbox.com/34/9e/No9JdkhR_o.png" alt="在这里插入图片描述"><br> 事务一</p> 
+<pre><code class="prism language-sql"><span class="token keyword">start</span> <span class="token keyword">TRANSACTION</span><span class="token punctuation">;</span>
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token identifier"><span class="token punctuation">`</span>xiaomi<span class="token punctuation">`</span></span><span class="token punctuation">.</span><span class="token identifier"><span class="token punctuation">`</span>goods<span class="token punctuation">`</span></span> <span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>price<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>stock<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>goods_type_id<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>remark<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>version<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> <span class="token string">'3'</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">,</span> <span class="token string">'3'</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">UPDATE</span> <span class="token identifier"><span class="token punctuation">`</span>xiaomi<span class="token punctuation">`</span></span><span class="token punctuation">.</span><span class="token identifier"><span class="token punctuation">`</span>goods<span class="token punctuation">`</span></span> <span class="token keyword">SET</span> <span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token string">'2'</span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>price<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>stock<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>goods_type_id<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>remark<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token string">'2'</span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>version<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token number">1</span> <span class="token keyword">WHERE</span> <span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+<span class="token keyword">commit</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>事务二</p> 
+<pre><code class="prism language-sql"><span class="token keyword">start</span> <span class="token keyword">TRANSACTION</span><span class="token punctuation">;</span>
+<span class="token keyword">SELECT</span> <span class="token operator">*</span> <span class="token keyword">from</span> goods<span class="token punctuation">;</span>
+<span class="token keyword">commit</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>先后开启事务一、事务二，事务一中可以查到的数据（id=1），事务二可以查到的数据（id=1） ，然后事务一更新 id =1 的数据，且插入 id =3 的数据，并且提交事务，事务二接着查数据，执行多少遍结果都是只能查到（id=1）的数据。根本原因就是 快照读在第一次 select 的时候会生成一个 Readview 如下：</p> 
+<ol><li>活跃事务id列表：1</li><li>活跃事务最小id：1</li><li>生成 Readview 事务id：2</li><li>出现过的最大事务id+1：2+1=3</li></ol> 
+<p>直到事务一 commit 然后有如下版本控制链如下：</p> 
+<p>id为1的版本控制链条<br> <img src="https://images2.imgbox.com/26/14/3yOsXPBZ_o.png" alt="在这里插入图片描述"><br> id为3的版本控制链条<br> <img src="https://images2.imgbox.com/2a/17/RDAXf4bl_o.png" alt="在这里插入图片描述"></p> 
+<p>查询id为1的数据，Readview会做出如下判断：</p> 
+<ol><li>最新数据事务id：1 &gt;= Readview 中最小活跃事务id：1</li><li>最新数据事务id：1 &lt;= Readview 中最大事务id+1：2+1=3</li><li><font color="red">Readview 中活跃事务id数组：1 包含最新数据事务id：1（说明在事务二在生成 Readview 的时候，最新的这条数据还未 commit，为了防止幻读，最新的这条数据此时对事务二就不可见）</font></li></ol> 
+<h3><a id="_120"></a>特殊情况下发生的幻读</h3> 
+<p>表初始数据</p> 
+<p><img src="https://images2.imgbox.com/f3/2d/PqDoLSQX_o.png" alt="在这里插入图片描述"></p> 
+<p>事务一</p> 
+<pre><code class="prism language-sql"><span class="token keyword">start</span> <span class="token keyword">TRANSACTION</span><span class="token punctuation">;</span>
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token identifier"><span class="token punctuation">`</span>xiaomi<span class="token punctuation">`</span></span><span class="token punctuation">.</span><span class="token identifier"><span class="token punctuation">`</span>goods<span class="token punctuation">`</span></span> <span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>price<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>stock<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>goods_type_id<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>remark<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>version<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> <span class="token string">'3'</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">,</span> <span class="token string">'3'</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">commit</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>事务二</p> 
+<pre><code class="prism language-sql"><span class="token keyword">start</span> <span class="token keyword">TRANSACTION</span><span class="token punctuation">;</span>
+<span class="token keyword">SELECT</span> <span class="token operator">*</span> <span class="token keyword">from</span> goods<span class="token punctuation">;</span>
+<span class="token keyword">UPDATE</span> <span class="token identifier"><span class="token punctuation">`</span>xiaomi<span class="token punctuation">`</span></span><span class="token punctuation">.</span><span class="token identifier"><span class="token punctuation">`</span>goods<span class="token punctuation">`</span></span> <span class="token keyword">SET</span> <span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token string">'4'</span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>price<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token number">4</span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>stock<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token number">4</span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>goods_type_id<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token number">4</span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>remark<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token string">'4'</span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>version<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token number">1</span> <span class="token keyword">WHERE</span> <span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token number">3</span><span class="token punctuation">;</span>
+<span class="token keyword">commit</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>先后开启事务一、事务二，事务二查所有数据，查到只有id =1 的数据，并且生成 Readview，然后事务一插入id = 3的数据并且commit，事务二预判了你的预判，更新id = 3 的数据，然后再次查数据可以查到 id = 3 的数据了。</p> 
+<p>此时的版本控制链为：根据 Readview 可见性算法，不难计算出结论，id=3 的数据此时事务二也是可以查到的</p> 
+<p><img src="https://images2.imgbox.com/15/6e/chkhnWqB_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="mysqlmysql_147"></a>探究完了幻读，顺便提一嘴mysql中的锁机制，mysql中的锁有很多大体如下：</h2> 
+<p><strong>innodb使用的锁类型：</strong></p> 
+<ul><li><strong>意向锁是一把表级锁</strong></li><li><strong>意向排他锁</strong>：IX 
+  <ol><li><strong>作用</strong>：获取X锁之前先尝试获取IX锁，获取成功才能获取X锁</li></ol> </li><li><strong>意向共享锁</strong>：IS 
+  <ol><li><strong>作用</strong>：获取X锁之前先尝试获取IS锁或者更强的锁，获取成功才能获取S锁</li></ol> </li></ul> 
+<p><img src="https://images2.imgbox.com/2f/ca/gmm9uvYb_o.png" alt="在这里插入图片描述"></p> 
+<ul><li> <p><strong>读锁</strong>（S）：lock in share mode</p> 
+  <ol><li>代码：select * from user where id = 1 lock in share mode;</li><li>解释：锁定id = 1的这一行数据，在锁释放之前，别人不能修改id = 1 的这行数据，但是能读取这行数据</li></ol> </li><li> <p><strong>写锁</strong>（X）：for update （根据使用场景可以细分如下）</p> 
+  <ol><li><strong>记录锁（record lock）</strong>：select * from user where id = 1 for update；锁定id = 1这行数据，阻止别人修改、删除更新此数据行。效果相当于给行上了一把锁，因此有人称之为行锁！！！！！</li></ol> 
+  <ul><li> 
+    <ul><li><font color="red">误区：网上老有人说什么mysql有行锁，有个鸡儿行锁，还有说mysql索引是b树，b个鸡儿的树，明明是b树的改造版，mysql只是遵从规范那样定义的！还是看官网靠谱啊。官网定义如下</font><br> <img src="https://images2.imgbox.com/8b/eb/fiRCgKa8_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/93/eb/QpQaKi1z_o.png" alt="在这里插入图片描述"></li></ul> </li></ul> 
+  <ol start="2"><li><strong>间隙锁（GAP）</strong>：锁定数据之间的间隙（针对于查询加了非唯一索引的列for update，间隙锁锁住范围下文详解）<br> <img src="https://images2.imgbox.com/8e/ff/Ncf6LRky_o.png" alt="在这里插入图片描述"></li><li><font color="red"><strong>next-key lock</strong>: 记录锁(相当于行锁)+间隙锁的组合</font><br> <img src="https://images2.imgbox.com/2d/90/axFy2CWS_o.png" alt="在这里插入图片描述"></li><li><strong>插入意图锁（Insert Intention Locks）</strong></li></ol> 
+  <ul><li> 
+    <ul><li><strong>本质</strong>：插入数据行位置的一把间隙锁</li></ul> </li><li> 
+    <ul><li><font color="red"><strong>insert语句执行原理分析：获取插入数据行安放位置的Insert Intention Locks，接着设置插入数据行的X锁</strong></font></li></ul> </li></ul> </li></ul> 
+<blockquote> 
+ <p>官网的原话，我用浏览器翻译了一遍。<a href="https://dev.mysql.com/doc/refman/8.0/en/innodb-locking.html" rel="nofollow">出处链接</a><img src="https://images2.imgbox.com/b0/36/CNUHz4ib_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<blockquote> 
+ <p>select * from user where id = 1；快照读可以读取任何加了锁的数据</p> 
+</blockquote> 
+<p>延伸出来的锁称呼</p> 
+<ul><li><strong>乐观锁</strong>：查询使用普通sql、更新加版本号条件判断是否能更新（表层面实现控制并发，可以理解为轻量级锁）</li><li><strong>表锁</strong>：锁定整个表的数据（针对于未加索引的列for update，此时锁住整个表）</li><li><strong>悲观锁</strong>：在sql层面，查询使用for update（sql层面限制，可以理解为一把重量级锁）</li><li><strong>行锁</strong>：X,REC_NOT_GAP，本质是记录锁</li></ul> 
+<p>读锁演示：<br> <img src="https://images2.imgbox.com/80/cf/Z9J2VNM7_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>行锁演示</strong>：<br> <img src="https://images2.imgbox.com/bc/d7/okyQUUpy_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>间隙锁演示</strong><br> <strong>数据表user</strong>：id：主键、name：普通索引、age：未加索引的普通字段<br> <img src="https://images2.imgbox.com/28/f4/AAl5vbnE_o.png" alt="在这里插入图片描述"></p> 
+<p>开启<strong>事务一执行如下sql</strong>：<br> <img src="https://images2.imgbox.com/e9/94/WfPVaRpB_o.png" alt="在这里插入图片描述"></p> 
+<p>开启<strong>事务二执行如下sql</strong>：<br> <img src="https://images2.imgbox.com/e4/b5/QxPN4Uwb_o.png" alt="在这里插入图片描述"></p> 
+<p>我们发现了一个很有意思的现象，就是<font color="red"><strong>name在[c,g)的数据都被锁住了插入不进去了</strong></font>，这就是避免发生幻读的本质啊，要充分理解为什么mysql这么设计，必须要有对索引有一定的了解才行，不了解mysql索引的读者可以看这篇文章<a href="https://blog.csdn.net/qq_42875345/article/details/114961640">精通mysql索引</a>，我这里还是多补充几个概念吧：</p> 
+<ul><li><strong>当前读</strong>：读加锁，delete、update、insert都属于当前读～</li><li><strong>快照读</strong>：读不加锁，普通的select操作</li></ul> 
+<p>我用<a href="https://www.cs.usfca.edu/~galles/visualization/BPlusTree.html" rel="nofollow">b+树生成工具</a>依据name索引构建了如下一颗b+树（b+树实际上不是这样的，mysql的b+树叶子节点是双向链表，这也是一个坑！）<br> <img src="https://images2.imgbox.com/31/e3/WGFGXH6F_o.png" alt="在这里插入图片描述"></p> 
+<p>首先我们要知道b+树的一大特性就是排好序的，那么<font color="red"><strong>无论我们插入多少条name = "e"的数据，这个辅助索引上的e的区间永远介于c到g之间</strong></font><br> <img src="https://images2.imgbox.com/20/3e/VuDoPz7h_o.jpg" alt="在这里插入图片描述"></p> 
+<ul><li><strong>幻读和锁住[c,g)区间的元素有什么关系？</strong> 
+  <ol><li>select * from user where name = “e” for update;</li><li>当有多条name = "e"的数据存在的时候，这多条数据必然是存在 c于g之间的，你说为啥锁住这些地方呢？还不是为了防止幻读吗！让你插都插不进去</li></ol> </li><li><strong>为什么锁住的区间是[c,g)而不是(c,g)、(c,g]、[c,g]呢？</strong> 
+  <ol><li>其实这个和我们创建的索引有关，mysql创建索引默认是ASC（升序）</li><li>证明：下文详解</li></ol> </li><li><strong>很大程度上避免发生幻读是利用了什么类型的锁？</strong> 
+  <ol><li>锁了间隙又锁住了行，依靠next-key lock极大程度上避免了幻读的发生</li></ol> </li></ul> 
+<blockquote> 
+ <p>摘抄官网的原话：幻读的避免依靠next-key lock实现的<br> <img src="https://images2.imgbox.com/3c/7d/SsswzZ4n_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<h3><a id="_228"></a>间隙锁区间详解</h3> 
+<p>我现在喜欢把知识学透学精，知其然知其所以然感觉更有味道！夺命call来袭</p> 
+<ul><li><strong>间隙锁是加在谁身上？</strong> 
+  <ol><li>查看锁信息（mysql8）：select * from performance_schema.data_locks;</li><li>执行select name,age from user where name = “e” for update;加锁情况如下</li><li>g加上GAP、X组合锁，e数据对应的主键id被加上了X、X,REC_NOT_GAP锁、e被加上X锁、整个表加上IX锁<br> <img src="https://images2.imgbox.com/c6/02/DGlcXDZp_o.png" alt="在这里插入图片描述"></li></ol> </li></ul> 
+<p><font color="red555">现阶段的我还不能完全理解LOCK_MODE中的组合锁是啥意思，贴一段我阅读官方文档以及实操的心得吧</font></p> 
+<ul><li><strong>X</strong>：锁行，可以理解为行锁</li><li><strong>X,REC_NOT_GAP</strong>：锁行不包括间隙，可以理解为作用与主键的行锁</li><li><strong>X,GAP</strong>：锁行以及间隙 、可以理解为next-key lock</li><li><strong>X,GAP对应的（‘g’, 187）</strong>：说明g之前存在间隙锁、行锁，g只是一个上限值</li></ul> 
+<blockquote> 
+ <p><img src="https://images2.imgbox.com/cc/77/SlUH8LMI_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<ul><li><strong>什么时候加间隙锁？什么时候加行锁？什么时候加表锁？</strong> 
+  <ol><li>当前读使用的是普通索引查询，那么加间隙锁</li><li>当前读使用的是主键索引、唯一索引查询，那么加行锁</li><li>当前读使用压根就没有索引的字段查询，锁表</li></ol> </li><li><strong>为什么主键加的是X,REC_NOT_GAP锁？</strong> 
+  <ol><li>主键索引具有唯一性，你总不能插入俩条主键相同的数据入库吧，主键查询压根就不会出现幻读的问题产生好吧。</li><li><font color="red">加行锁是为了别的事务修改此条数据，造成同一事务俩次<font color="red555">当前读</font>，读取到同一条数据内容不一致的情况出现。</font></li><li>X,REC_NOT_GAP：个人觉着可以理解为就是行锁</li></ol> </li><li><strong>为什么整个表加一把意向排他锁（IX）？</strong> 
+  <ol><li>加意向排他锁（IX）的目的在于解决行锁与表锁的冲突问题的</li><li>当事务一向一个表中的某一行数据加上一把行锁，事务二想往该表加一个表锁，那么此时表锁是加入不进去的。事务二在进行加表锁之前会先判断表是否有IX锁，如果有那么表示此表有数据已经上了行锁，需要等待行锁释放，表锁才能添加成功。IX的好处就是不用在逐行的去扫描到底表中是否有添加了行锁的记录。</li></ol> </li></ul> 
+<p>是不是现在满脑子问号呢？你们最最最最想知道的幻读是怎么解决的来来了😬，为什么锁住的区间是[c,g)呢？开始步入正题。<font color="red"><strong>我们要防止c、g之间插入e，很简单把c到e之间的间隙锁住、以及把中间的e数据加一把记录锁就好了。</strong></font><font color="red555"><strong>现在的问题就是能插入g，而不能插入c？</strong></font></p> 
+<ul><li><strong>原因很简单</strong>：建索引的时候默认是ASC(升序排序)的，如果可以插入c数据，那么必然插入的c数据位置介于c - g之间，插入成功我们把c数据改成e，那么c - g这个区间不就是有俩条e数据了吗。而插入g，插入的位置在c - g这个范围之外</li><li><strong>那么还有人要问了：我插入g，接着修改g为e不行吗？</strong> 
+  <ol><li>小伙汁你很优秀啊very good这个问题，而这又涉及到update一条语句的加锁过程了</li></ol> </li><li><strong>update操作加锁过程？</strong> 
+  <ol><li>如果修改前后此行数据前后存储空间发生了改变，那么会先添加X锁给记录，接着删除记录，然后insert新记录，这个记录还不是要insert？insert到哪？还不是添加到c - g这个间隙嘛！所以说update g改成e压根就不会执行成功，这些间隙都被锁住了，压根insert不进去呀</li></ol> </li></ul> 
+<p><img src="https://images2.imgbox.com/f5/01/cly8P7uv_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/ae/8b/qpz961s7_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>如果建立索引是DESC那么锁住的间隙，用区间表示就是(c,g]。</strong></p> 
+<p>InnoDB中由不同SQL语句设置的锁：<br> <a href="https://dev.mysql.com/doc/refman/8.0/en/innodb-locks-set.html" rel="nofollow">https://dev.mysql.com/doc/refman/8.0/en/innodb-locks-set.html</a></p> 
+<p>mysql幻读官方解释：<br> <a href="https://dev.mysql.com/doc/refman/8.0/en/innodb-next-key-locking.html" rel="nofollow">https://dev.mysql.com/doc/refman/8.0/en/innodb-next-key-locking.html</a></p> 
+<p>mysql锁官方解释：<br> <a href="https://dev.mysql.com/doc/refman/8.0/en/innodb-locking.html" rel="nofollow">https://dev.mysql.com/doc/refman/8.0/en/innodb-locking.html</a></p> 
+<p>mysql data_lock表官方解释：<br> <a href="https://dev.mysql.com/doc/refman/8.0/en/performance-schema-data-locks-table.html" rel="nofollow">https://dev.mysql.com/doc/refman/8.0/en/performance-schema-data-locks-table.html</a></p> 
+<h3><a id="_287"></a>思考</h3> 
+<p>什么情况下，可重复度隔离级别会发生幻读呢？后续更新～～～～～</p> 
+<h3><a id="font_colorredfont_291"></a><font color="red"><strong>面试专栏</strong></font></h3> 
+<blockquote> 
+ <p>可重复读与读已提交本质区别是什么？</p> 
+</blockquote> 
+<p>可重复读只会在事务开启后的第一次 select 的时候生成 readview ，而 读已提交在事务开启后的每次 select 都会生成最新的一个 readview ，同时由于遵循 readview 可见性算法，未提交的数据 ，在读已提交隔离级别下是读取不到的。</p> 
+<blockquote> 
+ <p>隔离级别的作用？（对四大隔离级别作用一一阐述一下就好了）</p> 
+</blockquote> 
+<p>为了防止幻读、脏读、不可重复读的这些情况的发生，因此产生了隔离级别其中</p> 
+<ul><li>读未提交：啥都没解决</li><li>读已提交：只能读取另一个事务已提交的数据，杜绝了脏读</li><li>可重复读：极大的避免了幻读、杜绝了脏读、不可重复读</li><li>串行化：解决了幻读、脏读、不可重复读</li></ul> 
+<blockquote> 
+ <p>----------其他关于事务的面试问题，欢迎大家留言--------</p> 
+</blockquote> 
+<h3><a id="_307"></a>小咸鱼的技术窝</h3> 
+<p>关注不迷路，日后分享更多技术干货，B站、CSDN、微信公众号同名，名称都是（小咸鱼的技术窝）更多详情在主页<br> <img src="https://images2.imgbox.com/65/7e/TDqfnBml_o.jpg" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/fe1f6f8c27365a51980c70eee14943a1/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Laya 在控制面板暴露属性汇总</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/1c87458e5a72af143d00798cd4ad7957/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">aliyun MQTT ：纯透传配置</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

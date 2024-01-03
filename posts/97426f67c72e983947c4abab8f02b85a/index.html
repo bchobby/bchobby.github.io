@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>C&#43;&#43;性能优化（十二）——自旋锁 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="C&#43;&#43;性能优化（十二）——自旋锁" />
+<meta property="og:description" content="一、互斥锁 1、互斥锁简介 互斥锁属于sleep-waiting类型锁。Linux Kernel 2.6.x稳定版开始，Linux的互斥锁都是futex (Fast Usermode Mutex)锁。
+Futex是一个在Linux上实现锁定和构建高级抽象锁如信号量和POSIX互斥的基本工具。
+Futex由Hubertus Franke（IBM Thomas J. Watson 研究中心），Matthew Kirkwood，Ingo Molnar（Red Hat）和 Rusty Russell（IBM Linux 技术中心）等人创建。
+Futex是由用户空间的一个对齐的整型变量和附在其上的内核空间等待队列构成。多进程或多线程绝大多数情况下对位于用户空间的futex的整型变量进行操作(汇编语言调用CPU提供的原子操作指令来增加或减少)，而其它情况下则需要通过代价较大的系统调用来对位于内核空间的等待队列进行操作(如唤醒等待的进程/线程或将当前进程/线程放入等待队列)。除了多个线程同时竞争锁的少数情况外，基于futex的lock操作是不需要进行代价昂贵的系统调用操作的。
+Futex核心思想是通过将大多数情况下非同时竞争lock的操作放到在用户空间执行，而不是代价昂贵的内核系统调用方式来执行，从而提高了效率。
+互斥锁禁止多个线程同时进入受保护的代码临界区（critical section）。在任意时刻，只有一个线程被允许进入代码保护区。互斥锁实际上是count=1情况下的semaphore。
+2、互斥锁特点 互斥锁缺点：
+（1）等待互斥锁会消耗时间，等待延迟会损害系统的可伸缩性。
+（2）优先级倒置。低优先级的线程可以获得互斥锁，因此会阻碍需要同一互斥锁的高优先级线程。
+（3）锁护送（lock convoying）。如果持有互斥锁的线程分配的时间片结束，线程被取消调度，则等待同一互斥锁的其它线程需要等待更长时间。
+3、互斥锁API #include &lt;pthread.h&gt; int pthread_mutex_destroy(pthread_mutex_t *mutex); int pthread_mutex_init(pthread_mutex_t *restrict mutex, const pthread_mutexattr_t *restrict attr); pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER; int pthread_mutex_lock(pthread_mutex_t *mutex); int pthread_mutex_trylock(pthread_mutex_t *mutex); int pthread_mutex_unlock(pthread_mutex_t *mutex); int pthread_mutex_timedlock(pthread_mutex_t *restrict mutex, const struct timespec *restrict abs_timeout); 二、自旋锁 1、自旋锁简介 自旋锁（spin lock）属于busy-waiting类型锁。在多处理器环境中，自旋锁最多只能被一个可执行线程持有。如果一个可执行线程试图获得一个被其它线程持有的自旋锁，那么线程就会一直进行忙等待，自旋（空转），等待自旋锁重新可用。如果自旋锁未被争用，请求锁的执行线程便立刻得到自旋锁，继续执行。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/97426f67c72e983947c4abab8f02b85a/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-02-21T10:38:19+08:00" />
+<meta property="article:modified_time" content="2022-02-21T10:38:19+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">C&#43;&#43;性能优化（十二）——自旋锁</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2 style="text-align:justify;"><strong><strong><strong>一、互斥锁</strong></strong></strong></h2> 
+<h4 style="text-align:justify;"><strong><strong><strong>1、互斥锁简介</strong></strong></strong></h4> 
+<p style="margin-left:.0001pt;text-align:justify;">互斥锁属于sleep-waiting类型锁。Linux Kernel 2.6.x稳定版开始，Linux的互斥锁都是futex (Fast Usermode Mutex)锁。<br> Futex是一个在Linux上实现锁定和构建高级抽象锁如信号量和POSIX互斥的基本工具。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">Futex由Hubertus Franke（IBM Thomas J. Watson 研究中心），Matthew Kirkwood，Ingo Molnar（Red Hat）和 Rusty Russell（IBM Linux 技术中心）等人创建。<br> Futex是由用户空间的一个对齐的整型变量和附在其上的内核空间等待队列构成。多进程或多线程绝大多数情况下对位于用户空间的futex的整型变量进行操作(汇编语言调用CPU提供的原子操作指令来增加或减少)，而其它情况下则需要通过代价较大的系统调用来对位于内核空间的等待队列进行操作(如唤醒等待的进程/线程或将当前进程/线程放入等待队列)。除了多个线程同时竞争锁的少数情况外，基于futex的lock操作是不需要进行代价昂贵的系统调用操作的。<br> Futex核心思想是通过将大多数情况下非同时竞争lock的操作放到在用户空间执行，而不是代价昂贵的内核系统调用方式来执行，从而提高了效率。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">互斥锁禁止多个线程同时进入受保护的代码临界区（critical section）。在任意时刻，只有一个线程被允许进入代码保护区。互斥锁实际上是count=1情况下的semaphore。</p> 
+<h4 style="text-align:justify;"><strong><strong><strong>2、互斥锁特点</strong></strong></strong></h4> 
+<p style="margin-left:.0001pt;text-align:justify;">互斥锁缺点：</p> 
+<p style="margin-left:.0001pt;text-align:justify;">（1）等待互斥锁会消耗时间，等待延迟会损害系统的可伸缩性。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">（2）优先级倒置。低优先级的线程可以获得互斥锁，因此会阻碍需要同一互斥锁的高优先级线程。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">（3）锁护送（lock convoying）。如果持有互斥锁的线程分配的时间片结束，线程被取消调度，则等待同一互斥锁的其它线程需要等待更长时间。</p> 
+<h4 style="text-align:justify;"><strong><strong><strong>3、互斥锁API</strong></strong></strong></h4> 
+<pre><code class="language-cpp">#include &lt;pthread.h&gt;
+
+int pthread_mutex_destroy(pthread_mutex_t *mutex);
+int pthread_mutex_init(pthread_mutex_t *restrict mutex, const pthread_mutexattr_t *restrict attr);
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
+int pthread_mutex_lock(pthread_mutex_t *mutex);
+int pthread_mutex_trylock(pthread_mutex_t *mutex);
+int pthread_mutex_unlock(pthread_mutex_t *mutex);
+int pthread_mutex_timedlock(pthread_mutex_t *restrict mutex, const struct timespec *restrict abs_timeout);</code></pre> 
+<h3 style="text-align:justify;"><strong><strong><strong>二、自旋锁</strong></strong></strong></h3> 
+<h4 style="text-align:justify;"><strong><strong><strong>1、自旋锁简介</strong></strong></strong></h4> 
+<p style="margin-left:.0001pt;text-align:justify;">自旋锁（spin lock）属于busy-waiting类型锁。在多处理器环境中，自旋锁最多只能被一个可执行线程持有。如果一个可执行线程试图获得一个被其它线程持有的自旋锁，那么线程就会一直进行忙等待，自旋（空转），等待自旋锁重新可用。如果自旋锁未被争用，请求锁的执行线程便立刻得到自旋锁，继续执行。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">多处理器操作系统中某些资源是有限的，不同线程需要互斥访问，因此需要引入锁概念，只有获取锁的线程才能够对资源进行访问。多线程的核心是CPU的时间分片，同一时刻只能有一个线程获取到锁。对于没有获取到锁的线程通常有两种处理方式：自旋锁，没有获取到锁的线程会一直循环等待判断资源是否已经释放锁，不用将线程阻塞起来；互斥锁，把未获取到锁的线程阻塞起来，等待重新调度请求。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">自旋锁（spin lock）是指当一个线程在获取锁的时候，如果锁已经被其它线程获取，那么线程将循环等待，然后不断的判断锁是否能够被成功获取，直到获取到锁才会退出循环。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">获取锁的线程一直处于活跃状态，但并没有执行任何有效的任务，使用自旋锁会造成busy-waiting。</p> 
+<h4 style="text-align:justify;"><strong><strong><strong>2、自旋锁的特点</strong></strong></strong></h4> 
+<p style="margin-left:.0001pt;text-align:justify;">自旋锁不会使线程状态发生切换，一直处于用户态，即线程一直都是active的；不会使线程进入阻塞状态，减少了不必要的上下文切换，执行速度快</p> 
+<p style="margin-left:.0001pt;text-align:justify;">非自旋锁在获取不到锁的时候会进入阻塞状态，从而进入内核态，当获取到锁时需要从内核态恢复，导致线程在用户态与内核态之间来回切换，严重影响锁的性能。</p> 
+<h4 style="text-align:justify;"><strong><strong><strong>3、自旋锁原理</strong></strong></strong></h4> 
+<p style="margin-left:.0001pt;text-align:justify;">自旋锁的原理比较简单，如果持有锁的线程能在短时间内释放锁资源，那么等待竞争锁的线程就不需要做内核态和用户态之间的切换进入阻塞状态，只需要等一等(自旋)，等到持有锁的线程释放锁后即可获取，避免用户进程和内核切换的消耗。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">自旋锁避免了操作系统进程调度和线程切换，通常适用在时间极短的情况，因此操作系统的内核经常使用自旋锁。但如果长时间上锁，自旋锁会非常耗费性能。线程持有锁时间越长，则持有锁的线程被 OS调度程序中断的风险越大。如果发生中断情况，那么其它线程将保持旋转状态(反复尝试获取锁)，而持有锁的线程并不打算释放锁，导致结果是无限期推迟，直到持有锁的线程可以完成并释放它为止。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">自旋锁的目的是占着CPU资源不进行释放，等到获取锁立即进行处理。如果自旋执行时间太长，会有大量的线程处于自旋状态占用CPU资源，进而会影响整体系统的性能，因此可以给自旋锁设定一个自旋时间，等时间一到立即释放自旋锁。</p> 
+<h4 style="text-align:justify;"><strong><strong><strong>4、自旋锁API</strong></strong></strong></h4> 
+<pre><code class="language-cpp">#include &lt;pthread.h&gt;
+
+int pthread_spin_destroy(pthread_spinlock_t *lock);
+int pthread_spin_init(pthread_spinlock_t *lock, int pshared);
+
+int pthread_spin_lock(pthread_spinlock_t *lock);
+int pthread_spin_trylock(pthread_spinlock_t *lock);
+int pthread_spin_unlock(pthread_spinlock_t *lock);</code></pre> 
+<h4 style="text-align:justify;"><strong><strong><strong>5、自旋锁与互斥锁</strong></strong></strong></h4> 
+<p style="margin-left:.0001pt;text-align:justify;">spinlock不会使线程状态发生切换，mutex在获取不到锁的时候会选择sleep。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">spinlock优点：没有耗时的系统调用，一直处于用户态，执行速度快。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">spinlock缺点：一直占用CPU，而且在执行过程中还会锁bus总线，锁总线时其它处理器不能使用总线。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">mutex获取锁分为两阶段，第一阶段在用户态采用spinlock锁总线的方式获取一次锁，如果成功立即返回；否则进入第二阶段，调用系统的futex锁去sleep，当锁可用后被唤醒，继续竞争锁。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">mutex优点：不会忙等，得不到锁会sleep。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">mutex缺点：sleep时会陷入到内核态，需要昂贵的系统调用。</p> 
+<h3 style="text-align:justify;"><strong><strong><strong>三、</strong></strong><strong><strong>自旋锁实现</strong></strong></strong></h3> 
+<h4 style="text-align:justify;"><strong><strong><strong>1、</strong></strong><strong><strong>raw_spinlock</strong></strong></strong></h4> 
+<p style="margin-left:.0001pt;text-align:justify;">当某个处理器上的内核执行线程申请自旋锁时，如果锁可用，则获得锁，然后执行临界区操作，最后释放锁；如果锁已被占用，线程并不会转入睡眠状态，而是忙等待该锁，一旦锁被释放，则第一个感知此信息的线程将获得锁。</p> 
+<pre><code class="language-cpp">typedef struct {
+    unsigned int slock;
+} raw_spinlock_t;</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;">传统自旋锁本质是用一个整数来表示，值为1代表锁未被占用，为0或者为负数表示被占用。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在单处理机环境中可以使用特定的原子级汇编指令swap和test_and_set实现进程互斥，但由于中断只能发生在两条机器指令之间，而同一指令内的多个指令周期不可中断，从而保证swap指令或test_and_set指令的执行不会交叉进行。<br> 多处理器环境中利用test_and_set指令实现进程互斥，硬件需要提供进一步的支持，以保证test_and_set指令执行的原子性，目前多以锁总线形式提供，由于test_and_set指令对内存的两次操作都需要经过总线，在执行test_and_set指令前锁住总线，在执行test_and_set指令后释放总线，即可保证test_and_set指令执行的原子性。</p> 
+<pre><code class="language-cpp">static inline void __raw_spin_lock(raw_spinlock_t *lock)
+{
+    __asm__ __volatile__(
+        __raw_spin_lock_string
+        :"=m" (lock-&gt;slock) : : "memory");
+}
+
+static inline void __raw_spin_unlock(raw_spinlock_t *lock)
+{
+    __asm__ __volatile__(
+        __raw_spin_unlock_string
+    );
+}</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;">由于传统自旋锁无序竞争的本质特点，内核执行线程无法保证何时可以取到锁，某些执行线程可能需要等待很长时间，导致锁竞争不公平。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">（1）随着处理器个数增加，自旋锁竞争也在加剧，自然导致更长等待时间。释放自旋锁时的重置操作将无效化所有其它正在忙等待的处理器的缓存，那么在处理器拓扑结构中临近自旋锁拥有者的处理器可能会更快地刷新缓存，因而增大获得自旋锁的机率。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">（2）由于每个申请自旋锁的处理器均在全局变量slock上忙等待，系统总线将因为处理器间的缓存同步而导致繁重的流量，从而降低了系统整体性能。</p> 
+<h4 style="text-align:justify;"><strong><strong><strong>2、</strong></strong><strong><strong>ticket spinlock</strong></strong></strong></h4> 
+<p style="margin-left:.0001pt;text-align:justify;">Linux Kernel 2.6.25版本中引入了排队自旋锁，通过保存执行线程申请锁的顺序信息来解决不公平问题。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">排队自旋锁仍然使用raw_spinlock_t 数据结构，但是赋予slock字段新含义。为了保存顺序信息，slock字段被分成两部分Owner和Next，分别保存锁持有者和未来锁申请者的票据序号(Ticket Number)，只有Owner和Next相等时，才表明锁处于未使用状态。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">排队自旋锁初始化时slock被置为0，即Owner和Next置为0。Linux内核执行线程申请自旋锁时，原子地将Next加1，并将原值返回作为自己的票据序号。如果返回的票据序号等于申请时Owner值，说明自旋锁处于未使用状态，则直接获得锁；否则，线程忙等待检查Owner是否等于自己持有的票据序号，一旦相等，则表明锁轮到自己获取。线程释放锁时，原子地将Owner加1即可，下一个线程将会发现这一变化，从忙等待状态中退出。线程将严格地按照申请顺序依次获取排队自旋锁，从而完全解决了不公平问题。</p> 
+<pre><code class="language-cpp">typedef struct arch_spinlock {
+    union {
+        __ticketpair_t head_tail;
+        struct __raw_tickets {
+            __ticket_t head, tail;
+        } tickets;
+    };
+} arch_spinlock_t;</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;">申请自旋锁时，原子地将tail加1，释放时，head加1。只有head域和tail域的值相等时，才表明锁处于未使用的状态。</p> 
+<pre><code class="language-cpp">static inline void __raw_spin_lock(raw_spinlock_t *lock)
+{
+
+    asm volatile("\n1:\t"
+             LOCK_PREFIX " ; decb %0\n\t"
+             "jns 3f\n"
+             "2:\t"
+             "rep;nop\n\t"
+             "cmpb $0,%0\n\t"
+             "jle 2b\n\t"
+             "jmp 1b\n"
+             "3:\n\t"
+             : "+m" (lock-&gt;slock) : : "memory");
+}
+
+static inline void __raw_spin_unlock(raw_spinlock_t *lock)
+{
+    asm volatile("movb $1,%0" : "+m" (lock-&gt;slock) :: "memory");
+}</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;">在大规模多处理器系统和NUM系统中，排队自旋锁（包括传统自旋锁）存在一个比较严重的性能问题：由于执行线程均在同一个共享变量slock上自旋，申请和释放锁的时候必须对slock进行修改，将导致所有参与排队自旋锁操作的处理器的缓存变得无效。如果排队自旋锁竞争比较激烈的话，频繁的缓存同步操作会导致繁重的系统总线和内存的流量，从而大大降低了系统整体的性能。</p> 
+<h4 style="text-align:justify;"><strong><strong><strong>3、mcs spinlock</strong></strong></strong></h4> 
+<p style="margin-left:.0001pt;text-align:justify;">每个锁的申请者（处理器）只在一个本地变量上自旋。MCS Spinlock是一种基于链表结构的自旋锁。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">MCS Spinlock的设计目标如下：<br> （1）保证自旋锁申请者以先进先出的顺序获取锁（FIFO）<br> （2）只在本地可访问的标志变量上自旋。<br> （3）在处理器个数较少的系统中或锁竞争并不激烈的情况下，保持较高性能。<br> （4）自旋锁的空间复杂度（即锁数据结构和锁操作所需的空间开销）为常数。<br> （5）在没有处理器缓存一致性协议保证的系统中也能很好地工作。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">MCS Spinlock采用链表结构将全体锁申请者的信息串成一个单向链表。每个锁申请者必须提前分配一个本地mcs_lock_node，其中至少包括2个字段：本地自旋变量waiting和指向下一个申请者 mcs_lock_node结构的指针变量next。waiting初始值为1，申请者自旋等待其直接前驱释放锁；为0时结束自旋。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">自旋锁数据结构mcs_lock是一个永远指向最后一个申请者 mcs_lock_node的指针，当且仅当锁处于未使用（无任何申请者）状态时为NULL值。MCS Spinlock依赖原子的swap和CAS（compare_and_swap）操作，如果缺乏CAS支持，MCS Spinlock 就不能保证以先进先出的顺序获取锁。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">每个锁有NR_CPUS个元素node数组，mcs_lock_node结构可以在处理器所处节点的内存中分配，从而加快访问速度。</p> 
+<pre><code class="language-cpp">typedef struct _mcs_lock_node {
+    volatile int waiting;
+    struct _mcs_lock_node *volatile next;
+} ____cacheline_aligned_in_smp mcs_lock_node;
+
+typedef mcs_lock_node *volatile mcs_lock;
+
+typedef struct {
+    mcs_lock slock;
+    mcs_lock_node nodes[NR_CPUS];
+} raw_spinlock_t;
+
+static __always_inline void __raw_spin_lock(raw_spinlock_t *lock)
+{
+    int cpu;
+    mcs_lock_node *me;
+    mcs_lock_node *tmp;
+    mcs_lock_node *pre;
+
+    cpu = raw_smp_processor_id();                                 
+    me = &amp;(lock-&gt;nodes[cpu]);
+    tmp = me;
+    me-&gt;next = NULL;
+
+    pre = xchg(&amp;lock-&gt;slock, tmp);                              
+    if (pre == NULL) {
+        /* mcs_lock is free */
+        return;                                                
+    }
+
+    me-&gt;waiting = 1;                                               
+    smp_wmb();                                                      
+    pre-&gt;next = me;                                                
+
+    while (me-&gt;waiting) {                                            
+        asm volatile ("pause");
+    }   
+}
+
+static __always_inline int __raw_spin_trylock(raw_spinlock_t *lock)
+{
+    int cpu;
+    mcs_lock_node *me;
+
+    cpu = raw_smp_processor_id();
+    me = &amp;(lock-&gt;nodes[cpu]);
+    me-&gt;next = NULL;
+
+    if (cmpxchg(&amp;lock-&gt;slock, NULL, me) == NULL)            
+        return 1;
+    else
+        return 0;
+}
+
+static __always_inline void __raw_spin_unlock(raw_spinlock_t *lock)
+{
+    int cpu;
+    mcs_lock_node *me;
+    mcs_lock_node *tmp;
+
+    cpu = raw_smp_processor_id();
+    me = &amp;(lock-&gt;nodes[cpu]);
+    tmp = me;
+
+    if (me-&gt;next == NULL) {                                     
+        if (cmpxchg(&amp;lock-&gt;slock, tmp, NULL) == me) {   
+            /* mcs_lock I am the last. */
+            return;
+        }
+        while (me-&gt;next == NULL)                            
+            continue;
+    }
+    /* mcs_lock pass to next. */
+    me-&gt;next-&gt;waiting = 0;                                       
+}</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;">mcs spinlock 锁占用空间大。</p> 
+<h4 style="text-align:justify;"><strong><strong><strong>4、</strong></strong><strong><strong>qspinlock</strong></strong></strong></h4> 
+<p style="margin-left:.0001pt;text-align:justify;">qspinlock在Linux Kernel 4.2引入，基于mcs spinlock设计思想但解决了mcs spinlock接口不一致或空间太大的问题。<br> qspinlock数据结构体比mcs lock大大减小，与ticket spinlock大小相同。</p> 
+<pre><code class="language-cpp">struct __qspinlock {
+    union {
+        atomic_t val;
+#ifdef __LITTLE_ENDIAN
+        struct {
+            u8 locked;
+            u8 pending;
+        };
+        struct {
+            u16 locked_pending;
+            u16 tail;
+        };
+#else
+        struct {
+            u16 tail;
+            u16 locked_pending;
+        };
+        struct {
+            u8 reserved[2];
+            u8 pending;
+            u8 locked;
+        };
+#endif
+};
+
+
+static __always_inline void queued_spin_lock(struct qspinlock *lock)
+{
+        u32 val;
+        val = atomic_cmpxchg_acquire(&amp;lock-&gt;val, 0, _Q_LOCKED_VAL);
+        if (likely(val == 0))
+                return;
+        queued_spin_lock_slowpath(lock, val);
+}</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;">qspinlock采用mcs lock机制， 每一个CPU都定义有一个struct mcs spinlock数据结构，在大规模多处理器系统和NUM架构中， 使用qspinlock可以较好的提高锁的性能。</p> 
+<h4 style="text-align:justify;"><strong><strong><strong>5、性能比较</strong></strong></strong></h4> 
+<p style="margin-left:.0001pt;text-align:justify;"> 写一个spinlock的性能测试驱动，在等待相同时间后比较spinlock 临界区域的值, 从而比较各个锁的性能差异。</p> 
+<pre><code class="language-cpp">#include &lt;linux/init.h&gt;
+#include &lt;linux/module.h&gt;
+#include &lt;linux/kthread.h&gt;
+#include &lt;linux/sched.h&gt;
+#include &lt;linux/kernel/h&gt;
+#include &lt;linux/spinlock.h&gt;
+#include &lt;linux/random.h&gt;
+#include &lt;linux/slab.h&gt;
+#incude &lt;linux/timer.h&gt;
+#include &lt;linux/jiffies.h&gt;
+#include &lt;linux/atomic.h&gt;
+
+int spinlock_num;
+
+struct worker {
+    int burns;
+    struct task_struct *task;
+}
+
+static struct worker *workers;
+static int threads = 2;
+module_param(threads, int, 0);
+
+static spinlock_t lock;
+static int runtime = 10;
+module_param(runtime, int, 0);
+
+static int bench_running;
+static task_struct *monitor_task;
+static int rerun, done;
+module_param(rerun, int, S_IRUGO|S_ISUSR);
+module_param(done, int, S_IRUGO|S_ISUSR);
+
+static int work(void *data)
+{
+    struct worker *wk = (struct worker*)arg;
+    while(!kthread_should_stop()) {
+        cond_resched();
+
+        if (!ACCESS_ONCE(bench_running))
+            continue;
+        spin_lock(&amp;lock)
+        spinlock_num++;
+        spin_unlock(&amp;lock);
+    }
+    return 0;
+}
+
+static int monitor(void *unused)
+{
+    int i, c;
+    int total, min, max, avg;
+repeat:
+    total = 0, min = INT_MAX, max = 0, avg = 0;
+
+    spinlock_num = 0;
+    workers = (struct worker *)kzalloc(sizeof(struct worker) * threads, GFP_KERNEL);
+    for (i = 0; i &lt; threads; i++) {
+        c = i %num_online_cpus();
+        workers[i].task = kthread_create(work, &amp;workers, "locktest/%d:%d", c, i);
+        kthread_bind(workers[i].task, c);
+        wake_up_process(workers[i].task);
+    }
+    bench_running = 0;
+    for (i = 0; i &lt; threads; i++) {
+        if (workers[i].task)
+            kthread_stop(workers[i].task);
+    }
+    kfree(workers);
+    printk("lockresult:%6d %8d %12d\n", num_online_cpus(), threads, spinlock_num);
+    done = 1;
+    while(!kthread_should_stop()) {
+        schedule_timeout(1);
+        if (cmpxchg(&amp;rerun, done, 0)) {
+            done = 0;
+            goto repeat;
+        }
+    }
+    return 0;
+}
+
+static int locktest_init(void)
+{
+    monitor_task = kthread_run(monitor, NULL, "monitor");
+    return 0;
+}
+
+static void locktest_exit(void)
+{
+    kthread_stop(monitor_task);
+}
+
+module_init(locktest_init);
+module_exit(locktest_exit);
+MODULE_LICENSE("GPL");</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;">在CPU较少的情况下， qspinlock的性能和ticket spinlock的性能差不多， 在CPU较多的情况下，qspinlock的性能远好于ticket spinlock。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/84dec533c006cdb7c4ab059234f47b8f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">elementui日期选择器</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/61db9b20966376f6f1ac74b96efd3363/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">MacPro安装运行Win10虚拟机 (Parallels Desktop)</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

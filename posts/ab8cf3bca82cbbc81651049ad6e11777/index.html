@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>keras faster r-cnn源代码解析（四）——ROI - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="keras faster r-cnn源代码解析（四）——ROI" />
+<meta property="og:description" content="一、利用ROI训练分类器
+最后是ROI的生成了，在每个训练的epch循环中，核心代码如下：
+#输出：yield np.copy(x_img), [np.copy(y_rpn_cls), np.copy(y_rpn_regr)], img_data_aug #网络训练的输入是图片，和找到的最优的anchor，不是GTbox X, Y, img_data = next(data_gen_train) # loss_rpn = model_rpn.train_on_batch(X, Y)#Scalar training loss (if the model has a single output and no metrics) or list of scalars (if the model has multiple outputs and/or metrics). write_log(callback, [&#39;rpn_cls_loss&#39;, &#39;rpn_reg_loss&#39;], loss_rpn, train_step) P_rpn = model_rpn.predict_on_batch(X)#获取预测的Y值，即[np.copy(y_rpn_cls), np.copy(y_rpn_regr)] #筛选出ROI,ROI指的是在feature map中合法box中具有最大概率包含物体的box，删除重叠率较高的box之后剩下来的box(xxx,4) R = roi_helpers.rpn_to_roi(P_rpn[0], P_rpn[1], C, K.image_dim_ordering(), use_regr=True, overlap_thresh=0.7, max_boxes=300) # note: calc_iou converts from (x1,y1,x2,y2) to (x,y,w,h) format #img_data，图片的信息，R候选ROI #输出： #X2：#选取的iou大于0." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/ab8cf3bca82cbbc81651049ad6e11777/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-07-18T12:13:08+08:00" />
+<meta property="article:modified_time" content="2019-07-18T12:13:08+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">keras faster r-cnn源代码解析（四）——ROI</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>一、利用ROI训练分类器</p> 
+<p>最后是ROI的生成了，在每个训练的epch循环中，核心代码如下：</p> 
+<pre class="has"><code class="language-python"> #输出：yield np.copy(x_img), [np.copy(y_rpn_cls), np.copy(y_rpn_regr)], img_data_aug
+        #网络训练的输入是图片，和找到的最优的anchor，不是GTbox
+        X, Y, img_data = next(data_gen_train)
+        #
+        loss_rpn = model_rpn.train_on_batch(X, Y)#Scalar training loss (if the model has a single output and no metrics) or list of scalars (if the model has multiple outputs and/or metrics). 
+        write_log(callback, ['rpn_cls_loss', 'rpn_reg_loss'], loss_rpn, train_step)
+        P_rpn = model_rpn.predict_on_batch(X)#获取预测的Y值，即[np.copy(y_rpn_cls), np.copy(y_rpn_regr)]
+        #筛选出ROI,ROI指的是在feature map中合法box中具有最大概率包含物体的box，删除重叠率较高的box之后剩下来的box(xxx,4)
+        R = roi_helpers.rpn_to_roi(P_rpn[0], P_rpn[1], C, K.image_dim_ordering(), use_regr=True, overlap_thresh=0.7, max_boxes=300)
+        # note: calc_iou converts from (x1,y1,x2,y2) to (x,y,w,h) format
+        #img_data，图片的信息，R候选ROI
+        #输出：
+        #X2：#选取的iou大于0.7的roi,这里用X2是为了和上面的X相区别，
+        #Y1：对应的类别序号(1,xxx,21)，类别标签是one_hot
+        #Y2:[np.array(y_class_regr_label),np.array(y_class_regr_coords)]包含对应的类别的标签和回归参数，类别标签是one_hot的
+        #IoUs：用于调试的，没有用
+        X2, Y1, Y2, IouS = roi_helpers.calc_iou(R, img_data, C, class_mapping)
+
+        if X2 is None:
+            rpn_accuracy_rpn_monitor.append(0)
+            rpn_accuracy_for_epoch.append(0)
+            continue
+
+        # sampling positive/negative samples
+        neg_samples = np.where(Y1[0, :, -1] == 1)#背景，最后一项代表背景分类
+        pos_samples = np.where(Y1[0, :, -1] == 0)#非背景
+
+        if len(neg_samples) &gt; 0:
+            neg_samples = neg_samples[0]
+        else:
+            neg_samples = []
+
+        if len(pos_samples) &gt; 0:
+            pos_samples = pos_samples[0]
+        else:
+            pos_samples = []
+
+        rpn_accuracy_rpn_monitor.append(len(pos_samples))
+        rpn_accuracy_for_epoch.append((len(pos_samples)))
+
+        if C.num_rois &gt; 1:
+            if len(pos_samples) &lt; C.num_rois//2:#选取一些正例样本和一些反例样本，共300个，每类约150个
+                selected_pos_samples = pos_samples.tolist()
+            else:
+                selected_pos_samples = np.random.choice(pos_samples, C.num_rois//2, replace=False).tolist()
+            try:
+                selected_neg_samples = np.random.choice(neg_samples, C.num_rois - len(selected_pos_samples), replace=False).tolist()
+            except:
+                selected_neg_samples = np.random.choice(neg_samples, C.num_rois - len(selected_pos_samples), replace=True).tolist()
+
+            sel_samples = selected_pos_samples + selected_neg_samples
+        else:
+            # in the extreme case where num_rois = 1, we pick a random pos or neg sample
+            selected_pos_samples = pos_samples.tolist()
+            selected_neg_samples = neg_samples.tolist()
+            if np.random.randint(0, 2):
+                sel_samples = random.choice(neg_samples)
+            else:
+                sel_samples = random.choice(pos_samples)
+        #X用于生成share_layers,X2是挑选出来的roi
+        loss_class = model_classifier.train_on_batch([X, X2[:, sel_samples, :]], [Y1[:, sel_samples, :], Y2[:, sel_samples, :]])
+        write_log(callback, ['detection_cls_loss', 'detection_reg_loss', 'detection_acc'], loss_class, train_step)
+        train_step += 1</code></pre> 
+<p>这里面有两个关键方法，rpn_to_roi和calc_iou，下面分别注释。还可以参考<a href="http://geyao1995.com/Faster_rcnn%E4%BB%A3%E7%A0%81%E7%AC%94%E8%AE%B0_test_2_roi_helpers/" rel="nofollow">http://geyao1995.com/Faster_rcnn%E4%BB%A3%E7%A0%81%E7%AC%94%E8%AE%B0_test_2_roi_helpers/</a></p> 
+<p>二、rpn_to_roi</p> 
+<p>2.1 rpn_to_roi 代码及注释如下：</p> 
+<pre class="has"><code class="language-python">#输入：
+#rpn_layer:y_rpn_cls(1*37*37*18)前9个为valid后9个为overlap
+#regr_layer:y_rpn_regr(1*37*37*72)，前36个为overlap标记（实际上只有9个，是复制了4份），后36个为bestreg
+#输出：
+#result-&gt;boxes合法box中具有最大概率包含物体的box，删除重叠率较高的box(xxx,4)
+def rpn_to_roi(rpn_layer, regr_layer, C, dim_ordering, use_regr=True, max_boxes=300,overlap_thresh=0.9):
+
+    regr_layer = regr_layer / C.std_scaling#生成regr_layer的时候乘了一个std_scaling，这里除回去
+
+    anchor_sizes = C.anchor_box_scales# [128, 256, 512]
+    anchor_ratios = C.anchor_box_ratios#[[1, 1], [1, 2], [2, 1]]
+
+    assert rpn_layer.shape[0] == 1
+
+    if dim_ordering == 'th':
+        (rows,cols) = rpn_layer.shape[2:]
+
+    elif dim_ordering == 'tf':
+        (rows, cols) = rpn_layer.shape[1:3]
+
+    curr_layer = 0#当前的anchor标记
+    if dim_ordering == 'tf':
+        A = np.zeros((4, rpn_layer.shape[1], rpn_layer.shape[2], rpn_layer.shape[3]))#A(4,W,H,18)
+    elif dim_ordering == 'th':
+        A = np.zeros((4, rpn_layer.shape[2], rpn_layer.shape[3], rpn_layer.shape[1]))
+
+    for anchor_size in anchor_sizes:#[128,256,512]，以128为例
+        for anchor_ratio in anchor_ratios:#[1:1][1:2][2:1],以1:2为例
+
+            anchor_x = (anchor_size * anchor_ratio[0])/C.rpn_stride#anchor的x轴长度，在feture map图片上 (128*1)/16=8
+            anchor_y = (anchor_size * anchor_ratio[1])/C.rpn_stride#anchor的y轴长度，在feture map图片上 (128*2)/16=16
+            if dim_ordering == 'th':
+                regr = regr_layer[0, 4 * curr_layer:4 * curr_layer + 4, :, :]
+            else:
+                regr = regr_layer[0, :, :, 4 * curr_layer:4 * curr_layer + 4]#当前的回归参数，一共有72=36*2=9*4*2，reg=(W,H,4)
+                regr = np.transpose(regr, (2, 0, 1))#regr-&gt;(W,H,4)-&gt;(4,W,H)
+
+            X, Y = np.meshgrid(np.arange(cols),np. arange(rows))#生成网格点坐标矩阵，X.shape=(37*37) Y.shape=(37*37),一共有37*37个点，因此有同样数量的对应的坐标
+            #以下步骤是在所有的37*37个网格上对同样大小的anchor同时进行计算。
+            A[0, :, :, curr_layer] = X - anchor_x/2#获取网格中心点x坐标
+            A[1, :, :, curr_layer] = Y - anchor_y/2#获取网格中心点y坐标
+            A[2, :, :, curr_layer] = anchor_x##获取anchor宽度
+            A[3, :, :, curr_layer] = anchor_y#获取anchor高度
+           
+            if use_regr:#对anchor采取变换
+                A[:, :, :, curr_layer] = apply_regr_np(A[:, :, :, curr_layer], regr)
+            #调整变换anchor的位置，且anchor的宽度和高度都不能小于1，
+            A[2, :, :, curr_layer] = np.maximum(1, A[2, :, :, curr_layer])
+            A[3, :, :, curr_layer] = np.maximum(1, A[3, :, :, curr_layer])
+            A[2, :, :, curr_layer] += A[0, :, :, curr_layer]#？？
+            A[3, :, :, curr_layer] += A[1, :, :, curr_layer]#？？
+            #修剪anchor，不能让anchor超出feature map范围
+            A[0, :, :, curr_layer] = np.maximum(0, A[0, :, :, curr_layer])
+            A[1, :, :, curr_layer] = np.maximum(0, A[1, :, :, curr_layer])
+            A[2, :, :, curr_layer] = np.minimum(cols-1, A[2, :, :, curr_layer])
+            A[3, :, :, curr_layer] = np.minimum(rows-1, A[3, :, :, curr_layer])
+
+            curr_layer += 1
+
+    all_boxes = np.reshape(A.transpose((0, 3, 1,2)), (4, -1)).transpose((1, 0))#A-&gt;(4,W,H,18)-&gt;(4,18,W,H)-&gt;(4,18*W*H)-&gt;(18*37*37,4)
+    all_probs = rpn_layer.transpose((0, 3, 1, 2)).reshape((-1))#(1,37,37,18)-&gt;(1,18,37,37)-&gt;(18*37*37)
+
+    x1 = all_boxes[:, 0]#(18*37*37)
+    y1 = all_boxes[:, 1]#(18*37*37)
+    x2 = all_boxes[:, 2]#(18*37*37)
+    y2 = all_boxes[:, 3]#(18*37*37)
+
+    idxs = np.where((x1 - x2 &gt;= 0) | (y1 - y2 &gt;= 0))#找到那些box坐标不合法的id，
+
+    all_boxes = np.delete(all_boxes, idxs, 0)#删掉这些box  all_boxes(xxx,1)成为一个行向量
+    all_probs = np.delete(all_probs, idxs, 0)#删掉这些box对应的probs，即分类结果
+    
+    result = non_max_suppression_fast(all_boxes, all_probs, overlap_thresh=overlap_thresh, max_boxes=max_boxes)[0]
+    #result-&gt;boxes合法box中具有最大概率包含物体的box，删除重叠率较高的box(xxx,4)
+    return result</code></pre> 
+<p>2.2apply_regr_np</p> 
+<pre class="has"><code class="language-python">#输入：
+#X:(4,37,37),当前feature map上的anchor的坐标(x,y,w,h)
+#T:(4,37,37),对应的回归参数，这里的回归参数是经过RPN网络训练之后得到的回归参数，不是生成anchor时候得到的回归参数
+#输出：变换之后的anchor，也就是认为最仅仅GTbox的一个anchor，这个anchor已经不是默认的anchor的大小和位置了，是经过平移和缩放的了
+def apply_regr_np(X, T):
+    try:
+        x = X[0, :, :]
+        y = X[1, :, :]
+        w = X[2, :, :]
+        h = X[3, :, :]
+
+        tx = T[0, :, :]
+        ty = T[1, :, :]
+        tw = T[2, :, :]
+        th = T[3, :, :]
+
+        cx = x + w/2.
+        cy = y + h/2.
+        cx1 = tx * w + cx
+        cy1 = ty * h + cy
+
+        w1 = np.exp(tw.astype(np.float64)) * w
+        h1 = np.exp(th.astype(np.float64)) * h
+        x1 = cx1 - w1/2.
+        y1 = cy1 - h1/2.
+
+        x1 = np.round(x1)
+        y1 = np.round(y1)
+        w1 = np.round(w1)
+        h1 = np.round(h1)
+        return np.stack([x1, y1, w1, h1])
+    except Exception as e:
+        print(e)
+        return X</code></pre> 
+<p>2.3non_max_suppression_fast</p> 
+<pre class="has"><code class="language-python">#输入：
+#boxes:所有合法的box
+#probs：所有合法的box的预测概率
+#输出：
+#boxes:合法box中具有最大概率包含物体的box，删除重叠率较高的box
+#probs：对应的预测概率
+def non_max_suppression_fast(boxes, probs, overlap_thresh=0.9, max_boxes=300):
+    # code used from here: http://www.pyimagesearch.com/2015/02/16/faster-non-maximum-suppression-python/
+    # if there are no boxes, return an empty list
+    if len(boxes) == 0:
+        return []
+
+    # grab the coordinates of the bounding boxes，注意这里x1,y1,x2,y2都是array，记录的是所有合法的box
+    x1 = boxes[:, 0]
+    y1 = boxes[:, 1]
+    x2 = boxes[:, 2]
+    y2 = boxes[:, 3]
+    #Given two array_like objects, check that the shape is equal and all elements of the first object are strictly smaller than those of the second object.
+    #下面这个assert同样是保证x1一定要小于对应的x2,即保证box合法
+    np.testing.assert_array_less(x1, x2)
+    np.testing.assert_array_less(y1, y2)
+
+    # if the bounding boxes integers, convert them to floats --
+    # this is important since we'll be doing a bunch of divisions
+    #将box的坐标转换为浮点数
+    if boxes.dtype.kind == "i":
+        boxes = boxes.astype("float")
+
+    # initialize the list of picked indexes
+    #初始化选取数组
+    pick = []
+
+    # calculate the areas
+    #计算所有box的面积
+    area = (x2 - x1) * (y2 - y1)
+
+    # sort the bounding boxes
+    idxs = np.argsort(probs)#对probs的概率进行排序，概率表明了这个box是否是物体,#retrun Array of indices that sort 'a' along the specified axis.
+    #从概率最大的box开始选
+    # keep looping while some indexes still remain in the indexes
+    # list
+    while len(idxs) &gt; 0:
+        # grab the last index in the indexes list and add the
+        # index value to the list of picked indexes
+        last = len(idxs) - 1
+        i = idxs[last]#i=index value
+        pick.append(i)
+
+        # find the intersection
+
+        xx1_int = np.maximum(x1[i], x1[idxs[:last]])#取x1[i]和所有x1其他元素的之间的较大值,即取x1[i]作为左边界, np.maximum会让x[i]和中的所有元素比较，并且返回x，其中所有小于x[i]的都会被x[i]替换
+        yy1_int = np.maximum(y1[i], y1[idxs[:last]])#上边界
+        xx2_int = np.minimum(x2[i], x2[idxs[:last]])#右边界
+        yy2_int = np.minimum(y2[i], y2[idxs[:last]])#下边界
+
+        ww_int = np.maximum(0, xx2_int - xx1_int)#ww_int是数组
+        hh_int = np.maximum(0, yy2_int - yy1_int)
+
+        area_int = ww_int * hh_int#area_int也是数组
+
+        # find the union
+        area_union = area[i] + area[idxs[:last]] - area_int
+
+        # compute the ratio of overlap
+        overlap = area_int/(area_union + 1e-6)
+        #删除那些重复率比较高的box
+        # delete all indexes from the index list that have
+        idxs = np.delete(idxs, np.concatenate(([last],np.where(overlap &gt; overlap_thresh)[0])))
+        #最多只保留300个box，或者当所有的box都处理挑选完毕之后就退出循环
+        if len(pick) &gt;= max_boxes:
+            break
+
+    # return only the bounding boxes that were picked using the integer data type
+    boxes = boxes[pick].astype("int")
+    probs = probs[pick]
+    return boxes, probs</code></pre> 
+<p>三、calc_iou</p> 
+<pre class="has"><code class="language-python">#输入:
+#img_data，图片的信息，
+#R候选ROI,(xxx,4) 在feature map上的坐标4-&gt;(x1,y1,x2,y2)
+#输出：
+#X：#选取的iou大于0.7的roi
+#Y1：对应的类别序号(1,xxx,21)，类别标签是one_hot
+#Y2:[np.array(y_class_regr_label),np.array(y_class_regr_coords)]包含对应的类别的标签和回归参数，类别标签是one_hot的
+#IoUs：用于调试的，没有用
+def calc_iou(R, img_data, C, class_mapping):
+
+    '''
+    all_img_data[0] = {'width': 500, 'height': 500,
+                     'bboxes': [{'y2': 500, 'y1': 27, 'x2': 183, 'x1': 20, 'class': 'person', 'difficult': False},
+                                {'y2': 500, 'y1': 2, 'x2': 249, 'x1': 112, 'class': 'person', 'difficult': False},
+                                {'y2': 490, 'y1': 233, 'x2': 376, 'x1': 246, 'class': 'person', 'difficult': False},
+                                {'y2': 468, 'y1': 319, 'x2': 356, 'x1': 231, 'class': 'chair', 'difficult': False},
+                                {'y2': 450, 'y1': 314, 'x2': 58, 'x1': 1, 'class': 'chair', 'difficult': True}], 'imageset': 'test',
+                     'filepath': './datasets/VOC2007/JPEGImages/000910.jpg'}
+    '''
+    bboxes = img_data['bboxes']
+    (width, height) = (img_data['width'], img_data['height'])
+    # get image dimensions for resizing
+    (resized_width, resized_height) = data_generators.get_new_img_size(width, height, C.im_size)
+
+    gta = np.zeros((len(bboxes), 4))#GTbox的坐标，e.g. 5*4
+
+    for bbox_num, bbox in enumerate(bboxes):
+        # get the GT box coordinates, and resize to account for image resizing
+        #得到gta在feature map的坐标
+        gta[bbox_num, 0] = int(round(bbox['x1'] * (resized_width / float(width))/C.rpn_stride))#e.g. vgg (600/16)=37
+        gta[bbox_num, 1] = int(round(bbox['x2'] * (resized_width / float(width))/C.rpn_stride))
+        gta[bbox_num, 2] = int(round(bbox['y1'] * (resized_height / float(height))/C.rpn_stride))
+        gta[bbox_num, 3] = int(round(bbox['y2'] * (resized_height / float(height))/C.rpn_stride))
+
+    x_roi = []#选取的iou大于0.7的roi
+    y_class_num = []#对应的类别序号
+    y_class_regr_coords = []
+    y_class_regr_label = []
+    IoUs = [] # for debugging only
+
+    for ix in range(R.shape[0]):#遍历每个一ROI
+        (x1, y1, x2, y2) = R[ix, :]
+        x1 = int(round(x1))
+        y1 = int(round(y1))
+        x2 = int(round(x2))
+        y2 = int(round(y2))
+
+        best_iou = 0.0
+        best_bbox = -1
+        #计算当前ROI和gta在feature map上的iou
+        for bbox_num in range(len(bboxes)):
+            curr_iou = data_generators.iou([gta[bbox_num, 0], gta[bbox_num, 2], gta[bbox_num, 1], gta[bbox_num, 3]], [x1, y1, x2, y2])
+            if curr_iou &gt; best_iou:
+                best_iou = curr_iou
+                best_bbox = bbox_num
+
+        if best_iou &lt; C.classifier_min_overlap:#0.3 iou小于0.3则忽略这个ROI
+                continue
+        else:
+            w = x2 - x1
+            h = y2 - y1
+            x_roi.append([x1, y1, w, h])#将ROI的(x1,y1,x2,y2)转变为(x,y,w,h)格式
+            IoUs.append(best_iou)
+
+            if C.classifier_min_overlap &lt;= best_iou &lt; C.classifier_max_overlap:#如果best iou在0.3到0.7之间，则认为是背景
+                # hard negative example
+                cls_name = 'bg'
+            elif C.classifier_max_overlap &lt;= best_iou:
+                cls_name = bboxes[best_bbox]['class']#如果bestiou大等于0.7则找到了对应的GTA的类别存入cls_name
+                cxg = (gta[best_bbox, 0] + gta[best_bbox, 1]) / 2.0
+                cyg = (gta[best_bbox, 2] + gta[best_bbox, 3]) / 2.0
+
+                cx = x1 + w / 2.0
+                cy = y1 + h / 2.0
+                #计算回归参数
+                tx = (cxg - cx) / float(w)
+                ty = (cyg - cy) / float(h)
+                tw = np.log((gta[best_bbox, 1] - gta[best_bbox, 0]) / float(w))
+                th = np.log((gta[best_bbox, 3] - gta[best_bbox, 2]) / float(h))
+            else:
+                print('roi = {}'.format(best_iou))
+                raise RuntimeError
+
+        class_num = class_mapping[cls_name]
+        class_label = len(class_mapping) * [0]#print(3*[0])-&gt;[0,0,0]  class_label-&gt;(21*1)
+        class_label[class_num] = 1
+        y_class_num.append(copy.deepcopy(class_label))
+        coords = [0] * 4 * (len(class_mapping) - 1)#临时变量，存储坐标
+        labels = [0] * 4 * (len(class_mapping) - 1)#临时变量，存储类别标签
+        if cls_name != 'bg':
+            label_pos = 4 * class_num#每个类别的roi有4个坐标，占4个位置
+            sx, sy, sw, sh = C.classifier_regr_std
+            coords[label_pos:4+label_pos] = [sx*tx, sy*ty, sw*tw, sh*th]#乘一个回归标准差[8.0, 8.0, 4.0, 4.0]，作用？？
+            labels[label_pos:4+label_pos] = [1, 1, 1, 1]#对应的标签标记为1
+            y_class_regr_coords.append(copy.deepcopy(coords))
+            y_class_regr_label.append(copy.deepcopy(labels))
+        else:
+            y_class_regr_coords.append(copy.deepcopy(coords))
+            y_class_regr_label.append(copy.deepcopy(labels))
+
+    if len(x_roi) == 0:
+        return None, None, None, None
+
+    X = np.array(x_roi)
+    Y1 = np.array(y_class_num)#(xxx,21)
+    Y2 = np.concatenate([np.array(y_class_regr_label),np.array(y_class_regr_coords)],axis=1)
+    #最后返回的时候Y1又利用expand_dims增加了一个维度
+    return np.expand_dims(X, axis=0), np.expand_dims(Y1, axis=0), np.expand_dims(Y2, axis=0), IoUs
+</code></pre> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4e8607e65ffc88258279ffddd646dda3/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">while()循环条件为假却不退出循环</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/84666dfea19a4acf30a11b259bacc8f6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">MyBatis 核心配置综述之StatementHandler</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

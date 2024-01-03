@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Java内存模型（JMM）以及 垃圾回收机制 小结 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Java内存模型（JMM）以及 垃圾回收机制 小结" />
+<meta property="og:description" content="内存模型：
+内存模型描述了程序中各个变量（实例域、静态域和数组元素）之间的关系，以及在实际计算机系统中将变量存储到内存和从内存中取出变量这样的底层细节，对象最终是存储在内存里面的，这点没有错，但是编译器、运行库、处理器或者系统缓存可以有特权在变量指定内存位置存储或者取出变量的值。【JMM】（Java Memory Model的缩写）允许编译器和缓存以数据在处理器特定的缓存（或寄存器）和主存之间移动的次序拥有重要的特权，除非程序员使用了final或synchronized明确请求了某些可见性的保证。
+1、主内存和工作内存
+Java内存模型的主要目标是定义程序中各个变量的访问规则，即在虚拟机中将变量存储到内存和从内存中取出变量这样底层细节。此处的变量与Java编程时所说的变量不一样，指包括了实例字段、静态字段和构成数组对象的元素，但是不包括局部变量与方法参数，后者是线程私有的，不会被共享。
+Java内存模型中规定了所有的变量都存储在主内存中，每条线程还有自己的工作内存（可以与前面将的处理器的高速缓存类比），线程的工作内存中保存了该线程使用到的变量到主内存副本拷贝，线程对变量的所有操作（读取、赋值）都必须在工作内存中进行，而不能直接读写主内存中的变量。不同线程之间无法直接访问对方工作内存中的变量，线程间变量值的传递均需要在主内存来完成，线程、主内存和工作内存的交互关系如下图所示。
+2、内存间的交互操作
+关于主内存与工作内存之间的具体交互协议，即一个变量如何从主内存拷贝到工作内存、如何从工作内存同步到主内存之间的实现细节，Java内存模型定义了以下八种操作来完成：
+lock（锁定）：作用于主内存的变量，把一个变量标识为一条线程独占状态。unlock（解锁）：作用于主内存变量，把一个处于锁定状态的变量释放出来，释放后的变量才可以被其他线程锁定。 read（读取）：作用于主内存变量，把一个变量值从主内存传输到线程的工作内存中，以便随后的load动作使用load（载入）：作用于工作内存的变量，它把read操作从主内存中得到的变量值放入工作内存的变量副本中。 use（使用）：作用于工作内存的变量，把工作内存中的一个变量值传递给执行引擎，每当虚拟机遇到一个需要使用变量的值的字节码指令时将会执行这个操作。assign（赋值）：作用于工作内存的变量，它把一个从执行引擎接收到的值赋值给工作内存的变量，每当虚拟机遇到一个给变量赋值的字节码指令时执行这个操作。 store（存储）：作用于工作内存的变量，把工作内存中的一个变量的值传送到主内存中，以便随后的write的操作。write（写入）：作用于主内存的变量，它把store操作从工作内存中一个变量的值传送到主内存的变量中。 如果要把一个变量从主内存中复制到工作内存，就需要按顺寻地执行read和load操作，如果把变量从工作内存中同步回主内存中，就要按顺序地执行store和write操作。Java内存模型只要求上述操作必须按顺序执行，而没有保证必须是连续执行。也就是read和load之间，store和write之间是可以插入其他指令的，如对主内存中的变量a、b进行访问时，可能的顺序是read a，read b，load b， load a。
+Java内存模型还规定了在执行上述八种基本操作时，必须满足如下规则：
+不允许read和load、store和write操作之一单独出现不允许一个线程丢弃它的最近assign的操作，即变量在工作内存中改变了之后必须同步到主内存中。不允许一个线程无原因地（没有发生过任何assign操作）把数据从工作内存同步回主内存中。一个新的变量只能在主内存中诞生，不允许在工作内存中直接使用一个未被初始化（load或assign）的变量。即就是对一个变量实施use和store操作之前，必须先执行过了assign和load操作。一个变量在同一时刻只允许一条线程对其进行lock操作，lock和unlock必须成对出现如果对一个变量执行lock操作，将会清空工作内存中此变量的值，在执行引擎使用这个变量前需要重新执行load或assign操作初始化变量的值如果一个变量事先没有被lock操作锁定，则不允许对它执行unlock操作；也不允许去unlock一个被其他线程锁定的变量。对一个变量执行unlock操作之前，必须先把此变量同步到主内存中（执行store和write操作）。 3、JVM逻辑内存模型（以下部分参考“《深入理解java虚拟机》”）
+如图为JVM的逻辑内存模型：
+依次对内存中名词进行解释：
+1.方法区
+也称&#34;永久代” 、“非堆”， 它用于存储虚拟机加载的类信息、常量、静态变量、是各个线程共享的内存区域。默认最小值为16MB，最大值为64MB（未验证），可以通过-XX:PermSize 和 -XX:MaxPermSize 参数限制方法区的大小。
+运行时常量池：是方法区的一部分，Class文件中除了有类的版本、字段、方法、接口等描述信息外，还有一项信息是常量池，用于存放编译器生成的各种符号引用，这部分内容将在类加载后放到方法区的运行时常量池中。
+2.虚拟机栈
+描述的是java 方法执行的内存模型：每个方法被执行的时候 都会创建一个“栈帧”用于存储局部变量表(包括参数)、操作栈、方法出口等信息。每个方法被调用到执行完的过程，就对应着一个栈帧在虚拟机栈中从入栈到出栈的过程。声明周期与线程相同，是线程私有的。
+局部变量表存放了编译器可知的各种基本数据类型(boolean、byte、char、short、int、float、long、 double)、对象引用(引用指针，并非对象本身)，其中64位长度的long和double类型的数据会占用2个局部变量的空间，其余数据类型只占1 个。局部变量表所需的内存空间在编译期间完成分配，当进入一个方法时，这个方法需要在栈帧中分配多大的局部变量是完全确定的，在运行期间栈帧不会改变局部 变量表的大小空间。
+3.本地方法栈
+与虚拟机栈基本类似，区别在于虚拟机栈为虚拟机执行的java方法服务，而本地方法栈则是为Native方法服务。
+4.堆 也叫做java 堆、GC堆，是java虚拟机所管理的内存中最大的一块内存区域，也是被各个线程共享的内存区域，在JVM启动时创建。该内存区域存放了对象实例及数组(所有new的对象)。其大小通过-Xms(最小值)和-Xmx(最大值)参数设置，-Xms为JVM启动时申请的最小内存，-Xmx为JVM可申请的最大内存。在JVM启动时，最大内存会被保留下来。为对象内存而保留的地址空间可以被分成年轻代和老年代。
+默认当空余堆内存小于40%时，JVM会增大Heap到-Xmx指定的大小，可通过-XX:MinHeapFreeRation=来指定这个比列；当空余堆内存大于70%时，JVM会减小heap的大小到-Xms指定的大小，可通过XX:MaxHeapFreeRation=来指定这个比列，对于运行系统，为避免在运行时频繁调整Heap的大小，通常-Xms与-Xmx的值设成一样。
+Parameter
+Default Value
+MinHeapFreeRatio
+40
+MaxHeapFreeRatio
+70
+-Xms
+3670k
+-Xmx
+64m
+注：如果是64位系统，这些值一般需要扩张30％，来容纳在64位系统下变大的对象。
+从J2SE 1.2开始，JVM使用分代收集算法，在不同年代的区域里使用不同的算法。堆被划分为新生代和老年代。新生代主要存储新创建的对象和尚未进入老年代的对象。老年代存储经过多次新生代GC(MinorGC)任然存活的对象。
+注1：图中的Perm不是堆内存，是永久代
+注2：图中的Virtaul则是各区域还未被分配的内存，即最大内存-当前分配的内存
+新生代：
+新生代包括一块eden（伊甸园）和2块survivor(通常又称S0和S1或From和To)。大多数对象都是在eden中初始化。而对于2块survivor来说，总有一块是空的，它会在下一个复制收集过程中作为eden中的活跃对象和另一块survivor的目的地。在对象衰老之前（也就是被复制到tenured之前），它们会在两块survivor区域之间以这样的方式复制。可通过-Xmn参数来指定新生代的大小，也可以通过-XX:SurvivorRation来调整Eden Space及Survivor Space的大小。
+老年代：
+用于存放经过多次新生代Minor GC依然存活的对象，例如缓存对象，新建的对象也有可能直接进入老年代，主要有两种情况：①.大对象，可通过启动参数设置-XX:PretenureSizeThreshold=1024(单位为字节，默认为0)来代表超过多大时就不在新生代分配，而是直接在老年代分配。②.大的数组对象，即数组中无引用外部对象。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/2ec349b689620ec744b18e7eb18a41ad/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2016-10-09T19:43:00+08:00" />
+<meta property="article:modified_time" content="2016-10-09T19:43:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Java内存模型（JMM）以及 垃圾回收机制 小结</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="cnblogs_post_body" class="blogpost-body"> 
+ <p> </p> 
+ <p><span style="font-size:24px;color:#000000;"><strong>内存模型：</strong></span></p> 
+ <p><span style="font-size:14px;color:#000000;">        内存模型描述了程</span><a href="http://baike.baidu.com/subview/165620/5129543.htm" rel="nofollow"><span style="font-size:14px;color:#000000;">序</span></a>中各个变量（实例域、静态域和数组元素）之间的关系，以及在实际计算机系统中将变量存储到内存和从内存中取出变量这样的底层细节，对象最终是存储在内存里面的，这点没有错，但是编译器、运行库、处理器或者<a href="http://baike.baidu.com/subview/1050/1050.htm" rel="nofollow"><span style="font-size:14px;color:#000000;">系统缓存</span></a>可以有特权在变量指定内存位置存储或者取出变量的值。【JMM】（Java Memory Model的缩写）允许编译器和缓存以数据在处理器特定的缓存（或寄存器）和主存之间移动的次序拥有重要的特权，除非<a href="http://baike.baidu.com/subview/39175/9475487.htm" rel="nofollow"><span style="font-size:14px;color:#000000;">程序员</span></a>使用了final或<a href="http://baike.baidu.com/subview/1207212/1207212.htm" rel="nofollow"><span style="font-size:14px;color:#000000;">synchronized</span></a>明确请求了某些可见性的保证。</p> 
+ <p><span style="font-size:14px;color:#000000;"></span> </p> 
+ <p><span style="font-size:18px;color:#000000;"><strong>1、主内存和工作内存</strong></span></p> 
+ <p><span style="font-size:14px;color:#000000;">       Java内存模型的主要目标是定义程序中各个变量的访问规则，即在虚拟机中将变量存储到内存和从内存中取出变量这样底层细节。此处的变量与Java编程时所说的变量不一样，指包括了实例字段、静态字段和构成数组对象的元素，但是不包括局部变量与方法参数，后者是线程私有的，不会被共享。</span></p> 
+ <p><span style="font-size:14px;color:#000000;">　　Java内存模型中规定了<span style="line-height:1.5;">所有的变量都存储在主内存中，每条线程还有自己的工作内存</span>（可以与前面将的处理器的高速缓存类比），线程的工作内存中保存了该线程使用到的变量到主内存副本拷贝，<span style="line-height:1.5;">线程对变量的所有操作（读取、赋值）都必须在工作内存中进行，而不能直接读写主内存中的变量</span>。不同线程之间无法直接访问对方工作内存中的变量，线程间变量值的传递均需要在主内存来完成，线程、主内存和工作内存的交互关系如下图所示。</span></p> 
+ <p><span style="font-size:14px;color:#000000;"><img alt="" src="https://images2.imgbox.com/33/ec/PkvleVBI_o.jpg"></span></p> 
+ <p><span style="font-size:14px;color:#000000;"></span> </p> 
+ <p><span style="font-size:14px;color:#000000;"></span> </p> 
+ <p><span style="font-size:18px;color:#000000;"><strong>2、内存间的交互操作</strong></span></p> 
+ <p><span style="font-size:14px;color:#000000;">关于主内存与工作内存之间的具体交互协议，即一个变量如何从主内存拷贝到工作内存、如何从工作内存同步到主内存之间的实现细节，Java内存模型定义了以下八种操作来完成：</span></p> 
+ <ul><li style="list-style-type:disc;"><span style="font-size:14px;color:#000000;"><strong><span style="font-size:18px;">lock（锁定）：</span></strong>作用于主内存的变量，把一个变量标识为一条线程独占状态。</span></li><li style="list-style-type:disc;"><span style="font-size:14px;color:#000000;"><strong><span style="font-size:18px;">unlock（解锁）：</span></strong>作用于主内存变量，把一个处于锁定状态的变量释放出来，释放后的变量才可以被其他线程锁定。</span></li></ul> 
+ <p style="list-style-type:disc;"><span style="font-family:Verdana;font-size:14px;"></span> </p> 
+ <ul><li style="list-style-type:disc;"><span style="font-size:14px;color:#000000;"><strong><span style="font-size:18px;">read（读取）：</span></strong>作用于主内存变量，把一个变量值从主内存传输到线程的工作内存中，以便随后的load动作使用</span></li><li style="list-style-type:disc;"><span style="font-size:14px;color:#000000;"><strong><span style="font-size:18px;">load（载入）：</span></strong>作用于工作内存的变量，它把read操作从主内存中得到的变量值放入工作内存的变量副本中。</span></li></ul> 
+ <p style="list-style-type:disc;"><span style="font-family:Verdana;font-size:14px;"></span> </p> 
+ <ul><li style="list-style-type:disc;"><span style="font-size:14px;color:#000000;"><span style="font-size:18px;"><strong>use（使用）：</strong></span>作用于工作内存的变量，把工作内存中的一个变量值传递给执行引擎，每当虚拟机遇到一个需要使用变量的值的字节码指令时将会执行这个操作。</span></li><li style="list-style-type:disc;"><span style="font-size:14px;color:#000000;"><strong><span style="font-size:18px;">assign（赋值）：</span></strong>作用于工作内存的变量，它把一个从执行引擎接收到的值赋值给工作内存的变量，每当虚拟机遇到一个给变量赋值的字节码指令时执行这个操作。</span></li></ul> 
+ <p style="list-style-type:disc;"><span style="font-family:Verdana;font-size:14px;"></span> </p> 
+ <ul><li style="list-style-type:disc;"><span style="font-size:14px;color:#000000;"><strong><span style="font-size:18px;">store（存储）：</span></strong>作用于工作内存的变量，把工作内存中的一个变量的值传送到主内存中，以便随后的write的操作。</span></li><li style="list-style-type:disc;"><span style="font-size:14px;color:#000000;"><strong><span style="font-size:18px;">write（写入）：</span></strong>作用于主内存的变量，它把store操作从工作内存中一个变量的值传送到主内存的变量中。</span></li></ul> 
+ <p><span style="font-size:14px;color:#000000;">　　如果要把一个变量从主内存中复制到工作内存，就需要按顺寻地执行read和load操作，如果把变量从工作内存中同步回主内存中，就要按顺序地执行store和write操作。<span style="line-height:1.5;">Java内存模型只要求上述操作必须按顺序执行，而没有保证必须是连续执行</span>。也就是read和load之间，store和write之间是可以插入其他指令的，如对主内存中的变量a、b进行访问时，可能的顺序是read a，read b，load b， load a。</span></p> 
+ <p><span style="font-size:18px;color:#000000;"><strong>Java内存模型还规定了在执行上述八种基本操作时，必须满足如下规则：</strong></span></p> 
+ <ul><li style="list-style-type:disc;"><span style="font-size:14px;color:#000000;">不允许read和load、store和write操作之一单独出现</span></li><li style="list-style-type:disc;"><span style="font-size:14px;color:#ff0000;">不允许一个线程丢弃它的最近assign的操作，即变量在工作内存中改变了之后必须同步到主内存中。</span></li><li style="list-style-type:disc;"><span style="font-size:14px;color:#000000;">不允许一个线程无原因地（没有发生过任何assign操作）把数据从工作内存同步回主内存中。</span></li><li style="list-style-type:disc;"><span style="font-size:14px;color:#000000;">一个新的变量只能在主内存中诞生，不允许在工作内存中直接使用一个未被初始化（load或assign）的变量。即就是对一个变量实施use和store操作之前，必须先执行过了assign和load操作。</span></li><li style="list-style-type:disc;"><span style="font-size:14px;color:#000000;">一个变量在同一时刻只允许一条线程对其进行lock操作，lock和unlock必须成对出现</span></li><li style="list-style-type:disc;"><span style="font-size:14px;color:#000000;">如果对一个变量执行lock操作，将会清空工作内存中此变量的值，在执行引擎使用这个变量前需要重新执行load或assign操作初始化变量的值</span></li><li style="list-style-type:disc;"><span style="font-size:14px;color:#000000;">如果一个变量事先没有被lock操作锁定，则不允许对它执行unlock操作；也不允许去unlock一个被其他线程锁定的变量。</span></li><li style="list-style-type:disc;"><span style="font-size:14px;color:#000000;">对一个变量执行unlock操作之前，必须先把此变量同步到主内存中（执行store和write操作）。</span></li></ul> 
+ <p><span style="color:#000000;"></span> </p> 
+ <p><span style="font-size:18px;"><strong>3、JVM逻辑内存模型（以下部分参考“《深入理解java虚拟机》”）</strong></span></p> 
+ <p> </p> 
+ <p>如图为JVM的逻辑内存模型：</p> 
+ <p><img src="https://images2.imgbox.com/8a/da/4zcxRj7S_o.jpg" alt=""></p> 
+ <p> </p> 
+ <p><span style="font-size:18px;">依次对内存中名词进行解释：</span></p> 
+ <p></p> 
+ <span style="font-size:14px;"></span> 
+ <p><span style="font-size:18px;"><strong>1.方法区</strong></span></p> 
+ <p><strong><span style="font-size:18px;"></span></strong><br>       也称"永久代” 、“非堆”，  它用于存储虚拟机加载的类信息、常量、静态变量、是各个线程共享的内存区域。默认最小值为16MB，最大值为64MB（未验证），可以通过-XX:PermSize 和 -XX:MaxPermSize 参数限制方法区的大小。<br><br>       运行时常量池：是方法区的一部分，Class文件中除了有类的版本、字段、方法、接口等描述信息外，还有一项信息是常量池，用于存放编译器生成的各种符号引用，这部分内容将在类加载后放到方法区的运行时常量池中。<br></p> 
+ <p><span style="font-size:14px;"><br><strong><span style="font-size:18px;">2.虚拟机栈</span></strong></span></p> 
+ <p><span style="font-size:14px;"><strong><span style="font-size:18px;"></span></strong><br>       描述的是java 方法执行的内存模型：每个方法被执行的时候 都会创建一个“栈帧”用于存储局部变量表(包括参数)、操作栈、方法出口等信息。每个方法被调用到执行完的过程，就对应着一个栈帧在虚拟机栈中从入栈到出栈的过程。声明周期与线程相同，是线程私有的。<br><br>       局部变量表存放了编译器可知的各种基本数据类型(boolean、byte、char、short、int、float、long、 double)、对象引用(引用指针，并非对象本身)，其中64位长度的long和double类型的数据会占用2个局部变量的空间，其余数据类型只占1 个。局部变量表所需的内存空间在编译期间完成分配，当进入一个方法时，这个方法需要在栈帧中分配多大的局部变量是完全确定的，在运行期间栈帧不会改变局部 变量表的大小空间。<br><br><span style="font-size:18px;"><strong>3.本地方法栈</strong></span></span></p> 
+ <span style="font-size:14px;"><strong><span style="font-size:18px;"></span></strong></span> 
+ <p><br>       与虚拟机栈基本类似，区别在于虚拟机栈为虚拟机执行的java方法服务，而本地方法栈则是为Native方法服务。<br></p> 
+ <p><br><span style="font-size:18px;"><strong>4.堆 </strong></span></p> 
+ <p><strong><span style="font-size:18px;"></span></strong><br>        也叫做java 堆、GC堆，是java虚拟机所管理的内存中最大的一块内存区域，也是被各个线程共享的内存区域，在JVM启动时创建。该内存区域存放了对象实例及数组(所有new的对象)。其大小通过-Xms(最小值)和-Xmx(最大值)参数设置，-Xms为JVM启动时申请的最小内存，-Xmx为JVM可申请的最大内存。在JVM启动时，最大内存会被保留下来。为对象内存而保留的地址空间可以被分成年轻代和老年代。<br><br> 默认当空余堆内存小于40%时，JVM会增大Heap到-Xmx指定的大小，可通过-XX:MinHeapFreeRation=来指定这个比列；当空余堆内存大于70%时，JVM会减小heap的大小到-Xms指定的大小，可通过XX:MaxHeapFreeRation=来指定这个比列，对于运行系统，为避免在运行时频繁调整Heap的大小，通常-Xms与-Xmx的值设成一样。<br><br> Parameter<br><br> Default Value<br><br> MinHeapFreeRatio<br><br> 40<br><br> MaxHeapFreeRatio<br><br> 70<br><br> -Xms<br><br> 3670k<br><br> -Xmx<br><br> 64m<br><br> 注：如果是64位系统，这些值一般需要扩张30％，来容纳在64位系统下变大的对象。<br> 从J2SE 1.2开始，JVM使用分代收集算法，在不同年代的区域里使用不同的算法。堆被划分为新生代和老年代。新生代主要存储新创建的对象和尚未进入老年代的对象。老年代存储经过多次新生代GC(MinorGC)任然存活的对象。<br></p> 
+ <p><br><img src="https://images2.imgbox.com/22/9e/WazxY0WD_o.jpg" alt=""><br><br><span style="font-size:14px;"><span style="color:#ff0000;">注1：图中的Perm不是堆内存，是永久代<br><br> 注2：图中的Virtaul则是各区域还未被分配的内存，即最大内存-当前分配的内存</span><br><br><strong>新生代：</strong><br>        新生代包括一块eden（伊甸园）和2块survivor(通常又称S0和S1或From和To)。大多数对象都是在eden中初始化。而对于2块survivor来说，总有一块是空的，它会在下一个复制收集过程中作为eden中的活跃对象和另一块survivor的目的地。在对象衰老之前（也就是被复制到tenured之前），它们会在两块survivor区域之间以这样的方式复制。可通过-Xmn参数来指定新生代的大小，也可以通过-XX:SurvivorRation来调整Eden Space及Survivor Space的大小。<br><br><strong>老年代：</strong><br>        用于存放经过多次新生代Minor GC依然存活的对象，例如缓存对象，新建的对象也有可能直接进入老年代，主要有两种情况：①.大对象，可通过启动参数设置-XX:PretenureSizeThreshold=1024(单位为字节，默认为0)来代表超过多大时就不在新生代分配，而是直接在老年代分配。②.大的数组对象，即数组中无引用外部对象。<br><br> 老年代所占的内存大小为-Xmx对应的值减去-Xmn对应的值。<br><br><br><br><span style="font-size:18px;"><strong>5.程序计数器 </strong></span></span></p> 
+ <p><strong><span style="font-size:18px;"></span></strong><span style="font-size:14px;"><br>       是最小的一块内存区域，它的作用是当前线程所执行的字节码的行号指示器，在虚拟机的模型里，字节码解释器工作时就是通过改变这个计数器的值来选取下一条需要执行的字节码指令，分支、循环、异常处理、线程恢复等基础功能都需要依赖计数器完成。</span></p> 
+ <p> </p> 
+ <p><span style="font-size:18px;"><strong>6、直接内存</strong></span><br><br><span style="font-size:14px;">         直接内存（Direct Memory）并不是虚拟机运行时数据区的一部分，也不是Java虚拟机规范中定义的内存区域，但是这部分内存也被频繁地使用，而且也可能导致OutOfMemoryError 异常出现，</span></p> 
+ <p> </p> 
+ <p> </p> 
+ <p><span style="font-size:24px;color:#000000;"><strong>垃圾回收机制（Garbage Collection）</strong></span></p> 
+ <p><strong><span style="font-size:24px;"></span></strong> </p> 
+ <p><span style="font-size:18px;color:#000000;"><strong>1、finalize()</strong></span></p> 
+ <p><span style="color:#000000;"><span style="font-size:14px;"> 在JVM垃圾回收器收集一个对象之前，一般要求程序调用适当的方法释放资源，但在没有明确释放资源的情况下，Java提供了缺省机制来终止该对象心释放资源，这个方法就是finalize（）。它的原型为：<br> 　</span><span style="font-size:14px;"><span style="color:#ff0000;">　protected void finalize() throws Throwable<br></span>　　在finalize()方法返回之后，对象消失，垃圾收集开始执行。原型中的throws Throwable表示它可以抛出任何类型的异常。<br> 　　之所以要使用finalize()，是存在着垃圾回收器不能处理的特殊情况。假定你的对象（并非使用new方法）获得了一块“特殊”的内存区域，由于垃圾回收器只知道那些显示地经由new分配的内存空间，所以它不知道该如何释放这块“特殊”的内存区域，那么这个时候java允许在类中定义一个由finalize()方法。</span></span></p> 
+ <p><span style="color:#000000;"><span style="font-size:14px;">      特殊的区域例如：1）由于在分配内存的时候可能采用了类似 </span></span><a title="C语言知识库" class="replace_word" href="http://lib.csdn.net/base/c" rel="nofollow" style="color:rgb(223,52,52);font-weight:bold;text-decoration:none;"><span style="font-size:14px;color:#000000;">C语言</span></a><span style="font-size:14px;color:#000000;">的做法，而非JAVA的通常new做法。这种情况主要发生在native method中，比如native method调用了C/C++方法malloc()函数系列来分配存储空间，但是除非调用free()函数，否则这些内存空间将不会得到释放，那么这个时候就可能造成内存泄漏。但是由于free()方法是在C/C++中的函数，所以finalize()中可以用本地方法来调用它。以释放这些“特殊”的内存空间。2）又或者打开的文件资源，这些资源不属于垃圾回收器的回收范围。<br>       换言之，finalize()的主要用途是释放一些其他做法开辟的内存空间，以及做一些清理工作。因为在JAVA中并没有提够像“析构”函数或者类似概念的函数，要做一些类似清理工作的时候，必须自己动手创建一个执行清理工作的普通方法，也就是override Object这个类中的finalize()方法。例如，假设某一个对象在创建过程中会将自己绘制到屏幕上，如果不是明确地从屏幕上将其擦出，它可能永远都不会被清理。如果在finalize()加入某一种擦除功能，当GC工作时，finalize()得到了调用，图像就会被擦除。要是GC没有发生，那么这个图像就会</span><span style="font-size:14px;color:#000000;">被一直保存下来。</span></p> 
+ <p><span style="font-size:14px;color:#000000;">      一旦垃圾回收器准备好释放对象占用的存储空间，首先会去调用finalize()方法进行一些必要的清理工作。</span><span style="font-size:14px;"><span style="color:#000000;"><span style="font-size:14px;">只有到下一次再进行垃圾回收动作的时候，才会真正释放这个对象所占用的内存空间。<br>　　在普通的清除工作中，为清除一个对象，那个对象的用户必须在希望进行清除的地点调用一个清除方法。这与C++"析构函数"的概念稍有抵触。在C++中，所有对象都会破坏（清除）。或者换句话说，所有对象都"应该"破坏。若将C++对象创建成一个本地对象，比如在堆栈中创建（在Java中是不可能的，Java都在堆中），那么清除或破坏工作就会在"结束花括号"所代表的、创建这个对象的作用域的末尾进行。若对象是用new创建的（类似于Java），那么当程序员调用C++的 delete命令时（Java没有这个命令），就会调用相应的析构函数。若程序员忘记了，那么永远不会调用析构函数，我们最终得到的将是一个内存"漏洞"，另外还包括对象的其他部分永远不会得到清除。<br> 　　相反，Java不允许我们创建本地（局部）对象--无论如何都要使用new。但在Java中，没有"delete"命令来释放对象，因为垃圾回收器会帮助我们自动释放存储空间。所以如果站在比较简化的立场，我们可以说正是由于存在垃圾回收机制，所以Java没有析构函数。然而，随着以后学习的深入，就会知道垃圾收集器的存在并不能完全消除对析构函数的需要，或者说不能消除对析构函数代表的那种机制的需要（原因见下一段。另外finalize()函数是在垃圾回收器准备释放对象占用的存储空间的时候被调用的，绝对不能直接调用finalize()，所以应尽量避免用它）。若希望执行除释放存储空间之外的其他某种形式的清除工作，仍然必须调用Java中的一个方法。它等价于C++的析构函数，只是没后者方便。<br>       在C++中所有的对象运用delete()一定会被销毁，而JAVA里的对象并非总会被垃圾回收器回收。In another word, 1 对象可能不被垃圾回收，2 垃圾回收并不等于“析构”，3 垃圾回收只与内存有关。也就是说，并不是如果一个对象不再被使用，是不是要在finalize()中释放这个对象中含有的其它对象呢？不是的。因为无论对象是如何创建的，垃圾回收器都会负责释放那些对象占有的内存。</span></span></span></p> 
+ <p><span style="font-size:14px;color:#000000;"></span> </p> 
+ <p><span style="font-size:14px;color:#000000;"></span> </p> 
+ <p><span style="font-size:14px;color:#000000;"></span> </p> 
+ <p><span style="font-size:14px;color:#000000;"></span> </p> 
+ <p><span style="font-size:14px;color:#000000;"></span> </p> 
+ <p><span style="font-size:14px;color:#000000;"></span> </p> 
+ <p><span style="font-size:14px;color:#000000;"></span> </p> 
+ <p><span style="font-size:14px;color:#000000;"></span> </p> 
+</div> 
+<p>转载于:https://www.cnblogs.com/lanzhi/p/6467262.html</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/78dd0e9f6b16ac1f00cbc909082ab3da/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">awk &#39;{print $2}&#39; 这个命令</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b7deea276ad61d256a001f2b173ec346/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">notepad&#43;&#43;快速在每行头尾都加上指定的内容</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

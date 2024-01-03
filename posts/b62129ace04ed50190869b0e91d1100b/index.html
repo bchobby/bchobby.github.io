@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>UEFI简介 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="UEFI简介" />
+<meta property="og:description" content="前言
+大多数人接触UEFI都是在PC的应用场景上，有在PC上安装过多操作系统的经历的同学，通常会进入UEFI界面设置操作系统引导顺序、CPU虚拟化等设置。UEFI诞生之初也确实是作为BIOS的替代者，主要应用在PC电脑上。随着手机/平板等移动设备的发展，高通从MSM8998开始使用UEFI替代LK（Little Kernel）作为手机的Bootloader，作为一个嵌入式开发者势必比较好奇，UEFI相比嵌入式常见Bootloader（u-boot、LK等）区别在哪？
+UEFI（Unified Extensible Firmware Interface，统一可扩展固件接口）定义了操作系统和平台固件之间的接口，它是UEFI Forum发布的一种标准。它只是一种标准，没有提供实现。下面让我们通过Tianocore社区提供的EDK2源码一窥UEFI的具体实现，相比其他的Bootloader有什么优势特点。
+一、UEFI入门
+1. 启动过程
+UEFI系统从上电到关机可分为7个阶段：SEC-&gt; PEI-&gt; DXE-&gt; BDS-&gt; TSL -&gt; RT-&gt; AL
+开源嵌入式的Bootloader大多分两个阶段（Stage1、Stage2）。
+Stage1：系统资源环境较少情况下部分硬件初始化，为Stage2准备执行环境。
+Stage2：系统硬件进一步初始化，定制化功能的实现和操作系统的引导。
+进行类比，SEC/PEI可以看作是Stage1，DXE/BDS/TSL可以看作是Stage2。
+l SEC阶段/PEI阶段
+SEC：Security Phase
+PEI：Pre-EFI Initalization
+顾名思义，这两个阶段的主要工作是安全校验相关和前期硬件初始化，最重要的是RAM的初始化，让后面的阶段可以执行在外置RAM中。
+l DXE阶段/BDS阶段
+DXE：Driver Exection Environment
+BDS：Boot Device Select
+DXE阶段加载各个驱动模块，驱动模块通过Protocol结构体为后续的应用功能执行提供服务，DXE驱动服务在内存中常驻。BDS实现操作系统的启动顺序的设置。
+l TSL阶段
+TSL：Transient System Load
+OSLoader的执行阶段，一般以UEFI应用程序的形式存在。以Android系统为例，需要完成AVB校验，加载Linux Kernel到内存，解析DTB和Kernel cmdline的设置等。
+高通的UEFI实现有所精简，SEC和PEI作为Stage1放到了一个Module中实现。
+2. EDK2目录
+EDK2根目录下很多以*Pkg命令的文件夹，称之为一个Package，是一组功能的集合。例如MdePkg是基础静态库的集合，MdeModulePkg是PEI、DXE启动过程和常见通用驱动框架服务的集合。Package下各个功能目录称之为Module，Module可编译成efi文件动态加载/卸载。
+dsc和inf文件相当于是Makefile，定义了Module的编译，生成哪些efi文件，fdf文件将众多的efi文件组织打包成烧录镜像。
+二、UEFI的特点
+LK、u-boot等开源的Bootloader都是结构简单的轻量级系统，开发门槛低。UEFI系统虽然较为复杂，但其具有模块扩展性、多任务实现等类操作系统的特性，更易实现复杂功能，且具有较好的开发灵活性，因而高通使用UEFI替换LK作为手机的Bootloader也就不奇怪了。
+1. 扩展性
+UEFI-统一可扩展固件接口，可扩展性是UEFI的突出优势。这主要体现在UEFI可以动态地加载其它编译好的efi镜像，而u-boot在编译完后并不能动态地加载其它定制化的驱动或者命令。那UEFI是如何实现这一特性地呢？
+DXE是UEFI的核心阶段，这一阶段初始化了Boot Services（后面简称BS），BS为后面的引导过程和应用程序的执行提供了几乎所有基础服务接口。看一下BS的结构：
+BS中的提供了Image和Protocol的管理接口，Image相关接口提供了efi镜像加载&amp;启动功能，Protocol相关接口则可以找到镜像提供的功能服务。下图描述了Image和Protocol加载到内存后的存储结构，该存储结构揭示了Portocol管理接口如何在Image中找到对应的Protocol服务：接口（HandleProtocol）传入了对应的ImageHandle，则直接通过GUID在IHANDLE的Protocols链表中查找，接口（LocateHandle）没有传对应的ImageHandle则直接在包含所有Protocol的链表中查找。
+efi镜像的加载过程：
+BDS跳转至TSL阶段时BS调用CoreLoadImage()函数加载TSL的efi镜像，调用过程如下：
+CoreLoadImage-&gt;CoreLoadImageCommon-&gt;CoreInstallProtocolInterfaceNotify
+可以看到CoreLoadImage最终申请了一个IHADNLE结构体，并将节点挂到gHandleList列表中。
+而后调用CoreStartImage函数最终执行Image的EntryPoint(定义在inf文件中)。
+驱动服务模块一般在ModuleEntry中将自身的Protocol注册到ImageHandle中。Protocol的管理接口如何使用就不在赘述。
+2. 设备驱动模型
+UEFI驱动实现了一种类Linux系统的驱动模型，实现了Host Bus、Driver和Device的架构解耦。(DXE_DRIVER可以看做是一种驱动类型的功能服务，不一定需要硬件支持)" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/b62129ace04ed50190869b0e91d1100b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-05-31T17:02:12+08:00" />
+<meta property="article:modified_time" content="2022-05-31T17:02:12+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">UEFI简介</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <p style="text-align:left;"><strong>前言</strong></p> 
+ <p style="text-align:left;">大多数人接触UEFI都是在PC的应用场景上，有在PC上安装过多操作系统的经历的同学，通常会进入UEFI界面设置操作系统引导顺序、CPU虚拟化等设置。UEFI诞生之初也确实是作为BIOS的替代者，主要应用在PC电脑上。随着手机/平板等移动设备的发展，高通从MSM8998开始使用UEFI替代LK（Little Kernel）作为手机的Bootloader，作为一个嵌入式开发者势必比较好奇，UEFI相比嵌入式常见Bootloader（u-boot、LK等）区别在哪？</p> 
+ <p style="text-align:left;">UEFI（Unified Extensible Firmware Interface，统一可扩展固件接口）定义了操作系统和平台固件之间的接口，它是UEFI Forum发布的一种标准。它只是一种标准，没有提供实现。下面让我们通过Tianocore社区提供的EDK2源码一窥UEFI的具体实现，相比其他的Bootloader有什么优势特点。</p> 
+ <p style="text-align:left;"><strong>一、UEFI入门</strong></p> 
+ <p style="text-align:left;"><strong>1. 启动过程</strong></p> 
+ <p style="text-align:left;">UEFI系统从上电到关机可分为7个阶段：SEC-&gt; PEI-&gt; DXE-&gt; BDS-&gt; TSL -&gt; RT-&gt; AL</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/2b/ac/u3PYMLlG_o.png" alt="a77872ed3ef0b078cac5608f6d7d82f2.png"></p> 
+ <p style="text-align:left;">开源嵌入式的Bootloader大多分两个阶段（Stage1、Stage2）。</p> 
+ <p style="text-align:left;">Stage1：系统资源环境较少情况下部分硬件初始化，为Stage2准备执行环境。</p> 
+ <p style="text-align:left;">Stage2：系统硬件进一步初始化，定制化功能的实现和操作系统的引导。</p> 
+ <p style="text-align:left;">进行类比，SEC/PEI可以看作是Stage1，DXE/BDS/TSL可以看作是Stage2。</p> 
+ <p style="text-align:left;">l  <strong>SEC阶段/PEI阶段</strong></p> 
+ <p style="text-align:left;">SEC：Security Phase</p> 
+ <p style="text-align:left;">PEI：Pre-EFI Initalization</p> 
+ <p style="text-align:left;">顾名思义，这两个阶段的主要工作是安全校验相关和前期硬件初始化，最重要的是RAM的初始化，让后面的阶段可以执行在外置RAM中。</p> 
+ <p style="text-align:left;">l  <strong>DXE阶段/BDS阶段</strong></p> 
+ <p style="text-align:left;">DXE：Driver Exection Environment</p> 
+ <p style="text-align:left;">BDS：Boot Device Select</p> 
+ <p style="text-align:left;">DXE阶段加载各个驱动模块，驱动模块通过Protocol结构体为后续的应用功能执行提供服务，DXE驱动服务在内存中常驻。BDS实现操作系统的启动顺序的设置。</p> 
+ <p style="text-align:left;">l  <strong>TSL阶段</strong></p> 
+ <p style="text-align:left;">TSL：Transient System Load</p> 
+ <p style="text-align:left;">OSLoader的执行阶段，一般以UEFI应用程序的形式存在。以Android系统为例，需要完成AVB校验，加载Linux Kernel到内存，解析DTB和Kernel cmdline的设置等。</p> 
+ <p style="text-align:left;">高通的UEFI实现有所精简，SEC和PEI作为Stage1放到了一个Module中实现。</p> 
+ <p style="text-align:left;"><strong>2. EDK2目录</strong></p> 
+ <p style="text-align:left;">EDK2根目录下很多以*Pkg命令的文件夹，称之为一个Package，是一组功能的集合。例如MdePkg是基础静态库的集合，MdeModulePkg是PEI、DXE启动过程和常见通用驱动框架服务的集合。Package下各个功能目录称之为Module，Module可编译成efi文件动态加载/卸载。</p> 
+ <p style="text-align:left;"><img src="https://images2.imgbox.com/92/1a/FM7MdFpG_o.png" alt="9527ed41512d6db22bcc95d63d6d1d79.png"></p> 
+ <p style="text-align:left;">dsc和inf文件相当于是Makefile，定义了Module的编译，生成哪些efi文件，fdf文件将众多的efi文件组织打包成烧录镜像。</p> 
+ <p style="text-align:left;"><strong>二、UEFI的特点</strong></p> 
+ <p style="text-align:left;">LK、u-boot等开源的Bootloader都是结构简单的轻量级系统，开发门槛低。UEFI系统虽然较为复杂，但其具有模块扩展性、多任务实现等类操作系统的特性，更易实现复杂功能，且具有较好的开发灵活性，因而高通使用UEFI替换LK作为手机的Bootloader也就不奇怪了。</p> 
+ <p style="text-align:left;"><strong>1. 扩展性</strong></p> 
+ <p style="text-align:left;">UEFI-统一可扩展固件接口，可扩展性是UEFI的突出优势。这主要体现在UEFI可以动态地加载其它编译好的efi镜像，而u-boot在编译完后并不能动态地加载其它定制化的驱动或者命令。那UEFI是如何实现这一特性地呢？</p> 
+ <p style="text-align:left;">DXE是UEFI的核心阶段，这一阶段初始化了Boot Services（后面简称BS），BS为后面的引导过程和应用程序的执行提供了几乎所有基础服务接口。看一下BS的结构：</p> 
+ <p style="text-align:left;"><img src="https://images2.imgbox.com/d4/7c/HcjDlz7w_o.png" alt="0aeeb67baa80a498b338d7d38e491bc7.png"></p> 
+ <p style="text-align:left;">BS中的提供了Image和Protocol的管理接口，Image相关接口提供了efi镜像加载&amp;启动功能，Protocol相关接口则可以找到镜像提供的功能服务。下图描述了Image和Protocol加载到内存后的存储结构，该存储结构揭示了Portocol管理接口如何在Image中找到对应的Protocol服务：接口（HandleProtocol）传入了对应的ImageHandle，则直接通过GUID在IHANDLE的Protocols链表中查找，接口（LocateHandle）没有传对应的ImageHandle则直接在包含所有Protocol的链表中查找。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/70/4a/9eoOGSkZ_o.png" alt="7ed5206f70dd6278c92df3b46fde48a4.png"></p> 
+ <p style="text-align:left;"><strong>efi镜像的加载过程：</strong></p> 
+ <p style="text-align:left;">BDS跳转至TSL阶段时BS调用CoreLoadImage()函数加载TSL的efi镜像，调用过程如下：</p> 
+ <p style="text-align:left;">CoreLoadImage-&gt;CoreLoadImageCommon-&gt;CoreInstallProtocolInterfaceNotify</p> 
+ <p style="text-align:left;">可以看到CoreLoadImage最终申请了一个IHADNLE结构体，并将节点挂到gHandleList列表中。</p> 
+ <p style="text-align:left;"><img src="https://images2.imgbox.com/cb/c8/ggtOC69u_o.png" alt="bb915e0a7a7690e4a1c2e1c5664753a0.png"></p> 
+ <p style="text-align:left;">而后调用CoreStartImage函数最终执行Image的EntryPoint(定义在inf文件中)。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/0a/ee/PIbjDYcw_o.png" alt="d24326b0dec699b781ac171793cba6ba.png"></p> 
+ <p style="text-align:left;">驱动服务模块一般在ModuleEntry中将自身的Protocol注册到ImageHandle中。Protocol的管理接口如何使用就不在赘述。</p> 
+ <p style="text-align:left;"><strong>2. 设备驱动模型</strong></p> 
+ <p style="text-align:left;">UEFI驱动实现了一种类Linux系统的驱动模型，实现了Host Bus、Driver和Device的架构解耦。(DXE_DRIVER可以看做是一种驱动类型的功能服务，不一定需要硬件支持)</p> 
+ <p style="text-align:left;">以SCSI驱动为例，在UEFI中的驱动架构大致如下图：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/b4/d7/JLyXTWya_o.png" alt="25f13fe21d6c0792ae21f308b3ceb6f4.png"></p> 
+ <p style="text-align:left;">UEFI驱动一般分为两部分，一部分是架构部分的Driver Binding Protocol，一部分是和硬件IO相关的Protocol。Driver Binding Protocol用于在UEFI框架中匹配到Device Handle后，触发Start()接口将对应的IO Protocol协议绑定到Device Handle上。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/f3/99/FkqI9kTV_o.png" alt="18b2369ad17a3f039d369016b9c462b9.png"></p> 
+ <p style="text-align:left;">先看SCSI总线驱动的实现，Start()接口扫描总线上的设备，为设备上的LUN创建Controller Handle(即Device)，并安装SCSI通信协议的IOProtocol：</p> 
+ <p style="text-align:left;">SCSIBusDriverBindingStart()-&gt;ScsiScanCreateDevice()</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/7a/54/CHae9dWA_o.png" alt="6c3ba9fb21db39ec33e20a26fa3fba67.png"></p> 
+ <p style="text-align:left;">再看ScsiDisk驱动，安装后匹配到ScsiBus驱动创建的LUN设备，触发Driver Binding Protocol的Start接口，Start接口将BlockIo驱动安装到Controller Handle（即设备）上，这样我们就能在应用或服务中使用BlockIoProtocol的接口读写设备了。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/04/2e/ZB8aCwKc_o.png" alt="d5f9118f4717b25b3d9b6aba607d7a88.png"></p> 
+ <p style="text-align:left;"><strong>3. 多任务机制</strong></p> 
+ <p style="text-align:left;">目前接触的嵌入式Bootloader都是单线程系统，但UEFI实现了Linux系统中类似eloop的单线程多任务机制，UE，eloop机制是通过Linux系统的select/epoll系统调用实现了多任务、定时器等机制，那UEFI中是如何实现这一机制的呢？</p> 
+ <p style="text-align:left;">UEFI中的应用和Event的Notifier可以看作是任务，DXE中初始化的BS提供了事件相关接口实现了异步操作。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/64/5c/slvG0N29_o.png" alt="a449764d7f2c82423bc4a1dd2e9aa08b.png"></p> 
+ <p style="text-align:left;">Event接口可类比Linux系统中的条件变量，对应的存在create、wait、signal等函数。TPL接口用于提升任务的优先级，当优先级大于31时，中断被关闭，这被用于UEFI锁的实现，因为UEFI中任务的调度依赖时钟中断，关中断后其它任务不会再被调度。</p> 
+ <p style="text-align:left;">先讲讲任务如何调度的，再来看看如何触发调度。DXE中调用CoreInitializeEventServices函数初始化Event模块，申请了一个事件队列存储调用任务链表，同优先级的在一个按时间排在一个链表中。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/59/a0/6jzmeSZD_o.png" alt="fa12bfa445ad9efe00397fad5ace4eaf.png"></p> 
+ <p style="text-align:left;">Event的调度过程大致如下：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/29/bc/SEE9c9jO_o.png" alt="748b3f972335ac2aca92fd1cda2494e3.png"></p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/01/87/m8LYZ9G8_o.png" alt="3659b7d1675123222c7d104e2019e1b3.png"></p> 
+ <p style="text-align:left;">CoreRestoreTpl函数依据gEventPending标志位优先级从高到低遍历任务依次执行，清空后标志位置0。</p> 
+ <p style="text-align:left;">下面再来看看调度的时机，每一次释放锁的操作，都会触发高于当前任务等级的任务执行，前面说到任务调度依赖时钟中断，中断处理程序进入CoreTimerTick函数有释放锁的操作，高于当前优先级（TPL_APPLICATION）的任务在此时被调度，即每次TimerTick会导致高优先级任务抢占CPU。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/5c/0c/FvbhXZ51_o.png" alt="addbda87a253492bae9873370b440c74.png"></p> 
+ <p style="text-align:left;">时钟中断到CoreTimerTick的过程，DXE中调用CoreNotifyOnProtocolInstallation 函数注册了CPU架构相关的Protocol，其中包含Timer的Protocol。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/7f/38/W3BUR1he_o.png" alt="719b94b513895377d078830be2c97e19.png"></p> 
+ <p style="text-align:left;">DxeMain-&gt;CoreNotifyOnProtocolInstallation-&gt;GenericProtocolNotify:</p> 
+ <p style="text-align:left;">在注册gTimer之后，GenericProtocolNotify被触发，CoreTimerTick注册到gTimer中断处理函数TimerInterruptHandler中。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/ed/a5/W9d1LmiD_o.png" alt="055fd6dfb4155e696638f618ea27f58b.png"></p> 
+ <p style="text-align:left;">以ArmPkg的gTimer为例：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/3b/ce/wnQj57rF_o.png" alt="a03ed402d9686ad7541cf9d23d7de681.png"></p> 
+ <p style="text-align:left;">最后看看CoreTimerTick的实现：</p> 
+ <p style="text-align:left;"><img src="https://images2.imgbox.com/fa/e6/NGzNYuf6_o.png" alt="57fc6603355a860bd4a630f27faa8029.png"></p> 
+ <p style="text-align:left;">先检查Timer的时间，将Timer任务加入调度列表，最后调用CoreReleaseLock（即RestoreTpl）函数触发了任务调度。</p> 
+ <p style="text-align:left;"><strong>三、小结</strong></p> 
+ <p style="text-align:left;">u-boot、LK和UEFI等Bootloader各有优劣，无所谓哪一种更好，只有合不合适的情况。目前在嵌入式领域应用最广的BL还是u-boot，结构简单，驱动移植和裁剪的门槛低，可以满足绝大部分嵌入式系统的需求，而UEFI在手机、平板等较复杂的嵌入式硬件更具优势，满足手机设备的多样化需求。</p> 
+ <p style="text-align:left;">参考文献</p> 
+ <p style="text-align:left;">1.   EDK2源码：https://github.com/tianocore/edk2</p> 
+ <p style="text-align:left;">2.  《UEFI原理与编程》-- 戴正华</p> 
+ <p style="text-align:left;"><br><img src="https://images2.imgbox.com/02/13/VQ9It6Hn_o.png" alt="4a5d7dfedd8ea5cf40342196f7f05018.gif"></p> 
+ <pre class="has"><code class="language-go">长按关注内核工匠微信
+
+
+Linux 内核黑科技 | 技术文章 | 精选教程</code></pre> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/75e6fea68b63c20511cc2a56bf2831bf/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">MATLAB修饰线条</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/350bcad741db69c256f7ac65117b6735/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">gitee使用教程，创建项目仓库并上传代码</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

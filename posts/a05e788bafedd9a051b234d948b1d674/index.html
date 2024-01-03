@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>java常用垃圾回收器G1和CMS的区别 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="java常用垃圾回收器G1和CMS的区别" />
+<meta property="og:description" content="1 概述 从jdk1.8为界限，几种常用的垃圾回收器如下图所示：
+注意：
+对于Serial-Serial Old 和Parallel Scavenge-Parallel Old这两种垃圾回收器，新生代都采用复制回收算法，老年代采用标记整理算法，区别在于回收时采用一个还是多个线程，缺点也都很一致，就是会产生STW。
+虽然CMS垃圾回收器比其他两种好，但是java8之前还算是默认使用的是PS-PO回收器。
+2 ParNew-CMS（ConcurrentMarkSweep）回收器 与上图说的那样，parNew是一种新生代垃圾回收器，而CMS是一种老年代垃圾回收器，两者常作为搭档应用。
+从他的名字ConcurrentMarkSweep我们就可以顾名思义，它是一种“并发标记清除算法”，新生代采用复制算法，老年代采用标记清除算法。
+注意：
+上面其他两种Serial Old和Parallel Old采用的是标记整理算法。
+而标记清除算法是会产生内存碎片的，CMS怎么解决的呢？
+解决这个问题的办法就是可以让CMS在进行一定次数的Full GC（标记清除）的时候进行一次标记整理算法，CMS提供了一下参数来控制：
+-XX：UseCMSCompactAtFullCollection -XX:CMSFullGCBeforeCompaction=5
+也就是CMS在进行5次Full GC(标记清除）之后进行一次标记整理算法，从而可以控制老年带的碎片在一定数量以内，甚至可以配置CMS在每次Full GC的时候都进行内存的整理。
+2.1 垃圾回收过程 参考链接: CMS&amp;G1垃圾回收算法.
+参考链接: 详解CMS垃圾回收机制.
+新生代采用复制算法，会暂停所有用户线程。
+老年代采用CMS，而这种垃圾回收器的回收过程主要分成四个过程：
+2.1.1 初始标记 初始标记其实就是对被我们GC ROOT直接引用的对象做一个标记，在这个过程中将会触发一次STW（stop the word）机制，但是时间很短可以忽略。
+当前阶段标记老年代的GC Roots对象和新生代存活的对象引用到老年代的对象（非老年代引用新生代，是新生代引用到老年代的跨代引用，这里需要遍历整个新生代，主要是标记老年代的对象可达），然后把这个GC Roots push到标记栈(mark-stack)；
+2.1.2 并发标记 从标记栈(mark-stack)pop出对象，递归遍历出所有的子对象，然后把子对象继续push到标记栈(mark-stack)，重复这个过程直到所有对象被标记，然后标记栈(mark-stack)为空；
+应用线程期间发生：
+新生代晋升老年代；
+直接在老年代分配；
+老年代引用关系发生变化（新增，删除，变更）；
+这些对象在都会触发写屏障标识为dirty，放到一个叫ModUnionTalble（主要是为了解决在YGC时应用程序删除了某个新生代对原来dirty card中对象的引用，写屏障捕获后标识为clean的场景）的类似Card Table（写屏障标识dirty card的动作应该会在每个并发阶段被触发）；
+在进行并发标记的过程中，我们的用户线程和CMS线程会一起执行。CMS所做的一件事情就是把堆里的所有引用对象全部找到并做标记。
+但是在这个过程中可能会发生对象状态被改变的问题。
+1、比如我的一个对象的引用链已经断开，变成了垃圾对象，但是CMS已经对他做过标记判断为非垃圾对象了怎么办？这就是在并发标记过程中产生的浮动垃圾（多标问题）
+2、比如本来一个对象在CMS标记的过程中把他标记成了垃圾对象但是后来我们有引用了，结果在我们用的时候垃圾对象已经被干掉了，那我们是不是在引用这个对象的时候就会找不到这个垃圾对象。（漏标问题）
+这时候我们的第五步就产生了。
+2.1.3 并发预清理（CMS-concurrent-preclean） 扫描新生代确定之前未被标记的老年代对象的可达性，将老年代的对象标记为存活；扫描ModUnionTalble并处理dirty card；
+并发预清理阶段，也是一个并发执行（可与用户线程一起执行）的阶段，主要解决新生代晋升的问题，新分配到老年代的对象以及并发被修改的对象。在本阶段，会查找前一阶段执行过程中,从新生代晋升或新分配或被更新的对象。通过并发地重新扫描这些对象，预清理阶段可以减少下一个stop-the-world 重新标记阶段的工作量。
+并发预处理阶段做的工作还是标记，与重标记功能相似。既然相似为什么要有这一步？
+前面我们讲过，CMS是以获取最短停顿时间为目的的GC。重标记需要STW（Stop The World），因此重标记的工作尽可能多的在并发阶段完成来减少STW的时间。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/a05e788bafedd9a051b234d948b1d674/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-04-10T21:41:04+08:00" />
+<meta property="article:modified_time" content="2022-04-10T21:41:04+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">java常用垃圾回收器G1和CMS的区别</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="1__0"></a>1 概述</h2> 
+<p>   从jdk1.8为界限，几种常用的垃圾回收器如下图所示：<br> <img src="https://images2.imgbox.com/54/86/A2RS69Ce_o.png" alt="在这里插入图片描述"><br> 注意：<br>    对于Serial-Serial Old 和Parallel Scavenge-Parallel Old这两种垃圾回收器，新生代都采用复制回收算法，老年代采用标记整理算法，区别在于回收时采用一个还是多个线程，缺点也都很一致，就是会产生STW。</p> 
+<p>   虽然CMS垃圾回收器比其他两种好，但是java8之前还算是默认使用的是PS-PO回收器。</p> 
+<h2><a id="2_ParNewCMSConcurrentMarkSweep_8"></a>2 ParNew-CMS（ConcurrentMarkSweep）回收器</h2> 
+<p>   与上图说的那样，parNew是一种新生代垃圾回收器，而CMS是一种老年代垃圾回收器，两者常作为搭档应用。<br>   从他的名字ConcurrentMarkSweep我们就可以顾名思义，它是一种“并发标记清除算法”，新生代采用复制算法，老年代采用标记清除算法。</p> 
+<p>注意：<br>   上面其他两种Serial Old和Parallel Old采用的是标记整理算法。</p> 
+<p>  而标记清除算法是会产生内存碎片的，CMS怎么解决的呢？</p> 
+<p>  解决这个问题的办法就是可以让CMS在进行一定次数的Full GC（标记清除）的时候进行一次标记整理算法，CMS提供了一下参数来控制：</p> 
+<p>  -XX：UseCMSCompactAtFullCollection -XX:CMSFullGCBeforeCompaction=5</p> 
+<p>  也就是CMS在进行5次Full GC(标记清除）之后进行一次标记整理算法，从而可以控制老年带的碎片在一定数量以内，甚至可以配置CMS在每次Full GC的时候都进行内存的整理。</p> 
+<h3><a id="21__26"></a>2.1 垃圾回收过程</h3> 
+<p>  参考链接: <a href="https://zhuanlan.zhihu.com/p/361377545" rel="nofollow">CMS&amp;G1垃圾回收算法</a>.<br>   参考链接: <a href="https://www.cnblogs.com/lzmrex/articles/12887198.html" rel="nofollow">详解CMS垃圾回收机制</a>.</p> 
+<p>  新生代采用复制算法，会暂停所有用户线程。</p> 
+<p>  老年代采用CMS，而这种垃圾回收器的回收过程主要分成四个过程：</p> 
+<h4><a id="211__34"></a>2.1.1 初始标记</h4> 
+<p>  初始标记其实就是对被我们GC ROOT直接引用的对象做一个标记，在这个过程中将会触发一次STW（stop the word）机制，但是时间很短可以忽略。</p> 
+<p>  当前阶段标记老年代的GC Roots对象和新生代存活的对象引用到老年代的对象（非老年代引用新生代，是新生代引用到老年代的跨代引用，这里需要遍历整个新生代，主要是标记老年代的对象可达），然后把这个GC Roots push到标记栈(mark-stack)；</p> 
+<h4><a id="212__40"></a>2.1.2 并发标记</h4> 
+<p>  从标记栈(mark-stack)pop出对象，递归遍历出所有的子对象，然后把子对象继续push到标记栈(mark-stack)，重复这个过程直到所有对象被标记，然后标记栈(mark-stack)为空；</p> 
+<p>  应用线程期间发生：<br>   新生代晋升老年代；<br>   直接在老年代分配；<br>   老年代引用关系发生变化（新增，删除，变更）；</p> 
+<p>  这些对象在都会触发写屏障标识为dirty，放到一个叫ModUnionTalble（主要是为了解决在YGC时应用程序删除了某个新生代对原来dirty card中对象的引用，写屏障捕获后标识为clean的场景）的类似Card Table（写屏障标识dirty card的动作应该会在每个并发阶段被触发）；</p> 
+<p>  在进行并发标记的过程中，我们的用户线程和CMS线程会一起执行。CMS所做的一件事情就是把堆里的所有引用对象全部找到并做标记。</p> 
+<p>  但是在这个过程中可能会发生对象状态被改变的问题。<br>   1、比如我的一个对象的引用链已经断开，变成了垃圾对象，但是CMS已经对他做过标记判断为非垃圾对象了怎么办？这就是在并发标记过程中产生的浮动垃圾（多标问题）<br>   2、比如本来一个对象在CMS标记的过程中把他标记成了垃圾对象但是后来我们有引用了，结果在我们用的时候垃圾对象已经被干掉了，那我们是不是在引用这个对象的时候就会找不到这个垃圾对象。（漏标问题）</p> 
+<p>  这时候我们的第五步就产生了。</p> 
+<h4><a id="213_CMSconcurrentpreclean_58"></a>2.1.3 并发预清理（CMS-concurrent-preclean）</h4> 
+<p>  扫描新生代确定之前未被标记的老年代对象的可达性，将老年代的对象标记为存活；扫描ModUnionTalble并处理dirty card；</p> 
+<p>  并发预清理阶段，也是一个并发执行（可与用户线程一起执行）的阶段，<strong>主要解决新生代晋升的问题，新分配到老年代的对象以及并发被修改的对象</strong>。在本阶段，会查找前一阶段执行过程中,从新生代晋升或新分配或被更新的对象。通过并发地重新扫描这些对象，预清理阶段可以减少下一个stop-the-world 重新标记阶段的工作量。</p> 
+<p>  并发预处理阶段做的工作还是标记，与重标记功能相似。既然相似为什么要有这一步？</p> 
+<p>  前面我们讲过，CMS是以获取最短停顿时间为目的的GC。重标记需要STW（Stop The World），因此重标记的工作尽可能多的在并发阶段完成来减少STW的时间。</p> 
+<h4><a id="214_CMSconcurrentabortablepreclean_67"></a>2.1.4 并发可中止的预清理（CMS-concurrent-abortable-preclean）</h4> 
+<p>  这个阶段其实跟上一个阶段做的东西一样，也是为了减少下一个STW重新标记阶段的工作量。增加这一阶段是为了让我们可以控制这个阶段的结束时机，比如扫描多长时间（默认5秒）或者Eden区使用占比达到期望比例（默认50%）就结束本阶段。</p> 
+<p>  这个阶段主要是为了尽可能的引发一次YGC，为下一个阶段扫描整个新生代减轻负担；</p> 
+<h4><a id="215__72"></a>2.1.5 重新标记</h4> 
+<p>  STW，完成标记整个老年代所有存活的对象：<br>   遍历整个新生代，重新标记（因为之前的并发阶段应用程序还是在并行执行，所以会存在老年代未被标记的对象被新生代引用，需要遍历新生代来确保该老年代对象是否可达）；<br>   根据GC Roots重新标记；<br>   遍历老年代的Dirty Card，重新标记，这里的Dirty Card大部分已经在clean阶段处理过；<br>   扫描整个新生代、老年代GC Roots、老年代的dirty card；<br>   上面的所有操作基本上都是为了减少重新标记的暂停时间，这个阶段可以通过开启参数  CMSScavengeBeforeRemark使得在此之前做一次YGC；</p> 
+<p>  在这一步，CMS会触发STW机制，并修复并发标记状态已经改变的对象，但是这个过程会比较漫长。</p> 
+<p>  暂停所有用户线程，重新扫描堆中的对象，进行可达性分析,标记活着的对象。有了前面的基础，这个阶段的工作量被大大减轻，停顿时间因此也会减少。注意这个阶段是多线程的。</p> 
+<p>  使用的标记算法三色标记算法。<a href="https://www.cnblogs.com/krock/p/14409225.html" rel="nofollow">三色标记法</a>.</p> 
+<h4><a id="215__86"></a>2.1.5 并发清理</h4> 
+<p>   用户线程被重新激活，同时清理那些无效的对象。</p> 
+<h4><a id="216__89"></a>2.1.6 并发重置</h4> 
+<p>  CMS重置本次GC过程中的标记数据，为下次回收做准备。</p> 
+<h2><a id="3_G1_93"></a>3 G1回收器</h2> 
+<p>  在jdk1.9之后，G1便是默认的垃圾回收器，用于替代CMS，而同时，一种回收器通吃新生代和老年代回收。</p> 
+<h3><a id="31_G1_96"></a>3.1 G1的内存布局</h3> 
+<p>  G1摒弃了以往的堆内存分代思想，而是将内存分为等大的区域块：利用参数 -XX：GCHeapRegionSize = N，默认2048个区域。并且每个区域不在固定，可以是Eden，也可以是Surviver也可以是Old，也就是说，这三个区域从此不再连续了，并且分配了一个Humongous区域（属于老年代）来存放那些大小超过一个区域的一半的超大对象，如图所示：<br> <img src="https://images2.imgbox.com/b1/a8/slCP7ObD_o.png" alt="![在这里插入图片描述](https://img-blog.csdnimg.cn/b4b75724ade745a3b8ccba7c24c95d19.png?x-oss-process=image/watermark,type_d3F5LXplbmhlaQ,shadow_50,text_Q1NETiBA55m95![rO95LiK5qCR,size_20,color_FFFFFF,t_70,g_se,x_16"></p> 
+<h3><a id="32_G1_99"></a>3.2 G1收集器底层原理</h3> 
+<p>  G1运作过程</p> 
+<p>  1.初始标记：标记GC Roots能直接关联到的对象。修改TAMS指针(Top at Mark Start），【G1为每个Region分配了两个指针，用于记录回收过程中新对象的分配】，短暂停顿用户线程，借用Minor GC时完成。<br>   2.并发标记：从GC Roots开始递归扫描整个堆，对堆中对象进行可达性分析。【与用户线程并发执行，并发过程漏标对象使用SATB(snapshot-at-the-beginning)算法记录】<br>   3.最终标记：短暂停顿用户线程，处理并发阶段遗留的漏标对象。<br>   4.筛选回收：对各个Region的回收价值和成本进行排序，根据用户期望的停顿时间，制定回收计划，回收一部分Region。【两种回收模式，Young GC、Mixed GC】</p> 
+<h3><a id="33_Young_GC_107"></a>3.3 Young GC</h3> 
+<p>  G1在回收年轻代的时候，是会产生STW的，它不会回收整个堆，而是回收一个Collection Set（CS：回收区域集合）来进行回收，并且会估计整个Region的垃圾比例，优先回收垃圾占比高的Region。</p> 
+<p>  但是这里必须考虑两个问题：<br>   1、跨代引用（老年代对象持有年轻代引用）<br>   2、不同Region之间互相引用</p> 
+<p>  解决方法：<br>   GC又将Region分成很多个卡片，并引入两个数据结构Card Table（用来记录卡片） 和 Remember Set（RS：被引用对象的Region用来记录引用对象的Card）。也就是说当两个Region有对象互相引用的时候，就会将引用对象的Card记录在另一个区域的RS里面，这样我们回收对象的时候，出现这种引用情况就不需要引用整个堆，而只需要扫描那个对应的Card就可以了，这是一个典型的“空换时”的概念。<br> <img src="https://images2.imgbox.com/82/11/z00KXMee_o.png" alt="在这里插入图片描述"></p> 
+<p>  年轻代垃圾回收只会回收Eden区和Survivor区。YGC时,首先G1停止应用程序的执行(Stop-The-World),G1创建回收集(Collection Set),回收集是指需要被回收的内存分段的集合,年轻代回收过程的回收集包含年轻代Eden区和Survivor区所有的内存分段。</p> 
+<p>  1）第一阶段,扫描根。根是指static变量指向的对象,正在执行的方法调用链条上的局部变量等。跟引用连同RSet记录的外部引用作为扫描存活对象的入口。</p> 
+<p>  2）第二阶段,更新RSet。处理dirty card queue中的card,更新RSet。此阶段完成后,RSet可以准确的反映老年代对所在的内存分段中对象的引用。</p> 
+<p>  3）第三阶段,处理RSet。识别被老年代对象指向的Eden中的对象,这些被指向的Eden中的对象被认为是存活的对象。</p> 
+<p>  4）第四阶段,复制对象。此阶段,对象树被遍历,Eden区内存段中存活的对象会被复制到Survivor区中空的内存分段,Survivor区内存段中存活的对象如果年龄未达阈值,年龄会加1,达到阈值会被复制到Old区中空的内存分段。如果Survivor空间不够,Eden空间的部分数据会直接晋升到老年代空间。</p> 
+<p>  5）第五阶段,处理引用。处理Soft,Weak,Phantom,Final,JNI Weak 等引用。最终Eden空间的数据为空,GC停止工作,而目标内存中的对象都是连续存储的,没有碎片,所以复制过程可以达到内存整理的效果,减少碎片。</p> 
+<h3><a id="34__130"></a>3.4 并发标记</h3> 
+<p>  当整个堆大小在jvm堆栈空间中占比达到IHOP阈值-XX:InitiatingHeapOccupancyPercent(默认45%)时，G1就会启动一次混合垃圾收集周期。Mix GC不仅进行正常的新生代垃圾收集，同时也回收部分后台扫描线程标记的老年代分区。进行Mix GC之前，会先进行全局并发标记。</p> 
+<p>  1）初始标记（InitingMark）:标记GC Roots，会STW,一般会复用YoungGC的暂停时间。初始标记会设置好所有分区的NTAMS值。</p> 
+<p>  2）根分区扫描（RootRegionScan）：根据初始标记阶段确定的GC根元素，扫描这些元素所在region，获取对老年代的引用，并标记被引用的对象。 该阶段与应用线程并发执行，也就是说没有STW停顿，必须在下一次年轻代GC开始之前完成。</p> 
+<p>  3）并发标记（ConcurrentMark）：遍历整个堆，查找所有可达的存活对象。若发现区域对象中的所有对象都是垃圾,那这个区域会被立即回收。 此阶段与应用线程并发执行， 也允许被年轻代GC打断。</p> 
+<p>  4）最终标记（Remark）：此阶段有一次STW暂停，以完成标记周期。 G1会清空SATB缓冲区，跟踪未访问到的存活对象，并进行引用处理。</p> 
+<p>  5）清除阶段（Clean UP）： 这是最后的子阶段，G1在执行统计和清理RSet时会有一次STW停顿。 在统计过程中，会把完全空闲的region标记出来，也会标记出适合于进行混合模式GC的候选region。 清理阶段有一部分是并发执行的，比如在重置空闲region并将其加入空闲列表时。</p> 
+<p>  清除阶段之后，还会对存活对象进行转移（复制算法），转移到其他可用分区，所以当前的分区就变成了新的可用分区。复制转移主要是为了解决分区内的碎片问题。</p> 
+<h3><a id="35_MixedGc_146"></a>3.5 MixedGc</h3> 
+<p>  1）并发标记结束以后,老年代中百分百为垃圾的内存分段被回收了,部分为垃圾的内存分段被计算了出来。默认情况下,这些老年代的内存分段会分8次(可以通过-XX:G1MixedGCCountTarget设置)被回收。</p> 
+<p>  2）混合回收的回收集(Collection Set)包括八分之一的老年代内存分段,Eden区内存分段,Survivor区内存分段。混合回收的算法和年轻代回收的算法完全一样,只是回收集多了老年代的内存分段。具体过程请参考年轻代回收过程。</p> 
+<p>  3）由于老年代中的内存分段默认分8次回收,G1会优先回收垃圾多的内存分段。垃圾占内存分段比例越高,越会被先回收。并且有一个阈值会决定内存分段是否被回收。-XX:G1MixedGCLiveThresholdPercent,默认为65%,意思是垃圾占内存分段比例要达到65%才会被回收。如果垃圾占比太低,意味着存活的对象占比高,在复制的时候会花费更多的时间。</p> 
+<p>  4）混合回收并不一定要进行8次。有一个阈值-XX:G1HeapWastePercent,默认值为10%,意思是允许整个堆内存中有10%的空间被浪费,意味着如果发现可以回收的垃圾占堆内存的比例低于10%,则不再进行混合回收。因为GC会花费很多的时间但是回收到的内存却很少。</p> 
+<h2><a id="4_G1CMS_155"></a>4 G1和CMS对比</h2> 
+<p>  1.CMS是老年代回收器，G1有YGC和Mixed GC来回收新生代和老年代；</p> 
+<p>  2.STW时间，CMS是整个回收过程以达到最小的暂停时间为目标，G1软实时，暂停时间可控；</p> 
+<p>  3.垃圾碎片，CMS是标记-清除算法容易产生碎片，G1是标记整理，降低了空间碎片（不易导致fullgc）；</p> 
+<p>  4.回收过程不一致；</p> 
+<p>  5.大对象，CMS过大的对象会提前晋升或直接在老年代分配，G1可以使用多个region保存，避免晋升和直接在老年代分配导致老年代空间的消耗而引发fullgc；</p> 
+<p>  6.CMS的并发清理阶段会造成浮动垃圾无法回收，G1的清除阶段是STW;</p> 
+<p>  CMS适用于对暂停时间敏感的系统；</p> 
+<p>  G1适用于内存较大的系统，内存吃紧GC效果不如传统GC，内存太小会导致转移失败导致fullgc；</p> 
+<p>  7.关于漏标问题<br>    CMS采用增量更新解决，当一个白色的对象被一个黑色对象引用，【将黑色对象重新标记为灰色】，让垃圾回收器重新扫描。<br>   G1中的解决方案：SATB(snapshot-at-the-beginning)：当B-&gt;C的引用链消失时，将C推到GC的堆栈上，保证C还能被GC扫描到。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2a4ab7db58df3cc4115ed57df82f019e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">python_飞机大战源代码</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f5ceb3c19bfd99d35b592d77f798b1ab/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">redis和mysql如何保持数据一致性</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

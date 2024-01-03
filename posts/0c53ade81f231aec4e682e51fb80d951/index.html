@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>车载Android应用开发与分析 - 初试 SystemUI Plugin - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="车载Android应用开发与分析 - 初试 SystemUI Plugin" />
+<meta property="og:description" content="在前面的视频、文章中我们介绍完了整个车载Android应用开发所需要的基础知识：
+【视频文稿】车载Android应用开发与分析 - 走进车载操作系统 - 掘金【视频文稿】车载Android应用开发与分析 - AOSP的下载与编译 - 掘金【视频文稿】车载Android应用开发与分析 - 开发系统应用 - 掘金【视频文稿】车载Android应用开发与分析 - AIDL实践与封装(上) - 掘金【视频文稿】车载Android应用开发与分析 - AIDL实践与封装(下) - 掘金 本期内容，我们介绍原生Android Automotive中车载应用的实现方式和它的原理。首先要介绍的就是车载应用开发中非常重要的一个系统应用，Android系统的UI - SystemUI。
+由于原生Android系统的SystemUI代码量很大、内容也非常庞杂，这里我会挑选出对车载SystemUI开发具有参考意义的模块进行介绍，大约会有4-5期的内容，主要分为以下几个模块：
+车载Android应用开发与分析 - SystemUI 「功能」与「源码结构」分析 - 掘金车载Android应用开发与分析 - 初试 SystemUI Plugin SystemUI的源代码可能是所有Android原生应用中最复杂的一个，当我们需要定制SystemUI时，庞大的源码量会对的定制化开发带来巨大的潜在风险。所以目前车载SystemUI常见的做法就是，从原生SystemUI中移植少量必须的源码，然后从头定制一个源码、功能完全可控的SystemUI。
+重新开发一个SystemUI就是唯一的选项吗？当然不是！Google官方早就注意到了这个问题，所以SystemUI中提供插件化的开发方式 - SystemUI Plugin。
+本文源码地址：/frameworks/base/&#43;/refs/heads/main/packages/SystemUI/plugin/ExamplePlugin/
+本文源码环境基于Android 13
+SystemUI Plugin SystemUI plugin机制是一种让SystemUI的功能可以被动态替换或修改的方法，它可以让开发者快速创建和迭代SystemUI的原型，而尽可能少的修改SystemUI的主框架。
+注意：使用Plugin并不能保证我们完全不需要修改SystemUI的主框架，毕竟需求永远是多变的。
+Plugin Hooks Plugin hooks是一些预定义的插件接口，它们可以让应用实现一些特定的功能，并通过Intent和注解来注册和声明插件的类型和版本。Plugin hooks有多种类型，例如OverlayPlugin, QSFactory, VolumeDialog等，每种类型都有一个对应的action和expected interface，用于标识插件的功能和要求。
+Android 13中Plugin hooks预定义接口主要有以下几种：
+BcSmartspaceDataPlugin：这个plugin可以让应用提供自定义的数据给锁屏界面上的智能空间（BcSmartspace），例如天气、日历、新闻等。ClockProviderPlugin：这个plugin可以让应用提供自定义的时钟样式给锁屏界面和始终应用。DozeServicePlugin：这个plugin可以让应用自定义Doze模式的行为，例如控制屏幕亮度、显示内容、传感器等。FalsingPlugin：这个plugin可以让应用自定义对误触（Falsing）事件的检测和处理，例如判断用户是否真的想滑动通知栏或解锁屏幕等。GlobalActions：这个plugin可以让应用自定义全局操作（GlobalActions）对话框的外观和行为，例如添加新的操作按钮或改变对话框样式。GlobalActionsPanelPlugin：这个plugin可以让应用在全局操作对话框中添加一个可展开的面板，用于显示更多的操作选项或信息。IntentButtonProvider：这个plugin可以让应用在锁屏界面上添加一个自定义的按钮，用于启动一个指定的Intent。NavigationEdgeBackPlugin：这个plugin可以让应用自定义导航栏边缘返回（NavigationEdgeBack）手势的行为，例如改变触发区域或动画效果。NotificationListenerController：这个plugin可以让应用控制通知监听器（NotificationListener）服务的连接和断开，以及获取通知事件和数据。NotificationMenuRowPlugin：这个plugin可以让应用自定义通知菜单栏（NotificationMenuRow）的外观和行为，例如添加新的菜单项或改变菜单样式。NotificationPersonExtractorPlugin：这个plugin可以让应用自定义从通知中提取人物信息（NotificationPersonExtractor）的逻辑，例如识别通知中包含的联系人或头像等。OverlayPlugin：这个plugin可以让应用自定义覆盖在通知栏上方的视图（OverlayView），用于显示一些额外的内容或功能。PluginFragment：这个plugin可以让应用在SystemUI中嵌入一个Fragment，用于显示一些自定义的界面或功能。QSFactory：这个plugin可以让应用提供自定义的快速设置工厂（QSFactory），用于创建快速设置图块或面板。SensorManagerPlugin：这个plugin可以让应用使用SensorManager服务来注册和取消注册传感器监听器，以及获取传感器事件和数据。ToastPlugin：这个plugin可以让应用自定义Toast消息（Toast）的外观和行为，例如改变Toast位置或持续时间等。ViewProvider：这个plugin可以让应用提供一个自定义的视图（View），用于替换SystemUI中某些组件或功能。VolumeDialog：这个plugin可以让应用自定义音量调节对话框（VolumeDialog）的外观和行为，例如添加新的音量控制选项或改变音量条的样式。 Plugin 上手 创建一个AndroidStudio的SystemUI plugin项目，可以参考以下的步骤：
+1）编译SystemUIPluginLib.jar
+使用Plugin之前我们需要编译出SystemUIPluginLib.jar，在AOSP源码根目录执行下面的指令。
+make SystemUIPluginLib 然后就可以在下面的目录中得到SystemUIPluginLib." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/0c53ade81f231aec4e682e51fb80d951/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-09-13T10:09:07+08:00" />
+<meta property="article:modified_time" content="2023-09-13T10:09:07+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">车载Android应用开发与分析 - 初试 SystemUI Plugin</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>在前面的视频、文章中我们介绍完了整个车载Android应用开发所需要的基础知识：</p> 
+<ol><li><strong><a href="https://juejin.cn/post/7199269310295801916" rel="nofollow">【视频文稿】车载Android应用开发与分析 - 走进车载操作系统 - 掘金</a></strong></li><li><strong><a href="https://juejin.cn/post/7202826051541532727" rel="nofollow">【视频文稿】车载Android应用开发与分析 - AOSP的下载与编译 - 掘金</a></strong></li><li><strong><a href="https://juejin.cn/post/7208839038018502693" rel="nofollow">【视频文稿】车载Android应用开发与分析 - 开发系统应用 - 掘金</a></strong></li><li><strong><a href="https://juejin.cn/post/7221328463692120119" rel="nofollow">【视频文稿】车载Android应用开发与分析 - AIDL实践与封装(上) - 掘金</a></strong></li><li><strong><a href="https://juejin.cn/post/7236009756530933819" rel="nofollow">【视频文稿】车载Android应用开发与分析 - AIDL实践与封装(下) - 掘金</a></strong></li></ol> 
+<p>本期内容，我们介绍原生<strong>Android Automotive</strong>中车载应用的实现方式和它的原理。首先要介绍的就是车载应用开发中非常重要的一个系统应用，Android系统的UI - <code>SystemUI</code>。</p> 
+<p>由于原生Android系统的<code>SystemUI</code>代码量很大、内容也非常庞杂，这里我会挑选出对车载<code>SystemUI</code>开发具有参考意义的模块进行介绍，大约会有4-5期的内容，主要分为以下几个模块：</p> 
+<ol><li><strong><a href="https://juejin.cn/post/7252708463946629180" rel="nofollow">车载Android应用开发与分析 - SystemUI 「功能」与「源码结构」分析 - 掘金</a></strong></li><li>车载Android应用开发与分析 - 初试 SystemUI Plugin</li></ol> 
+<hr> 
+<p>SystemUI的源代码可能是所有Android原生应用中最复杂的一个，当我们需要定制SystemUI时，庞大的源码量会对的定制化开发带来巨大的潜在风险。所以目前车载SystemUI常见的做法就是，从原生SystemUI中移植少量必须的源码，然后从头定制一个源码、功能完全可控的SystemUI。</p> 
+<p>重新开发一个SystemUI就是唯一的选项吗？当然不是！Google官方早就注意到了这个问题，所以SystemUI中提供插件化的开发方式 - SystemUI Plugin。</p> 
+<blockquote> 
+ <p>本文源码地址：<a href="https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/packages/SystemUI/plugin/ExamplePlugin/" rel="nofollow">/frameworks/base/+/refs/heads/main/packages/SystemUI/plugin/ExamplePlugin/</a></p> 
+ <p>本文源码环境基于Android 13</p> 
+</blockquote> 
+<h3><a id="SystemUI_Plugin_26"></a>SystemUI Plugin</h3> 
+<p>SystemUI plugin机制是一种让SystemUI的功能可以被动态替换或修改的方法，它可以让开发者快速创建和迭代SystemUI的原型，而<strong>尽可能少</strong>的修改SystemUI的主框架。</p> 
+<blockquote> 
+ <p>注意：使用Plugin并不能保证我们完全不需要修改SystemUI的主框架，毕竟需求永远是多变的。</p> 
+</blockquote> 
+<h3><a id="Plugin_Hooks_38"></a>Plugin Hooks</h3> 
+<p>Plugin hooks是一些预定义的插件接口，它们可以让应用实现一些特定的功能，并通过Intent和注解来注册和声明插件的类型和版本。Plugin hooks有多种类型，例如OverlayPlugin, QSFactory, VolumeDialog等，每种类型都有一个对应的action和expected interface，用于标识插件的功能和要求。</p> 
+<p>Android 13中Plugin hooks预定义接口主要有以下几种：</p> 
+<ul><li><strong>BcSmartspaceDataPlugin</strong>：这个plugin可以让应用提供自定义的数据给锁屏界面上的智能空间（BcSmartspace），例如天气、日历、新闻等。</li><li><strong>ClockProviderPlugin</strong>：这个plugin可以让应用提供自定义的时钟样式给锁屏界面和始终应用。</li><li><strong>DozeServicePlugin</strong>：这个plugin可以让应用自定义Doze模式的行为，例如控制屏幕亮度、显示内容、传感器等。</li><li><strong>FalsingPlugin</strong>：这个plugin可以让应用自定义对误触（Falsing）事件的检测和处理，例如判断用户是否真的想滑动通知栏或解锁屏幕等。</li><li><strong>GlobalActions</strong>：这个plugin可以让应用自定义全局操作（GlobalActions）对话框的外观和行为，例如添加新的操作按钮或改变对话框样式。</li><li><strong>GlobalActionsPanelPlugin</strong>：这个plugin可以让应用在全局操作对话框中添加一个可展开的面板，用于显示更多的操作选项或信息。</li><li><strong>IntentButtonProvider</strong>：这个plugin可以让应用在锁屏界面上添加一个自定义的按钮，用于启动一个指定的Intent。</li><li><strong>NavigationEdgeBackPlugin</strong>：这个plugin可以让应用自定义导航栏边缘返回（NavigationEdgeBack）手势的行为，例如改变触发区域或动画效果。</li><li><strong>NotificationListenerController</strong>：这个plugin可以让应用控制通知监听器（NotificationListener）服务的连接和断开，以及获取通知事件和数据。</li><li><strong>NotificationMenuRowPlugin</strong>：这个plugin可以让应用自定义通知菜单栏（NotificationMenuRow）的外观和行为，例如添加新的菜单项或改变菜单样式。</li><li><strong>NotificationPersonExtractorPlugin</strong>：这个plugin可以让应用自定义从通知中提取人物信息（NotificationPersonExtractor）的逻辑，例如识别通知中包含的联系人或头像等。</li><li><strong>OverlayPlugin</strong>：这个plugin可以让应用自定义覆盖在通知栏上方的视图（OverlayView），用于显示一些额外的内容或功能。</li><li><strong>PluginFragment</strong>：这个plugin可以让应用在SystemUI中嵌入一个Fragment，用于显示一些自定义的界面或功能。</li><li><strong>QSFactory</strong>：这个plugin可以让应用提供自定义的快速设置工厂（QSFactory），用于创建快速设置图块或面板。</li><li><strong>SensorManagerPlugin</strong>：这个plugin可以让应用使用SensorManager服务来注册和取消注册传感器监听器，以及获取传感器事件和数据。</li><li><strong>ToastPlugin</strong>：这个plugin可以让应用自定义Toast消息（Toast）的外观和行为，例如改变Toast位置或持续时间等。</li><li><strong>ViewProvider</strong>：这个plugin可以让应用提供一个自定义的视图（View），用于替换SystemUI中某些组件或功能。</li><li><strong>VolumeDialog</strong>：这个plugin可以让应用自定义音量调节对话框（VolumeDialog）的外观和行为，例如添加新的音量控制选项或改变音量条的样式。</li></ul> 
+<h3><a id="Plugin__66"></a>Plugin 上手</h3> 
+<p>创建一个AndroidStudio的SystemUI plugin项目，可以参考以下的步骤：</p> 
+<p><strong>1）编译SystemUIPluginLib.jar</strong></p> 
+<p>使用Plugin之前我们需要编译出<code>SystemUIPluginLib.jar</code>，在AOSP源码根目录执行下面的指令。</p> 
+<pre><code>make SystemUIPluginLib
+</code></pre> 
+<p>然后就可以在下面的目录中得到<code>SystemUIPluginLib.jar</code></p> 
+<pre><code>out/target/product/emulator_x86/obj/JAVA_LIBRARIES/SystemUIPluginLib_intermediates/javalib.jar
+</code></pre> 
+<blockquote> 
+ <p>在AOSP的文档中建议使用 frameworks/base/packages/SystemUI/plugin/update_plugin_lib.sh 脚本编译 SystemUIPluginLib.jar，不过我编译时出现了环境配置问题。</p> 
+</blockquote> 
+<p><strong>2）配置系统签名</strong></p> 
+<p>在build.gradle中配置系统签名。</p> 
+<pre><code>android {
+    ...
+    signingConfigs {
+        sign {
+            storeFile file('system.keystore')
+            storePassword '123456'
+            keyAlias 'cardemo'
+            keyPassword '123456'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.sign
+        }
+        debug {
+            minifyEnabled false
+            signingConfig signingConfigs.sign
+        }
+    }
+}
+</code></pre> 
+<p>关于如何制作系统签名，请参考：<strong><a href="https://juejin.cn/post/7208839038018502693" rel="nofollow">车载Android应用开发与分析 - 开发系统应用 - 掘金</a></strong></p> 
+<p><strong>3）创建一个Plugin</strong></p> 
+<p>在plugin项目中定义一个类，实现自Plugin中已经提供的各种插件，并使用Requires注解声明target和version字段，这些字段用于标识插件的类型和版本。</p> 
+<pre><code>@Requires(target = OverlayPlugin.class, version = OverlayPlugin.VERSION)
+public class SampleOverlayPlugin implements OverlayPlugin {
+    private static final String TAG = "SampleOverlayPlugin";
+    private Context mPluginContext;
+
+    private View mStatusBarView;
+    private View mNavBarView;
+
+    @Override
+    public void onCreate(Context sysuiContext, Context pluginContext) {
+        Log.d(TAG, "onCreate");
+        mPluginContext = pluginContext;
+    }
+
+    @Override
+    public void onDestroy() {
+        if (mInputSetup) {
+            mStatusBarView.getViewTreeObserver().removeOnComputeInternalInsetsListener(
+                    onComputeInternalInsetsListener);
+        }
+        Log.d(TAG, "onDestroy");
+        if (mStatusBarView != null) {
+            mStatusBarView.post(() -&gt; ((ViewGroup) mStatusBarView.getParent()).removeView(mStatusBarView));
+        }
+        if (mNavBarView != null) {
+            mNavBarView.post(() -&gt; ((ViewGroup) mNavBarView.getParent()).removeView(mNavBarView));
+        }
+    }
+
+@Override
+public void setup(View notificationShadeWindowView, View navBar) {
+    Log.d(TAG, "Setup");
+    if (notificationShadeWindowView instanceof ViewGroup) {
+        mStatusBarView = LayoutInflater.from(mPluginContext)
+                .inflate(R.layout.colored_overlay, (ViewGroup) notificationShadeWindowView, false);
+        ((ViewGroup) notificationShadeWindowView).removeAllViews();
+        ((ViewGroup) notificationShadeWindowView).addView(mStatusBarView);
+    }
+    if (navBar instanceof ViewGroup) {
+        mNavBarView = LayoutInflater.from(mPluginContext)
+                .inflate(R.layout.colored_overlay, (ViewGroup) navBar, false);
+        ((ViewGroup) navBar).removeAllViews();
+        ((ViewGroup) navBar).addView(mNavBarView);
+    }
+}
+}
+</code></pre> 
+<blockquote> 
+ <p>注意：Android不同版本中SystemUI的代码存在不小的差异，例如：Android13中setup(View statusBar, View navBar)中返回的statusBar实际上是NotificationShadeWindowView。</p> 
+</blockquote> 
+<p><strong>4）注册Plugin</strong></p> 
+<p>在plugin项目的AndroidManifest中注册一个service，使用action和permission属性指定插件的接口和权限，这样SystemUI就可以通过Intent找到插件。</p> 
+<pre><code>&lt;uses-permission android:name="com.android.systemui.permission.PLUGIN" /&gt;
+
+&lt;application&gt;
+
+    &lt;service
+        android:name=".SampleOverlayPlugin"
+        android:exported="false"
+        android:label="@string/plugin_label"
+        tools:ignore="Instantiatable"&gt;
+        &lt;intent-filter&gt;
+            &lt;action android:name="com.android.systemui.action.PLUGIN_OVERLAY" /&gt;
+        &lt;/intent-filter&gt;
+    &lt;/service&gt;
+
+&lt;/application&gt;
+</code></pre> 
+<p> 的name可以在我们实现的plugin接口中找到。</p> 
+<p><img src="https://images2.imgbox.com/47/eb/dRugqFxq_o.png" alt=""></p> 
+<p>SystemUI为了保证系统安全，对于plugin的加载，构筑了两道防线：</p> 
+<p>第一道防线是Build.IS_DEBUGGABLE检查。SysUI 在扫描或加载设备上的任何插件之前，会检查Build.IS_DEBUGGABLE，以确保构建是可调试的。</p> 
+<p>第二道防线是就是签名权限。所有插件都必须被系统签名且持有<code>com.android.systemui.permission.PLUGIN</code>权限才能加载其任何代码，否则将记录违规行为，并忽略插件。</p> 
+<p><strong>5）运行Plugin</strong></p> 
+<p>将plugin.apk push 到Android 13 模拟器的/system/priv-app/ 目录下，重启。可以看到如下的效果：</p> 
+<ol><li>NavBar的所有子View被移除，并添加了一个红色的View；</li><li>NotificationShadeWindowView的所有子View被移除，并添加了一个红色的View。</li></ol> 
+<p><img src="https://images2.imgbox.com/c1/fa/486SZDef_o.gif" alt=""></p> 
+<h3><a id="_231"></a>总结</h3> 
+<p>本文初试了SystemUI插件机制，在编写本文时发现Plugin相关的资料少的可怜，即使是官方资料有的也过时了。所以就像标题那样，本文只是简单尝试了Plugin，如何使用Plugin来详细定制一个完全符合我们需求的SystemUI呢？这个我们放到以后再写，因为接下来需要先来分析SystemUI Plugin的原理，在资料如此稀少的情况下，不了解原理几乎无法写出符合需求的Plugin。在分析的原理的过程中，我们会逐步补完、理解一些Plugin的概念。</p> 
+<p>以上就是本文的所有内容，感谢你的阅读，希望对你所有帮助。</p> 
+<p>参考资料</p> 
+<p><a href="https://xuecci.github.io/2020/01/20/sysui-plugin/" rel="nofollow">Sysui plugin</a></p> 
+<p><a href="https://www.jianshu.com/p/2b2048fdbeba" rel="nofollow">SystemUI Plugin 简介及使用</a></p> 
+<p><a href="https://android.googlesource.com/platform/frameworks/base/+/master/packages/SystemUI/docs/plugins.md" rel="nofollow">/SystemUI/docs/plugins.md</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6c7feac5c3cd26cb5028400d1a1da739/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">8、Spring security配置放过的请求又被拦截了</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a8e0cc5aad2624824ba85cb67453b41e/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">picgo报错Error: connect ECONNREFUSED 127.0.0.1:443的解决方式</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

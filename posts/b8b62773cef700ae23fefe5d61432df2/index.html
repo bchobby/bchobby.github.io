@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>如何解决Prometheus的数据回填问题 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="如何解决Prometheus的数据回填问题" />
+<meta property="og:description" content="去年10月底的时候，我们的监控系统因为一个偶然的问题，出乎意料地发生了重大的故障，这次故障暴露了当前监控系统存在的一下重大隐患。
+故障背景及现象 我们的监控系统基于Thanos构建，基本架构如下（箭头表示数据流向）：
+分布在各个区域的prometheus负责指标采集并通过远程写将数据发送给运维中心部署的Thanos套件，Thanos套件负责将指标数据持久化进对象存储并提供统一视图及统一告警能力。
+某一次因为网络问题，A区域的prometheus与Thanos之间的发生了长时间中断，当网络重新连接时，A区域大量涌入的数据造成Thanos的distributor与receive组件反复崩溃重启CrashLoopBackOff，引发所有区域的prometheus远程写失败，整个系统处于瘫痪状态。
+此时，prometheus端大量发生如下报错：
+msg=&#34;Remote storage resharding&#34; from=1 to=200 msg=&#34;Skipping resharding, last successful send was beyond threshold&#34; lastSendTimestamp=1673493925 minSendTimestamp=1673494034 msg=&#34;Failed to send batch, retrying&#34; err=&#34;server returned HTTP status 503 Service Unavailable: 2 errors: backing off forward request for endpoint thanos-prod-receive-6.thanos-prod-receive-headless.thanos-prod.svc.cluster.local:10901: target not available; backing off forward request for endpoint thanos-prod-receive-7.thanos-prod-receive-headless.thanos-prod.svc.cluster.local:10901: target not available&#34; msg=&#34;Failed to send batch, retrying&#34; err=&#34;server returned HTTP status 500 Internal Server Error: context deadline exceeded&#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/b8b62773cef700ae23fefe5d61432df2/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-01-19T10:53:20+08:00" />
+<meta property="article:modified_time" content="2023-01-19T10:53:20+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">如何解决Prometheus的数据回填问题</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div class="kdocs-document"> 
+ <p style="">去年10月底的时候，我们的监控系统因为一个偶然的问题，出乎意料地发生了重大的故障，这次故障暴露了当前监控系统存在的一下重大隐患。</p> 
+ <h2 style="text-align:left;">故障背景及现象</h2> 
+ <p style="text-align:left;">我们的监控系统基于Thanos构建，基本架构如下（箭头表示数据流向）：</p> 
+ <div class="kdocs-line-container" style="display:flex;justify-content:center;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:591px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:101.52284%;height:0;"> 
+    <img src="https://images2.imgbox.com/46/e1/7Uhm0dG4_o.png" style="margin-left:;display:block;width:591px;margin-top:-101.52284%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="text-align:left;">分布在各个区域的prometheus负责指标采集并通过远程写将数据发送给运维中心部署的Thanos套件，Thanos套件负责将指标数据持久化进对象存储并提供统一视图及统一告警能力。</p> 
+ <p style="text-align:left;">某一次因为网络问题，A区域的prometheus与Thanos之间的发生了长时间中断，当网络重新连接时，A区域大量涌入的数据造成Thanos的distributor与receive组件反复崩溃重启CrashLoopBackOff，引发所有区域的prometheus远程写失败，整个系统处于瘫痪状态。</p> 
+ <p style="text-align:left;">此时，prometheus端大量发生如下报错：</p> 
+ <pre class="kdocs-plaintext"><code class="language-plaintext">msg="Remote storage resharding" from=1 to=200
+msg="Skipping resharding, last successful send was beyond threshold" lastSendTimestamp=1673493925 minSendTimestamp=1673494034
+msg="Failed to send batch, retrying" err="server returned HTTP status 503 Service Unavailable: 2 errors: backing off forward request for endpoint thanos-prod-receive-6.thanos-prod-receive-headless.thanos-prod.svc.cluster.local:10901: target not available; backing off forward request for endpoint thanos-prod-receive-7.thanos-prod-receive-headless.thanos-prod.svc.cluster.local:10901: target not available"
+msg="Failed to send batch, retrying" err="server returned HTTP status 500 Internal Server Error: context deadline exceeded"
+msg="Failed to send batch, retrying" err="Post \"https://***/api/v1/receive\": read tcp 10.42.0.14:54240-&gt;***: read: connection reset by peer"</code></pre> 
+ <p style="text-align:left;">Thanos receive大量发生如下报错：</p> 
+ <pre class="kdocs-plaintext"><code class="language-plaintext">level=warn ts=2022-10-30T16:12:58.492368127Z caller=writer.go:184 component=receive component=receive-writer tenant=default-tenant 
+msg="Error on ingesting samples that are too old or are too far into the future" numDropped=3</code></pre> 
+ <h2 style="text-align:left;">问题分析</h2> 
+ <p style="text-align:left;">该问题的产生源于如下两个事实和两条限制。</p> 
+ <p style="text-align:left;">两个事实：</p> 
+ <ol start="1"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;text-align:left;"><p>prometheus的remote write失败时具有重传机制，remote write并发数会根据数据量及传输情况自动调整；</p></li></ol> 
+ <ol start="2"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;text-align:left;"><p>Thanos基于prometheus源代码构建，receive组件的本地tsdb与prometheus的tsdb具有相同的特性；</p></li></ol> 
+ <p style="text-align:left;">旧版Prometheus的TSDB具有如下两条写入限制：</p> 
+ <ol start="3"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;text-align:left;"><p>同一序列：无法摄入时序早于当前最新样本的样本，称为out of order samples；</p></li></ol> 
+ <ol start="4"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;text-align:left;"><p>所有序列：无法摄入时序早于当前最新样本1h的样本，称为too old samples（假定storage.tsdb.min-block-duration为默认值2h）；</p></li></ol> 
+ <p style="text-align:left;">限制1容易理解，可以认为是旧版“时序”数据库TSDB的特点，即数据必须按时间顺序写入。限制2原理可以通过这幅图来表达：</p> 
+ <div class="kdocs-line-container" style="display:flex;justify-content:center;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:1746px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:34.36426%;height:0;"> 
+    <img src="https://images2.imgbox.com/2a/5f/QyupaOdS_o.png" style="margin-left:;display:block;width:1746px;margin-top:-34.36426%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <p style="text-align:left;">图中每个方块代表含有不同序列组成的数据块（block），虚线表示暂存于内存中尚未刷新到磁盘中的数据，实线表示已经刷新到磁盘的数据。当storage.tsdb.min-block-duration为默认值2h，TSDB并不会在内存中数据时间跨度达到2h时立即落盘，而是再等待1h才会落盘，防止数据切分处产生问题。而数据块一旦落盘后，就不可写入，因为存在限制2。</p> 
+ <p style="">这两条限制在一些应用场景下会造成较为严重的问题，例如：</p> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>在多Prometheus的场景下，如果某个Prometheus因网络故障与Thanos断开连接超过一个小时，而这段时间内其他Prometheus的样本是被Thanos成功摄入的，那么当该Prometheus 网络恢复正常并试图重新推送旧样本时，这些样本将被Thanos拒绝，指标将永久丢失；</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>使用消息队列（如kafka）的复杂指标传递架构可能会由于拥塞、随机分片或数据预处理产生延迟，进而导致指标无法写入而丢失；</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>一些指标生产者可能需要聚合过去数小时的数据，然后发送带有旧时间戳的聚合结果，这样的聚合结果无法被TSDB接收；</p></li></ul> 
+ <ul><li style="margin-left:1.4em;list-style-type:disc;text-indent:0;"><p>通过长时间断开网络来节省电量的物联网设备无法可靠地推送指标；</p></li></ul> 
+ <h2 style="text-align:left;">故障回溯</h2> 
+ <p style="">了解了上述一些技术背景后，现在我们来回溯本次故障发生的过程。</p> 
+ <ol start="1"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><p>Prometheus A网络恢复后，开始重传中断期间发送失败的数据，且由于数据量较大，Prometheus自动增大了远程写的并发数；</p></li></ol> 
+ <ol start="2"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><p>由于数据too old，Thanos拒绝了这些数据，并返回4XX报错；</p></li></ol> 
+ <ol start="3"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><p>Prometheus A接收到4XX报错，认为发送失败但远端并无问题，所以再次重传；</p></li></ol> 
+ <ol start="4"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><p>上述过程反复重复，造成Thanos distributor及receive大量报错并发生拥塞，liveness健康检查失败，并造成pod反复重启；</p></li></ol> 
+ <ol start="5"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><p>由于Thanos distributor及receive的反复崩溃重启，造成中心的Thanos系统无法正常接收各个区域Prometheus的远程写，因为所有区域的Prometheus均进行了重写，Thanos端压力进一步增加，引起雪崩；</p></li></ol> 
+ <p style="">Prometheus端的反复重写造成的系统网络流量、内存、CPU负载的急剧升高，引发的OOM问题，也是本次故障的重要表征：</p> 
+ <div class="kdocs-line-container" style="display:flex;justify-content:center;"> 
+  <div class="kdocs-img" style="flex-direction:column;max-width:100%;display:flex;width:506px;justify-content:center;align-items:center;height:auto;"> 
+   <div class="kdocs-img" style="padding-top:118.57708%;height:0;"> 
+    <img src="https://images2.imgbox.com/1c/46/jNkakFdR_o.png" style="margin-left:;display:block;width:506px;margin-top:-118.57708%;height:auto;"> 
+   </div> 
+  </div> 
+ </div> 
+ <h2 style="">故障的临时解决方案</h2> 
+ <p style="">为了解决尽快解决这个问题，当时采取了两个不恰当的临时措施：</p> 
+ <ol start="1"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><p>关闭Thanos receive distributor前的负载均衡端口，拒绝所有Prometheus的数据写入，然后恢复Thanos系统的正常运行；</p></li></ol> 
+ <ol start="2"><li style="margin-left:1.4em;list-style-type:decimal;text-indent:0;"><p>重启所有区域的Prometheus pod（因为各区域的Prometheus均部署于k8s并使用emptyDir作为数据目录，因此重启pod相当于丢弃了本地所有的历史数据，从而避免大量历史数据的反复重写），然后重新开启Thanos receive distributor的负载均衡端口；</p></li></ol> 
+ <p style="">造成的后果是丢失了部分历史数据。</p> 
+ <h2 style="">故障的长期解决方案</h2> 
+ <p style="">得益于Prometheus与Thanos社区的高活跃，事后我在Prometheus 2.39.0版本的发布日志中找到了该问题的长期解决方案：</p> 
+ <pre class="kdocs-plaintext"><code class="language-plaintext">[FEATURE] experimental TSDB: Add support for ingesting out-of-order samples. This is configured via out_of_order_time_window field in the config file; check config file docs for more info. #11075</code></pre> 
+ <p style="">相关的提交见：<a class="kdocs-link" style="color:#0A6CFF;" href="https://github.com/prometheus/prometheus/pull/11075" target="_blank" rel="noopener noreferrer">https://github.com/prometheus/prometheus/pull/11075</a>，其中的设计文档对该问题的解决进行了详细释义。</p> 
+ <p style="">Thanos社区也迅速跟进，在提交<a class="kdocs-link" style="color:#0A6CFF;" href="https://github.com/thanos-io/thanos/pull/5839" target="_blank" rel="noopener noreferrer">https://github.com/thanos-io/thanos/pull/5839</a>中为receive组件增加了对乱序数据的支持，并于今天1月最新发布的v0.30.0版本中正式上线该特性。</p> 
+ <p style="">因此针对Prometheus数据回填问题的长期解决方案可以从以下几个方面入手：</p> 
+ <h3 style="">Thanos端的优化</h3> 
+ <p style="">升级Thanos至<span class="kdocs-bold" style="font-weight:bold;">v0.30.1</span>版本及以上，并为receive模块增加如下三个启动参数，启用乱序数据支持：</p> 
+ <pre class="kdocs-bash"><code class="language-bash">#If true, shipper will skip failed block uploads in the given iteration and retry later. 
+#This means that some newer blocks might be uploaded sooner than older block. 
+#This can trigger compaction without those blocks and as a result will create an overlap situation. 
+#Set it to true if you have vertical compaction enabled and wish to upload blocks as soon as possible without caring about order.
+--shipper.allow-out-of-order-uploads
+#Allow overlapping blocks, which in turn enables vertical compaction and vertical query merge.#Does not do anything, enabled all the time.
+--tsdb.allow-overlapping-blocks
+#[EXPERIMENTAL] Configures the allowed time window for ingestion of out-of-order samples. 
+#Disabled (0s) by default. Please note if you enable this option and you use compactor, make sure you have the --enable-vertical-compaction flag enabled, otherwise you might risk compactor halt.
+--tsdb.out-of-order.time-window=7d</code></pre> 
+ <p style="">为compactor模块增加如下启动参数，启用垂直压缩：</p> 
+ <pre class="kdocs-bash"><code class="language-bash">--compact.enable-vertical-compaction</code></pre> 
+ <h3 style="">Prometheus端的优化</h3> 
+ <p style="">Prometheus端通过配置远程写的queue_config，限制异常时Prometheus的发送速率，减轻Thanos端的压力，以下参数根据实际情况选配，建议优先配置max_shards限制数据发送的并发量，其余参数可使用默认值。</p> 
+ <pre class="kdocs-bash"><code class="language-bash"># Configures the queue used to write to remote storage.
+queue_config:
+  # Number of samples to buffer per shard before we block reading of more
+  # samples from the WAL. It is recommended to have enough capacity in each
+  # shard to buffer several requests to keep throughput up while processing
+  # occasional slow remote requests.
+  capacity: 2500
+  # Maximum number of shards, i.e. amount of concurrency.
+  max_shards: 5
+  # Minimum number of shards, i.e. amount of concurrency.
+  min_shards: 1
+  # Maximum number of samples per send.
+  max_samples_per_send: 500
+  # Maximum time a sample will wait in buffer.
+  batch_send_deadline: 5s
+  # Initial retry delay. Gets doubled for every retry.
+  min_backoff: 30ms
+  # Maximum retry delay.
+  max_backoff: 5s</code></pre> 
+ <p style="">参看：<a class="kdocs-link" style="color:#0A6CFF;" href="https://prometheus.io/docs/prometheus/latest/configuration/configuration/#remote_write" rel="nofollow noopener noreferrer" target="_blank">https://prometheus.io/docs/prometheus/latest/configuration/configuration/#remote_write</a></p> 
+ <h3 style="">其余优化项</h3> 
+ <p style="">增加Prometheus离线告警，尽可能避免边缘Prometheus的长时间离线；</p> 
+ <p style="">为可能的异常情况预留较为充足的CPU、内存资源，避免长时间高位运行；</p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/9c0c461aae133b2d9e0d9faababedf37/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">（附源码）订餐app  毕业设计190711</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/fa404381cbb831e90cf7c49922dc7105/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">powerdns 系列之二 PowerDNS Authoritative Server</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

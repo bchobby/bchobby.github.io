@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【嵌入式学习-STM32F103-TIM-编码器接口】 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【嵌入式学习-STM32F103-TIM-编码器接口】" />
+<meta property="og:description" content="编码器接口 本质手册编码器接口简介编码器接口基本结构工作细节和例子 编码器接口测速硬件接线图编程步骤实验现象测位置极性问题 测速度 代码main.cEncoder.cEncoder.hTimer.cTimer.h 本质 编码器测速相当于测频法测正交脉冲的频率，CNT计次，每隔一段时间取一次计次。高级，它是带方向的计次。
+手册 编码器接口简介 通过定时器的编码器接口来实现自动计次。之前的代码是通过触发外部中断，然后在中断函数里手动进行计次。使用编码器接口的好处就是节约软件资源。对于频繁执行，操作简单的任务，一般设计一个硬件电路模块来自动完成。
+使用定时器的编码器接口，再配合编码器，就可以测量旋转速度和旋转方向。编码器测速一般应用在电机控制的项目上。使用PWM驱动电机，再使用编码器测量电机的速度，然后再使用PID算法进行闭环控制。
+编码器的工作流程：根据编码器旋转产生的正交信号脉冲，自动控制CNT自增或自减，从而只是编码器的位置、旋转方向和旋转速度
+这是一个编码器，它有两个输出，一个是A相，一个是B相，然后接入到stm32，定制起的编码器接口，编码器接口自动控制定时器时基单元中的CNT计数器进行自增或自减。比如初始化后，CNT初始值为0，然后编码器右转，CNT就&#43;&#43;，右转产生一个脉冲，CNT就加一次，比如右转产生10个脉冲停下来，那么CNT就由0自增到10，停下来。编码器左转，CNT就–，左转产生一个脉冲，CNT减一次，如编码器左转产生5个脉冲，CNT就在原来10的基础上自减5停下来。
+正交编码器(输出两个相位相差90°的方波信号)一般可以测量位置，或者带有方向的速度值，它一般有两个信号输出引脚，一个是A相，一个是B相，当编码器的旋转轴转起来，A和B相会输出方波信号，转的越快，方波的频率就越高，所以方波的频率就代表了速度。取出任意一相的信号来测量频率，就能知道旋转速度。
+方向：当正转时，A相提前B相90度，反转时，A相滞后B相90度。接口：一个带有方向控制的外部时钟
+使用正交信号精度更高，AB相都可以计次，相当于计次频率提高了一倍，还可以加抗噪声电路。
+首先把A相和B相的所有边沿作为计数器的计数时钟，出现边沿信号时，就计数自增或自减，自增或自减的计数方向由另一相的状态来决定。查下表即可。
+编码器接口有两个输入端，分别要接到编码器的A相和B相，有两个网络标号分别写的是TI1FP1和TI2FP2
+可以看出这个编码器接口的两个引脚，借用了输入捕获单元的前两个通道，所以最终编码器的输入引脚是定时器的CH1和CH2这两个引脚
+信号的通路如下（与CH3和CH4无关 ），编码器接口使用CH1和CH2的输入捕获滤波器和边沿检测，但没有使用后面的是否交叉、预分频器和CCR寄存器
+编码器接口的输出部分就相当于从模式控制器，去控制CNT的计数时钟和计数方向，如果出现了边沿信号，并且对应另一相的状态为正转，则控制CNT自增，否则控制CNT自减。
+注意：72MHZ内部时钟（CK_PSC）和在时基单元初始化设置的计数方向(上图的&#43;/-)并不会使用，因为此时计数时钟和计数方向都处于编码器接口托管的状态，计数器的自增和自减受编码器的控制
+编码器接口基本结构 输入捕获的前两个通道，通过GPIO口接入编码器A、B相，通过滤波器和边沿检测极性选择，产生TI1FP1和TI2FP2，通向编码器接口，编码器接口通过预分频器控制CNT计数器的时钟，同时，编码器接口还根据编码器的旋转方向，控制CNT的计数方向，编码器正转时，CNT自增，编码器反转时，CNT自减，ARR有效，一般我们设置ARR为65535，最大量程。补码：65535对应-1，依此类推（读出数据，得到负数的技巧）
+工作细节和例子 在两相边沿计数，计数精度高（一般使用该模式）
+正转
+正转的状态都向上计数，反转的状态的都向下计数。
+实例图1（向上计数、向下计数、正交编码器抗噪声）
+如果出现了一个引脚不变，另一个引脚连续跳变多次的毛刺信号，计数器就会加、减、加、减来回摆动，最终计数值还是原来那个数，并不受毛刺噪声的影响。正交编码器抗噪声的原理
+实例2（TI1反相，TI2不反相）极性
+编码器接口测速 硬件接线图 计划用TIM3接编码器，所以需要接在PA6和PA7这两个引脚上。
+编程步骤 第一步，RCC开启时钟，开启GPIO和定时器的时钟
+第二步，配置GPIO，将PA6和PA7配置成输入模式
+第三步，配置时基单元，这里预分频一般选择不分频
+第四步， 配置输入捕获单元，只需要配置滤波器和极性两个参数
+第五步，配置编码器接口模式
+最后，调用TIM_Cmd启动定时器
+电路初始化完成后，CNT就会随着编码器旋转而自增自减，如果想要测量编码器的位置，直接读出CNT的值即可，如果想要测量编码器的速度和方向，那就需要每隔一段固定的闸门时间，取出CNT，然后把CNT清零。
+上拉输入还是下拉输入的选择
+一般可以看一下接在这个引脚的外部模块输出的默认电平，如果外部模块空闲默认输出高电平，我们就选择上拉输入，默认输入高电平，如果外部模块默认输出低电平，我们配置下拉输入，默认输入低电平。总结，将需要配置电平的位置和外部模块保持默认状态一致，防止默认电平打架。
+如果不确定外部模块输出的默认状态或者外部信号输出功率非常小，这时尽量选择浮空输入，浮空输入没有上下拉电阻去影响外部信号，缺点是当引脚悬空时，没有默认电平，输入就会受噪声干扰，来回不断跳变。
+实验现象 测位置 A、B相各出现了一个下降沿和上升沿，所以计次总共加了4次。
+如果转到0，再往左转，0自减，计数器反向溢出，回到自动重装值，65535，然后继续往下减。
+如果我们想让0自减为-1，直接把uint16_t类型强制转换成int16_t即可
+极性问题 硬件方面：对换AB相接线即可
+软件方面：通过修改两个输入通道的极性，把任意一个极性反转一下，方向就会反过来
+测速度 如果想让编码器测速度，可以在固定的闸门时间读一次CNT，然后把CNT清零，此时CNT的值代表速度，单位是脉冲个数/S
+代码 1、通过Delay实现闸门时间，如果程序没有其他东西，可以这么做
+2、如果有其他东西，最好不要在主循环加入过长的Delay函数，这样会阻塞主循环的执行，比较好的方法时使用定时中断，这里的定时中断是每隔1s执行一次，可修改定时中断的时间，来调整闸门时间。
+main.c #include &#34;stm32f10x.h&#34; // Device header #include &#34;Delay.h&#34; #include &#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/d9aa8bccdad6d18fcd01230359b18661/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-06-10T11:31:45+08:00" />
+<meta property="article:modified_time" content="2023-06-10T11:31:45+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【嵌入式学习-STM32F103-TIM-编码器接口】</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>编码器接口</h4> 
+ <ul><li><a href="#_1" rel="nofollow">本质</a></li><li><a href="#_3" rel="nofollow">手册</a></li><li><a href="#_5" rel="nofollow">编码器接口简介</a></li><li><ul><li><a href="#_39" rel="nofollow">编码器接口基本结构</a></li><li><a href="#_43" rel="nofollow">工作细节和例子</a></li></ul> 
+  </li><li><a href="#_58" rel="nofollow">编码器接口测速</a></li><li><ul><li><a href="#_59" rel="nofollow">硬件接线图</a></li><li><a href="#_63" rel="nofollow">编程步骤</a></li><li><a href="#_87" rel="nofollow">实验现象</a></li><li><ul><li><a href="#_88" rel="nofollow">测位置</a></li><li><ul><li><a href="#_98" rel="nofollow">极性问题</a></li></ul> 
+    </li><li><a href="#_102" rel="nofollow">测速度</a></li></ul> 
+   </li><li><a href="#_104" rel="nofollow">代码</a></li><li><ul><li><a href="#mainc_107" rel="nofollow">main.c</a></li><li><a href="#Encoderc_151" rel="nofollow">Encoder.c</a></li><li><a href="#Encoderh_228" rel="nofollow">Encoder.h</a></li><li><a href="#Timerc_240" rel="nofollow">Timer.c</a></li><li><a href="#Timerh_287" rel="nofollow">Timer.h</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>本质</h2> 
+<p>编码器测速相当于测频法测正交脉冲的频率，CNT计次，每隔一段时间取一次计次。高级，它是带方向的计次。</p> 
+<h2><a id="_3"></a>手册</h2> 
+<p><img src="https://images2.imgbox.com/4b/3e/ugtWtS6X_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_5"></a>编码器接口简介</h2> 
+<p>通过定时器的编码器接口来实现自动计次。之前的代码是通过触发外部中断，然后在中断函数里手动进行计次。使用编码器接口的好处就是节约软件资源。对于频繁执行，操作简单的任务，一般设计一个硬件电路模块来自动完成。</p> 
+<p><mark>使用定时器的编码器接口，再配合编码器，就可以测量旋转速度和旋转方向</mark>。编码器测速一般应用在电机控制的项目上。使用PWM驱动电机，再使用编码器测量电机的速度，然后再使用PID算法进行闭环控制。<br> <img src="https://images2.imgbox.com/ec/d0/3ga2Vmlm_o.png" alt="在这里插入图片描述"><br> <mark>编码器的工作流程</mark>：根据编码器旋转产生的正交信号脉冲，自动控制CNT自增或自减，从而只是编码器的位置、旋转方向和旋转速度</p> 
+<p>这是一个编码器，它有两个输出，一个是A相，一个是B相，然后接入到stm32，定制起的编码器接口，编码器接口自动控制定时器时基单元中的CNT计数器进行自增或自减。比如初始化后，CNT初始值为0，然后编码器右转，CNT就++，右转产生一个脉冲，CNT就加一次，比如右转产生10个脉冲停下来，那么CNT就由0自增到10，停下来。编码器左转，CNT就–，左转产生一个脉冲，CNT减一次，如编码器左转产生5个脉冲，CNT就在原来10的基础上自减5停下来。</p> 
+<p><img src="https://images2.imgbox.com/34/6b/cZIoUc5P_o.png" alt="在这里插入图片描述"><br> 正交编码器(<mark>输出两个相位相差90°的方波信号</mark>)一般可以测量位置，或者带有方向的速度值，它一般有两个信号输出引脚，一个是A相，一个是B相，当编码器的旋转轴转起来，A和B相会输出方波信号，转的越快，方波的频率就越高，所以方波的频率就代表了速度。取出任意一相的信号来测量频率，就能知道旋转速度。</p> 
+<p>方向：当正转时，A相提前B相90度，反转时，A相滞后B相90度。<mark>接口：一个带有方向控制的外部时钟</mark><br> 使用正交信号精度更高，AB相都可以计次，相当于计次频率提高了一倍，还可以加抗噪声电路。</p> 
+<p>首先把A相和B相的所有边沿作为计数器的计数时钟，出现边沿信号时，就计数自增或自减，自增或自减的计数方向由另一相的状态来决定。查下表即可。<br> <img src="https://images2.imgbox.com/10/4b/UCZAEWpW_o.png" alt="在这里插入图片描述"><br> 编码器接口有两个输入端，分别要接到编码器的A相和B相，有两个网络标号分别写的是TI1FP1和TI2FP2</p> 
+<p><img src="https://images2.imgbox.com/46/c3/U8t6UHJj_o.png" alt="在这里插入图片描述"></p> 
+<p>可以看出这个编码器接口的两个引脚，借用了输入捕获单元的前两个通道，所以最终编码器的输入引脚是定时器的CH1和CH2这两个引脚</p> 
+<p><img src="https://images2.imgbox.com/0e/d8/ADIfZWNE_o.png" alt="在这里插入图片描述"><br> 信号的通路如下（与CH3和CH4无关 ），编码器接口使用CH1和CH2的输入捕获滤波器和边沿检测，但没有使用后面的是否交叉、预分频器和CCR寄存器</p> 
+<p><img src="https://images2.imgbox.com/bc/52/WWjTht2j_o.png" alt="在这里插入图片描述"><br> <mark>编码器接口的输出部分就相当于从模式控制器，去控制CNT的计数时钟和计数方向，如果出现了边沿信号，并且对应另一相的状态为正转，则控制CNT自增，否则控制CNT自减。</mark></p> 
+<p><img src="https://images2.imgbox.com/8a/2c/xIPDU7H6_o.png" alt="在这里插入图片描述"><br> <mark>注意</mark>：72MHZ内部时钟（CK_PSC）和在时基单元初始化设置的计数方向(上图的+/-)并不会使用，因为此时计数时钟和计数方向都处于编码器接口托管的状态，计数器的自增和自减受编码器的控制</p> 
+<p><img src="https://images2.imgbox.com/49/27/w1t3xEk9_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_39"></a>编码器接口基本结构</h3> 
+<p>输入捕获的前两个通道，通过GPIO口接入编码器A、B相，通过滤波器和边沿检测极性选择，产生TI1FP1和TI2FP2，通向编码器接口，编码器接口通过预分频器控制CNT计数器的时钟，同时，编码器接口还根据编码器的旋转方向，控制CNT的计数方向，编码器正转时，CNT自增，编码器反转时，CNT自减，ARR有效，一般我们设置ARR为65535，最大量程。<mark>补码</mark>：65535对应-1，依此类推（读出数据，得到负数的技巧）</p> 
+<p><img src="https://images2.imgbox.com/14/42/YXHwObvg_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_43"></a>工作细节和例子</h3> 
+<p>在两相边沿计数，计数精度高（一般使用该模式）<br> <mark>正转</mark></p> 
+<p>正转的状态都向上计数，反转的状态的都向下计数。</p> 
+<p><img src="https://images2.imgbox.com/68/03/Sp9DYkSf_o.png" alt="在这里插入图片描述"><br> 实例图1（向上计数、向下计数、正交编码器抗噪声）</p> 
+<p>如果出现了一个引脚不变，另一个引脚连续跳变多次的毛刺信号，计数器就会加、减、加、减来回摆动，最终计数值还是原来那个数，并不受毛刺噪声的影响。<mark>正交编码器抗噪声的原理</mark><br> <img src="https://images2.imgbox.com/ac/1f/bGUBMZCn_o.png" alt="在这里插入图片描述"><br> 实例2（TI1反相，TI2不反相）<mark>极性</mark></p> 
+<p><img src="https://images2.imgbox.com/00/6b/aHFQXsSH_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_58"></a>编码器接口测速</h2> 
+<h3><a id="_59"></a>硬件接线图</h3> 
+<p>计划用TIM3接编码器，所以需要接在PA6和PA7这两个引脚上。<br> <img src="https://images2.imgbox.com/c9/3b/XNDkCoDa_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/32/44/DDQmc4Yu_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_63"></a>编程步骤</h3> 
+<p><img src="https://images2.imgbox.com/61/e5/8oAdRxYN_o.png" alt="在这里插入图片描述"><br> 第一步，RCC开启时钟，开启GPIO和定时器的时钟</p> 
+<p>第二步，配置GPIO，将PA6和PA7配置成输入模式</p> 
+<p>第三步，配置时基单元，这里预分频一般选择不分频</p> 
+<p>第四步， 配置输入捕获单元，只需要配置滤波器和极性两个参数</p> 
+<p>第五步，配置编码器接口模式</p> 
+<p>最后，调用TIM_Cmd启动定时器</p> 
+<p>电路初始化完成后，CNT就会随着编码器旋转而自增自减，如果想要测量编码器的位置，直接读出CNT的值即可，如果想要测量编码器的速度和方向，那就需要每隔一段固定的闸门时间，取出CNT，然后把CNT清零。</p> 
+<p><img src="https://images2.imgbox.com/eb/77/zDfslqLr_o.png" alt="在这里插入图片描述"><br> 上拉输入还是下拉输入的选择</p> 
+<p>一般可以看一下接在这个引脚的外部模块输出的默认电平，如果外部模块空闲默认输出高电平，我们就选择上拉输入，默认输入高电平，如果外部模块默认输出低电平，我们配置下拉输入，默认输入低电平。总结，将需要配置电平的位置和外部模块保持默认状态一致，防止默认电平打架。</p> 
+<p><img src="https://images2.imgbox.com/18/cc/hZSHRCyO_o.png" alt="在这里插入图片描述"><br> 如果不确定外部模块输出的默认状态或者外部信号输出功率非常小，这时尽量选择浮空输入，浮空输入没有上下拉电阻去影响外部信号，缺点是当引脚悬空时，没有默认电平，输入就会受噪声干扰，来回不断跳变。</p> 
+<h3><a id="_87"></a>实验现象</h3> 
+<h4><a id="_88"></a>测位置</h4> 
+<p>A、B相各出现了一个下降沿和上升沿，所以计次总共加了4次。</p> 
+<p><img src="https://images2.imgbox.com/e0/f4/dqgtxLDX_o.png" alt="在这里插入图片描述"><br> 如果转到0，再往左转，0自减，计数器反向溢出，回到自动重装值，65535，然后继续往下减。</p> 
+<p><img src="https://images2.imgbox.com/59/6b/yBryqYnI_o.png" alt="在这里插入图片描述"></p> 
+<p><mark>如果我们想让0自减为-1，直接把uint16_t类型强制转换成int16_t即可</mark><br> <img src="https://images2.imgbox.com/a9/dd/Pp4YvMqY_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="_98"></a>极性问题</h5> 
+<p>硬件方面：对换AB相接线即可<br> 软件方面：通过修改两个输入通道的极性，把任意一个极性反转一下，方向就会反过来<br> <img src="https://images2.imgbox.com/ca/a6/LxfcRHK3_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_102"></a>测速度</h4> 
+<p>如果想让编码器测速度，可以在固定的闸门时间读一次CNT，然后把CNT清零，此时CNT的值代表速度，单位是脉冲个数/S</p> 
+<h3><a id="_104"></a>代码</h3> 
+<p>1、通过Delay实现闸门时间，如果程序没有其他东西，可以这么做<br> 2、如果有其他东西，最好不要在主循环加入过长的Delay函数，这样会阻塞主循环的执行，比较好的方法时使用定时中断，这里的定时中断是每隔1s执行一次，可修改定时中断的时间，来调整闸门时间。</p> 
+<h4><a id="mainc_107"></a>main.c</h4> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span>                  <span class="token comment">// Device header</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Delay.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"OLED.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Timer.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Encoder.h"</span></span>
+<span class="token comment">//全局变量</span>
+<span class="token class-name">uint16_t</span> Speed<span class="token punctuation">;</span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">OLED_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">Timer_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">Encoder_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"Speed:"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//在主循环里每隔一段时间get一次CNT值，可快速刷新Speed</span>
+		<span class="token function">OLED_ShowSignedNum</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">7</span><span class="token punctuation">,</span> Speed<span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">//OLED_ShowSignedNum(1, 7, Encoder_Get(), 5);</span>
+		<span class="token comment">//Delay_ms(1000);//1s  （最好将闸门时间弄短，提高速度刷新频率，防止计数器溢出）</span>
+		<span class="token comment">//因为每一秒都会清零，CNT最多是1妙内的值，就是速度</span>
+		<span class="token comment">//CNT的值代表速度，单位是脉冲个数/s</span>
+		
+		
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">void</span> <span class="token function">TIM2_IRQHandler</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">TIM_GetITStatus</span><span class="token punctuation">(</span>TIM2<span class="token punctuation">,</span> TIM_IT_Update<span class="token punctuation">)</span> <span class="token operator">==</span> SET<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token comment">//每隔一秒读取一下速度，存在speed变量里</span>
+		Speed <span class="token operator">=</span> <span class="token function">Encoder_Get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">TIM_ClearITPendingBit</span><span class="token punctuation">(</span>TIM2<span class="token punctuation">,</span> TIM_IT_Update<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h4><a id="Encoderc_151"></a>Encoder.c</h4> 
+<p>如果想要测量编码器的位置，直接读出CNT的值就可以<br> 如果想要测量编码器的速度和方向，需要每隔一段固定的闸门时间，取出一次CNT，然后再把CNT清零（<mark>测频法测量速度</mark>）</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span></span>
+
+<span class="token comment">//编码器接口初始化</span>
+<span class="token keyword">void</span> <span class="token function">Encoder_Init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">//1、开启时钟</span>
+	<span class="token function">RCC_APB1PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB1Periph_TIM3<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">//由于代码需要TIM2输出PWM，因此，输入捕获定时器需要换一个</span>
+	<span class="token function">RCC_APB2PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB2Periph_GPIOA<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//2、配置GPIO</span>
+	GPIO_InitTypeDef GPIO_InitStructure<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Mode <span class="token operator">=</span> GPIO_Mode_IPU<span class="token punctuation">;</span>  <span class="token comment">//上拉输入</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Pin <span class="token operator">=</span> GPIO_Pin_6 <span class="token operator">|</span> GPIO_Pin_7<span class="token punctuation">;</span>	<span class="token comment">//PA6和PA7	</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Speed <span class="token operator">=</span> GPIO_Speed_50MHz<span class="token punctuation">;</span>
+	<span class="token function">GPIO_Init</span><span class="token punctuation">(</span>GPIOA<span class="token punctuation">,</span> <span class="token operator">&amp;</span>GPIO_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//3、配置时基单元</span>
+	<span class="token comment">//TIM_InternalClockConfig(TIM3);  //定时器内部时钟配置不需要，因为编码器接口会托管时钟，编码器接口就是一个带方向控制的外部时钟</span>
+	
+	TIM_TimeBaseInitTypeDef TIM_TimeBaseInitStructure<span class="token punctuation">;</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_ClockDivision <span class="token operator">=</span> TIM_CKD_DIV1<span class="token punctuation">;</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_CounterMode <span class="token operator">=</span> TIM_CounterMode_Up<span class="token punctuation">;</span>  <span class="token comment">//向上计数，这个计数值是由编码器托管的，它暂时没有用到</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_Period <span class="token operator">=</span> <span class="token number">65535</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">;</span>		<span class="token comment">//ARR周期，给最大值，防止溢出，16位计数器可以满量程计数</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_Prescaler <span class="token operator">=</span> <span class="token number">1</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">;</span>		<span class="token comment">//PSC，不分频，编码器时钟，直接驱动计数器</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_RepetitionCounter <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	<span class="token function">TIM_TimeBaseInit</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span> <span class="token operator">&amp;</span>TIM_TimeBaseInitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">//把以上参数配置为TIM3的时基单元</span>
+	<span class="token comment">//4、初始化输入捕获单元</span>
+	TIM_ICInitTypeDef TIM_ICInitStruct<span class="token punctuation">;</span>
+	<span class="token comment">//输入捕获单元并没有全部使用到，编码器接口只使用了通道1和通道2的滤波器和极性选择，因此只需要配置这两部分的参数即可</span>
+	<span class="token comment">//由于无需配置两个参数，因此结构体配置不完整，又为了防止结构体中出现不确定值可能会造成问题，默认配置</span>
+	<span class="token function">TIM_ICStructInit</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>TIM_ICInitStruct<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//通道1</span>
+	TIM_ICInitStruct<span class="token punctuation">.</span>TIM_Channel <span class="token operator">=</span> TIM_Channel_1<span class="token punctuation">;</span>  <span class="token comment">//选用TIM3的通道1</span>
+	TIM_ICInitStruct<span class="token punctuation">.</span>TIM_ICFilter <span class="token operator">=</span> <span class="token number">0xF</span><span class="token punctuation">;</span>   <span class="token comment">//用于选择输入捕获的滤波器</span>
+	<span class="token comment">//由于待会配置编码器接口时有配置极性选择，所以此处属于重复配置，因此可省略</span>
+	<span class="token comment">//TIM_ICInitStruct.TIM_ICPolarity = TIM_ICPolarity_Rising;  //上升沿参数代表的是高低电平极性不反转，也就是TI1和TI2是否反相</span>
+	<span class="token comment">//TIM_ICInitStruct.TIM_ICPrescaler = TIM_ICPSC_DIV1;  //不分频就是每次触发都有效，2分频就是每个一次有效一次，以此类推</span>
+	<span class="token comment">//TIM_ICInitStruct.TIM_ICSelection = TIM_ICSelection_DirectTI; //配置数据选择器，可以选择直连通道或者交叉通道</span>
+	<span class="token function">TIM_ICInit</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span><span class="token operator">&amp;</span>TIM_ICInitStruct<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">//通道2</span>
+	TIM_ICInitStruct<span class="token punctuation">.</span>TIM_Channel <span class="token operator">=</span> TIM_Channel_2<span class="token punctuation">;</span>  <span class="token comment">//选用TIM3的通道1</span>
+	TIM_ICInitStruct<span class="token punctuation">.</span>TIM_ICFilter <span class="token operator">=</span> <span class="token number">0xF</span><span class="token punctuation">;</span>   <span class="token comment">//用于选择输入捕获的滤波器</span>
+	<span class="token comment">//TIM_ICInitStruct.TIM_ICPolarity = TIM_ICPolarity_Rising;  ，与5编码器接口配置重复配置，因此这里可删掉，同一由配置编码器接口配置即可。</span>
+	<span class="token function">TIM_ICInit</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span><span class="token operator">&amp;</span>TIM_ICInitStruct<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">//5、配置编码器接口，只需要调用一个函数即可，保证ICInit在该函数的上面，否则会出现覆盖问题，TI1和TI2都计数</span>
+	<span class="token function">TIM_EncoderInterfaceConfig</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span>TIM_EncoderMode_TI12<span class="token punctuation">,</span>TIM_ICPolarity_Rising<span class="token punctuation">,</span>TIM_ICPolarity_Rising<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">//开启定时器</span>
+	<span class="token function">TIM_Cmd</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span>ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token comment">//测位置</span>
+<span class="token comment">//int16_t Encoder_Get(void)</span>
+<span class="token comment">//{<!-- --></span>
+<span class="token comment">//直接返回CNT的值</span>
+<span class="token comment">//	return TIM_GetCounter(TIM3);</span>
+<span class="token comment">//}</span>
+<span class="token comment">//测速度</span>
+<span class="token class-name">int16_t</span> <span class="token function">Encoder_Get</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token comment">//因为先读取后清零，因此需要用Temp缓存一下</span>
+	<span class="token class-name">int16_t</span> Temp<span class="token punctuation">;</span>
+	<span class="token comment">//获取CNT的值</span>
+	Temp <span class="token operator">=</span> <span class="token function">TIM_GetCounter</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//CNT清零</span>
+	<span class="token function">TIM_SetCounter</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//返回temp值</span>
+	<span class="token keyword">return</span> Temp<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+
+</code></pre> 
+<h4><a id="Encoderh_228"></a>Encoder.h</h4> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">__ENCODER_H</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">__ENCODER_H</span></span>
+
+<span class="token keyword">void</span> <span class="token function">Encoder_Init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">//编码器初始化</span>
+<span class="token class-name">int16_t</span> <span class="token function">Encoder_Get</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span><span class="token punctuation">;</span>  <span class="token comment">//获取编码器的位置或速度</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+</code></pre> 
+<p><mark>以下是定时中断部分代码，因为利用测频法，因此固定1s定时进入中断一次</mark></p> 
+<h4><a id="Timerc_240"></a>Timer.c</h4> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span>                  <span class="token comment">// Device header</span></span>
+
+<span class="token keyword">void</span> <span class="token function">Timer_Init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">RCC_APB1PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB1Periph_TIM2<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">TIM_InternalClockConfig</span><span class="token punctuation">(</span>TIM2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	TIM_TimeBaseInitTypeDef TIM_TimeBaseInitStructure<span class="token punctuation">;</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_ClockDivision <span class="token operator">=</span> TIM_CKD_DIV1<span class="token punctuation">;</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_CounterMode <span class="token operator">=</span> TIM_CounterMode_Up<span class="token punctuation">;</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_Period <span class="token operator">=</span> <span class="token number">10000</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_Prescaler <span class="token operator">=</span> <span class="token number">7200</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_RepetitionCounter <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	<span class="token function">TIM_TimeBaseInit</span><span class="token punctuation">(</span>TIM2<span class="token punctuation">,</span> <span class="token operator">&amp;</span>TIM_TimeBaseInitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">TIM_ClearFlag</span><span class="token punctuation">(</span>TIM2<span class="token punctuation">,</span> TIM_FLAG_Update<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">TIM_ITConfig</span><span class="token punctuation">(</span>TIM2<span class="token punctuation">,</span> TIM_IT_Update<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">NVIC_PriorityGroupConfig</span><span class="token punctuation">(</span>NVIC_PriorityGroup_2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	NVIC_InitTypeDef NVIC_InitStructure<span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannel <span class="token operator">=</span> TIM2_IRQn<span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelCmd <span class="token operator">=</span> ENABLE<span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelPreemptionPriority <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">;</span>
+	NVIC_InitStructure<span class="token punctuation">.</span>NVIC_IRQChannelSubPriority <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token function">NVIC_Init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>NVIC_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">TIM_Cmd</span><span class="token punctuation">(</span>TIM2<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/*
+void TIM2_IRQHandler(void)
+{
+	if (TIM_GetITStatus(TIM2, TIM_IT_Update) == SET)
+	{
+		
+		TIM_ClearITPendingBit(TIM2, TIM_IT_Update);
+	}
+}
+*/</span>
+
+</code></pre> 
+<h4><a id="Timerh_287"></a>Timer.h</h4> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifndef</span> <span class="token expression">__TIMER_H</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">__TIMER_H</span></span>
+
+<span class="token keyword">void</span> <span class="token function">Timer_Init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+</code></pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/1cf39fc45a9a415c5ce14fd6ea987b82/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">计算机视觉领域英文SCI期刊</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/0fbe06b1c6b6e1d48e94ca84cbf83ba1/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">白嫖一年免费的亚马逊云服务器搭建小工具</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

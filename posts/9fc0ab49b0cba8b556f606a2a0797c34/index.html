@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>mybatis源码（五）springboot pagehelper实现查询分页 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="mybatis源码（五）springboot pagehelper实现查询分页" />
+<meta property="og:description" content="1、背景 springboot的pagehelper插件能够实现对mybatis查询的分页管理，而且在使用时只需要提前声明即可，不需要修改已有的查询语句。使用如下：
+之前对这个功能一直很感兴趣，但是一直没完整看过，今天准备详细梳理下。按照个人的习惯，我喜欢带着问题去看源码，这次浏览源码我希望可以了解以下两个问题：
+1）分页插件什么时候被加载的
+2）分页插件什么时候生效的，如何生效的
+2、技巧（可跳过） mybatis自身的功能原理这里我们不深入探讨，网上文章很多，我之前也写过类似的文章，这里为了防止文章杂乱，我们只关注感兴趣的点，即mybatis pagehelper分页原理，其它的一笔带过。另外因为mybatis查询生效都是用的代理对象。如果对源码不是很熟悉，很难第一时间找到打断点的位置。不过通过查看page的源码可以知道，最后的分页参数都放到了threadlocal对象里，如下：
+而最后使用该threadlocal时是一定会调用它的获取和移除方法，因此我们在它的这两个方法中加断点。等进入断点后再通过方法栈追踪其全流程。如下：
+3、源码追踪流程 有了上述方法栈的查看，我们知道了查询的入口和大体流程，现在重新执行查询跟随源码脚步来详细看下分页的实现逻辑。首先是在代码中我们主动进行分页查询，如下：
+前三行代码很简单，主要是从httpservletrequest中获取分页参数，并设置到当前线程的threadlocal变量中。第四行则是调用接口方法进行查询。在mybatis中，接口方法最终功能的实现主要是依靠MapperProxy代理类实现（代理类中包含接口和xml配置相关信息），所以接下来我们直接到MapperProxy中打断点追踪（至于mybatis如何关联接口和mapper.xml文件，MapperProxy如何生成等问题不是本文讨论重点，感兴趣的可以单独去查阅或者浏览我以前的相关文章）。
+MapperProxy是代理对象，主要调用方法是invoke方法，所以在该方法中加断点，或者依靠第二步中的技巧查看整个查询的方法栈，随后再在MapperProxy对应的行中加断点。具体断点信息如下：
+因为method不是Object类型，所以执行else里面的代码：
+可以看到最后会执行PlainMethodInvoker对象里的invoke方法，所以我们接着到该方法中打断点并继续追踪查看：
+可以看到调用SqlSessionTemplate对象的selectList方法，我们接着向下看：
+再接着到DefaultSqlSession中继续查看：
+可以看到，最后会调用CachingExecutor的query方法，但是这里要留意一点，那就是CachingExecutor是一个代理对象，执行代理对象方法首先要进入代理，并执行invoke方法。我们这里通过断点调试的步入查看执行哪个类的invoke方法：
+可以看到最终是通过Plugin代理实现CachingExecutor对象query方法的调用。我们再接着向下看：
+因为要执行的方法是查询方法，其是分页拦截器指定要拦截的方法类型，所以会进入拦截方法中。这里我标记了两个框，第一个是拦截，第二个是不进行拦截直接执行查询方法，因此可以推测分页逻辑是再拦截器中进行的。拦截器中会进行sql的改写，所以这里进入拦截器中进一步查看。拦截器对象为PageInterceptor，到这终于和本文的主题关联上了，接下来我们到分页拦截器中看一下：
+可以看到源码中都加好注释了，看起来就更简单了，这里我们看下进入分页的条件：
+可以看到最后获取的page对象实际上就是我们一开在代码中传入分页参数创建的page对象。因为page对象不为空，所以会返回false，进而不跳过分页逻辑。（另外这里要提醒下各位小伙伴，page对象继承了ArrayList，所以断点查看时看不得page里面的内容，只能看到其size为0。）
+我们接着回到主流程向下看，随后会判断是否需要计算总数，默认创建page时需要计算总数，这里我们就不进入before方法查看了，里面逻辑比较简单。下面我们简单看下计算总数的逻辑：
+可以看到其计算总数的sql比较精简，主要是根据查询的对象和条件直接计算总数。这里sql的解析和生成主要是依赖jsqlparser工具类实现(jsqlparser的使用可以参考我以前的文章)，sql解析比较复杂，感兴趣的可以自行查看。接着我们再回到主流程，看下何时添加的分页查询参数：
+可以看到最后再sql末尾加了limit分页参数，而这个sql的改写过程与计算count类似，都是通过jsqlparser工具实现的。
+通过上面的流程，我们已经知道了分页插件如何生效的了。但是还有一个问题是分页插件如何被加载的。这个流程比较简单，我也是通过第二步的技巧逆推的全流程。下面我按照正常项目的加载顺利简单介绍下：
+当我们在pom中引入pageHelper插件依赖并且在yml中配置分页相关的信息时，项目启动后就会主动的进行插件的初始化并注入到插件拦截器链里面。大体逻辑如下：
+可以看到分页插件有个配置类，其在项目初始化的时候会创建分页拦截器，并调用Configuration进行添加，接着我们看下最后会将拦截器添加到哪里：
+可以看到最终会添加到拦截器链对象的私有集合里。但是我们最终使用拦截器是在Plugin对象里用的，而不是在拦截器链里面，那Plugin如何使用到该拦截器的呢？
+在拦截器链里有个pluginAll方法，它会封装拦截器成一个“链式”动态代理对象，代理类是Plugin，该方法会在创建Executor时执行（还记得前面源码里介绍这块的提醒吧，Executor是一个被动态代理的对象），通过pluginAll方法，将拦截器封装成链并将Executor放在链路最后一层。
+可以看到通过pluginAll方法将拦截器封装成了一个链，下面再看一下Executor的创建就完全清晰了：
+至此，我们两个问题都再浏览源码的过程中清晰了。
+4、总结 1）该文章主要是探究sringboot分页插件实现的原理，所以对于mapper.xml与接口方法的整合和mybatis代理对象如何实现查看没有细讲，但是这部分也是查询过程中核心的代码。
+2）由PageInterceptor分页拦截器拦截指定的查询请求，然后在拦截方法中调用PageHelper中的方法对sql进行改写，最后再进行提交。
+2）无论计算总数还是重写分页sql，都是通过jsqlparser工具实现的（为了使得文章主题清晰，这里没有介绍sql的改写过程，jsqlparser的使用可以浏览我以前的文章）
+3）Plugin是一个链式动态代理对象，最后一个节点是Executor被代理对象，前面的节点是Interceptor被代理对象。
+4）再Plugin.wrap方法中会提取出拦截器里的signature标签，并保存在每个Plugin链式代理对象中。在被代理对象执行对应方法时，如果plugin代理对象包含对应的signature集合则说明当前被代理对象是拦截器，如果不包含signature或者signature标签没有拦截当前方法，则直接执行当前方法。
+参考文章： 5分钟！彻底搞懂MyBatis插件&#43;PageHelper原理 - 知乎" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/9fc0ab49b0cba8b556f606a2a0797c34/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-02T11:53:28+08:00" />
+<meta property="article:modified_time" content="2023-12-02T11:53:28+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">mybatis源码（五）springboot pagehelper实现查询分页</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>1、背景</h2> 
+<p>springboot的pagehelper插件能够实现对mybatis查询的分页管理，而且在使用时只需要提前声明即可，不需要修改已有的查询语句。使用如下：<br><img alt="" height="142" src="https://images2.imgbox.com/5d/bd/M174N8OP_o.png" width="865"><br> 之前对这个功能一直很感兴趣，但是一直没完整看过，今天准备详细梳理下。按照个人的习惯，我喜欢带着问题去看源码，这次浏览源码我希望可以了解以下两个问题：<br><strong>1）分页插件什么时候被加载的<br> 2）分页插件什么时候生效的，如何生效的</strong></p> 
+<h2>2、技巧（可跳过）</h2> 
+<p>mybatis自身的功能原理这里我们不深入探讨，网上文章很多，我之前也写过类似的文章，这里为了防止文章杂乱，我们只关注感兴趣的点，即mybatis pagehelper分页原理，其它的一笔带过。另外因为mybatis查询生效都是用的代理对象。如果对源码不是很熟悉，很难第一时间找到打断点的位置。不过通过查看page的源码可以知道，<strong>最后的分页参数都放到了threadlocal对象里</strong>，如下：<br><img alt="" height="135" src="https://images2.imgbox.com/3b/5e/GxGCcvZ0_o.png" width="865"><br><img alt="" height="108" src="https://images2.imgbox.com/6c/a2/zzgLGLhz_o.png" width="865"><br><img alt="" height="91" src="https://images2.imgbox.com/b3/ce/8eyGj4ba_o.png" width="865"><br><img alt="" height="241" src="https://images2.imgbox.com/71/45/dxH7pd5D_o.png" width="865"><br><img alt="" height="223" src="https://images2.imgbox.com/1f/ab/d2kQhOwX_o.png" width="865">而最后使用该threadlocal时是一定会调用它的获取和移除方法，因此我们在它的这两个方法中加断点。等进入断点后再通过方法栈追踪其全流程。如下：<br><img alt="" height="393" src="https://images2.imgbox.com/2e/2a/sMeGyPzs_o.png" width="865"><br><img alt="" height="823" src="https://images2.imgbox.com/73/9e/MDI7sltB_o.png" width="798"></p> 
+<h2 style="background-color:transparent;">3、源码追踪流程</h2> 
+<p>有了上述方法栈的查看，我们知道了查询的入口和大体流程，现在重新执行查询跟随源码脚步来详细看下分页的实现逻辑。首先是在代码中我们主动进行分页查询，如下：</p> 
+<p><img alt="" height="225" src="https://images2.imgbox.com/75/cb/VUTptsK0_o.png" width="1200"></p> 
+<p>前三行代码很简单，主要是从httpservletrequest中获取分页参数，并设置到当前线程的threadlocal变量中。第四行则是调用接口方法进行查询。<strong>在mybatis中，接口方法最终功能的实现主要是依靠MapperProxy代理类实现（代理类中包含接口和xml配置相关信息）</strong>，所以接下来我们直接到MapperProxy中打断点追踪（至于mybatis如何关联接口和mapper.xml文件，MapperProxy如何生成等问题不是本文讨论重点，感兴趣的可以单独去查阅或者浏览我以前的相关文章）。</p> 
+<p>MapperProxy是代理对象，主要调用方法是invoke方法，所以在该方法中加断点，或者依靠第二步中的技巧查看整个查询的方法栈，随后再在MapperProxy对应的行中加断点。具体断点信息如下：</p> 
+<p><img alt="" height="484" src="https://images2.imgbox.com/e6/77/5rcC3MfW_o.png" width="1200">因为method不是Object类型，所以执行else里面的代码：</p> 
+<p><img alt="" height="595" src="https://images2.imgbox.com/38/c5/YH2wSrjA_o.png" width="1200">可以看到最后会执行PlainMethodInvoker对象里的invoke方法，所以我们接着到该方法中打断点并继续追踪查看：</p> 
+<p><img alt="" height="522" src="https://images2.imgbox.com/ad/7a/CWJEccxc_o.png" width="1200"><img alt="" height="912" src="https://images2.imgbox.com/0b/f5/oG6R1t8I_o.png" width="1200"><img alt="" height="360" src="https://images2.imgbox.com/d4/b2/YLjjWJla_o.png" width="1200"><img alt="" height="395" src="https://images2.imgbox.com/18/71/ggl0XzcZ_o.png" width="1200">可以看到调用SqlSessionTemplate对象的selectList方法，我们接着向下看：</p> 
+<p><img alt="" height="183" src="https://images2.imgbox.com/21/6d/Ivou3A8o_o.png" width="1200"></p> 
+<p>再接着到DefaultSqlSession中继续查看：</p> 
+<p><img alt="" height="266" src="https://images2.imgbox.com/14/68/E4tljcFe_o.png" width="1200"></p> 
+<p><img alt="" height="151" src="https://images2.imgbox.com/c9/8b/xHuN3A8y_o.png" width="1200"></p> 
+<p><img alt="" height="245" src="https://images2.imgbox.com/e8/9a/KV8Dqn7X_o.png" width="1200"></p> 
+<p>可以看到，最后会调用CachingExecutor的query方法，但是这里要留意一点，那就是<strong>CachingExecutor是一个代理对象，执行代理对象方法首先要进入代理，并执行invoke方法</strong>。我们这里通过断点调试的步入查看执行哪个类的invoke方法：</p> 
+<p><img alt="" height="322" src="https://images2.imgbox.com/d4/b3/6gYDZjMo_o.png" width="1200"></p> 
+<p><img alt="" height="551" src="https://images2.imgbox.com/42/3a/SwK2Tws9_o.png" width="1200"></p> 
+<p>可以看到最终是<strong>通过Plugin代理实现CachingExecutor对象query方法的调用</strong>。我们再接着向下看：</p> 
+<p><img alt="" height="454" src="https://images2.imgbox.com/1e/6a/NSy8409Y_o.png" width="1200"></p> 
+<p>因为要执行的方法是查询方法，其是分页拦截器指定要拦截的方法类型，所以会进入拦截方法中。这里我标记了两个框，第一个是拦截，第二个是不进行拦截直接执行查询方法，因此可以推测分页逻辑是再拦截器中进行的。拦截器中会进行sql的改写，所以这里进入拦截器中进一步查看。<strong>拦截器对象为PageInterceptor</strong>，<strong>到这终于和本文的主题关联上了</strong>，接下来我们到分页拦截器中看一下：</p> 
+<p><img alt="" height="702" src="https://images2.imgbox.com/95/58/7D92Ov6e_o.png" width="1200">可以看到源码中都加好注释了，看起来就更简单了，这里我们看下进入分页的条件：</p> 
+<p><img alt="" height="565" src="https://images2.imgbox.com/e7/0f/kbsuFwzr_o.png" width="1200"></p> 
+<p></p> 
+<p><img alt="" height="703" src="https://images2.imgbox.com/c7/bd/5w6Xsjk4_o.png" width="1200"></p> 
+<p><img alt="" height="612" src="https://images2.imgbox.com/5f/92/OSg8uSIz_o.png" width="1200"></p> 
+<p>可以看到<strong>最后获取的page对象实际上就是我们一开在代码中传入分页参数创建的page对象</strong>。因为page对象不为空，所以会返回false，进而不跳过分页逻辑。（另外这里要提醒下各位小伙伴，<strong>page对象继承了ArrayList，所以断点查看时看不得page里面的内容，只能看到其size为0</strong>。）</p> 
+<p>我们接着回到主流程向下看，随后会判断是否需要计算总数，默认创建page时需要计算总数，这里我们就不进入before方法查看了，里面逻辑比较简单。下面我们简单看下计算总数的逻辑：</p> 
+<p><img alt="" height="450" src="https://images2.imgbox.com/ca/6e/WlK8cucG_o.png" width="1200"></p> 
+<p><img alt="" height="530" src="https://images2.imgbox.com/57/91/xKRN7YNf_o.png" width="1200"></p> 
+<p><img alt="" height="581" src="https://images2.imgbox.com/19/30/5KXTy02c_o.png" width="1200"></p> 
+<p>可以看到其计算总数的sql比较精简，主要是根据查询的对象和条件直接计算总数。<strong>这里sql的解析和生成主要是依赖jsqlparser工具类实现(jsqlparser的使用可以参考我以前的文章)</strong>，sql解析比较复杂，感兴趣的可以自行查看。接着我们再回到主流程，看下何时添加的分页查询参数：</p> 
+<p><img alt="" height="640" src="https://images2.imgbox.com/b1/a0/6DphlKpb_o.png" width="1200"></p> 
+<p><img alt="" height="880" src="https://images2.imgbox.com/f2/74/1QqS1Htb_o.png" width="1200"></p> 
+<p>可以看到最后再sql末尾加了limit分页参数，而这个sql的改写过程与计算count类似，都是通过jsqlparser工具实现的。</p> 
+<p><strong>通过上面的流程，我们已经知道了分页插件如何生效的了。</strong>但是还有一个问题是分页插件如何被加载的。这个流程比较简单，我也是通过第二步的技巧逆推的全流程。下面我按照正常项目的加载顺利简单介绍下：<br> 当我们在pom中引入pageHelper插件依赖并且在yml中配置分页相关的信息时，项目启动后就会主动的进行插件的初始化并注入到插件拦截器链里面。大体逻辑如下：<br><img alt="" height="1071" src="https://images2.imgbox.com/df/02/Bh6Oi8u2_o.png" width="1200"></p> 
+<p>可以看到<strong>分页插件有个配置类，其在项目初始化的时候会创建分页拦截器，并调用Configuration进行添加</strong>，接着我们看下最后会将拦截器添加到哪里：</p> 
+<p><img alt="" height="133" src="https://images2.imgbox.com/2c/af/8tHBRpym_o.png" width="839"></p> 
+<p><img alt="" height="545" src="https://images2.imgbox.com/1d/78/5ndlX0aw_o.png" width="1116"></p> 
+<p>可以看到最终会添加到拦截器链对象的私有集合里。但是我们最终使用拦截器是在Plugin对象里用的，而不是在拦截器链里面，那Plugin如何使用到该拦截器的呢？</p> 
+<p>在<strong>拦截器链里有个pluginAll方法，它会封装拦截器成一个“链式”动态代理对象，代理类是Plugin，该方法会在创建Executor时执行（还记得前面源码里介绍这块的提醒吧，Executor是一个被动态代理的对象），通过pluginAll方法，将拦截器封装成链并将Executor放在链路最后一层</strong>。</p> 
+<p><img alt="" height="643" src="https://images2.imgbox.com/06/9d/2OLlFFrV_o.png" width="1200"></p> 
+<p><img alt="" height="145" src="https://images2.imgbox.com/2e/ca/T4uBHDdX_o.png" width="790"></p> 
+<p><img alt="" height="474" src="https://images2.imgbox.com/96/f5/Ax9hV93Y_o.png" width="1147"></p> 
+<p>可以看到通过pluginAll方法将拦截器封装成了一个链，下面再看一下Executor的创建就完全清晰了：</p> 
+<p><img alt="" height="639" src="https://images2.imgbox.com/94/45/rXa29BZT_o.png" width="1200"></p> 
+<p>至此，我们两个问题都再浏览源码的过程中清晰了。</p> 
+<h2 style="background-color:transparent;">4、总结</h2> 
+<p>1）该文章主要是探究sringboot分页插件实现的原理，所以对于mapper.xml与接口方法的整合和mybatis代理对象如何实现查看没有细讲，但是这部分也是查询过程中核心的代码。</p> 
+<p>2）由PageInterceptor分页拦截器拦截指定的查询请求，然后在拦截方法中调用PageHelper中的方法对sql进行改写，最后再进行提交。</p> 
+<p>2）无论计算总数还是重写分页sql，都是通过jsqlparser工具实现的（为了使得文章主题清晰，这里没有介绍sql的改写过程，jsqlparser的使用可以浏览我以前的文章）</p> 
+<p>3）Plugin是一个链式动态代理对象，最后一个节点是Executor被代理对象，前面的节点是Interceptor被代理对象。</p> 
+<p>4）再Plugin.wrap方法中会提取出拦截器里的signature标签，并保存在每个Plugin链式代理对象中。在被代理对象执行对应方法时，如果plugin代理对象包含对应的signature集合则说明当前被代理对象是拦截器，如果不包含signature或者signature标签没有拦截当前方法，则直接执行当前方法。</p> 
+<p></p> 
+<h2>参考文章：</h2> 
+<p><a href="https://zhuanlan.zhihu.com/p/612056903" rel="nofollow" title="5分钟！彻底搞懂MyBatis插件+PageHelper原理 - 知乎">5分钟！彻底搞懂MyBatis插件+PageHelper原理 - 知乎</a></p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/80a998c55b49a9739ff301fbc01a6cf7/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">JavaScript 整理了一些常用的数组方法，点赞加关注内容持续更新~</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/409a7a15814153659189a7deb8b68af3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">png图片批量转jpg</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>MySQL的事务与索引 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="MySQL的事务与索引" />
+<meta property="og:description" content="MySQL 1.事务 事务（Transaction）是并发控制的单位，是用户定义的一个操作序列。这些操作要么都做，要么都不做，是一个不可分割的工作单位。 1.1 什么是事务 要么都成功 要么都失败 事务就是将一组SQL语句放在同一批次内去执行如果一个SQL语句出错,则该批次内的所有SQL都将被取消执行MySQL事务处理只支持InnoDB和BDB数据表类型 1.SQL 执行 A给B转账 A 1000 --&gt; B 2002.SQL 执行 B收到A的钱 A 800 --&gt; B400 1.2 事务原则 ： ACID原则 原子性，一致性，持久性，隔离性 （脏读，幻读…） 参考博客链接 https://blog.csdn.net/dengjili/article/details/82468576 原子性(Atomic)
+整个事务中的所有操作，要么全部完成，要么全部不完成，不可能停滞在中间某个环节。事务在执行过程中发生错误，会被回滚（ROLLBACK）到事务开始前的状态，就像这个事务从来没有执行过一样 一致性(Consist)
+一个事务可以封装状态改变（除非它是一个只读的）。事务必须始终保持系统处于一致的状态，不管在任何给定的时间并发事务有多少。也就是说：如果事务是并发多个，系统也必须如同串行事务一样操作。其主要特征是保护性和不变性(Preserving an Invariant)，以转账案例为例，假设有五个账户，每个账户余额是100元，那么五个账户总额是500元，如果在这个5个账户之间同时发生多个转账，无论并发多少个，比如在A与B账户之间转账5元，在C与D账户之间转账10元，在B与E之间转账15元，五个账户总额也应该还是500元，这就是保护性和不变性。 持久性(Durable)
+在事务完成以后，该事务对数据库所作的更改便持久的保存在数据库之中，并不会被回滚。 隔离性(Isolated)
+隔离状态执行事务，使它们好像是系统在给定时间内执行的唯一操作。如果有两个事务，运行在相同的时间内，执行相同的功能，事务的隔离性将确保每一事务在系统中认为只有该事务在使用系统。这种属性有时称为串行化，为了防止事务操作间的混淆，必须串行化或序列化请求，使得在同一时间仅有一个请求用于同一数据。 隔离导致的一些问题 脏读 指一个事务读取了另外一个事务未提交的数据 不可重复读 在一个事务内读取表中的某行数据，多次读取结果不同。（这个不一定是错误 只是某些场合不对） 幻读（虚读） ​ 是指在一个事务内读取到了别的事务插入的数据，导致前后读取不一致。（一般是行影响，多了一行） 幻读和不可重复读有些类似，但是幻读强调的是集合的增减，而不是单条数据的更新。 1.3 事务隔离级别 为了解决以上的问题，主流的关系型数据库都会提供四种事务的隔离级别。事务隔离级别从低到高分别是：读未提交，读已提交，可重复读，串行化。事务隔离级别越高，越能保证数据的一致性和完整性，但是执行效率也越低，所以在设置数据库的事务隔离级别时需要做一下权衡 mysql默认是可重复读读未提交 读未提交(Read Uncommitted)，是最低的隔离级别，所有的事务都可以看到其他未提交的事务的执行结果。只能防止第一类更新丢失，不能解决脏读，可重复读，幻读，所以很少应用于实际项目。 读已提交
+**读已提交(Read Committed)，在该隔离级别下，**一个事务的更新操作只有在该事务提交之后，另外一个事务才可能读取到同一笔数据更新后的结果。可以防止脏读和第一类更新丢失，但是不能解决可重复和幻读的问题。 可重复读（重要）
+可重复读(Repeatable Read)，mysql默认的隔离级别。在该隔离级别下，一个事务多次读同一个数据，在这个事务还没有结束时，其他事务不能访问该数据（包括了读写），这样就可以在同一个事务内两次读到的数据是一样的。可以防止脏读、不可重复读、第一类更新丢失，第二类更新丢失的问题，不过还是会出现幻读。 串行化 串行化(Serializable)，这是最高的隔离级别。它要求事务序列化执行，事务只能一个接着一个的执行，不能并发执行。在这个级别，可以解决上面提到的所有并发问题，但是可能导致大量的超时现象和锁竞争，通常不会用这个隔离级别。 1.4 测试事务实现转账 执行事务：相关命令 -- ==========事务==================== -- mysql默认开启事务自动提交的 SET autoccommit = 0;/*关闭*/ SET autoccommit = 1;/*开启（默认）*/ -- s手动处理事务 SET autoccommit = 0; -- 关闭自动提交 -- 事务开启 START TRANSACTION -- 标记一个事务的开始，从这个开始的sql 都在同一个事务中 INSERT xx INSERT yy -- 提交 持久化（成功） COMMIT -- 回滚 回到原来的样子（失败） ROLLBACK -- 事务结束 SET autoccommit = 1;-- 开启自动提交 -- 了解 SAVEPOINT 保存点名称 -- 设置一个事务的保存点 ROLLBACK TO SAVEPOINT -- 回滚到保存点 RELEASE SAVEPOINT 保存点名称 -- 删除保存点 模拟场景 /* 课堂测试题目 A在线买一款价格为500元商品,网上银行转账." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/c5cb75f2603066e2b60623ae043cc588/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-10-13T16:00:22+08:00" />
+<meta property="article:modified_time" content="2022-10-13T16:00:22+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">MySQL的事务与索引</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="MySQL_0"></a>MySQL</h2> 
+<h3><a id="1_1"></a>1.<strong>事务</strong></h3> 
+<ul><li><font color="red"> <strong>事务（Transaction）是并发控制的单位，是用户定义的一个操作序列。这些操作要么都做，要么都不做，是一个不可分割的工作单位。</strong> </font></li></ul> 
+<h4><a id="11__6"></a>1.1 什么是事务</h4> 
+<ul><li><font color="red"> <strong>要么都成功 要么都失败</strong> </font></li><li><font color="black"><strong>事务就是将一组SQL语句放在同一批次内去执行</strong></font></li><li><font color="black"><strong>如果一个SQL语句出错,则该批次内的所有SQL都将被取消执行</strong></font></li><li><font color="black"><strong>MySQL事务处理只支持InnoDB和BDB数据表类型</strong></font> 
+  <ul><li><font color="black"><strong>1.SQL 执行 A给B转账 A 1000 --&gt; B 200</strong></font></li><li><font color="black"><strong>2.SQL 执行 B收到A的钱 A 800 --&gt; B400</strong></font></li></ul> </li></ul> 
+<h4><a id="12___ACID___13"></a>1.2 事务原则 ： ACID原则 原子性，一致性，持久性，隔离性 （脏读，幻读…）</h4> 
+<ul><li><font color="red"><strong>参考博客链接</strong> </font> <strong>https://blog.csdn.net/dengjili/article/details/82468576</strong></li></ul> 
+<ul><li> <p><font color="black"><strong>原子性(Atomic)</strong></font></p> 
+  <ul><li><font color="black"><strong>整个事务中的所有操作，要么全部完成，要么全部不完成，不可能停滞在中间某个环节。事务在执行过程中发生错误，会被回滚（ROLLBACK）到事务开始前的状态，就像这个事务从来没有执行过一样</strong></font></li></ul> </li><li> <p><font color="black"><strong>一致性(Consist)</strong></font></p> 
+  <ul><li><font color="black"><strong>一个事务可以封装状态改变（除非它是一个只读的）。事务必须始终保持系统处于一致的状态，不管在任何给定的时间并发事务有多少。也就是说：如果事务是并发多个，系统也必须如同串行事务一样操作。其主要特征是保护性和不变性(Preserving an Invariant)，以转账案例为例，假设有五个账户，每个账户余额是100元，那么五个账户总额是500元，如果在这个5个账户之间同时发生多个转账，无论并发多少个，比如在A与B账户之间转账5元，在C与D账户之间转账10元，在B与E之间转账15元，五个账户总额也应该还是500元，这就是保护性和不变性。</strong></font></li></ul> </li><li> <p><font color="black"><strong>持久性(Durable)</strong></font></p> 
+  <ul><li><font color="black"><strong>在事务完成以后，该事务对数据库所作的更改便持久的保存在数据库之中，并不会被回滚。</strong></font></li></ul> </li><li> <p><font color="black"><strong>隔离性(Isolated)</strong></font></p> 
+  <ul><li><font color="black"><strong>隔离状态执行事务，使它们好像是系统在给定时间内执行的唯一操作。如果有两个事务，运行在相同的时间内，执行相同的功能，事务的隔离性将确保每一事务在系统中认为只有该事务在使用系统。这种属性有时称为串行化，为了防止事务操作间的混淆，必须串行化或序列化请求，使得在同一时间仅有一个请求用于同一数据。</strong></font></li></ul> </li></ul> 
+<pre><code>隔离导致的一些问题
+</code></pre> 
+<ul><li><font color="black"><strong>脏读</strong></font> 
+  <ul><li><font color="black"><strong>指一个事务读取了另外一个事务未提交的数据</strong></font></li></ul> </li><li><font color="black"><strong>不可重复读</strong></font> 
+  <ul><li><font color="black"><strong>在一个事务内读取表中的某行数据，多次读取结果不同。（这个不一定是错误 只是某些场合不对）</strong></font></li></ul> </li><li><font color="black"><strong>幻读（虚读）</strong></font> 
+  <ul><li><font color="black"><strong>​ 是指在一个事务内读取到了别的事务插入的数据，导致前后读取不一致。（一般是行影响，多了一行）</strong></font></li></ul> </li><li><font color="red"><strong>幻读和不可重复读有些类似，但是幻读强调的是集合的增减，而不是单条数据的更新。</strong></font></li></ul> 
+<h4><a id="13__46"></a>1.3 事务隔离级别</h4> 
+<ul><li><font color="black"><strong>为了解决以上的问题，主流的关系型数据库都会提供四种事务的隔离级别。事务隔离级别从低到高分别是：读未提交，读已提交，可重复读，串行化。事务隔离级别越高，越能保证数据的一致性和完整性，但是执行效率也越低，所以在设置数据库的事务隔离级别时需要做一下权衡</strong></font></li></ul> 
+<ul><li><font color="red"><strong>mysql默认是可重复读</strong></font></li><li><font color="red"><strong>读未提交</strong></font> 
+  <ul><li><font color="black"><strong>读未提交(Read Uncommitted)，是最低的隔离级别，所有的事务都可以看到其他未提交的事务的执行结果。只能防止第一类更新丢失，不能解决脏读，可重复读，幻读，所以很少应用于实际项目。</strong></font></li></ul> </li></ul> 
+<ul><li> <p><font color="red"><strong>读已提交</strong></font></p> 
+  <ul><li><font color="black">**读已提交(Read Committed)，在该隔离级别下，**一个事务的更新操作只有在该事务提交之后，另外一个事务才可能读取到同一笔数据更新后的结果。<strong>可以防止脏读和第一类更新丢失，但是不能解决可重复和幻读的问题。</strong></font></li></ul> </li><li> <p><font color="red"><strong>可重复读（重要）</strong></font></p> 
+  <ul><li><font color="black"><strong>可重复读(Repeatable Read)，mysql默认的隔离级别。在该隔离级别下，一个事务多次读同一个数据，在这个事务还没有结束时，其他事务不能访问该数据（包括了读写），这样就可以在同一个事务内两次读到的数据是一样的。可以防止脏读、不可重复读、第一类更新丢失，第二类更新丢失的问题，不过还是会出现幻读。</strong></font></li></ul> </li></ul> 
+<ul><li><font color="red"><strong>串行化</strong></font> 
+  <ul><li><font color="black"><strong>串行化(Serializable)，这是最高的隔离级别。它要求事务序列化执行，事务只能一个接着一个的执行，不能并发执行。在这个级别，可以解决上面提到的所有并发问题，但是可能导致大量的超时现象和锁竞争，通常不会用这个隔离级别。</strong></font></li></ul> </li></ul> 
+<hr> 
+<h4><a id="font_colorblack14_font_64"></a><font color="black"><strong>1.4 测试事务实现转账</strong></font></h4> 
+<ul><li><font color="red"><strong>执行事务：相关命令</strong></font></li></ul> 
+<pre><code class="prism language-mysql">-- ==========事务====================
+-- mysql默认开启事务自动提交的
+  SET  autoccommit = 0;/*关闭*/
+  SET  autoccommit = 1;/*开启（默认）*/
+  -- s手动处理事务
+  SET  autoccommit = 0; -- 关闭自动提交
+
+--  事务开启
+  START TRANSACTION  -- 标记一个事务的开始，从这个开始的sql  都在同一个事务中
+  INSERT xx
+   INSERT  yy
+
+--  提交  持久化（成功）
+ COMMIT
+-- 回滚   回到原来的样子（失败）
+
+ROLLBACK
+--  事务结束
+ SET  autoccommit = 1;-- 开启自动提交
+
+-- 了解
+SAVEPOINT 保存点名称  -- 设置一个事务的保存点
+ROLLBACK TO SAVEPOINT -- 回滚到保存点
+RELEASE SAVEPOINT 保存点名称 -- 删除保存点
+
+</code></pre> 
+<ul><li><font color="black"><strong>模拟场景</strong></font></li></ul> 
+<pre><code class="prism language-sql"><span class="token comment">/*
+课堂测试题目
+
+A在线买一款价格为500元商品,网上银行转账.
+A的银行卡余额为2000,然后给商家B支付500.
+商家B一开始的银行卡余额为10000
+
+创建数据库shop和创建表account并插入2条数据
+*/</span>
+
+<span class="token keyword">CREATE</span> <span class="token keyword">DATABASE</span> <span class="token identifier"><span class="token punctuation">`</span>shop<span class="token punctuation">`</span></span><span class="token keyword">CHARACTER</span> <span class="token keyword">SET</span> utf8 <span class="token keyword">COLLATE</span> utf8_general_ci<span class="token punctuation">;</span>
+<span class="token keyword">USE</span> <span class="token identifier"><span class="token punctuation">`</span>shop<span class="token punctuation">`</span></span><span class="token punctuation">;</span>
+
+<span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> <span class="token identifier"><span class="token punctuation">`</span>account<span class="token punctuation">`</span></span> <span class="token punctuation">(</span>
+<span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span> <span class="token keyword">INT</span><span class="token punctuation">(</span><span class="token number">11</span><span class="token punctuation">)</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span> <span class="token keyword">AUTO_INCREMENT</span><span class="token punctuation">,</span>
+<span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span> <span class="token keyword">VARCHAR</span><span class="token punctuation">(</span><span class="token number">32</span><span class="token punctuation">)</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span><span class="token punctuation">,</span>
+<span class="token identifier"><span class="token punctuation">`</span>cash<span class="token punctuation">`</span></span> <span class="token keyword">DECIMAL</span><span class="token punctuation">(</span><span class="token number">9</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span><span class="token punctuation">,</span>
+<span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">)</span>
+<span class="token punctuation">)</span> <span class="token keyword">ENGINE</span><span class="token operator">=</span><span class="token keyword">INNODB</span> <span class="token keyword">DEFAULT</span> <span class="token keyword">CHARSET</span><span class="token operator">=</span>utf8
+
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> account <span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span><span class="token punctuation">,</span><span class="token identifier"><span class="token punctuation">`</span>cash<span class="token punctuation">`</span></span><span class="token punctuation">)</span>
+<span class="token keyword">VALUES</span><span class="token punctuation">(</span><span class="token string">'A'</span><span class="token punctuation">,</span><span class="token number">2000.00</span><span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token punctuation">(</span><span class="token string">'B'</span><span class="token punctuation">,</span><span class="token number">10000.00</span><span class="token punctuation">)</span>
+
+
+<span class="token comment">-- 模拟转账</span>
+<span class="token comment">-- 转账实现</span>
+<span class="token keyword">SET</span> autocommit <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> <span class="token comment">-- 关闭自动提交</span>
+<span class="token keyword">START</span> <span class="token keyword">TRANSACTION</span><span class="token punctuation">;</span>  <span class="token comment">-- 开始一个事务,标记事务的起始点（一组事务）</span>
+<span class="token keyword">UPDATE</span> account <span class="token keyword">SET</span> cash<span class="token operator">=</span>cash<span class="token operator">-</span><span class="token number">500</span> <span class="token keyword">WHERE</span> <span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span><span class="token operator">=</span><span class="token string">'A'</span><span class="token punctuation">;</span><span class="token comment">-- A减500</span>
+<span class="token keyword">UPDATE</span> account <span class="token keyword">SET</span> cash<span class="token operator">=</span>cash<span class="token operator">+</span><span class="token number">500</span> <span class="token keyword">WHERE</span> <span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span><span class="token operator">=</span><span class="token string">'B'</span><span class="token punctuation">;</span><span class="token comment">-- B加500</span>
+<span class="token keyword">COMMIT</span><span class="token punctuation">;</span> <span class="token comment">-- 提交事务就会被持久化了</span>
+<span class="token comment"># rollback; --回滚</span>
+<span class="token keyword">SET</span> autocommit <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span> <span class="token comment">-- 恢复自动提交</span>
+
+</code></pre> 
+<hr> 
+<h3><a id="2_134"></a>2.<strong>索引</strong></h3> 
+<h4><a id="font_colorblack21_font_135"></a><font color="black"><strong>2.1 索引的介绍</strong></font></h4> 
+<ul><li><font color="black"><strong>MySQL官方对索引的定义为：</strong></font><strong>索引（index）是帮助MySQL高效获取数据的数据结构</strong></li><li><font color="red"> <strong>提取句子主干 就可以得到索引的本质 ：</strong> </font><strong>索引是数据结构</strong></li></ul> 
+<ul><li> <p><font color="black"><strong>索引的作用</strong></font></p> 
+  <ul><li><font color="black"><strong>提高查询速度</strong></font></li><li><font color="black"><strong>确保数据的唯一性</strong></font></li><li><font color="black"><strong>可以加速表和表之间的连接 , 实现表与表之间的参照完整性</strong></font></li><li><font color="black"><strong>使用分组和排序子句进行数据检索时 , 可以显著减少分组和排序的时间</strong></font></li><li><font color="black"><strong>全文检索字段进行搜索优化</strong></font></li></ul> </li><li> <p><font color="black"><strong>索引的分类</strong></font></p> </li></ul> 
+<pre><code>在一个表中，主键索引只能有一个，唯一索引可以有多个
+</code></pre> 
+<ul><li> <p><font color="black"><strong>主键索引 （PRIMARY KEY）</strong></font></p> 
+  <ul><li><font color="black"><strong>唯一的标识，主键不可重复，只能有一个列作为主键</strong></font></li></ul> </li><li> <p><font color="black"><strong>唯一索引 （UNIQUE KEY）</strong></font></p> 
+  <ul><li><font color="black"><strong>避免重复的列出现，唯一索引可以重复，多个列都可以标识唯一索引</strong></font></li></ul> </li><li> <p><font color="black"><strong>常规索引（KEY/INDEX）</strong></font></p> 
+  <ul><li><font color="black"><strong>默认的，index,key关键字来设置</strong></font></li></ul> </li><li> <p><font color="black"><strong>全文索引（FULLTEXT）</strong></font></p> 
+  <ul><li><font color="black"><strong>在特定的数据库引擎下才有, MySAM</strong></font></li><li><font color="black"><strong>快速定位数据</strong></font></li></ul> </li></ul> 
+<pre><code>基础语法
+</code></pre> 
+<pre><code>/*
+#方法一：创建表时
+  　　CREATE TABLE 表名 (
+               字段名1 数据类型 [完整性约束条件…],
+               字段名2 数据类型 [完整性约束条件…],
+               [UNIQUE | FULLTEXT | SPATIAL ]   INDEX | KEY
+               [索引名] (字段名[(长度)] [ASC |DESC])
+               );
+
+
+#方法二：CREATE在已存在的表上创建索引
+       CREATE [UNIQUE | FULLTEXT | SPATIAL ] INDEX 索引名
+                    ON 表名 (字段名[(长度)] [ASC |DESC]) ;
+
+
+#方法三：ALTER TABLE在已存在的表上创建索引
+       ALTER TABLE 表名 ADD [UNIQUE | FULLTEXT | SPATIAL ] INDEX
+                            索引名 (字段名[(长度)] [ASC |DESC]) ;
+                           
+                           
+#删除索引：DROP INDEX 索引名 ON 表名字;
+#删除主键索引: ALTER TABLE 表名 DROP PRIMARY KEY;
+
+
+#显示索引信息: SHOW INDEX FROM student;
+*/
+
+/*增加全文索引*/
+ALTER TABLE `school`.`student` ADD FULLTEXT INDEX `studentname` (`StudentName`);
+
+/*EXPLAIN : 分析SQL语句执行性能*/
+EXPLAIN SELECT * FROM student WHERE studentno='1000';
+
+/*使用全文索引*/
+-- 全文搜索通过 MATCH() 函数完成。
+-- 搜索字符串作为 against() 的参数被给定。搜索以忽略字母大小写的方式执行。对于表中的每个记录行，MATCH() 返回一个相关性值。即，在搜索字符串与记录行在 MATCH() 列表中指定的列的文本之间的相似性尺度。
+EXPLAIN SELECT *FROM student WHERE MATCH(studentname) AGAINST('love');
+
+/*
+开始之前，先说一下全文索引的版本、存储引擎、数据类型的支持情况
+
+MySQL 5.6 以前的版本，只有 MyISAM 存储引擎支持全文索引；
+MySQL 5.6 及以后的版本，MyISAM 和 InnoDB 存储引擎均支持全文索引;
+只有字段的数据类型为 char、varchar、text 及其系列才可以建全文索引。
+测试或使用全文索引时，要先看一下自己的 MySQL 版本、存储引擎和数据类型是否支持全文索引。
+*/
+
+
+-- 索引的使用
+-- 1、在创建表的时候给字段增加索引
+--  2、创建完毕后  增加索引
+
+--  显示所有索引信息
+SHOW  INDEX  FROM  `student`; 
+
+--  增加一个索引 (索引名：列名)
+ALTER TABLE school.`student` ADD FULLTEXT INDEX `StudentName`(`StudentName`);
+--  EXPLAIN 分析SQL执行的状况
+EXPLAIN SELECT * FROM student;  -- 非全文索引
+EXPLAIN  SELECT * FROM  student WHERE MATCH(StudentName)  AGAINST('韩')
+  
+
+
+</code></pre> 
+<h4><a id="font_colorblack22_font_232"></a><font color="black"><strong>2.2 测试索引</strong></font></h4> 
+<ul><li><font color="black"><strong>创建使用的表</strong></font></li></ul> 
+<pre><code class="prism language-sql"><span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> <span class="token identifier"><span class="token punctuation">`</span>app_user<span class="token punctuation">`</span></span> <span class="token punctuation">(</span>
+<span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span> <span class="token keyword">BIGINT</span><span class="token punctuation">(</span><span class="token number">20</span><span class="token punctuation">)</span> <span class="token keyword">UNSIGNED</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span> <span class="token keyword">AUTO_INCREMENT</span><span class="token punctuation">,</span>
+<span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span> <span class="token keyword">VARCHAR</span><span class="token punctuation">(</span><span class="token number">50</span><span class="token punctuation">)</span> <span class="token keyword">DEFAULT</span><span class="token string">''</span> <span class="token keyword">COMMENT</span><span class="token string">'用户昵称'</span><span class="token punctuation">,</span>
+<span class="token identifier"><span class="token punctuation">`</span>email<span class="token punctuation">`</span></span> <span class="token keyword">VARCHAR</span><span class="token punctuation">(</span><span class="token number">50</span><span class="token punctuation">)</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span> <span class="token keyword">COMMENT</span><span class="token string">'用户邮箱'</span><span class="token punctuation">,</span>
+<span class="token identifier"><span class="token punctuation">`</span>phone<span class="token punctuation">`</span></span> <span class="token keyword">VARCHAR</span><span class="token punctuation">(</span><span class="token number">20</span><span class="token punctuation">)</span> <span class="token keyword">DEFAULT</span><span class="token string">''</span> <span class="token keyword">COMMENT</span><span class="token string">'手机号'</span><span class="token punctuation">,</span>
+<span class="token identifier"><span class="token punctuation">`</span>gender<span class="token punctuation">`</span></span> <span class="token keyword">TINYINT</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">)</span> <span class="token keyword">UNSIGNED</span> <span class="token keyword">DEFAULT</span> <span class="token string">'0'</span><span class="token keyword">COMMENT</span> <span class="token string">'性别（0：男;1:女）'</span><span class="token punctuation">,</span>
+<span class="token identifier"><span class="token punctuation">`</span>password<span class="token punctuation">`</span></span> <span class="token keyword">VARCHAR</span><span class="token punctuation">(</span><span class="token number">100</span><span class="token punctuation">)</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span> <span class="token keyword">COMMENT</span> <span class="token string">'密码'</span><span class="token punctuation">,</span>
+<span class="token identifier"><span class="token punctuation">`</span>age<span class="token punctuation">`</span></span> <span class="token keyword">TINYINT</span><span class="token punctuation">(</span><span class="token number">4</span><span class="token punctuation">)</span> <span class="token keyword">DEFAULT</span><span class="token string">'0'</span> <span class="token keyword">COMMENT</span> <span class="token string">'年龄'</span><span class="token punctuation">,</span>
+<span class="token identifier"><span class="token punctuation">`</span>create_time<span class="token punctuation">`</span></span> <span class="token keyword">DATETIME</span> <span class="token keyword">DEFAULT</span> <span class="token keyword">CURRENT_TIMESTAMP</span><span class="token punctuation">,</span>
+<span class="token identifier"><span class="token punctuation">`</span>update_time<span class="token punctuation">`</span></span> <span class="token keyword">TIMESTAMP</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span> <span class="token keyword">DEFAULT</span> <span class="token keyword">CURRENT_TIMESTAMP</span> <span class="token keyword">ON</span> <span class="token keyword">UPDATE</span> <span class="token keyword">CURRENT_TIMESTAMP</span><span class="token punctuation">,</span>
+<span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">)</span>
+<span class="token punctuation">)</span> <span class="token keyword">ENGINE</span><span class="token operator">=</span><span class="token keyword">INNODB</span> <span class="token keyword">DEFAULT</span> <span class="token keyword">CHARSET</span><span class="token operator">=</span>utf8 <span class="token keyword">COMMENT</span> <span class="token operator">=</span> <span class="token string">'app用户表'</span>
+</code></pre> 
+<ul><li><font color="black"><strong>插入100万数据</strong></font></li></ul> 
+<pre><code class="prism language-sql"><span class="token comment">-- 插入100w条数据</span>
+ <span class="token keyword">DROP</span> <span class="token keyword">FUNCTION</span> <span class="token keyword">IF</span> <span class="token keyword">EXISTS</span> mock_data<span class="token punctuation">;</span>
+<span class="token keyword">DELIMITER</span> $$ <span class="token comment">-- 写函数之前必须要写   标志</span>
+<span class="token keyword">CREATE</span> <span class="token keyword">FUNCTION</span> mock_data<span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token keyword">RETURNS</span> <span class="token keyword">INT</span>
+<span class="token keyword">BEGIN</span>
+<span class="token keyword">DECLARE</span> num <span class="token keyword">INT</span> <span class="token keyword">DEFAULT</span> <span class="token number">1000000</span><span class="token punctuation">;</span>
+<span class="token keyword">DECLARE</span> i <span class="token keyword">INT</span> <span class="token keyword">DEFAULT</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token keyword">WHILE</span> i <span class="token operator">&lt;</span> num <span class="token keyword">DO</span>
+    <span class="token comment">-- 插入语句</span>
+  <span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> app_user<span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>email<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>phone<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>gender<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>password<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>age<span class="token punctuation">`</span></span><span class="token punctuation">)</span>
+   <span class="token keyword">VALUES</span><span class="token punctuation">(</span>CONCAT<span class="token punctuation">(</span><span class="token string">'用户'</span><span class="token punctuation">,</span> i<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">'24736743@qq.com'</span><span class="token punctuation">,</span> CONCAT<span class="token punctuation">(</span><span class="token string">'18'</span><span class="token punctuation">,</span> FLOOR<span class="token punctuation">(</span>RAND<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">*</span><span class="token punctuation">(</span><span class="token number">999999999</span><span class="token operator">-</span><span class="token number">100000000</span><span class="token punctuation">)</span><span class="token operator">+</span><span class="token number">100000000</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span>FLOOR<span class="token punctuation">(</span>RAND<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">*</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">,</span>UUID<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> FLOOR<span class="token punctuation">(</span>RAND<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">*</span><span class="token number">100</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+  <span class="token keyword">SET</span> i <span class="token operator">=</span> i <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">;</span>
+<span class="token keyword">END</span> <span class="token keyword">WHILE</span><span class="token punctuation">;</span>
+<span class="token keyword">RETURN</span> i<span class="token punctuation">;</span>
+<span class="token keyword">END</span><span class="token punctuation">;</span>
+<span class="token keyword">SELECT</span> mock_data<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+</code></pre> 
+<ul><li><font color="black"><strong>索引效率测试</strong></font></li></ul> 
+<pre><code class="prism language-sql"><span class="token comment">-- 加索引前</span>
+<span class="token keyword">SELECT</span> <span class="token operator">*</span> <span class="token keyword">FROM</span> app_user <span class="token keyword">WHERE</span> <span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token string">'用户9999'</span><span class="token punctuation">;</span> <span class="token comment">-- 1.159 sec</span>
+<span class="token keyword">SELECT</span> <span class="token operator">*</span> <span class="token keyword">FROM</span> app_user <span class="token keyword">WHERE</span> <span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token string">'用户9999'</span><span class="token punctuation">;</span> <span class="token comment">-- 0.642 sec</span>
+<span class="token keyword">SELECT</span> <span class="token operator">*</span> <span class="token keyword">FROM</span> app_user <span class="token keyword">WHERE</span> <span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token string">'用户9999'</span><span class="token punctuation">;</span> <span class="token comment">-- 0.631 sec</span>
+
+<span class="token keyword">EXPLAIN</span> <span class="token keyword">SELECT</span> <span class="token operator">*</span> <span class="token keyword">FROM</span> app_user <span class="token keyword">WHERE</span> <span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token string">'用户9999'</span><span class="token punctuation">;</span><span class="token comment">-- 分析看到查询了99999条记录</span>
+
+<span class="token keyword">SELECT</span> <span class="token operator">*</span> <span class="token keyword">FROM</span> student
+
+<span class="token comment">-- id _ 表名 _ 字段名</span>
+<span class="token comment">-- CREATE INDEX 索引名 on 表（字段）</span>
+<span class="token keyword">CREATE</span> <span class="token keyword">INDEX</span> id_app_user_name <span class="token keyword">ON</span> app_user<span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">-- 加索引后</span>
+<span class="token keyword">SELECT</span> <span class="token operator">*</span> <span class="token keyword">FROM</span> app_user <span class="token keyword">WHERE</span> <span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token string">'用户9999'</span><span class="token punctuation">;</span> <span class="token comment">-- 0.009 sec</span>
+<span class="token keyword">EXPLAIN</span> <span class="token keyword">SELECT</span> <span class="token operator">*</span> <span class="token keyword">FROM</span> app_user <span class="token keyword">WHERE</span> <span class="token identifier"><span class="token punctuation">`</span>name<span class="token punctuation">`</span></span> <span class="token operator">=</span> <span class="token string">'用户9999'</span><span class="token punctuation">;</span> <span class="token comment">-- 查询一条记录</span>
+
+</code></pre> 
+<ul><li><font color="red"><strong>索引在小数据量的时候，用处不大，但是再大数据的时候，区分十分明显</strong></font></li></ul> 
+<hr> 
+<h4><a id="23_font_colorblackfont_300"></a>2.3 <font color="black"><strong>索引原则</strong></font></h4> 
+<ul><li><font color="black"><strong>索引不是越多越好</strong></font></li><li><font color="black"><strong>不要对经常变动的数据加索引</strong></font></li></ul> 
+<ul><li><font color="black"><strong>小数据量的表不需要加索引</strong></font></li></ul> 
+<ul><li><font color="red"><strong>索引一般加在常用来查询的字段上</strong></font></li></ul> 
+<pre><code class="prism language-sql">索引的数据结构
+</code></pre> 
+<ul><li><font color="black"><strong>Hash类型的索引</strong></font></li><li><font color="red"><strong>Btree：InnoDB默认的</strong></font></li></ul> 
+<ul><li><font color="black"><strong>参考博客：http://blog.codinglabs.org/articles/theory-of-mysql-index.html</strong></font></li></ul> 
+<pre><code class="prism language-sql"><span class="token comment">-- 我们可以在创建上述索引的时候，为其指定索引类型，分两类</span>
+<span class="token keyword">hash</span>类型的索引：查询单条快，范围查询慢
+<span class="token keyword">btree</span>类型的索引：b<span class="token operator">+</span>树，层数越多，数据量指数级增长（我们就用它，因为<span class="token keyword">innodb</span>默认支持它）
+
+<span class="token comment">-- 不同的存储引擎支持的索引类型也不一样</span>
+<span class="token keyword">InnoDB</span> 支持事务，支持行级别锁定，支持 B<span class="token operator">-</span>tree、<span class="token keyword">Full</span><span class="token operator">-</span><span class="token keyword">text</span> 等索引，不支持 <span class="token keyword">Hash</span> 索引；
+MyISAM 不支持事务，支持表级别锁定，支持 B<span class="token operator">-</span>tree、<span class="token keyword">Full</span><span class="token operator">-</span><span class="token keyword">text</span> 等索引，不支持 <span class="token keyword">Hash</span> 索引；
+Memory 不支持事务，支持表级别锁定，支持 B<span class="token operator">-</span>tree、<span class="token keyword">Hash</span> 等索引，不支持 <span class="token keyword">Full</span><span class="token operator">-</span><span class="token keyword">text</span> 索引；
+NDB 支持事务，支持行级别锁定，支持 <span class="token keyword">Hash</span> 索引，不支持 B<span class="token operator">-</span>tree、<span class="token keyword">Full</span><span class="token operator">-</span><span class="token keyword">text</span> 等索引；
+Archive 不支持事务，支持表级别锁定，不支持 B<span class="token operator">-</span>tree、<span class="token keyword">Hash</span>、<span class="token keyword">Full</span><span class="token operator">-</span><span class="token keyword">text</span> 等索引；
+
+</code></pre> 
+<h3><a id="3MySQL_333"></a>3.<strong>MySQL权限管理与备份</strong></h3> 
+<h4><a id="font_colorblack31_font_334"></a><font color="black"><strong>3.1 用户管理</strong></font></h4> 
+<ul><li> <p><font color="red"> <strong>方式一：SQLyog可视化管理</strong> </font><br> <img src="https://images2.imgbox.com/3e/37/QX2vPUcM_o.png" alt="fff"></p> </li><li> <p><font color="red"><strong>方式二： SQL命令操作</strong></font></p> </li></ul> 
+<ul><li><font color="black"><strong>用户表：mysql.user</strong></font> 
+  <ul><li><font color="black"><strong>本质：对这张表的增删改查</strong></font></li></ul> </li></ul> 
+<pre><code class="prism language-sql"><span class="token comment">-- 创建用户  CREATE USER 用户名 IDENTIFIED BY '密码'</span>
+<span class="token keyword">CREATE</span> <span class="token keyword">USER</span> sanjin IDENTIFIED <span class="token keyword">BY</span> <span class="token string">'123456'</span>
+
+<span class="token comment">-- 修改密码（修改当前密码）</span>
+<span class="token keyword">SET</span> PASSWORD <span class="token operator">=</span> PASSWORD<span class="token punctuation">(</span><span class="token string">'111111'</span><span class="token punctuation">)</span>
+
+
+<span class="token comment">-- 修改密码（修改指定用户密码）</span>
+
+<span class="token keyword">SET</span> PASSWORD <span class="token keyword">FOR</span> sanjin <span class="token operator">=</span> PASSWORD<span class="token punctuation">(</span><span class="token string">'111111'</span><span class="token punctuation">)</span>
+
+
+<span class="token comment">-- 重命名  rename user 原名字 to 新名字</span>
+<span class="token keyword">RENAME</span> <span class="token keyword">USER</span> sanjin <span class="token keyword">TO</span> sanjin2
+
+<span class="token comment">-- 用户授权   ALL PRIVILEGES 全部的权限   库，表</span>
+<span class="token comment">-- ALL PRIVILEGES 除了给别人授权，其他都能干</span>
+<span class="token keyword">GRANT</span> <span class="token keyword">ALL</span> <span class="token keyword">PRIVILEGES</span> <span class="token keyword">ON</span> <span class="token operator">*</span><span class="token punctuation">.</span><span class="token operator">*</span> <span class="token keyword">TO</span> sanjin2
+
+<span class="token comment">-- 查询权限</span>
+<span class="token keyword">SHOW</span> GRANTS <span class="token keyword">FOR</span> sanjin2  <span class="token comment">-- 查看指定用户的权限</span>
+<span class="token keyword">SHOW</span> GRANTS <span class="token keyword">FOR</span> root<span class="token variable">@localhost</span>
+
+<span class="token comment">-- ROOT用户权限：GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION</span>
+
+<span class="token comment">-- 撤销权限 REVOKE 哪些权限，在哪个库撤销，给谁撤销</span>
+<span class="token keyword">REVOKE</span> <span class="token keyword">ALL</span> <span class="token keyword">PRIVILEGES</span> <span class="token keyword">ON</span> <span class="token operator">*</span><span class="token punctuation">.</span><span class="token operator">*</span> <span class="token keyword">FROM</span> sanjin2
+
+<span class="token comment">-- 删除用户</span>
+<span class="token keyword">DROP</span> <span class="token keyword">USER</span> sanjin2
+
+
+</code></pre> 
+<ul><li><font color="black"><strong>以上的操作都是物理外键，数据库级别外键，我们不建议使用！（避免数据库过多造成困扰）</strong></font></li></ul> 
+<ul><li><font color="red"> <strong>最佳实践</strong> </font> 
+  <ul><li><font color="black"><strong>数据库就是单纯的表，只用来存数据，只有行（数据）和列（字段）。</strong></font></li><li><font color="black"><strong>我们想使用多张表的数据，想使用外键（程序去实现）。</strong></font></li></ul> </li></ul> 
+<h4><a id="32__font_colorblackMySQL_font_389"></a>3.2 <font color="black"><strong>MySQL 备份</strong></font></h4> 
+<ul><li><font color="black"><strong>为什么要备份：</strong></font> 
+  <ul><li><font color="black"><strong>保证重要的数据不丢失</strong></font></li><li><font color="black"><strong>数据转移</strong></font></li></ul> </li></ul> 
+<ul><li><font color="red"> <strong>mysql数据库备份的方式</strong> </font> 
+  <ul><li><font color="black"><strong>直接拷贝物理文件</strong></font></li><li><font color="black"><strong>在sqlyog这种可视化工具中手动导出:在想要导出的表或者库中，右键选择备份或导出</strong></font></li><li><font color="black"><strong>使用SQL命令行 mysqldump导出</strong></font></li></ul> </li></ul> 
+<pre><code>#导出一张表
+#mysqldump -h 主机 -u 用户名 -p 密码 数据库名 表名 &gt;导出位置
+mysqldump -hlocalhost -uroot -p123456 myschool student &gt;D:/a.sql
+
+# 多张表
+#mysqldump -h 主机 -u 用户名 -p 密码 数据库名 表1 表2 表3 &gt;导出位置
+mysqldump -hlocalhost -uroot -p123456 myschool student result &gt;D:/b.sql
+
+# 数据库
+#mysqldump -h 主机 -u 用户名 -p 密码 数据库名 &gt;导出位置
+mysqldump -hlocalhost -uroot -p123456 myschool  &gt;D:/c.sql
+
+#导入
+#在登陆的情况下,切换到指定的数据库
+#source 备份文件
+source D:/a.sql
+
+#没有登陆的情况下
+mysql -u用户名 -p密码 库名&lt;备份文件
+
+</code></pre> 
+<h3><a id="4_424"></a>4.<strong>规范数据库设计</strong></h3> 
+<h4><a id="41__font_colorblackfont_425"></a>4.1 <font color="black"><strong>为什么要需要设计</strong></font></h4> 
+<ul><li> <p><font color="red"> <strong>当数据库比较复杂的时候，我们就需要设计了</strong> </font></p> </li><li> <p><font color="black"> <strong>糟糕的数据库设计：</strong> </font></p> 
+  <ul><li><font color="black"> <strong>数据冗余，浪费空间</strong> </font></li><li><font color="black"> <strong>数据库插入和删除都会麻烦、异常【屏蔽使用物理外键】</strong> </font></li><li><font color="black"> <strong>程序的性能差</strong> </font></li></ul> </li><li> <p><font color="red"> <strong>良好的数据库设计：</strong> </font></p> 
+  <ul><li><font color="black"> <strong>节省内存空间</strong> </font></li><li><font color="black"> <strong>保证数据库的完整。</strong> </font></li><li><font color="black"> <strong>方便我们开发系统</strong> </font></li></ul> </li><li> <p><font color="black"> <strong>软件开发中，关于数据库的设计</strong> </font></p> 
+  <ul><li><font color="black"> <strong>分析需求：分析业务和需要处理的数据库的需求</strong> </font></li><li><font color="black"> <strong>概要设计：设计关系图 E-R 图</strong> </font></li></ul> </li></ul> 
+<pre><code>设计数据库的步骤：（例如个人博客）
+</code></pre> 
+<ul><li> <p><font color="black"> <strong>收集信息，分析需求</strong> </font></p> 
+  <ul><li><font color="red"> <strong>用户表（用户登录注销，用户的个人信息，写博客，创建分类）</strong> </font></li><li><font color="black"> <strong>分类表（文章分类，谁创建的）</strong> </font></li><li><font color="black"> <strong>文章表（文章的信息）</strong> </font></li><li><font color="black"> <strong>评论表</strong> </font></li><li><font color="black"> <strong>友链表（友链信息）</strong> </font></li><li><font color="black"> <strong>自定义表（系统信息，某个关键的字，或者一些主字段）key ：value</strong> </font></li><li><font color="black"> <strong>说说表（发表心情 … id… content… create_time）</strong> </font></li></ul> </li><li> <p><font color="black"> <strong>标识实体（把需求落地到每个字段）</strong> </font></p> </li><li> <p><font color="red"> <strong>标识实体 之间的关系</strong> </font></p> 
+  <ul><li><font color="black"> <strong>写博客：user --&gt; blog</strong> </font></li><li><font color="black"> <strong>创建分类：user --&gt; category</strong> </font></li><li><font color="black"> <strong>关注：user --&gt; user</strong> </font></li><li><font color="black"> <strong>友链：links</strong> </font></li><li><font color="black"> <strong>评论：user-user-blog</strong> </font></li></ul> </li></ul> 
+<hr> 
+<h4><a id="42__font_colorblackfont_466"></a>4.2 <font color="black"><strong>数据库三大范式</strong></font></h4> 
+<ul><li><font color="black"> <strong>为什么需要数据规范化</strong> </font> 
+  <ul><li> <p><font color="black"> <strong>信息重复</strong> </font></p> </li><li> <p><font color="black"> <strong>更新异常</strong> </font></p> </li><li> <p><font color="black"> <strong>插入异常:无法正常显示信息</strong> </font></p> </li><li> <p><font color="black"> <strong>删除异常:丢失有效的信息</strong> </font></p> </li></ul> </li></ul> 
+<pre><code>三大范式
+</code></pre> 
+<ul><li> <p><font color="red"> <strong>第一范式 (1st NF)</strong> </font></p> 
+  <ul><li><font color="black"> <strong>第一范式的目标是确保每列的原子性，如果每列都是不可再分的最小数据单元，则满足第一范式</strong> </font></li></ul> </li><li> <p><font color="red"> <strong>第二范式(2nd NF)</strong> </font></p> 
+  <ul><li><strong>第二范式（2NF）是在第一范式（1NF）的基础上建立起来的，即满足第二范式（2NF）必须先满足第一范式（1NF）</strong></li></ul> 
+  <ul><li><font color="black"> <strong>第二范式要求每个表只描述一件事情</strong> </font></li></ul> </li><li> <p><font color="red"> <strong>第三范式(3rd NF)</strong> </font></p> 
+  <ul><li><font color="black"> <strong>如果一个关系满足第二范式，并且除了主键以外的其他列都不传递依赖于主键列，则满足第三范式</strong> </font></li><li><font color="black"> <strong>第三范式需要确保数据表中的每一列数据都和主键直接相关，而不能间接相关</strong> </font></li></ul> </li><li> <p><font color="black"> <strong>规范性 和 性能的问题</strong> </font></p> </li><li> <p><font color="red"> <strong>关联查询的表不得超过三张表</strong> </font></p> 
+  <ul><li><font color="black"> <strong>考虑商业化的需求和目标，（成本，用户体验！）数据库的性能更加重要</strong> </font></li><li><font color="black"> <strong>在规范性能的问题的时候，需要适当的考虑一下 规范性！</strong> </font></li><li><font color="black"> <strong>故意给某些表增加一些冗余的字段。（从多表查询中变为单表查询）</strong> </font></li><li><font color="black"> <strong>故意增加一些计算列（从大数据量降低为小数据量的查询：索引）</strong> </font></li></ul> </li></ul> 
+<hr> 
+<hr> 
+<h3><a id="5font_colorPurplefront_517"></a>5.<font color="Purple"><strong>更多参考</strong></font></h3> 
+<p><a href="https://www.bilibili.com/video/BV1NJ411J79W?p=35&amp;vd_source=f42ac4986f5bcf541a6766d1af61e0bd" rel="nofollow">狂神-MySQL最新教程</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/9c4cba87e331f532ac64f9778340f61b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">es客户端线程池配置</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/198d1b6bc6a563dfb28f86c0630b5bff/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">哈希表与字符串</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

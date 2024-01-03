@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>聊聊java8中的@sun.misc.Contended与伪共享 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="聊聊java8中的@sun.misc.Contended与伪共享" />
+<meta property="og:description" content="“持续创作，加速成长！这是我参与「掘金日新计划 · 6 月更文挑战」的第30天，点击查看活动详情”
+@[toc] 在前面学习ConcurrentHashMap的size方法的过程中，对于CounterCell这个类，有个特殊的注解 @sun.misc.Contended。那么今天就来聊聊这个注解的具体作用和其底层的基本原理。
+&lt;pre class=&#34;prettyprint hljs cs&#34;&gt;/** * A padded cell for distributing counts. Adapted from LongAdder * and Striped64\. See their internal docs for explanation. */ @sun.misc.Contended static final class CounterCell { volatile long value; CounterCell(long x) { value = x; } }&lt;/pre&gt; 经过查阅资料之后，不难发现，@sun.misc.Contended注解是被设计用来解决伪共享问题的。那么什么是为伪共享呢？
+1.伪共享 在了解伪共享之前，需要了解一下CPU的缓存机制。
+1.1 CPU的缓存机制
+学过计算机的人都知道，CPU是计算机的大脑，所有的程序，最终都要变成CPU指令在CPU中去执行。CPU的计算速度是非常快的，但是，我们知道，程序必须存储在存储介质中，程序启动之后被加载到内存中才能执行。但是内存的读取速度和CPU的计算速度之间存在非常大的差异。那么为了解决这个计算速度之间的差异，就在CPU上增加了缓存来解决这个问题。通常情况下，CPU是三级缓存结构，如下图：
+越靠近CPU的缓存，其容量就越小，但是其速度就越快。所以实际上L1的容量是最小的，这取决于CPU的具型号。
+如上图所示，我们笔记本使用的I7CPU的三级缓存，L1为256k，L2为1M,L3为8M。 当CPU在执行计算的时候，先去L1查找数据，然后再去L2、L3,如果都没有数据则需要到主存中去加载。走得越远运算耗费的时间就越长。所以，对于一些高CPU的计算，尽量确保数据都能在L1中，降低加载次数。 Martin Thompson 提供了一些从CPU到缓存加载需要的大值时间：
+从CPUCPU周期大致时间主存60-80nsQPI总线20nsL3 cache40-45cycles15nsL2 cache10 cycles3nsL1 cache3-4cycle1ns寄存器1cycle 1.2 缓存行和伪共享
+我们了解了缓存cache之后，缓存是以行为单位存在在cache中的，通常而言，一个缓存行大概是64byte。对于java类而言，一个javalong的对象长度为8字节，因此一个缓存行就是8个long的长度。因此，在你访问一个long数组的时候，当数组中有一个值被加载到缓存中的时候，它会额外加载另外7个值，以至于遍历数组的速度可以非常快。因此对于连续存储在内存块的数据结构，都是可以非常快速的遍历的。 对于链表，由于数据不连续，因此很难享受到这个优势。也就是说，CPU处理内存的宽度是64byte。但是我们程序中的基本的变量都会小于这个宽度，因此这会带来另外一个问题，这就是伪共享。 伪共享的意思就是说，当线程1在使用变量x的时候，CPU会将X相连的部分共64字节全部都加载到core的L1中。如果此时线程2需要使用的y，但是y在此时已经做为x相邻的64字节的一部分被加载到了L1中。由于L1是按核心各自独立的，因此这个时候就会对这个缓存行产生了竞争。这就是伪共享。 实际上CPU的处理可能比这个描述复杂，但是对于这种竞争的情况，一般在MESI协议的CPU上，是会互相影响的。 在MESI协议中，如果两个不同的处理器都需要操作相同的缓存行，那么就会导致RFO请求。 我们来看看Disruptor的示例图：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/38830fca328e3d030787043f8df3f9e9/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-06-27T16:14:45+08:00" />
+<meta property="article:modified_time" content="2022-06-27T16:14:45+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">聊聊java8中的@sun.misc.Contended与伪共享</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>“持续创作，加速成长！这是我参与「掘金日新计划 · 6 月更文挑战」的第30天，点击查看活动详情”</p> 
+<p>@[toc] 在前面学习ConcurrentHashMap的size方法的过程中，对于CounterCell这个类，有个特殊的注解 @sun.misc.Contended。那么今天就来聊聊这个注解的具体作用和其底层的基本原理。</p> 
+<pre><code>&lt;pre class="prettyprint hljs cs"&gt;/**
+ * A padded cell for distributing counts.  Adapted from LongAdder
+ * and Striped64\.  See their internal docs for explanation.
+ */
+@sun.misc.Contended static final class CounterCell {
+    volatile long value;
+    CounterCell(long x) { value = x; }
+}&lt;/pre&gt;
+</code></pre> 
+<p>经过查阅资料之后，不难发现，@sun.misc.Contended注解是被设计用来解决伪共享问题的。那么什么是为伪共享呢？</p> 
+<h4>1.伪共享</h4> 
+<p>在了解伪共享之前，需要了解一下CPU的缓存机制。</p> 
+<p>1.1 CPU的缓存机制</p> 
+<p>学过计算机的人都知道，CPU是计算机的大脑，所有的程序，最终都要变成CPU指令在CPU中去执行。CPU的计算速度是非常快的，但是，我们知道，程序必须存储在存储介质中，程序启动之后被加载到内存中才能执行。但是内存的读取速度和CPU的计算速度之间存在非常大的差异。那么为了解决这个计算速度之间的差异，就在CPU上增加了缓存来解决这个问题。通常情况下，CPU是三级缓存结构，如下图：</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/96/78/5lNj0sk0_o.png"></p> 
+<p>越靠近CPU的缓存，其容量就越小，但是其速度就越快。所以实际上L1的容量是最小的，这取决于CPU的具型号。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/ab/8e/tZGC6vqu_o.png"></p> 
+<p>如上图所示，我们笔记本使用的I7CPU的三级缓存，L1为256k，L2为1M,L3为8M。 当CPU在执行计算的时候，先去L1查找数据，然后再去L2、L3,如果都没有数据则需要到主存中去加载。走得越远运算耗费的时间就越长。所以，对于一些高CPU的计算，尽量确保数据都能在L1中，降低加载次数。 Martin Thompson 提供了一些从CPU到缓存加载需要的大值时间：</p> 
+<table><thead><tr><th>从CPU</th><th>CPU周期</th><th>大致时间</th></tr></thead><tbody><tr><td>主存</td><td>60-80ns</td><td></td></tr><tr><td>QPI总线</td><td>20ns</td><td></td></tr><tr><td>L3 cache</td><td>40-45cycles</td><td>15ns</td></tr><tr><td>L2 cache</td><td>10 cycles</td><td>3ns</td></tr><tr><td>L1 cache</td><td>3-4cycle</td><td>1ns</td></tr><tr><td>寄存器</td><td>1cycle</td><td></td></tr></tbody></table> 
+<p>1.2 缓存行和伪共享</p> 
+<p>我们了解了缓存cache之后，缓存是以行为单位存在在cache中的，通常而言，一个缓存行大概是64byte。对于java类而言，一个javalong的对象长度为8字节，因此一个缓存行就是8个long的长度。因此，在你访问一个long数组的时候，当数组中有一个值被加载到缓存中的时候，它会额外加载另外7个值，以至于遍历数组的速度可以非常快。因此对于连续存储在内存块的数据结构，都是可以非常快速的遍历的。 对于链表，由于数据不连续，因此很难享受到这个优势。也就是说，CPU处理内存的宽度是64byte。但是我们程序中的基本的变量都会小于这个宽度，因此这会带来另外一个问题，这就是伪共享。 伪共享的意思就是说，当线程1在使用变量x的时候，CPU会将X相连的部分共64字节全部都加载到core的L1中。如果此时线程2需要使用的y，但是y在此时已经做为x相邻的64字节的一部分被加载到了L1中。由于L1是按核心各自独立的，因此这个时候就会对这个缓存行产生了竞争。这就是伪共享。 实际上CPU的处理可能比这个描述复杂，但是对于这种竞争的情况，一般在MESI协议的CPU上，是会互相影响的。 在MESI协议中，如果两个不同的处理器都需要操作相同的缓存行，那么就会导致RFO请求。 我们来看看Disruptor的示例图：</p> 
+<p><img alt="" height="595" src="https://images2.imgbox.com/99/78/YV6ws9Zh_o.png" width="550"></p> 
+<p>在上图中，当core1上的线程想要修改变量x的值的时候，同时另外一个线程需要修改y的值。但是这两个操作的变量都处于同一缓存行，这样就会导致其中一个线程在操作的过程中，缓存行的数据由于被其他的线程修改，而不得不重新从L3中去加载。在前文中我们了解到，l3的速度会比较慢，这样就产生了性能的差异。 这就是我们说的伪共享。 那么怎么解决这个问题呢，最好的办法就是不让一个行中存在的数据产生竞争。那么最好的办法就是插入几个无效的变量将这两个高频计算的变量分开，使之不能加载到同一行中。 在java7中我们只能通过内存填充来解决这个问题，但是在java8中，提供了@sun.misc.Contended注解，替换了内存填充的工作。这就是@sun.misc.Contended注解的作用。</p> 
+<h4>2.代码验证</h4> 
+<p>我们定义两个变量，分别在两个线程中各自增加到10亿次，看看再各种情况下的计算结果：</p> 
+<p>2.1 不做任何处理</p> 
+<pre><code>&lt;pre class="prettyprint hljs java"&gt;package com.dhb.map.test;
+
+public class FalseSharingTest {
+
+    public static void main(String[] args) throws InterruptedException {
+        testPointer(new Pointer());
+    }
+
+    private static void testPointer(Pointer pointer) throws InterruptedException{
+        long start  = System.currentTimeMillis();
+        Thread t1 = new Thread(() -&gt; {
+            for(int i=0;i&lt;1000000000;i++){
+                pointer.x++;
+            }
+        });
+
+        Thread t2 = new Thread(() -&gt; {
+            for(int i=0;i&lt;1000000000;i++){
+                pointer.y++;
+            }
+        });
+        t1.start();
+        t2.start();
+        t1.join();
+        t2.join();
+        System.out.println("cost ["+(System.currentTimeMillis()-start)+"] ms");
+        System.out.println(pointer);
+    }
+
+    static class Pointer{
+        volatile long x;
+        volatile long y;
+
+        @Override
+        public String toString() {
+            return "Pointer{" +
+                    "x=" + x +
+                    ", y=" + y +
+                    '}';
+        }
+    }
+}&lt;/pre&gt;
+</code></pre> 
+<p>上述代码执行之后：</p> 
+<pre><code>&lt;pre class="hljs xquery"&gt;cost [35885] ms
+Pointer{x=1000000000, y=1000000000}&lt;/pre&gt;
+</code></pre> 
+<p>可以看到共计花费35多。</p> 
+<p>2.2 缓存填充</p> 
+<p>我们采用填充的方式，如下：</p> 
+<pre><code>&lt;pre class="prettyprint hljs java"&gt;package com.dhb.map.test;
+
+public class FalseSharingTest {
+
+    public static void main(String[] args) throws InterruptedException {
+        testPointer(new Pointer());
+    }
+
+    private static void testPointer(Pointer pointer) throws InterruptedException{
+        long start  = System.currentTimeMillis();
+        Thread t1 = new Thread(() -&gt; {
+            for(int i=0;i&lt;1000000000;i++){
+                pointer.x++;
+            }
+        });
+
+        Thread t2 = new Thread(() -&gt; {
+            for(int i=0;i&lt;1000000000;i++){
+                pointer.y++;
+            }
+        });
+        t1.start();
+        t2.start();
+        t1.join();
+        t2.join();
+        System.out.println("cost ["+(System.currentTimeMillis()-start)+"] ms");
+        System.out.println(pointer);
+    }
+
+    static class Pointer{
+        volatile long x;
+        long p1, p2, p3, p4, p5, p6, p7;
+        volatile long y;
+
+        @Override
+        public String toString() {
+            return "Pointer{" +
+                    "x=" + x +
+                    ", y=" + y +
+                    '}';
+        }
+    }
+}&lt;/pre&gt;
+</code></pre> 
+<p>实际上只是增加了7个long变量,计算结果如下：</p> 
+<pre><code>&lt;pre class="hljs xquery"&gt;cost [5218] ms
+Pointer{x=1000000000, y=1000000000}&lt;/pre&gt;
+</code></pre> 
+<p>可以看到，性能有了大幅提升，只需要5秒就能完成，比上个版本的代码快了6倍多。</p> 
+<p>2.3 通过Contended</p> 
+<pre><code>&lt;pre class="prettyprint hljs java"&gt;package com.dhb.map.test;
+
+public class FalseSharingTest {
+
+    //-XX:-RestrictContended
+    public static void main(String[] args) throws InterruptedException {
+        testPointer(new Pointer());
+    }
+
+    private static void testPointer(Pointer pointer) throws InterruptedException{
+        long start  = System.currentTimeMillis();
+        Thread t1 = new Thread(() -&gt; {
+            for(int i=0;i&lt;1000000000;i++){
+                pointer.x++;
+            }
+        });
+
+        Thread t2 = new Thread(() -&gt; {
+            for(int i=0;i&lt;1000000000;i++){
+                pointer.y++;
+            }
+        });
+        t1.start();
+        t2.start();
+        t1.join();
+        t2.join();
+        System.out.println("cost ["+(System.currentTimeMillis()-start)+"] ms");
+        System.out.println(pointer);
+    }
+
+    static class Pointer{
+        @sun.misc.Contended
+        volatile long x;
+        @sun.misc.Contended
+        volatile long y;
+
+        @Override
+        public String toString() {
+            return "Pointer{" +
+                    "x=" + x +
+                    ", y=" + y +
+                    '}';
+        }
+    }
+}&lt;/pre&gt;
+</code></pre> 
+<p>我们可以看到，再运行的时候设置了-XX:-RestrictContended之后，通过注解的方式可以生效。Contended注解必须修改jvm运行参数-XX:-RestrictContended，否则会被jvm忽略。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/52/35/YC66hJ8c_o.png"></p> 
+<p>执行结果如下：</p> 
+<pre><code>&lt;pre class="hljs xquery"&gt;cost [5230] ms
+Pointer{x=1000000000, y=1000000000}&lt;/pre&gt;
+</code></pre> 
+<p>我们可以看到花费的时间几乎与缓存填充差不多。比伪共享有显著的提升。</p> 
+<h4>3.总结</h4> 
+<p>通过本文，了解了什么是缓存的伪共享。以及@sun.misc.Contended注解的作用和使用方法。 这也是ConcurrentHashMap中为了性能提升所采取的一个优化措施。自然，这个注解会因为添加了一些无用的变量而带来了内存的浪费。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2df88191cd1be1d0250522cde1ef085a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">输入输出大全（普通输入输出和快读快写）C/C&#43;&#43;</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/49477aaec7ca5e075a2dc26cf81b65d6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C语言中的分支语句和循环语句（if语句、switch语句、while循环、for循环、do...while循环、goto语句）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

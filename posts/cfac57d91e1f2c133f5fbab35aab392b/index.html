@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>实战Kafka之异地双活--MirrorMaker1.0 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="实战Kafka之异地双活--MirrorMaker1.0" />
+<meta property="og:description" content="前言 异地灾备可以防止一个机房出现灾难而导致整个系统无法提供服务的问题。
+异地双活在异地灾备的基础上减少了数据的冗余，并且提高了对数据双向同步及同步实时性的要求。
+Kafka作为在双活中扮演了很重要的角色，一方面是两个区域的正常业务的消息数据分发、另一方面则是elasticsearch等中间件集群的双活方案有时需要依赖kafka的双活。那么在保证实时性的前提下做好kafka的双活呢？下面博主抛砖引玉给出自己实现的基于Kafka自带组件Mirror-Maker的两种方案，读者可以根据自己需要进行改进。
+一、Kafka-Mirror-Maker MirrorMaker是Kafka官方提供的用来做跨机房同步的组件。在kafka的安装目录的bin目录下有一个kafka-mirror-maker.sh文件就是MirrorMaker的入口。
+image.png 工作原理： 1、MirrorMaker本质上既是一个生产者又是一个消费者
+2、MirrorMaker从一个机房的某个主题消费消息，再把消费到的消息生产到另一个机房的相同的主题下。
+如何使用： bin/kafka-mirror-maker.sh --consumer.config consumer.properties --producer.config producer.properties --num.streams 3 --whitelist=&#34;.*&#34; 参数解释：
+--producer.config：mirrormaker中的生产者，与我们常规的生产者配置是一样的，我们可以参照生产者配置文档进行参数配置
+--consumer.config：mirrormaker中的消费者，与我们常规的消费者配置相同，可以参照消费者配置文档进行参数配置
+--num.streams：mirrormaker中消费者线程的个数
+--whitelist：mirrormaker中消费者指定消费的主题，.*表示所有主题，常规可以使用 | 分割开多个主题。
+当然还有很多其他参数，我们可以执行bin/kafka-mirror-maker.sh --help来查看
+疑问解答： 1、mirrormaker应该从哪个机房消费，向哪个机房生产。
+答：应该从异地机房消费向本地机房生产。如果反过来，当网络异常的时候就会产生消费的消息没有及时得到转发。
+2、mirrormaker怎么配置生产者和消费者？
+答：参照这个链接里的配置 就可以了 https://www.orchome.com/511
+方案一、各机房自主题 实现原理 1、假设有北方机房和南方机房需要实现双活
+2、南方机房的kafka包含江苏、广东、上海三个topic。北方机房包含黑龙江、甘肃、四川三个topic。每个机房的消费者只向自己机房的topic生产消息和消费消息。
+3、启动两个Mirror-Maker分别负责从北向南同步数据和从南向北同步数据，保证两遍的机房都有六个省份的全量数据。
+4、考虑异常情况，如果北方机房挂了或者南方机房挂了，那么另一个机房都会有全量数据可以提供服务。当然不排除小部分数据丢失，但灾难情况下是无法避免的。
+存在问题及解决办法
+存在问题： 1、__consumer_offset主题无法双向同步，会造成消费死循环。这就导致切换机房的时候备用消费者只能从头消费来保证消息的不丢失，消息会大量重复。
+2、即便是灾备集群也存在同样的问题，如果把consumer_offset同步到灾备集群，如果主集群的topic的partition和灾备集群的topic的partition的数目不一致，就会导致切换机房的时候备用消费者无法复用offset的情况发生，最终导致消息大量重复消费或者消息丢失。
+对于问题1的解决办法
+1、参照方案二，做数据的全量同步
+对于问题2的解决办法：
+解决办法1、根据消息时间戳来找到消费者组对应的offset，然后从offset开始消费，同时业务端需要做幂等处理。下面给出关键代码（对应的kafka版本的消息要有时间戳才行）。
+// 获取所有分区 List&lt;PartitionInfo&gt; partitionInfos = consumer.partitionsFor(topic); // 把分区映射成TopicPartition List&lt;TopicPartition&gt; topicPartitionList = partitionInfos .stream() .map(info -&gt; new TopicPartition(topic, info.partition())) .collect(Collectors.toList()); // 给consumer分配这些分区 consumer." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/cfac57d91e1f2c133f5fbab35aab392b/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-11-27T11:53:40+08:00" />
+<meta property="article:modified_time" content="2019-11-27T11:53:40+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">实战Kafka之异地双活--MirrorMaker1.0</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>前言</h2> 
+<p>异地灾备可以防止一个机房出现灾难而导致整个系统无法提供服务的问题。<br> 异地双活在异地灾备的基础上减少了数据的冗余，并且提高了对数据双向同步及同步实时性的要求。<br> Kafka作为在双活中扮演了很重要的角色，一方面是两个区域的正常业务的消息数据分发、另一方面则是elasticsearch等中间件集群的双活方案有时需要依赖kafka的双活。那么在保证实时性的前提下做好kafka的双活呢？下面博主抛砖引玉给出自己实现的基于Kafka自带组件Mirror-Maker的两种方案，读者可以根据自己需要进行改进。</p> 
+<h2>一、Kafka-Mirror-Maker</h2> 
+<p>MirrorMaker是Kafka官方提供的用来做跨机房同步的组件。在kafka的安装目录的bin目录下有一个kafka-mirror-maker.sh文件就是MirrorMaker的入口。</p> 
+<br> 
+<div class="image-package"> 
+ <div class="image-container"> 
+  <div class="image-container-fill"></div> 
+  <div class="image-view"> 
+   <img src="https://images2.imgbox.com/b2/6a/w1thrXqV_o.png" alt="12062369-a8d015561898251b.png"> 
+  </div> 
+ </div> 
+ <div class="image-caption">
+   image.png 
+ </div> 
+</div> 
+<ul><li>工作原理：</li></ul> 
+<blockquote> 
+ <p>1、MirrorMaker本质上既是一个生产者又是一个消费者<br> 2、MirrorMaker从一个机房的某个主题消费消息，再把消费到的消息生产到另一个机房的相同的主题下。</p> 
+</blockquote> 
+<ul><li>如何使用：</li></ul> 
+<pre><code>bin/kafka-mirror-maker.sh --consumer.config consumer.properties  --producer.config producer.properties --num.streams 3 --whitelist=".*"
+</code></pre> 
+<blockquote> 
+ <p>参数解释：<br> --producer.config：mirrormaker中的生产者，与我们常规的生产者配置是一样的，我们可以参照生产者配置文档进行参数配置<br> --consumer.config：mirrormaker中的消费者，与我们常规的消费者配置相同，可以参照消费者配置文档进行参数配置<br> --num.streams：mirrormaker中消费者线程的个数<br> --whitelist：mirrormaker中消费者指定消费的主题，.*表示所有主题，常规可以使用 | 分割开多个主题。<br> 当然还有很多其他参数，我们可以执行bin/kafka-mirror-maker.sh --help来查看</p> 
+</blockquote> 
+<ul><li>疑问解答：</li></ul> 
+<blockquote> 
+ <p>1、mirrormaker应该从哪个机房消费，向哪个机房生产。<br> 答：应该从异地机房消费向本地机房生产。如果反过来，当网络异常的时候就会产生消费的消息没有及时得到转发。<br> 2、mirrormaker怎么配置生产者和消费者？<br> 答：参照这个链接里的配置 就可以了 <a href="https://links.jianshu.com/go?to=https%3A%2F%2Fwww.orchome.com%2F511" rel="nofollow">https://www.orchome.com/511</a></p> 
+</blockquote> 
+<h2>方案一、各机房自主题</h2> 
+<ul><li>实现原理</li></ul> 
+<blockquote> 
+ <p>1、假设有北方机房和南方机房需要实现双活<br> 2、南方机房的kafka包含江苏、广东、上海三个topic。北方机房包含黑龙江、甘肃、四川三个topic。每个机房的消费者只向自己机房的topic生产消息和消费消息。<br> 3、启动两个Mirror-Maker分别负责从北向南同步数据和从南向北同步数据，保证两遍的机房都有六个省份的全量数据。<br> 4、考虑异常情况，如果北方机房挂了或者南方机房挂了，那么另一个机房都会有全量数据可以提供服务。当然不排除小部分数据丢失，但灾难情况下是无法避免的。</p> 
+</blockquote> 
+<ul><li>存在问题及解决办法<br> 存在问题：</li></ul> 
+<blockquote> 
+ <p>1、__consumer_offset主题无法双向同步，会造成消费死循环。这就导致切换机房的时候备用消费者只能从头消费来保证消息的不丢失，消息会大量重复。<br> 2、即便是灾备集群也存在同样的问题，如果把consumer_offset同步到灾备集群，如果主集群的topic的partition和灾备集群的topic的partition的数目不一致，就会导致切换机房的时候备用消费者无法复用offset的情况发生，最终导致消息大量重复消费或者消息丢失。<br> 对于问题1的解决办法<br> 1、参照方案二，做数据的全量同步</p> 
+</blockquote> 
+<p>对于问题2的解决办法：</p> 
+<blockquote> 
+ <p>解决办法1、根据消息时间戳来找到消费者组对应的offset，然后从offset开始消费，同时业务端需要做幂等处理。下面给出关键代码（对应的kafka版本的消息要有时间戳才行）。</p> 
+</blockquote> 
+<pre><code>        // 获取所有分区
+        List&lt;PartitionInfo&gt; partitionInfos = consumer.partitionsFor(topic);
+        // 把分区映射成TopicPartition
+        List&lt;TopicPartition&gt; topicPartitionList = partitionInfos
+                .stream()
+                .map(info -&gt; new TopicPartition(topic, info.partition()))
+                .collect(Collectors.toList());
+        // 给consumer分配这些分区
+        consumer.assign(topicPartitionList);
+        // 根据时间戳找到消费偏移量
+        Map&lt;TopicPartition, Long&gt; partitionTimestampMap = topicPartitionList.stream()
+                .collect(Collectors.toMap(tp -&gt; tp, tp -&gt; 时间戳));
+        Map&lt;TopicPartition, OffsetAndTimestamp&gt; partitionOffsetMap = consumer.offsetsForTimes(partitionTimestampMap);
+        // consumer从消费偏移量处开始消费
+        partitionOffsetMap.forEach((tp, offsetAndTimestamp) -&gt; consumer.seek(tp, offsetAndTimestamp.offset()));
+</code></pre> 
+<blockquote> 
+ <p>解决方法2、consumer消费的时候把消费偏移量offset记录到底层数据库中，利用数据库的双活进行同步。切换机房的时候根据数据库中的offset进行消息的恢复。</p> 
+</blockquote> 
+<div class="image-package"> 
+ <div class="image-container"> 
+  <div class="image-container-fill"></div> 
+  <div class="image-view"> 
+   <img src="https://images2.imgbox.com/d1/99/V25RjB0Y_o.png" alt="12062369-e2c4fcd84aeeedb9.png"> 
+  </div> 
+ </div> 
+ <div class="image-caption">
+   各分区自主题.png 
+ </div> 
+</div> 
+<h2>方案二、各机房同主题</h2> 
+<ul><li>背景</li></ul> 
+<blockquote> 
+ <p>有的业务不能或者很难做topic主题拆分，这就要求两边机房的主题必须是相同的，并且消费者需要消费全量数据。但是原始的Mirror-Maker有一个特性，如果两遍机房的主题相同，那么互相搬运就会导致死循环消费消息。</p> 
+</blockquote> 
+<ul><li>实现原理：</li></ul> 
+<blockquote> 
+ <p>1、假设有北方机房和南方机房需要实现双活<br> 2、南方机房负责南方所有消息的分发，北方机房负责北方所有消息的分发<br> 3、两方机房都要有全量数据并且主题不能拆分。<br> 4、启动4个mirrormaker，分别负责北-&gt;北全、北-&gt;南全 、南-&gt;南全、南-&gt;北全的消息搬运</p> 
+</blockquote> 
+<ul><li>存在问题</li></ul> 
+<blockquote> 
+ <p>1、业务层上需要过滤对方机房同步过来的消息，造成了逻辑耦合，对业务层的扩展性造成了限制和阻碍</p> 
+</blockquote> 
+<div class="image-package"> 
+ <div class="image-container"> 
+  <div class="image-container-fill"></div> 
+  <div class="image-view"> 
+   <img src="https://images2.imgbox.com/02/95/sDenjSjh_o.png" alt="12062369-f2c5791329675cf2.png"> 
+  </div> 
+ </div> 
+ <div class="image-caption">
+   各机房同主题 
+ </div> 
+</div> 
+<ul><li>疑问解答：</li></ul> 
+<blockquote> 
+ <p>1、mirrormak只能把消息搬运到另一个机房的相同主题里，如何解决两个mirrormaker不会出现死循环搬运的问题？<br> 答：MirrorMaker提供了一个--message.handler参数和一个--message.handler.args参数供开发者扩展。我们可以实现MessageHandler类，来对消息即将生产到的主题进行更改，更改方案github上有现成的，我们可以会直接使用即可：<a href="https://links.jianshu.com/go?to=https%3A%2F%2Fgithub.com%2Fopencore%2Fmirrormaker_topic_rename" rel="nofollow">https://github.com/opencore/mirrormaker_topic_rename</a> <br> 当然你也可以自己实现其他的扩展，这里使用的时候需要注意kafka的版本。<br> 2、如何使用上述的扩展源码呢？<br> 答：很简单。<br> 第一、mvn clean package 打成jar包<br> 第二、export CLASSPATH=/home/sliebau/mmchangetopic-1.0-SNAPSHOT.jar 在你的机器上导入环境变量让kafka能够找到jar包<br> 第三、<code>--consumer.config consumer.properties --producer.config producer.properties --whitelist test_.* --message.handler com.opencore.RenameTopicHandler --message.handler.args `test_source,test_target;test_source2,test_target2`</code> 启动mirrormaker的时候再加上两个参数，前面表示使用的类，后边表示类传入的参数，注意其中的格式。</p> 
+</blockquote> 
+<h2>二、实现高可伸缩</h2> 
+<ul><li>背景：</li></ul> 
+<blockquote> 
+ <p>基于方案二。为了让mirrormaker服务能够随着数据量的增加而自由的伸缩，我们决定把mirrormaker服务化并且打包成docker。这样当数据量增大的时候我们可以通过增加mirror-maker的数量来承载。</p> 
+</blockquote> 
+<ul><li><p>服务版镜像地址：<a href="https://links.jianshu.com/go?to=https%3A%2F%2Fhub.docker.com%2Frepository%2Fdocker%2Fxiao5aha%2Fmirror-maker" rel="nofollow">https://hub.docker.com/repository/docker/xiao5aha/mirror-maker</a></p></li><li><p>服务版镜像制作地址：<a href="https://links.jianshu.com/go?to=https%3A%2F%2Fgithub.com%2FKouLouYiMaSi%2Fmirror-maker-service" rel="nofollow">https://github.com/KouLouYiMaSi/mirror-maker-service</a></p></li><li><p>如何使用这个镜像<br> 1、对于sasl_plaintext和scram加密，请使用xiao5aha/mirror-maker:v13_sasl版本</p></li></ul> 
+<pre><code>docker run -itd -e SOURCE=消费ip:9092 -e DESTINATION=生产到的ip:9092 -e GROUP_ID=消费者组ID -e USERNAME=用户名 -e PASSWORD=密码 -e FROM_TOPIC_TO_TOPIC="从哪个主题到哪个主题使用逗号隔开，多个主题对使用分号隔开" -e CONSUMER_COUNT=消费者数量  -e WHITE_LIST="消费者主题白名单" xiao5aha/mirror-maker:v13_sasl
+</code></pre> 
+<p>2、对于没有加密的kafka请使用xiao5aha/mirror-maker:v9版本</p> 
+<pre><code>docker run -itd -e SOURCE=ip:9092 -e DESTINATION=ip:9092 -e GROUP_ID=group -e MESSAGE_HANDLER=com.opencore.RenameTopicHandler -e MESSAGE_HANDLER_ARGS="nanfang-center,china" -e STREAM_COUNT=3  -e WHITE_LIST="wuxi-center" xiao5aha/mirror-maker:v9
+</code></pre> 
+<ul><li>如何制作镜像：</li></ul> 
+<blockquote> 
+ <p>1、从上边的git地址拉下来源码<br> 2、如果你想替换kafka版本可以自己从kafka官网下载一个（国内下载超级慢）替换，然后改下Dockerfile里边的版本就行了<br> 3、如果你自己下载了kafka，用你的kafka版本替换我的kafka版本，注意是整个目录替换哦<br> 4、如果需要修改mirrormaker的producer和consumer配置，打开scripts下边的start.sh，在下边图片部分添加或者删除或者修改。比如去掉其中的用户认证和权限认证。</p> 
+ <br> 
+ <div class="image-package"> 
+  <div class="image-container"> 
+   <div class="image-container-fill"></div> 
+   <div class="image-view"> 
+    <img src="https://images2.imgbox.com/55/ca/GRN8DmyZ_o.png" alt="12062369-fcc1fecf8d9f17bc.png"> 
+   </div> 
+  </div> 
+  <div class="image-caption">
+    image.png 
+  </div> 
+ </div> 
+ <br> 
+ <p>5、全部修改完成之后docker build . docker tag 成自己的镜像就可以使用了</p> 
+</blockquote> 
+<h2>最后</h2> 
+<p>转载请注明出处。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0ee3e798e617673137329f380568586a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Hive brickhouse多列合并生成Json  collect_set JsonUDF</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4b2134635abd554763bb06fcbe3ea77f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">使用3.x版本create-react-app构建react并使用less和antd按需加载并修改主题颜色小总结</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

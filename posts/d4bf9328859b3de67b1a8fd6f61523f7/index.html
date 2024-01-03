@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>激光点云系列之一：详解激光雷达点云数据的处理过程 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="激光点云系列之一：详解激光雷达点云数据的处理过程" />
+<meta property="og:description" content="交流群 | 进“传感器群/滑板底盘群”请加微信号：xsh041388
+交流群 | 进“汽车基础软件群”请加微信号：Faye_chloe
+备注信息：群名称 &#43; 真实姓名、公司、岗位
+作者 | 奚少华
+随着激光雷达的上车数量的不断攀升，如何用好激光雷达成为了重中之重，而用好激光雷达的关键点之一就在于处理好点云数据。
+激光点云指的是由三维激光雷达设备扫描得到的空间点的数据集，每一个点云都包含了三维坐标（XYZ）和激光反射强度（Intensity），其中强度信息会与目标物表面材质与粗糙度、激光入射角度、激光波长以及激光雷达的能量密度有关。
+为了更进一步解释清楚点云，笔者梳理了点云的相关参数和特点。
+表：激光雷达点云的相关参数
+表：点云的特点
+从点云的采集原理来看，以ToF路线的激光雷达为例，激光点云是由车载激光扫描系统向周围发射激光信号，然后收集反射回来的激光信号得来的，并通过光速、激光从发射到返回的时间等信息来测得目标物的距离信息，再结合IMU、里程计、GNSS等信息计算出前方目标物的三维坐标信息和距离信息。
+此外，在点云的采集和分析过程中，感知算法人员需要根据车载激光雷达的特点与工作原理，并结合激光雷达的角分辨率、视场角等相关参数，才能更好地利用点云。
+那么，激光雷达点云在车端的处理环节中，具体有哪些处理过程和方法？又如何优化？
+此后，为了验证这些问题，笔者先后访谈了图达通算法负责人许建博士和系统及应用负责人Leon、上汽高级经理殷玮、纵目科技感知算法工程师汤强、禾赛科技的专家等。在此，笔者感谢各路专家给予的支持，并整理出如下系列的文章，以供读者参阅。
+以下为激光点云处理系列文章的第一篇内容。
+激光雷达点云处理的具体流程 聊完何谓点云及其特征后，下文将继续分析激光雷达点云在自动驾驶中的处理流程。在此之前，有两点需要说明。
+其一，激光雷达点云被用于感知和定位时，点云会先完成预处理，然后按照不同用途进行不同的处理，并在点云的应用细节上也会不同。
+汤强说：“激光雷达用于定位的话，算法模型会要求点云的数据量尽可能多，并且区别于感知，定位还需要道路数据。如车道线或地标，它们对于激光的反射率和普通路面的反射率是不同的，激光雷达通过这种方式来获取路面信息的数据。激光雷达用于感知的话，它会有一个预处理的过程，会确定一个ROI范围，随后用这一区域的点云数据来完成后续的检测。”
+其二，每家企业在点云的具体应用过程中，还会根据各自技术方案与应用场景不同，会存在些许处理流程上的差异，但大部分处理流程皆相同。
+为了更详细地阐述点云的处理流程，笔者结合专家访谈的内容与公开信息，梳理出激光雷达点云在自动驾驶应用中的普遍流程。
+图：激光点云的处理流程
+01
+点云预处理层面
+1.1 原始点云数据的接收与解析 （1）点云数据的接收
+激光雷达的原始点云数据都会被存放在一个数据包里（pcap），此时数据包里面的数据都是一连串的字节符号，无法直接使用。
+以Velodyne的16线激光雷达为例，原始点云数据的接收主要是通过UDP（用户数据报协议）的形式向网络发送数据。具体来说，在激光雷达的web端进行设置或通过命令行进行设置后，技术人员会在接收端匹配激光雷达的IP地址与自身的UDP端口号，从而即可接收原始点云数据。
+从数据的内容来看，该型号的激光雷达在垂直方向上（-15°到&#43;15°）有16线的激光束，其每帧的数据长度固定为1248字节，这些字节包括前42字节的前数据包标识、12组数据包、4字节时间戳和最后两字节雷达型号参数。
+图：Velodyne-16激光雷达每一帧的点云数据情况
+（数据来源：《Velodyne VLP-16激光雷达数据格式解析》）
+每个数据包中的数据都包含了激光光束的旋转角度、距离值、反射强度的信息。例如，“B6 07”代表了激光雷达的探测距离，“2A”代表了激光的反射强度，但这些信息都是以两字节表示，需要进一步解析这些数据。
+图：Velodyne-16激光雷达数据包的一部分数据
+（数据来源：《Velodyne VLP-16激光雷达数据格式解析》）
+（2）点云数据(pcd)的解析
+数据包（pcap）中的原始数据需要进一步转换为可被感知技术人员使用的pcd格式的数据集。
+点云数据的pcd格式文件是激光点云的一种存储格式，pcd文件主要是由笛卡尔坐标(x,y,z)和强度值i组成的列表，即每个点云都会附带独有的三维坐标系和能量反射强度。
+在这个坐标系中，x轴指向汽车的前部，y轴指向汽车的左侧。由于这个坐标系采用右手定则，坐标系z轴指向汽车上方。
+图：点云pcd坐标
+（数据来源：《学习笔记：点云库PCL介绍》）
+为了阐述点云数据的解析过程，笔者还是以上文Velodyne-16激光雷达的某帧点云数据包为例，并根据公开信息梳理如下。
+第一步，计算激光线的旋转角度值。
+例如，上图数据包前一部分的第一行的旋转角度为0xE0、0x63。
+a) 反转两个字节变成十六进制63 E0
+b) 把63 E0变成无符号的十进制为25568
+c) 再把25568除以100得到255.68，那么得到的值255.68就是当前的旋转角度值
+第二步，计算16线激光分别测得的距离。
+例如，上图数据包前一部分的第一个激光线的距离，其值为“B6 07 2A”，其中“ B6 07”为距离“2A”为反射强度。
+a) 反转两个距离字节“ B6 07”，将其变成“07 B6”" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/d4bf9328859b3de67b1a8fd6f61523f7/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-02-20T09:28:12+08:00" />
+<meta property="article:modified_time" content="2023-02-20T09:28:12+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">激光点云系列之一：详解激光雷达点云数据的处理过程</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <p><strong>交流群 | </strong>进“传感器群/滑板底盘群”请加微信号：xsh041388</p> 
+ <p><strong>交流群 | </strong>进“汽车基础软件群”请加微信号：Faye_chloe</p> 
+ <p><strong>备注信息：</strong>群名称<strong> </strong>+ 真实姓名、公司、岗位</p> 
+ <hr> 
+ <p style="text-align:right;">作者 | 奚少华</p> 
+ <p style="text-align:justify;">随着激光雷达的上车数量的不断攀升，如何用好激光雷达成为了重中之重，而用好激光雷达的关键点之一就在于处理好点云数据。<br></p> 
+ <p style="text-align:justify;">激光点云指的是由三维激光雷达设备扫描得到的空间点的数据集，每一个点云都包含了三维坐标（XYZ）和激光反射强度（Intensity），其中强度信息会与目标物表面材质与粗糙度、激光入射角度、激光波长以及激光雷达的能量密度有关。</p> 
+ <p style="text-align:justify;">为了更进一步解释清楚点云，笔者梳理了点云的相关参数和特点。</p> 
+ <p style="text-align:justify;">表：激光雷达点云的相关参数</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/c4/02/mUcgx75A_o.png" alt="6e5b201a89050a4e2caec8c189ec6439.png"></p> 
+ <p style="text-align:justify;">表：点云的特点</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/6c/ec/ZGC93R4U_o.png" alt="eaf5226f9b88fd7ac992e17cf799d5fe.png"></p> 
+ <p style="text-align:justify;">从点云的采集原理来看，以ToF路线的激光雷达为例，激光点云是由车载激光扫描系统向周围发射激光信号，然后收集反射回来的激光信号得来的，并通过光速、激光从发射到返回的时间等信息来测得目标物的距离信息，再结合IMU、里程计、GNSS等信息计算出前方目标物的三维坐标信息和距离信息。</p> 
+ <p style="text-align:justify;">此外，在点云的采集和分析过程中，感知算法人员需要根据车载激光雷达的特点与工作原理，并结合激光雷达的角分辨率、视场角等相关参数，才能更好地利用点云。</p> 
+ <p style="text-align:justify;">那么，激光雷达点云在车端的处理环节中，具体有哪些处理过程和方法？又如何优化？</p> 
+ <p style="text-align:justify;">此后，为了验证这些问题，笔者先后访谈了图达通算法负责人许建博士和系统及应用负责人Leon、上汽高级经理殷玮、纵目科技感知算法工程师汤强、禾赛科技的专家等。在此，笔者感谢各路专家给予的支持，并整理出如下系列的文章，以供读者参阅。</p> 
+ <p style="text-align:justify;">以下为激光点云处理系列文章的第一篇内容。</p> 
+ <h2><strong>激光雷达点云处理的具体流程</strong></h2> 
+ <p style="text-align:justify;">聊完何谓点云及其特征后，下文将继续分析激光雷达点云在自动驾驶中的处理流程。在此之前，有两点需要说明。</p> 
+ <p style="text-align:justify;">其一，激光雷达点云被用于感知和定位时，点云会先完成预处理，然后按照不同用途进行不同的处理，并在点云的应用细节上也会不同。</p> 
+ <p style="text-align:justify;">汤强说：“激光雷达用于定位的话，算法模型会要求点云的数据量尽可能多，并且区别于感知，定位还需要道路数据。如车道线或地标，它们对于激光的反射率和普通路面的反射率是不同的，激光雷达通过这种方式来获取路面信息的数据。激光雷达用于感知的话，它会有一个预处理的过程，会确定一个ROI范围，随后用这一区域的点云数据来完成后续的检测。”</p> 
+ <p style="text-align:justify;">其二，每家企业在点云的具体应用过程中，还会根据各自技术方案与应用场景不同，会存在些许处理流程上的差异，但大部分处理流程皆相同。</p> 
+ <p style="text-align:justify;">为了更详细地阐述点云的处理流程，笔者结合专家访谈的内容与公开信息，梳理出激光雷达点云在自动驾驶应用中的普遍流程。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/20/7b/UlpfnLhW_o.png" alt="d2216f1f6544b537fc0738f4707e7fa5.png"></p> 
+ <p>图：激光点云的处理流程</p> 
+ <p style="text-align:center;"><strong>0</strong><strong title="">1</strong></p> 
+ <p style="text-align:center;"><strong>点云预处理层面</strong></p> 
+ <h4><strong><strong>1.1 </strong></strong><strong><strong>原始点云数据的接收与解析</strong></strong></h4> 
+ <p style="text-align:justify;"><strong>（1）点云数据的接收</strong></p> 
+ <p style="text-align:justify;">激光雷达的原始点云数据都会被存放在一个数据包里（pcap），此时数据包里面的数据都是一连串的字节符号，无法直接使用。</p> 
+ <p style="text-align:justify;">以Velodyne的16线激光雷达为例，原始点云数据的接收主要是通过UDP（用户数据报协议）的形式向网络发送数据。具体来说，在激光雷达的web端进行设置或通过命令行进行设置后，技术人员会在接收端匹配激光雷达的IP地址与自身的UDP端口号，从而即可接收原始点云数据。</p> 
+ <p style="text-align:justify;">从数据的内容来看，该型号的激光雷达在垂直方向上（-15°到+15°）有16线的激光束，其每帧的数据长度固定为1248字节，这些字节包括前42字节的前数据包标识、12组数据包、4字节时间戳和最后两字节雷达型号参数。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/07/85/iirJDbGm_o.png" alt="0c706cf8e115f764090660465311789d.png"></p> 
+ <p style="text-align:justify;"> 图：Velodyne-16激光雷达每一帧的点云数据情况</p> 
+ <p style="text-align:justify;">（数据来源：《Velodyne VLP-16激光雷达数据格式解析》）</p> 
+ <p style="text-align:justify;">每个数据包中的数据都包含了激光光束的旋转角度、距离值、反射强度的信息。例如，“B6 07”代表了激光雷达的探测距离，“2A”代表了激光的反射强度，但这些信息都是以两字节表示，需要进一步解析这些数据。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/94/c9/qUdQipgw_o.png" alt="a61dabb5fcc21df92af28d79ca371588.png"></p> 
+ <p style="text-align:justify;"> 图：Velodyne-16激光雷达数据包的一部分数据</p> 
+ <p style="text-align:justify;">（数据来源：《Velodyne VLP-16激光雷达数据格式解析》）</p> 
+ <p style="text-align:justify;"><strong>（2）点云数据(pcd)的解析</strong></p> 
+ <p style="text-align:justify;">数据包（pcap）中的原始数据需要进一步转换为可被感知技术人员使用的pcd格式的数据集。</p> 
+ <p style="text-align:justify;">点云数据的pcd格式文件是激光点云的一种存储格式，pcd文件主要是由笛卡尔坐标(x,y,z)和强度值i组成的列表，即每个点云都会附带独有的三维坐标系和能量反射强度。</p> 
+ <p style="text-align:justify;">在这个坐标系中，x轴指向汽车的前部，y轴指向汽车的左侧。由于这个坐标系采用右手定则，坐标系z轴指向汽车上方。</p> 
+ <p><img src="https://images2.imgbox.com/7f/85/QjgQYLfX_o.png" alt="6139136c287fb2bfcfb7500b355607de.png"></p> 
+ <p style="text-align:justify;">图：点云pcd坐标</p> 
+ <p style="text-align:justify;">（数据来源：《学习笔记：点云库PCL介绍》）</p> 
+ <p style="text-align:justify;">为了阐述点云数据的解析过程，笔者还是以上文Velodyne-16激光雷达的某帧点云数据包为例，并根据公开信息梳理如下。</p> 
+ <p style="text-align:justify;"><strong>第一步，计算激光线的旋转角度值。</strong></p> 
+ <p style="text-align:justify;">例如，上图数据包前一部分的第一行的旋转角度为0xE0、0x63。</p> 
+ <p style="text-align:justify;">a) 反转两个字节变成十六进制63 E0</p> 
+ <p style="text-align:justify;">b) 把63 E0变成无符号的十进制为25568</p> 
+ <p style="text-align:justify;">c) 再把25568除以100得到255.68，那么得到的值255.68就是当前的旋转角度值</p> 
+ <p style="text-align:justify;"><strong>第二步，计算16线激光分别测得的距离。</strong></p> 
+ <p style="text-align:justify;">例如，上图数据包前一部分的第一个激光线的距离，其值为“B6 07 2A”，其中“ B6 07”为距离“2A”为反射强度。</p> 
+ <p style="text-align:justify;">a) 反转两个距离字节“ B6 07”，将其变成“07 B6”</p> 
+ <p style="text-align:justify;">b) 把“07 B6”变成无符号的十进制为1974</p> 
+ <p style="text-align:justify;">c) 由于该型号激光雷达的分辨率为2.0mm，所以激光束测得的目标物距离为1974*2=3948mm</p> 
+ <p style="text-align:justify;">d) 将3948mm转化为米计量的单位，即3.948m</p> 
+ <p style="text-align:justify;"><strong>第三步，获得该帧的时间戳和激光雷达型号参数。</strong></p> 
+ <p style="text-align:justify;">例如，上图数据包后一部分的最后六个字节的数据“6D 69 94 0F 37 22”。</p> 
+ <p style="text-align:justify;">a) 前四个字节的数据“6D 69 94 0F”为该帧的时间戳，然后反转顺序“0F 94 69 6D”</p> 
+ <p style="text-align:justify;">b) 将“0F 94 69 6D”转换为十进制的值261384557微秒（μs）</p> 
+ <p style="text-align:justify;">c) 把261384557除以1000000可获得当前的时间，即261.384557秒（s）</p> 
+ <p style="text-align:justify;">d) 后两个字节“37 22”表示雷达的型号和参数</p> 
+ <p style="text-align:justify;"><strong>第四步，把角度和距离信息转化为三维坐标XYZ值。</strong></p> 
+ <p style="text-align:justify;">三维坐标XYZ值可通过旋转角度α（已在第一步中求得）、垂直角度ω（每束激光线对应的固定值）和距离值R（已在第二步中求得）来综合求出，具体的坐标换算如下图所示。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/87/81/mZCNzRhK_o.png" alt="2570c111f0b90402a85f346f3d8ec3f9.png"></p> 
+ <p style="text-align:justify;"> 图：目标物点云的三维坐标计算</p> 
+ <p style="text-align:justify;">（数据来源：《Velodyne VLP-16激光雷达数据格式解析》）</p> 
+ <h4><strong><strong>1.2 </strong></strong><strong><strong>运动畸变补偿</strong></strong></h4> 
+ <p style="text-align:justify;">运动畸变是指在一帧时间内，激光雷达或者其载体在发生运动后，产生的点云位置不一样的问题。</p> 
+ <p style="text-align:justify;">要理解运动畸变补偿，我们首先要知道自动驾驶车端的激光雷达点云为什么会产生运动畸变。</p> 
+ <p style="text-align:justify;">其实，激光雷达发射的一帧激光点云会由多个激光点组成，而这些激光点云是由扫描器件经过一次扫描后才形成的。在静止的场景中时，车辆处于静止状态且场景中的目标物也处于相对静止状态，那么采集到的一帧点云是没有畸变的，每条激光线束最终会形成一个闭合的圆形。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/de/a4/Zm14p1HQ_o.png" alt="affac27c1795899a961b1293108825e4.png"></p> 
+ <p style="text-align:justify;"> 图：静止状态下的车辆点云不产生畸变</p> 
+ <p style="text-align:justify;">在运动场景下，如车辆高速行驶或者转弯时，一帧点云中的起始点云和终止点云只能在不同坐标系下获得测量结果，这便导致了三维环境信息产生了畸变。如下图所示，当车辆在运动过程中，车端上的激光雷达在扫描完一圈后，在最后一束激光照射到目标物时，跟第一束激光照射到目标时相比，目标物的空间位置已发生了相对位移——该物体在两个不同时刻的点云，显示在坐标系中的信息是不同的。</p> 
+ <p style="text-align:justify;"><img src="https://images2.imgbox.com/d1/21/g3fnAGHZ_o.png" alt="33db5ec1c4d80b8ab93594d422afc336.png"> 图：目标物在不同时刻被激光照射到的情况</p> 
+ <p style="text-align:justify;">运动畸变补偿就是为了解决上述问题——把激光在采集过程中的运动轨迹计算出来，并在对应的激光点云上补偿这部分运动位移带来的变化，将同一帧的点云统一到同一时刻的坐标系下。</p> 
+ <p style="text-align:justify;">为了进一步解释运动畸变补偿，某主机厂感知算法工程师举例说：“比如，若车端配有IMU或者轮式里程计，感知算法人员就可以通过IMU和轮式里程计（或者直接用IMU）的方式，推算出0.1秒内车是怎么运动的，然后利用运动模型来做运动畸变补偿。”</p> 
+ <p style="text-align:justify;">常见的运动畸变补偿的方法：</p> 
+ <ul><li><p style="text-align:justify;"><strong>纯估计方法(ICP/VICP)</strong></p></li></ul> 
+ <p style="text-align:justify;">迭代最近点（ICP）方法是采用ICP算法来匹配两个点云，通过不断地算法迭代后，将点云之间的误差缩至最小。</p> 
+ <p style="text-align:justify;">VICP方法是ICP算法的变种形式，模型假设车辆是在匀速运动，在进行匹配点云的同时估计车辆的自身速度。</p> 
+ <p style="text-align:justify;">迭代最近点（ICP）和VICP被统称为“纯估计方法”。</p> 
+ <ul><li><p style="text-align:justify;"><strong>传感器辅助方法(IMU/ODOM)</strong></p></li></ul> 
+ <p style="text-align:justify;">惯性测量单元（IMU）方法是在IMU队列中查找相邻两帧IMU的数据，然后通过球面线性插值的方式计算扫描点所在时刻的激光雷达位姿，并应用齐次坐标系变化将两个点云坐标变换至同一坐标系下。</p> 
+ <p style="text-align:justify;">轮式里程计（ODOM）方法是通过求解当前帧激光雷达数据中每个点云对应的坐标系下的里程计位姿后，再根据求得的位姿把每个点云坐标都转化到同一坐标系下（需要转化两次），最后重新封装该帧点云数据。</p> 
+ <p style="text-align:justify;">惯性测量单元（IMU）和轮式里程计（ODOM）被统称为传感器辅助方法。</p> 
+ <ul><li><p style="text-align:justify;"><strong>融合的方法</strong></p></li></ul> 
+ <p style="text-align:justify;">该方法是同时使用里程计和ICP的融合方案，会先利用里程计方法进行矫正，去除大部分的运动畸变，再通过ICP方法进行匹配，得到里程计的误差值，再把误差值均摊到每个点云上，并重新对点云位置进行修正。最后，再利用ICP方法进行迭代，直至误差收敛为止。</p> 
+ <h4><strong><strong>1.3 </strong></strong><strong><strong>点云组帧</strong></strong></h4> 
+ <p style="text-align:justify;">感知算法人员在完成点云的运动畸变补偿后，会发现一个问题：激光雷达发送的点云数据包中的点云数量其实非常少，完全无法用来进行后续感知和定位层面的处理工作。</p> 
+ <p style="text-align:justify;">此时，感知算法人员就需要对这些数据包进行点云组帧的处理。</p> 
+ <p style="text-align:justify;">关于点云组帧，某L4解决方案商的感知算法工程师说：“以单激光雷达为例，感知算法人员会把多个点云数据包叠加到同一帧上，让这一帧上的点云数据能包含上万个点云，以便后续感知和定位流程的处理。若车端有多个激光雷达，感知算法人员会分别解析这几个激光雷达的点云数据包，然后把解析后的点云数据集合在同一时刻上，让其变成一个大的数据包。例如，技术人员会把车端多个激光雷达在t时刻的点云都汇集在一起，作为一帧点云数据来处理。”</p> 
+ <h4><strong><strong>1.4 外参</strong></strong><strong><strong>变化</strong></strong></h4> 
+ <p style="text-align:justify;">点云数据通过解析得到的点云坐标系属于激光雷达坐标系，而在实际的自动驾驶技术应用中，仍需要将激光雷达的坐标系转化为车辆的坐标系，这个建立联系的过程称之为点云的外参变化。</p> 
+ <p style="text-align:justify;">由于激光雷达与车体是刚性连接，所以在车辆运动过程中，两者之间的相对姿态和位移是固定不变的，只需要建立两者相对坐标系之间的位置关系，通过旋转或者平移的方式，就能将这两个三维坐标系统一到一个三维坐标系下（也称为全局坐标系或世界坐标系）。</p> 
+ <h4><strong><strong>1.5 </strong></strong><strong><strong>滤波处理</strong></strong></h4> 
+ <p style="text-align:justify;">在激光雷达获取点云数据的过程中，由于受到产品自身系统、待测物体表面及扫描环境等因素的影响，点云数据中会不可避免地夹杂着一些噪点（离群点），需要将其直接剔除或者以平滑的方式进行处理。这些噪点（离群点）会在后续的点云处理环节中（如点云分割、特征提取、点云配准等）让模型结果产生一定的误差。因此，在实际的点云处理流程中，感知人员会对点云进行滤波处理。</p> 
+ <ul><li><p style="text-align:justify;">噪点是指对模型处理无用的点云数据。</p></li><li><p style="text-align:justify;">离群点是指远离主观测区域的点云数据。</p></li></ul> 
+ <p style="text-align:justify;">在与专家的访谈交流中，笔者了解到，在自动驾驶行业内，噪点一般包含了离群点。所以，后续的文章中，笔者将以噪点来统称。</p> 
+ <p style="text-align:justify;">下表为笔者梳理的自动驾驶行业内常见的滤波算法。</p> 
+ <p style="text-align:justify;">表：自动驾驶行业内常见的滤波算法</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/62/87/UxozRGMo_o.png" alt="714f77ff8308bac901dc96fbc5e3aab4.png"></p> 
+ <p style="text-align:center;"><strong>0</strong><strong title="">2</strong><strong title=""></strong></p> 
+ <p style="text-align:center;"><strong>感知功能层面的处理</strong></p> 
+ <p style="text-align:justify;">在整个点云预处理工作完成后，感知算法人员会将点云数据分别进行感知和定位层面的处理。</p> 
+ <p style="text-align:justify;">在感知层面的流程中，点云数据主要是用于3D目标检测，即自动驾驶系统需要识别检测出车辆感知区域内的障碍物，从而采取避障等措施。</p> 
+ <p style="text-align:justify;">在点云预处理工作完成后，感知层面的处理会有两个分支：一个是应用传统的3D目标检测方法，包括点云分割、目标物的聚类分析等；另一个是直接应用深度学习模型来完成3D目标检测。</p> 
+ <p style="text-align:justify;">下文将分别拆解基于两种不同方法下的点云3D目标检测流程。</p> 
+ <h4><strong><strong>2.1 </strong></strong><strong><strong>基于传统方法的感知数据处理</strong></strong></h4> 
+ <p style="text-align:justify;"><strong>（1）地面点云分割</strong></p> 
+ <p style="text-align:justify;">在进行目标检测后，点云数据中会有很大一部分点云属于地面点数据，并呈现出一定的纹理状，这会对后续目标物的点云处理流程产生影响。</p> 
+ <p style="text-align:justify;">一方面，若不将这些地面点云数据进行分割及去除，这些无效的点云数据就会对位于地面上的物体点云数据造成干扰，会降低目标障碍物分割算法的准确性和鲁棒性；另一方面，由于点云数据量过大，这就会增加模型对计算量的需求。</p> 
+ <p style="text-align:justify;">所以，在进行后续工作前，感知算法人员需要先对地面点云进行过滤处理。</p> 
+ <p style="text-align:justify;">由于卷积神经网络模型一般会以滑窗的方式对每一块局部区域提取特征，然后做分类回归，所以深度学习的方法往往不需要预先分割出地面点云。在自动驾驶领域，考虑到硬件性能的占用、开发周期、模型成熟度等因素，感知算法人员一般会采用传统算法来进行地面点云分割。</p> 
+ <p style="text-align:justify;">笔者梳理了几种常用的地面点分割方法：</p> 
+ <ul><li><p style="text-align:justify;"><strong>平面栅格法</strong></p></li></ul> 
+ <p style="text-align:justify;">主要思路：平面栅格法通常是根据设定好的尺寸建立平面网格（也可以做多层网格或者三维体素），然后将原始点云投影到各自的网格中，对每个网格中的点云集合提取特征，比如平均高度、最大高度、高度差、密度等等。</p> 
+ <p style="text-align:justify;">技术亮点：不考虑矢量特征，让后续规划控制能更易于实现。</p> 
+ <p style="text-align:justify;">存在的问题：当激光雷达线束比较少的时候，比如16线激光雷达在采集道路数据时，车辆前方20米以外的地面上，能够打到的激光点已经比较少了，而且打到障碍物上的激光线束一般也只有一条。如果在栅格中采用高度特征进行地面过滤，低矮的障碍物很容易会被当成地面点过滤掉。</p> 
+ <ul><li><p style="text-align:justify;"> <strong>点云法向量</strong></p></li></ul> 
+ <p style="text-align:justify;">主要思路：点云的法向量是指通过设置点云的角度阈值来分割地面的点云，一般地面点云的法向量是垂直方向，只需要通过模型来求解点云法向量与地面法向量的夹角，并与设定好的阈值来作对比和分类。该方法需要其邻域点做支持，而邻域的大小一般由邻域半径值或临近点个数来表示。过大的邻域会抹平三维结构细节使得法向量过于粗糙，而过小的邻域由于包含了太少的点受噪声干扰程度较强。</p> 
+ <p style="text-align:justify;">技术亮点：该方法可以较好地提取出道路两旁法向量突变的点云集合构成路沿，从而配合栅格化将道路区域、非道路区域、障碍物进行划分。</p> 
+ <p style="text-align:justify;">存在的问题：</p> 
+ <p style="text-align:justify;">1）根据法向量方法的假设，该方法一定要先对点云进行校正，如果不进行校正，那么很可能出现某一帧没有地面点被分割出来的极端情况（激光雷达倾斜角度过大）。<br></p> 
+ <p style="text-align:justify;">2）法向量方法对于平台类型障碍物（如路沿边上的长方形花坛）生成的点无法有效区分。</p> 
+ <ul><li><p style="text-align:justify;"><strong>模型拟合法-平面拟合（RANSAC）</strong></p></li></ul> 
+ <p style="text-align:justify;">主要思路：RANSAC平面拟合是指通过随机选区的三个点云来建立平面方程，并将点云数据依次代入平面方程内，然后根据设置好的距离阈值来判定，该点是否为平面内的点。例如，阈值范围内的点为内点，而阈值外的点为外点。迭代次数最多的平面方程即为地面方程，而方程内的内点为地面点集，反之为障碍物的点云集。</p> 
+ <p style="text-align:justify;">技术亮点：当数据中有大量的异常数据时,该方法也能高精度地估计模型参数——能从大规模点云数据中，更容易地估计出地面点云集。</p> 
+ <p style="text-align:justify;">存在的问题：</p> 
+ <p style="text-align:justify;">1）考虑到排水的因素，交通道路通常是中间凸起、两边低洼，类似于拱桥形状。虽然曲率不大，但是通过随机采样的一致性算法计算地平面，可能会得到倾斜于一侧的平面作为地面方程。</p> 
+ <p style="text-align:justify;">2）在上下坡的时候，由于地面非绝对平面，该方法计算出的地面方程，会出现把前方地面点集作为障碍物点的情况。</p> 
+ <p style="text-align:justify;">3）由于RANSAC是在点云空间随机地取三个点构建平面，如果场景中存在大块墙面时，会出现将墙面作为地面方程的情况。</p> 
+ <ul><li><p style="text-align:justify;"><strong>面元网格法</strong></p></li></ul> 
+ <p style="text-align:justify;">主要思路：基于面元的分割可以分为局部类型或者表面类型，常采用区域增长的方式进行地面分割。其核心是基于点法线之间角度的比较，将满足平滑约束的相邻点合并在一起，以一簇点集的形式输出，每簇点集被认为是属于相同平面。</p> 
+ <p style="text-align:justify;">技术亮点：该方法能够较好地应对地面存在曲率的情况，对于比较平缓的曲面或者平面能够达到较好的分割效果。</p> 
+ <p style="text-align:justify;">存在的问题：</p> 
+ <p style="text-align:justify;">1）实际道路中的噪声点太多，直接使用区域增长的方式分割地面，会出现较多零星的地面点被当成障碍物点云集合地情况。</p> 
+ <p style="text-align:justify;">2）区域增长算法的时耗较大，对于实时性要求较高的感知算法模块，需要进一步优化。比如将平面的区域增长降为到边缘，或者划分区域，在小范围内进行分割等等。</p> 
+ <p style="text-align:justify;"><strong>（2）目标物的点云分割</strong></p> 
+ <p style="text-align:justify;">在去除掉地面点云后，接下来感知算法人员就需要将目标物点云进行有效地分割、分块，从而便于对目标物进行单独处理，即点云分割。目标障碍物的点云分割是根据空间、几何和纹理等特征对点云进行划分。</p> 
+ <p style="text-align:justify;">笔者梳理了几个常用的点云分割方法：</p> 
+ <ul><li><p style="text-align:justify;"><strong>基于边缘的方法</strong></p></li></ul> 
+ <p style="text-align:justify;">主要思路：基于边缘的方法是指由物体的形状是尤其边缘来描述的，所以通过定位目标物边缘点云快速变化的点，来寻找靠近目标物边缘区域的点并进行分割。</p> 
+ <p style="text-align:justify;">技术亮点：该方法采用了可重构多环网络的算法优化机制，提高了算法运行的效率。</p> 
+ <p style="text-align:justify;">存在的问题：</p> 
+ <p style="text-align:justify;">1）该方法较适用简单场景（如低噪声、均匀密度），不适用于拥有大量三维点云的数据集。</p> 
+ <p style="text-align:justify;">2）面对存在不连续边缘的目标物点云数据，若不采用点云填充，就不能直接用于识别检测。</p> 
+ <ul><li><p style="text-align:justify;"><strong>基于区域增长的方法</strong></p></li></ul> 
+ <p style="text-align:justify;">主要思路：基于区域增长的方法是指通过使用邻域信息来将具有相似属性的附近点归类，以获得到分割区域，并区分出不同区域之间的差异性。该方法主要分为两类：种子区域方法和非种子区域方法。其中，种子区域方法是通过选择多个种子点来开始做分割，以这些种子点为起始点，通过添加种子的邻域点的方式逐渐形成点云区域；非种子区域方法是将所有点都分为一个区域，然后将其划分为更小的区域。</p> 
+ <p style="text-align:justify;">技术亮点：相比于边缘的方法，该方法的分割准确度会更高。</p> 
+ <p style="text-align:justify;">存在的问题：方法依赖于选取的起始种子点或者区域细分位置，若选取的不恰当，就会导致分割过度或不足等问题。</p> 
+ <ul><li><p style="text-align:justify;"><strong>基于属性的方法</strong></p></li></ul> 
+ <p style="text-align:justify;">主要思路：基于属性的方法是先计算目标物点云的属性，例如距离、密度、水平或垂直方向的点云分布等，并以此来定义测量点之间的领域，然后将每个方向上的法向量的斜率和点邻域的数据之差作为聚类的属性。</p> 
+ <p style="text-align:justify;">技术亮点：相比于前两个方法，基于属性的方法可以消除异常值和噪点的影响。</p> 
+ <p style="text-align:justify;">存在的问题：该方法依赖于点之间邻域的定义和点云数据的点密度，在处理大量输入点的多维属性时，会导致模型对计算量的需求过大。</p> 
+ <p style="text-align:justify;"><strong>（3）目标物聚类分析</strong></p> 
+ <p style="text-align:justify;">在目标物点云分割完后，感知算法人员就需要将点云图中各个已分割的点云聚类成若干个整体，即把具有相似程度较高的点云组成一组，以便降低后续模型的计算量——这个过程就被称为点云聚类。</p> 
+ <p style="text-align:justify;">常见的点云聚类方法如下：</p> 
+ <ul><li><p style="text-align:justify;"><strong>K-means</strong></p></li></ul> 
+ <p style="text-align:justify;">主要思路：K-means 聚类算法是指将整个点云数据集分为 k 个具有某种统一特征的点云簇。首先，从每个点云簇中随机选择k个点作为点云簇的中心点。然后，对每个点云簇分别计算每个点云簇与上述k个点之间的实际距离，依据距离值最小的原则将其聚类到该点云簇。之后再对聚类的点云簇计算形心坐标，并更新点云簇中心点。最后，模型会重复上述步骤，直到点云簇中心点不再变化。</p> 
+ <p style="text-align:justify;">技术亮点：准确定性高、可处理较大数据量、运算速度快。</p> 
+ <p style="text-align:justify;">存在的问题：该方法需要预先设定K值和初始聚类中心，实时性差。</p> 
+ <ul><li><p style="text-align:justify;"><strong>DBSCAN</strong></p></li></ul> 
+ <p style="text-align:justify;">主要思路：DBSCAN通过引入密度的概念，即要求聚类空间中的一定区域内所包含对象的数据量不小于某一给定阈值。该方法能够在具有噪声的空间数据库中发现任意形状的簇，可将密度足够大的相邻区域连接，能够有效地处理异常数据，主要用于对空间数据的聚类。</p> 
+ <p style="text-align:justify;">技术亮点：</p> 
+ <p style="text-align:justify;">1）可以聚类任意形状点云</p> 
+ <p style="text-align:justify;">2）可以有效去除噪声点</p> 
+ <p style="text-align:justify;">存在的问题：</p> 
+ <p style="text-align:justify;">1）对内存资源消耗大</p> 
+ <p style="text-align:justify;">2）对处理器的要求高</p> 
+ <p style="text-align:justify;">3）需要预先设定聚类区域的半径和触发的阈值</p> 
+ <ul><li><p style="text-align:justify;"><strong>欧式聚类</strong></p></li></ul> 
+ <p style="text-align:justify;">主要思路：欧式聚类（也称为欧几里得聚类）是指基于欧式距离聚类的方法，在激光雷达的点云数据中，同一个物体的点云簇中两点之间的距离小于一定的值，而不同物体之间的点云簇之间的距离大于一定的值。欧式聚类算法就是根据此种原理，将欧几里德距离小于设定距离阈值的点合并成一类，从而完成聚类过程。</p> 
+ <p style="text-align:justify;">技术亮点：该方法运算速度快，且具有良好通用性。</p> 
+ <p style="text-align:justify;">存在的问题：该方法需要预设固定距离的阈值，这会导致近处的目标物聚类效果会较好，而远处的聚类会出现欠分割或者截断的问题。</p> 
+ <p style="text-align:justify;"><strong>（4）匹配与跟踪</strong></p> 
+ <p style="text-align:justify;">在做完前面的部分后，感知算法人员基本上已经可以从已处理完的数据上获知这些点云具体代表了什么目标物，而接下来需要做的就是对目标物的匹配和跟踪，即预测下一时刻，目标物出现在哪个区域。在障碍物检测中，匹配的精确度是后续多传感器融合的基础。</p> 
+ <p style="text-align:justify;">通常来说，匹配和跟踪的算法流程是先将目标预测的结果与测量的点云数据计算关联矩阵，然后利用匈牙利算法（其核心原理是寻找增广路径，从而达成最大匹配）进行匹配关系的确定，最后将点云数据分为匹配上的目标和未匹配上的目标两类，将其分别保存，并为跟踪做准备。</p> 
+ <h4><strong><strong>2.2 </strong></strong><strong><strong>基于深度学习的感知数据处理</strong></strong></h4> 
+ <p style="text-align:justify;">在自动驾驶领域中，随着点云的数据量越来越大，传统的目标检测算法已经无法满足实际需求。笔者在与各个专家的交谈后获知，当前点云3D目标检测主要采用了深度学习模型。</p> 
+ <p style="text-align:justify;">某主机厂感知算法工程师说：“在感知层面的目标检测中，点云在预处理完成后，就直接放入深度学习模型中，或者是先降采样后再放入深度学习模型。”</p> 
+ <p style="text-align:justify;">常用的基于深度学习的目标检测方法：</p> 
+ <ul><li><p style="text-align:justify;"><strong>PointNet</strong></p></li></ul> 
+ <p style="text-align:justify;">主要思路：PointNet首先为点云中的每一个点计算特征，然后通过一个与点云顺序无关的操作将这些特征组合起来，得到属于全体点云的特征，这个特征可以直接用于任务识别。</p> 
+ <p style="text-align:justify;">技术亮点：</p> 
+ <p style="text-align:justify;">1）直接将点云数据输入网络，而不是将其规范化；</p> 
+ <p style="text-align:justify;">2）对旋转不变性和置换不变性的利用。</p> 
+ <p style="text-align:justify;">√旋转不变性：所有的点做相同的变换（旋转平移），不影响对形状的表达。</p> 
+ <p style="text-align:justify;">√置换不变性：任意交换各点的位置，不影响对形状的表达。</p> 
+ <p style="text-align:justify;">存在的问题：无法获得局部特征，这使得PointNet方法很难对复杂场景进行分析。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/47/9b/9TcGw7EF_o.png" alt="ae3e7a5cc59a5d3f0c905606dd7b8059.png"></p> 
+ <p style="text-align:justify;"> 图：PointNet的网络结构</p> 
+ <ul><li><p style="text-align:justify;"><strong>PointNet++</strong></p></li></ul> 
+ <p style="text-align:justify;">主要思路：PointNet++是基于PointNet方法得出，主要借鉴了CNN的多层感受野的思想。CNN通过分层不断地使用卷积核扫描图像上的像素并做内积，使得越到后面的特征图感受野越大，同时每个像素包含的信息也越多。PointNet++就是仿照了这样的结构，先通过在整个点云的局部采样并划一个范围，将里面的点作为局部的特征，用PointNet进行一次特征提取。</p> 
+ <p style="text-align:justify;">技术亮点：</p> 
+ <p style="text-align:justify;">1）没有量化带来的信息损失，也无需调节量化超参数。</p> 
+ <p style="text-align:justify;">2）忽略空白区域，避免了无效的计算。</p> 
+ <p style="text-align:justify;">存在的问题：</p> 
+ <p style="text-align:justify;">1）无法利用成熟的基于空间卷积的2D物体检测算法。</p> 
+ <p style="text-align:justify;">2）虽然避免了无效计算，但是GPU对于点云的处理效率远低于对网格数据的处理效率。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/47/70/6JYPnNKc_o.png" alt="cf9074a692b6a7e08eee63f425fd3d17.png"></p> 
+ <p style="text-align:justify;"> 图：PointNet（左侧部分）与PointNet++（中间部分）的分割效果对比</p> 
+ <p style="text-align:justify;"><img src="https://images2.imgbox.com/59/48/fR7dwhwB_o.png" alt="6f2b1c70afda3fc784d1976c2cf2dbba.png"></p> 
+ <p style="text-align:justify;"> 图：PointNet++的网络结构</p> 
+ <ul><li><p style="text-align:justify;"><strong>VoxelNet</strong></p></li></ul> 
+ <p style="text-align:justify;">主要思路：VoxelNet主要是讲三维点云转化为voxel结构，然后以鸟瞰图的方式来处理这个结构。此处的voxel结构就是利用相同尺寸的立方体来划分三维空间，其中每个立方体称为voxel（体素）。</p> 
+ <p style="text-align:justify;">VoxelNet有两个主要过程，第一个被称为VFE（Voxel Feature Extraction）是voxel的特征提取过程，第二个是类似YOLO的目标检测过程。</p> 
+ <p style="text-align:justify;">技术亮点：</p> 
+ <p style="text-align:justify;">1）可以直接在稀疏的点云数据上进行任务检测，并避免了人工特征工程带来的信息瓶颈。</p> 
+ <p style="text-align:justify;">2）可以更有效地利用GPU的并行运算优势。</p> 
+ <p style="text-align:justify;">存在的问题：VoxelNet对于数据表示（为适应模型运算而重建的一种新数据结构）比较低效，并且中间层的3D卷积对计算量的需求太大，导致其运行速度只有大约2FPS（Frame Per Second），远低于实时性的要求。</p> 
+ <p style="text-align:justify;"><img src="https://images2.imgbox.com/a5/4b/DiDvHslU_o.png" alt="c164e275ee400c45e6b4d60efba81d63.png"> 图：VoxelNet的网络结构</p> 
+ <ul><li><p style="text-align:justify;"><strong>SECOND</strong></p></li></ul> 
+ <p style="text-align:justify;">主要思路：SECOND是一种基于VoxelNet方法优化后的点云检测方法，其网络的整体结构和实现大部分与原先的VoxelNet相近，同时在VoxelNet的基础上改进了中间层的3D卷积，采用稀疏卷积来完成，提高了训练的效率和网络推理的速度。同时，SECOND还提出了一个新的损失函数与点云数据增强策略。SECOND网络结构主要由三部分组成：VFE特征提取阶段，稀疏卷积层，RPN网络。</p> 
+ <p style="text-align:justify;">技术亮点：利用稀疏卷积提高了模型的推理速度。</p> 
+ <p style="text-align:justify;">存在的问题：虽然SECOND相比VoxelNet来说，其速度有所提升，但仍然保留了3D卷积。</p> 
+ <p style="text-align:justify;"><img src="https://images2.imgbox.com/11/b2/zixUVfmg_o.png" alt="8499c9807291e3cbea591e68d95b8f66.png"> 图：SECOND的网络结构</p> 
+ <ul><li><p style="text-align:justify;"><strong>PointPillar</strong></p></li></ul> 
+ <p style="text-align:justify;">主要思路：PointPillar把落到每个网格内的点直接叠放在一起，形象地称其为柱子(Pillar)，然后利用与PointNet相似的方式来学习特征，最后再把学到的特征向量映射回网格坐标上，得到与图像类似的数据。</p> 
+ <p style="text-align:justify;">技术亮点：</p> 
+ <p style="text-align:justify;">1）通过学习特征而不是依赖固定的编码器，PointPillars可以利用点云表示的全部信息。</p> 
+ <p style="text-align:justify;">2）通过对柱而不是体素进行操作，不需要手动调整垂直方向的装箱。</p> 
+ <p style="text-align:justify;">3）网络中只使用2D卷积，不使用3D卷积，对计算量的需求小、运行高效。</p> 
+ <p style="text-align:justify;">4）无需手动调整即可使用不同的点云配置。</p> 
+ <p style="text-align:justify;">存在的问题：点特征的学习被限制在网格内，无法有效地提取相邻区域的信息。</p> 
+ <p style="text-align:justify;"><img src="https://images2.imgbox.com/35/25/JK6S0JiH_o.png" alt="426d785571dafd38f4c816f69b67c0ec.png"> 图：PointPillar的网络结构</p> 
+ <ul><li><p style="text-align:justify;"><strong>PCT</strong></p></li></ul> 
+ <p style="text-align:justify;">主要思路：PCT主要是利用Transformer固有的顺序不变性，避免定义点云数据的顺序，并通过注意力机制进行特征学习。网络结构整体分为三部分：输入嵌入、注意力层和点云的分类与分割。</p> 
+ <p style="text-align:justify;">技术亮点：</p> 
+ <p style="text-align:justify;">1）PCT具有固有的置换不变性，更适合点云学习。</p> 
+ <p style="text-align:justify;">2）相比于主流的PointNet网络，PCT的分割边缘更加清晰。</p> 
+ <p style="text-align:justify;"><img src="https://images2.imgbox.com/73/5f/eCogJPzO_o.png" alt="8a77bbdfc3b596ad83f852058b10bf6d.png"> </p> 
+ <p style="text-align:justify;">图：PointNet（左侧部分）与PCT（中间部分）的分割效果对比</p> 
+ <p style="text-align:justify;">存在的问题：PCT是一种有效的全局特征提取网络，然而它忽略了点云深度学习中同样重要的局部邻域信息。</p> 
+ <p style="text-align:justify;"><img src="https://images2.imgbox.com/a8/2b/EUfAphnB_o.png" alt="733e573d5f232d98114ca9e6c5745345.png"> 图：PCT网络结构</p> 
+ <p style="text-align:justify;">虽然当前深度学习已经在自动驾驶行业内被广泛应用，但是深度学习在点云数据处理中也会遇到一些挑战。</p> 
+ <p style="text-align:justify;">一方面，点云作为场景中点的位置具有稀疏和非结构化的性质，因此它们的密度和数量都随着场景中对象的变化而变化。另一方面，由于自动驾驶汽车行驶时需要非常快速地做出反应，因此必须实时执行物体检测，而这意味着检测网络必须在两次扫描之间的时间间隔内提供计算结果。</p> 
+ <p style="text-align:justify;">所以，深度学习虽然可用、好用，但不可尽用。</p> 
+ <p style="text-align:justify;">许建说：“深度学习等AI算法目前还做不到100%的精准识别和检测，容易导致目标漏检。AI算法是3D点云感知的非常重要的手段，但是不能只靠AI。通过综合应用AI算法和传统算法，可以解决数据样本空间的不完备性问题，从而避免目标漏检情况。”</p> 
+ <p style="text-align:center;"><strong>0</strong><strong title="">3</strong></p> 
+ <p style="text-align:center;"><strong>定位功能层面的处理</strong></p> 
+ <h4><strong><strong>3.1 </strong></strong><strong><strong>特征提取</strong></strong></h4> 
+ <p style="text-align:justify;">自动驾驶车辆在路上行驶时，其实车辆是不知道自己在哪的，所以用点云数据做定位的第一步就是先要让自动驾驶车辆知道“我在哪里”。</p> 
+ <p style="text-align:justify;">此时，感知算法人员就需要先提取周边场景的目标物特征，并通过这些特征和所获取到的相对距离信息来建立一个小地图，知道车辆的相对初始位置。</p> 
+ <p style="text-align:justify;">点云特征提取往往是实时的，这会导致点云的数据量会非常大，而现有量产车的硬件性能有限。所以，为了减少点云数据的计算量，点云数据在被提取特征时，一般会被优先提取一些较为明显的特征，比如物体的轮廓信息。</p> 
+ <p style="text-align:justify;">某主机厂感知算法工程师说：“激光雷达不会像视觉一样，视觉会有深度的语义信息，而激光雷达为了减少计算量，只会提取目标物的特征，主要是提取目标物的“线面角”特征。比如，电线杆就是线的特征，路面就是面的特征，建筑物的角点就是角的特征。”</p> 
+ <h4><strong><strong>3.2 </strong></strong><strong><strong>地图匹配</strong></strong><strong><strong> </strong></strong></h4> 
+ <p style="text-align:justify;">在提取完周围目标物的特征后，感知算法人员就需要根据这些特征来进行点云地图匹配，来获取各个点云之间的相对位姿。点云地图匹配一般可分为帧间匹配和高精地图匹配。</p> 
+ <ul><li><p style="text-align:justify;">帧间匹配，也叫子图匹配，指将前后帧上有相同特征的点云做匹配，最后得到一张局部小地图。</p></li><li><p style="text-align:justify;">高精地图匹配，指将优化后的点云与高精地图做匹配。</p></li></ul> 
+ <p style="text-align:justify;">在自动驾驶行业内，自动驾驶方案商或者主机厂都会应用这两种不同方案，但常用的匹配方案还是以帧间匹配为主。</p> 
+ <p style="text-align:justify;">某主机厂感知算法工程师说：“只有L4的无人驾驶项目或许是基于高精地图定位方案的地图匹配，而主机厂主要做的是帧间匹配，因为量产车的定位方案不可能都基于高精地图。另外，高精地图匹配的计算量很大，在应用时必须先做降采样的工作。”</p> 
+ <h4><strong><strong>3.3 </strong></strong><strong><strong>位姿优化</strong></strong></h4> 
+ <p style="text-align:justify;">上文也提到，点云数据在做完匹配后，可以获取各点云间的相对位姿，而相对位姿的准确性会影响构建地图的准确性，所以需要对点云的相对位姿做一定的优化。</p> 
+ <p style="text-align:justify;">通常来说，相对位姿的不准确主要是由于一些不可控因素造成的，如点云被物体遮挡或者激光雷达视场角的限制。点云的位姿优化通过一定的点云坐标系的刚体变化（旋转或平移）来得到最优相对位姿。</p> 
+ <h2><strong>参考文献</strong></h2> 
+ <p style="text-align:justify;">【1】激光雷达（LiDAR）点云数据知多少？</p> 
+ <p style="text-align:justify;">https://blog.csdn.net/OpenDataLab/article/details/124962277</p> 
+ <p style="text-align:justify;">【2】学习笔记：点云库PCL（Point Cloud Library ）介绍</p> 
+ <p style="text-align:justify;">https://blog.csdn.net/jeffliu123/article/details/126137566</p> 
+ <p style="text-align:justify;">【3】点云概念与点云处理</p> 
+ <p style="text-align:justify;">https://blog.csdn.net/hongju_tang/article/details/85008888</p> 
+ <p style="text-align:justify;">【4】一文总结激光雷达基本性能指标</p> 
+ <p style="text-align:justify;">http://www.360doc.com/content/20/0813/07/71135856_965448273.shtml</p> 
+ <p style="text-align:justify;">【5】激光点云预处理</p> 
+ <p style="text-align:justify;">https://zhuanlan.zhihu.com/p/455810371</p> 
+ <p style="text-align:justify;">【6】激光雷达运动补偿方法</p> 
+ <p style="text-align:justify;">https://zhuanlan.zhihu.com/p/470795318</p> 
+ <p style="text-align:justify;">【7】激光雷达标定</p> 
+ <p style="text-align:justify;">https://blog.csdn.net/qq_39032096/category_11512741.html</p> 
+ <p style="text-align:justify;">【8】基于3D点云的目标检测概述</p> 
+ <p style="text-align:justify;">https://zhuanlan.zhihu.com/p/479539638</p> 
+ <p style="text-align:justify;">【9】自动驾驶中的激光雷达目标检测（下）</p> 
+ <p style="text-align:justify;">https://mp.weixin.qq.com/s/3H6qCDO-2mOP3HjGKnmLzw</p> 
+ <p style="text-align:justify;">【10】三维点云分割综述（中）</p> 
+ <p style="text-align:justify;">https://mp.weixin.qq.com/s?__biz=MzI0MDYxMDk0Ng%3D%3D&amp;chksm=e9196bc2de6ee2d4220fbf4fca46ea676eadac19a4e17b5b3d4dd9c0aa772c0b57db57f5a044&amp;idx=1&amp;mid=2247487535&amp;scene=21&amp;sn=1c6687b0a7c6df60dc0bd902676c0ed0#wechat_redirect</p> 
+ <p style="text-align:justify;">【11】应用于无人驾驶车辆的点云聚类算法研究进展</p> 
+ <p style="text-align:justify;">https://mp.weixin.qq.com/s?__biz=MzI0MjcxNDQwNQ==&amp;mid=2247488019&amp;idx=1&amp;sn=be3089b2510cfb12b2a955990f9c7e3b&amp;chksm=e9794059de0ec94fb9559cfd011c173424586de115a943376c094e6572af5dcf74121239a009&amp;scene=27</p> 
+ <p style="text-align:justify;">【12】基于三维激光雷达的障碍物检测与跟踪</p> 
+ <p style="text-align:justify;">https://mp.weixin.qq.com/s/ULDIkGSUfVp3OwWgxR2A9g</p> 
+ <p style="text-align:justify;">【13】自动驾驶 - 滤波算法</p> 
+ <p style="text-align:justify;">https://blog.csdn.net/limeigui/article/details/127656052</p> 
+ <p style="text-align:center;"><strong>写在最后</strong></p> 
+ <p><strong>与作者交流</strong></p> 
+ <p>如果希望与文章作者直接交流，可以直接扫描右方二维码，添加作者本人微信。</p> 
+ <p>  <img height="196" width="194" src="https://images2.imgbox.com/59/44/kiRHVheg_o.png" alt="329fba3735804edadda84e21883246de.png"></p> 
+ <p style="text-align:center;">注：加微信时务必备注您的真实姓名、公司、现岗位</p> 
+ <p style="text-align:center;">以及意向岗位等信息，谢谢！</p> 
+ <p><strong>关于投稿</strong></p> 
+ <p>如果您有兴趣给《九章智驾》投稿（“知识积累整理”类型文章），请扫描右方二维码，添加工作人员微信。</p> 
+ <p><img src="https://images2.imgbox.com/0b/7f/1fED1jSR_o.png" alt="51a1a986cccc5cf80e782ebc000a21f2.jpeg"></p> 
+ <p style="text-align:center;">注：加微信时务必备注您的真实姓名、公司、现岗位</p> 
+ <p style="text-align:center;">以及意向岗位等信息，谢谢！</p> 
+ <p><br><strong>“知识积累”类稿件质量要求：</strong></p> 
+ <p>A：信息密度高于绝大多数券商的绝大多数报告，不低于《九章智驾》的平均水平；</p> 
+ <p>B：信息要高度稀缺，需要80%以上的信息是在其他媒体上看不到的，如果基于公开信息，需有特别牛逼的独家观点才行。多谢理解与支持。</p> 
+ <p><strong>推荐阅读：</strong></p> 
+ <p>◆<a href="" rel="nofollow">九章 - 2022年度文章大合集</a></p> 
+ <p>◆<a href="" rel="nofollow">投奔“自动驾驶第一城”—— 一场说走就走的“迁都”</a></p> 
+ <p>◆<a href="" rel="nofollow">万字长文讲清楚4D毫米波雷达</a></p> 
+ <p>◆<a href="" rel="nofollow">万字长文解读深度学习算法在自动驾驶规控中的应用</a></p> 
+ <p>◆<a href="" rel="nofollow">线控转向量产商用的挑战与曙光</a></p> 
+ <p>◆<a href="" rel="nofollow">“在别人恐惧时贪婪”，这支基金将在“自动驾驶寒冬”加大投资力度</a></p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/76b31f1466d8ef3105f2d650b09a5124/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">（附源码）基于PHP下的大学生校园交流论坛的设计与实现 毕业设计101634</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/533fdc7a8c36d9f3005e857aab7f8422/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Vue3使用Echarts实现自定义地图（使用阿里云数据可视化平台）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>认识 MySQL 和 Redis 的数据一致性问题 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="认识 MySQL 和 Redis 的数据一致性问题" />
+<meta property="og:description" content="作者：sinxu，腾讯 CSIG 后台开发工程师
+1. 什么是数据的一致性 “数据一致”一般指的是：缓存中有数据，缓存的数据值 = 数据库中的值。
+但根据缓存中是有数据为依据，则”一致“可以包含两种情况：
+缓存中有数据，缓存的数据值 = 数据库中的值（需均为最新值，本文将“旧值的一致”归类为“不一致状态”）
+缓存中本没有数据，数据库中的值 = 最新值（有请求查询数据库时，会将数据写入缓存，则变为上面的“一致”状态）
+”数据不一致“：缓存的数据值 ≠ 数据库中的值；缓存或者数据库中存在旧值，导致其他线程读到旧数据
+2. 数据不一致情况及应对策略 根据是否接收写请求，可以把缓存分成读写缓存和只读缓存。
+只读缓存：只在缓存进行数据查找，即使用 “更新数据库&#43;删除缓存” 策略；
+读写缓存：需要在缓存中对数据进行增删改查，即使用 “更新数据库&#43;更新缓存”策略。
+2.1 针对只读缓存（更新数据库&#43;删除缓存） 只读缓存：新增数据时，直接写入数据库；更新（修改/删除）数据时，先删除缓存。后续，访问这些增删改的数据时，会发生缓存缺失，进而查询数据库，更新缓存。
+新增数据时 ，写入数据库；访问数据时，缓存缺失，查数据库，更新缓存（始终是处于”数据一致“的状态，不会发生数据不一致性问题)
+更新（修改/删除）数据时 ，会有个时序问题：更新数据库与删除缓存的顺序（这个过程会发生数据不一致性问题）
+在更新数据的过程中，可能会有如下问题：
+无并发请求下，其中一个操作失败的情况
+并发请求下，其他线程可能会读到旧值
+因此，要想达到数据一致性，需要保证两点：
+无并发请求下，保证 A 和 B 步骤都能成功执行
+并发请求下，在 A 和 B 步骤的间隔中，避免或消除其他线程的影响
+接下来，我们针对有/无并发场景，进行分析并使用不同的策略。
+A. 无并发情况 无并发请求下，在更新数据库和删除缓存值的过程中，因为操作被拆分成两步，那么就很有可能存在“步骤 1 成功，步骤 2 失败” 的情况发生（由于单线程中步骤 1 和步骤 2 是串行执行的，不太可能会发生 “步骤 2 成功，步骤 1 失败” 的情况）。
+(1) 先删除缓存，再更新数据库
+(2) 先更新数据库，再删除缓存" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/4cd7d91bb18bf98c4dba14740a2cc106/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-11-08T18:00:00+08:00" />
+<meta property="article:modified_time" content="2021-11-08T18:00:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">认识 MySQL 和 Redis 的数据一致性问题</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/e4/b4/ORcmdLrv_o.gif" alt="4dc9ba23a56e3019142868816c996f98.gif"></p> 
+ <p>作者：sinxu，腾讯 CSIG 后台开发工程师</p> 
+ <h4>1. 什么是数据的一致性</h4> 
+ <p>“数据一致”一般指的是：缓存中有数据，缓存的数据值 = 数据库中的值。</p> 
+ <p>但根据缓存中是有数据为依据，则”一致“可以包含两种情况：</p> 
+ <ul><li><p>缓存中有数据，缓存的数据值 = 数据库中的值（需均为最新值，本文将“旧值的一致”归类为“不一致状态”）</p></li></ul> 
+ <ul><li><p>缓存中本没有数据，数据库中的值 = 最新值（有请求查询数据库时，会将数据写入缓存，则变为上面的“一致”状态）</p></li></ul> 
+ <p>”数据不一致“：缓存的数据值 ≠ 数据库中的值；缓存或者数据库中存在旧值，导致其他线程读到旧数据</p> 
+ <h4>2. 数据不一致情况及应对策略</h4> 
+ <p>根据是否接收写请求，可以把缓存分成读写缓存和只读缓存。</p> 
+ <p>只读缓存：只在缓存进行数据查找，即使用 “更新数据库+删除缓存” 策略；</p> 
+ <p>读写缓存：需要在缓存中对数据进行增删改查，即使用 “更新数据库+更新缓存”策略。</p> 
+ <h5>2.1 针对只读缓存（更新数据库+删除缓存）</h5> 
+ <p>只读缓存：新增数据时，直接写入数据库；更新（修改/删除）数据时，先删除缓存。后续，访问这些增删改的数据时，会发生缓存缺失，进而查询数据库，更新缓存。</p> 
+ <ul><li><p><strong>新增数据时</strong> ，写入数据库；访问数据时，缓存缺失，查数据库，更新缓存（始终是处于”数据一致“的状态，不会发生数据不一致性问题)</p></li></ul> 
+ <img src="https://images2.imgbox.com/a2/90/Dwi9WdHE_o.png" alt="d3a1c45aac00e166d3f464a79832c534.png"> 
+ <ul><li><p><strong>更新（修改/删除）数据时</strong> ，会有个时序问题：更新数据库与删除缓存的顺序（这个过程会发生数据不一致性问题）</p></li></ul> 
+ <img src="https://images2.imgbox.com/35/97/jiyKwk5H_o.png" alt="8c25f9070877ab15e510fe5cf0cb5b51.png"> 
+ <p>在更新数据的过程中，可能会有如下问题：</p> 
+ <ul><li><p>无并发请求下，其中一个操作失败的情况</p></li><li><p>并发请求下，其他线程可能会读到旧值</p></li></ul> 
+ <p>因此，要想达到数据一致性，需要保证两点：</p> 
+ <ul><li><p>无并发请求下，保证 A 和 B 步骤都能成功执行</p></li><li><p>并发请求下，在 A 和 B 步骤的间隔中，避免或消除其他线程的影响</p></li></ul> 
+ <p>接下来，我们针对有/无并发场景，进行分析并使用不同的策略。</p> 
+ <h6>A. 无并发情况</h6> 
+ <p>无并发请求下，在更新数据库和删除缓存值的过程中，因为操作被拆分成两步，那么就很有可能存在“步骤 1 成功，步骤 2 失败” 的情况发生（由于单线程中步骤 1 和步骤 2 是串行执行的，不太可能会发生 “步骤 2 成功，步骤 1 失败” 的情况）。</p> 
+ <p><strong>(1) 先删除缓存，再更新数据库</strong></p> 
+ <img src="https://images2.imgbox.com/4f/f2/5wCwICJT_o.png" alt="5f6aa8179fa88248ab501fa5d12aeb40.png"> 
+ <p><strong>(2) 先更新数据库，再删除缓存</strong></p> 
+ <img src="https://images2.imgbox.com/ad/2a/DIIjY0n4_o.png" alt="76129ce021cd25d694c0164b2ce92b74.png"> 
+ <img src="https://images2.imgbox.com/a2/54/UAUA0pXb_o.png" alt="fba7bf2cf4e3ed86207ec7bea110f273.png"> 
+ <p><strong>解决策略：</strong></p> 
+ <p><strong>a.消息队列+异步重试</strong></p> 
+ <p>无论使用哪一种执行时序，可以在执行步骤 1 时，将步骤 2 的请求写入消息队列，当步骤 2 失败时，就可以使用重试策略，对失败操作进行 “补偿”。</p> 
+ <img src="https://images2.imgbox.com/7a/39/kgJsAC48_o.png" alt="336a48596025d32922a23029129189be.png"> 
+ <p><strong>具体步骤如下：</strong></p> 
+ <ol><li><p>把要删除缓存值或者是要更新数据库值操作生成消息，暂存到消息队列中（例如使用 Kafka 消息队列）；</p></li><li><p>当删除缓存值或者是更新数据库值操作成功时，把这些消息从消息队列中去除（丢弃），以免重复操作；</p></li><li><p>当删除缓存值或者是更新数据库值操作失败时，执行失败策略，重试服务从消息队列中重新读取（消费）这些消息，然后再次进行删除或更新；</p></li><li><p>删除或者更新失败时，需要再次进行重试，重试超过的一定次数，向业务层发送报错信息。</p></li></ol> 
+ <p><strong>b.订阅 Binlog 变更日志</strong></p> 
+ <ul><li><p>创建更新缓存服务，接收数据变更的 MQ 消息，然后消费消息，更新/删除 Redis 中的缓存数据；</p></li></ul> 
+ <ul><li><p>使用 Binlog 实时更新/删除 Redis 缓存。利用 Canal，即将负责更新缓存的服务伪装成一个 MySQL 的从节点，从 MySQL 接收 Binlog，解析 Binlog 之后，得到实时的数据变更信息，然后根据变更信息去更新/删除 Redis 缓存；</p></li><li><p>MQ+Canal 策略，将 Canal Server 接收到的 Binlog 数据直接投递到 MQ 进行解耦，使用 MQ 异步消费 Binlog 日志，以此进行数据同步；</p></li></ul> 
+ <p>不管用 MQ/Canal 或者 MQ+Canal 的策略来异步更新缓存，对整个更新服务的数据可靠性和实时性要求都比较高，如果产生数据丢失或者更新延时情况，会造成 MySQL 和 Redis 中的数据不一致。因此，使用这种策略时，需要考虑出现不同步问题时的降级或补偿方案。</p> 
+ <h6>B. 高并发情况</h6> 
+ <p>使用以上策略后，可以保证在单线程/无并发场景下的数据一致性。但是，在高并发场景下，由于数据库层面的读写并发，会引发的数据库与缓存数据不一致的问题（本质是后发生的读请求先返回了）</p> 
+ <p><strong>(1) 先删除缓存，再更新数据库</strong></p> 
+ <p>假设线程 A 删除缓存值后，由于网络延迟等原因导致未及更新数据库，而此时，线程 B 开始读取数据时会发现缓存缺失，进而去查询数据库。而当线程 B 从数据库读取完数据、更新了缓存后，线程 A 才开始更新数据库，此时，会导致缓存中的数据是旧值，而数据库中的是最新值，产生“数据不一致”。其本质就是，本应后发生的“B 线程-读请求” 先于 “A 线程-写请求” 执行并返回了。</p> 
+ <img src="https://images2.imgbox.com/22/fc/DmvQgnv6_o.png" alt="d14d406d3d033b4271ff8adf02eb3ce8.png"> 
+ <p>或者</p> 
+ <img src="https://images2.imgbox.com/98/ca/hafeU3AO_o.png" alt="5816e706bc08bef7f2699d39233e4d25.png"> 
+ <p><strong>解决策略：</strong></p> 
+ <p><strong>a.设置缓存过期时间 + 延时双删</strong></p> 
+ <p>通过设置缓存过期时间，若发生上述淘汰缓存失败的情况，则在缓存过期后，读请求仍然可以从 DB 中读取最新数据并更新缓存，可减小数据不一致的影响范围。虽然在一定时间范围内数据有差异，但可以保证数据的最终一致性。</p> 
+ <p>此外，还可以通过延时双删进行保障：在线程 A 更新完数据库值以后，让它先 sleep 一小段时间，确保线程 B 能够先从数据库读取数据，再把缺失的数据写入缓存，然后，线程 A 再进行删除。后续，其它线程读取数据时，发现缓存缺失，会从数据库中读取最新值。</p> 
+ <pre class="has"><code class="language-go">redis.delKey(X)
+db.update(X)
+Thread.sleep(N)
+redis.delKey(X)</code></pre> 
+ <p>sleep 时间：在业务程序运行的时候，统计下线程读数据和写缓存的操作时间，以此为基础来进行估算：</p> 
+ <img src="https://images2.imgbox.com/b6/07/3NUQkVp6_o.png" alt="3ee16a7dbacb4bf96cedecbcc33dd3f1.png"> 
+ <p><strong>注意</strong>：如果难以接受 sleep 这种写法，可以使用延时队列进行替代。</p> 
+ <p>先删除缓存值再更新数据库，有可能导致请求因缓存缺失而访问数据库，给数据库带来压力，也就是缓存穿透的问题。针对缓存穿透问题，可以用缓存空结果、布隆过滤器进行解决。</p> 
+ <p><strong>(2) 先更新数据库，再删除缓存</strong></p> 
+ <p>如果线程 A 更新了数据库中的值，但还没来得及删除缓存值，线程 B 就开始读取数据了，那么此时，线程 B 查询缓存时，发现缓存命中，就会直接从缓存中读取旧值。其本质也是，本应后发生的“B 线程-读请求” 先于 “A 线程-删除缓存” 执行并返回了。</p> 
+ <img src="https://images2.imgbox.com/df/b5/HuLDtXZe_o.png" alt="0157029685ee3cf4671f30f3d6b763a2.png"> 
+ <p>或者，在”先更新数据库，再删除缓存”方案下，“读写分离 + 主从库延迟”也会导致不一致：</p> 
+ <img src="https://images2.imgbox.com/28/77/VTYG2iLK_o.png" alt="f19b7d1b63afbefd6ba8bc5c8b00222c.png"> 
+ <p><strong>解决方案：</strong></p> 
+ <p><strong>a.延迟消息</strong></p> 
+ <p>凭借经验发送「延迟消息」到队列中，延迟删除缓存，同时也要控制主从库延迟，尽可能降低不一致发生的概率</p> 
+ <p><strong>b.订阅 binlog，异步删除</strong></p> 
+ <p>通过数据库的 binlog 来异步淘汰 key，利用工具(canal)将 binlog 日志采集发送到 MQ 中，然后通过 ACK 机制确认处理删除缓存。</p> 
+ <p><strong>c.删除消息写入数据库</strong></p> 
+ <p>通过比对数据库中的数据，进行删除确认 先更新数据库再删除缓存，有可能导致请求因缓存缺失而访问数据库，给数据库带来压力，也就是缓存穿透的问题。针对缓存穿透问题，可以用缓存空结果、布隆过滤器进行解决。</p> 
+ <p><strong>d.加锁</strong></p> 
+ <p>更新数据时，加写锁；查询数据时，加读锁 保证两步操作的“原子性”，使得操作可以串行执行。“原子性”的本质是什么？不可分割只是外在表现，其本质是多个资源间有一致性的要求，操作的中间状态对外不可见。</p> 
+ <img src="https://images2.imgbox.com/da/44/FS3wkPrG_o.png" alt="072d1a40512b0e1bcdb18f53ba5ac427.png"> 
+ <p><strong>建议：</strong></p> 
+ <p>优先使用“先更新数据库再删除缓存”的执行时序，原因主要有两个：</p> 
+ <ol><li><p>先删除缓存值再更新数据库，有可能导致请求因缓存缺失而访问数据库，给数据库带来压力；</p></li><li><p>业务应用中读取数据库和写缓存的时间有时不好估算，进而导致延迟双删中的 sleep 时间不好设置。</p></li></ol> 
+ <h5>2.2 针对读写缓存（更新数据库+更新缓存）</h5> 
+ <p>读写缓存：增删改在缓存中进行，并采取相应的回写策略，同步数据到数据库中</p> 
+ <ul><li><p>同步直写：使用事务，保证缓存和数据更新的原子性，并进行失败重试（如果 Redis 本身出现故障，会降低服务的性能和可用性）</p></li><li><p>异步回写：写缓存时不同步写数据库，等到数据从缓存中淘汰时，再写回数据库（没写回数据库前，缓存发生故障，会造成数据丢失） 该策略在秒杀场中有见到过，业务层直接对缓存中的秒杀商品库存信息进行操作，一段时间后再回写数据库。</p></li></ul> 
+ <p>一致性：同步直写 &gt; 异步回写 因此，对于读写缓存，要保持数据强一致性的主要思路是：利用同步直写 同步直写也存在两个操作的时序问题：更新数据库和更新缓存</p> 
+ <h6>A. 无并发情况</h6> 
+ <img src="https://images2.imgbox.com/bb/a5/zNORbPZ1_o.png" alt="ef75683e37db0707ca4bdd4b67803014.png"> 
+ <h6>B. 高并发情况</h6> 
+ <p>有四种场景会造成数据不一致：</p> 
+ <img src="https://images2.imgbox.com/1e/0a/XRz5hjeY_o.png" alt="5da5b2f204eb21d2004bc1dcfb0fe9b2.png"> 
+ <p>针对场景 1 和 2 的解决方案是：保存请求对缓存的读取记录，延时消息比较，发现不一致后，做业务补偿 针对场景 3 和 4 的解决方案是：对于写请求，需要配合分布式锁使用。写请求进来时，针对同一个资源的修改操作，先加分布式锁，保证同一时间只有一个线程去更新数据库和缓存；没有拿到锁的线程把操作放入到队列中，延时处理。用这种方式保证多个线程操作同一资源的顺序性，以此保证一致性。</p> 
+ <img src="https://images2.imgbox.com/df/88/Uwia9g65_o.png" alt="81585b234d467301e821e2e28c5476d5.png"> 
+ <p>其中，分布式锁的实现可以使用以下策略：</p> 
+ <img src="https://images2.imgbox.com/0d/62/cdleRWv5_o.png" alt="145803b361899704ed750d7bbb3cc5c4.png"> 
+ <h5>2.3 强一致性策略</h5> 
+ <p>上述策略只能保证数据的最终一致性。要想做到强一致，最常见的方案是 2PC、3PC、Paxos、Raft 这类一致性协议，但它们的性能往往比较差，而且这些方案也比较复杂，还要考虑各种容错问题。如果业务层要求必须读取数据的强一致性，可以采取以下策略：</p> 
+ <p><strong>（1）暂存并发读请求</strong></p> 
+ <p>在更新数据库时，先在 Redis 缓存客户端暂存并发读请求，等数据库更新完、缓存值删除后，再读取数据，从而保证数据一致性。</p> 
+ <p><strong>（2）串行化</strong></p> 
+ <p>读写请求入队列，工作线程从队列中取任务来依次执行</p> 
+ <ol><li><p>修改服务 Service 连接池，id 取模选取服务连接，能够保证同一个数据的读写都落在同一个后端服务上</p></li><li><p>修改数据库 DB 连接池，id 取模选取 DB 连接，能够保证同一个数据的读写在数据库层面是串行的</p></li></ol> 
+ <p><strong>（3）使用 Redis 分布式读写锁</strong></p> 
+ <p>将淘汰缓存与更新库表放入同一把写锁中，与其它读请求互斥，防止其间产生旧数据。读写互斥、写写互斥、读读共享，可满足读多写少的场景数据一致，也保证了并发性。并根据逻辑平均运行时间、响应超时时间来确定过期时间。</p> 
+ <pre class="has"><code class="language-go">public void write() {
+    Lock writeLock = redis.getWriteLock(lockKey);
+    writeLock.lock();
+    try {
+        redis.delete(key);
+        db.update(record);
+    } finally {
+        writeLock.unlock();
+    }
+}
+
+public void read() {
+    if (caching) {
+        return;
+    }
+    // no cache
+    Lock readLock = redis.getReadLock(lockKey);
+    readLock.lock();
+    try {
+        record = db.get();
+    } finally {
+        readLock.unlock();
+    }
+    redis.set(key, record);
+}</code></pre> 
+ <h5>2.4 小结</h5> 
+ <img src="https://images2.imgbox.com/21/fe/5uNnymjD_o.png" alt="c7a7b9e7151a7c4b9e026470336bff57.png"> 
+ <p>针对读写缓存时：同步直写，更新数据库+更新缓存：</p> 
+ <img src="https://images2.imgbox.com/96/bf/fRUS88z6_o.png" alt="7e5951fd7439c923b43d1add8e711fe3.png"> 
+ <p>针对只读缓存时：更新数据库+删除缓存：</p> 
+ <img src="https://images2.imgbox.com/99/69/9oajG7qf_o.png" alt="3792c70880c7afdaf8953323d149b91e.png"> 
+ <p><strong>较为通用的一致性策略拟定：</strong></p> 
+ <p>在并发场景下，使用 “更新数据库 + 更新缓存” 需要用分布式锁保证缓存和数据一致性，且可能存在”缓存资源浪费“和”机器性能浪费“的情况；一般推荐使用 “更新数据库 + 删除缓存” 的方案。如果根据需要，热点数据较多，可以使用 “更新数据库 + 更新缓存” 策略。</p> 
+ <p>在 “更新数据库 + 删除缓存” 的方案中，推荐使用推荐用 “先更新数据库，再删除缓存” 策略，因为先删除缓存可能会导致大量请求落到数据库，而且延迟双删的时间很难评估。在 “先更新数据库，再删除缓存” 策略中，可以使用“消息队列+重试机制” 的方案保证缓存的删除。并通过 “订阅 binlog” 进行缓存比对，加上一层保障。</p> 
+ <p>此外，需要通过初始化缓存预热、多数据源触发、延迟消息比对等策略进行辅助和补偿。【多种数据更新触发源：定时任务扫描，业务系统 MQ、binlog 变更 MQ，相互之间作为互补来保证数据不会漏更新】</p> 
+ <h4>3. 数据一致性中需要注意的其他问题有哪些？</h4> 
+ <p><strong>(1) k-v 大小的合理设置</strong></p> 
+ <blockquote> 
+  <p><strong>Redis key 大小设计：</strong>由于网络的一次传输 MTU 最大为 1500 字节，所以为了保证高效的性能，建议单个 k-v 大小不超过 1KB，一次网络传输就能完成，避免多次网络交互；k-v 是越小性能越好<strong>Redis 热 key：</strong>（1） 当业务遇到单个读热 key，通过增加副本来提高读能力或是用 hashtag 把 key 存多份在多个分片中；（2）当业务遇到单个写热 key，需业务拆分这个 key 的功能，属于设计不合理- 当业务遇到热分片，即多个热 key 在同一个分片上导致单分片 cpu 高，可通过 hashtag 方式打散——[引自腾讯云技术分享]</p> 
+ </blockquote> 
+ <p><strong>(2 )避免其他问题导致缓存服务器崩溃，进而简直导致数据一致性策略失效</strong></p> 
+ <p>缓存穿透、缓存击穿、缓存雪崩、机器故障等问题：</p> 
+ <img src="https://images2.imgbox.com/a2/de/bi6OMHsz_o.png" alt="fe58b3c9d1a246618e44a88adc4dee0f.png"> 
+ <p><strong>(3)方案选定的思路</strong></p> 
+ <ol><li><p>确定缓存类型（读写/只读）</p></li><li><p>确定一致性级别</p></li><li><p>确定同步/异步方式</p></li><li><p>选定缓存流程</p></li><li><p>补充细节</p></li></ol> 
+ <h4>参考</h4> 
+ <ul><li><p style="text-align:left;">https://xie.infoq.cn/article/1322475e05c11bd2aacd8bc73</p></li><li><p style="text-align:left;">https://www.infoq.cn/article/Hh4IOuIiJHWB4X46vxeO</p></li><li><p style="text-align:left;">https://time.geekbang.org/column/article/217593</p></li><li><p style="text-align:left;">https://xie.infoq.cn/article/ab2599366009928a17fe498fb</p></li><li><p style="text-align:left;"><a href="" rel="nofollow">缓存与数据库一致性保证</a><br></p></li><li><p style="text-align:left;">https://time.geekbang.org/column/article/295812</p></li><li><p style="text-align:left;">https://blog.csdn.net/chengh1993/article/details/112685774</p></li><li><p style="text-align:left;">https://juejin.cn/post/6850418120201666568</p></li></ul> 
+ <p>最近热文：</p> 
+ <p><a href="" rel="nofollow">开发常用的缩写 你能看懂几个？</a><br></p> 
+ <p><a href="" rel="nofollow">TencentOCR 斩获 ICDAR 2021 三项冠军</a><br></p> 
+ <p><a href="" rel="nofollow">微信终端自研 C++协程框架的设计与实现</a><br></p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ff7d63674a46b538512c538a340bce3a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">vite.config.js配置(大坑)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/638f99654e8b0264a354230483c3be24/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">STM32中断与DMA串口收发</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

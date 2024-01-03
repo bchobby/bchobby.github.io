@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>IBL环境贴图原理及着色器实现【基于图像的照明】 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="IBL环境贴图原理及着色器实现【基于图像的照明】" />
+<meta property="og:description" content="IBL - Image Based Lighting - 也就是基于图像的照明，是一组照亮物体的技术，不是像上一章那样通过直接分析光，而是将周围环境视为一个大光源。 这通常是通过操作立方体贴图环境贴图（取自现实世界或从 3D 场景生成）来完成的，这样我们就可以直接在我们的光照方程中使用它：将每个立方体贴图纹理元素视为光发射器。 通过这种方式，我们可以有效地捕捉环境的全局照明和总体感觉，使物体在其环境中具有更好的归属感。
+NSDT工具推荐： Three.js AI纹理开发包 - YOLO合成数据生成器 - GLTF/GLB在线编辑 - 3D模型格式在线转换 - 可编程3D场景编辑器 - REVIT导出3D模型插件 - 3D模型语义搜索引擎
+1、辐照图贴图及其计算方法 由于基于图像的照明算法捕获某些（全局）环境的照明，因此其输入被认为是环境照明的更精确形式，甚至是全局照明的粗略近似。 这使得 IBL 对于 PBR 来说很有趣，因为当我们考虑环境照明时，物体看起来在物理上更加准确。
+为了开始将 IBL 引入我们的 PBR 系统，让我们再次快速浏览一下反射率方程：
+如前所述，我们的主要目标是求解半球Ω上所有入射光方向的积分wi。 求解上一章中的积分很容易，因为我们事先知道确切的几个光线方向wi有助于积分。 然而这一次，每个来自周围环境的入射光方向wi都可能会产生一些辐射，从而使求解积分变得不那么简单。 这给我们求解积分提出了两个主要要求：
+我们需要某种方法来检索给定任何方向向量 wi 的场景的辐射亮度。求解积分需要快速且实时。 现在，第一个要求相对简单。 我们已经暗示过，但表示环境或场景的辐照度的一种方法是采用（已处理的）环境立方体贴图的形式。 给定这样一个立方体贴图，我们可以将立方体贴图的每个纹理像素可视化为一个发射光源。 通过使用任意方向向量 wi 对该立方体贴图进行采样，我们从该方向检索场景的辐射。
+那么给定任意方向向量 wi 获取场景的辐射亮度就很简单：
+vec3 radiance = texture(_cubemapEnvironment, w_i).rgb; 尽管如此，求解积分要求我们不仅从一个方向采样环境贴图，而且从半球上Ω所有可能的方向wi采样，这对于每个片段着色器调用来说都太昂贵了。 为了以更有效的方式求解积分，我们需要预处理或预计算大部分计算。 为此，我们必须更深入地研究反射率方程：
+仔细研究反射率方程，我们发现BRDF 的漫反射 kd和镜面 ks项彼此独立，我们可以将积分一分为二：
+通过将积分分成两部分，我们可以分别关注漫反射和镜面反射项； 本章的重点是漫反射积分。
+仔细观察漫反射积分，我们发现漫反射朗伯项是一个常数项（颜色 c、 折射率 kd" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/f2c52d40d644f657df0bde3240055e85/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-12-01T15:40:33+08:00" />
+<meta property="article:modified_time" content="2023-12-01T15:40:33+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">IBL环境贴图原理及着色器实现【基于图像的照明】</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>IBL - Image Based Lighting - 也就是基于图像的照明，是一组照亮物体的技术，不是像上一章那样通过直接分析光，而是将周围环境视为一个大光源。 这通常是通过操作立方体贴图环境贴图（取自现实世界或从 3D 场景生成）来完成的，这样我们就可以直接在我们的光照方程中使用它：将每个立方体贴图纹理元素视为光发射器。 通过这种方式，我们可以有效地捕捉环境的全局照明和总体感觉，使物体在其环境中具有更好的归属感。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/95/3a/QgJP54lL_o.png"></p> 
+<blockquote> 
+ <p><strong>NSDT工具推荐</strong>： <a href="https://tools.nsdt.cloud/DreamTexture?s=7878" rel="nofollow" title="Three.js AI纹理开发包">Three.js AI纹理开发包</a> - <a href="https://tools.nsdt.cloud/UnrealSynth?s=7878" rel="nofollow" title="YOLO合成数据生成器">YOLO合成数据生成器</a> - <a href="https://gltf.nsdt.cloud/?s=7878" rel="nofollow" title="GLTF/GLB在线编辑">GLTF/GLB在线编辑</a> - <a href="https://3dconvert.nsdt.cloud/?s=7878" rel="nofollow" title="3D模型格式在线转换">3D模型格式在线转换</a> - <a href="https://studio.nsdt.cloud/?s=7878" rel="nofollow" title="可编程3D场景编辑器">可编程3D场景编辑器</a> - <a href="https://3dconvert.nsdt.cloud/conv/plugin?s=7878" rel="nofollow" title="REVIT导出3D模型插件">REVIT导出3D模型插件</a> - <a href="https://tools.nsdt.cloud/3DSEE?s=7878" rel="nofollow" title="3D模型语义搜索引擎">3D模型语义搜索引擎</a></p> 
+</blockquote> 
+<h3 id="1%E3%80%81%E8%BE%90%E7%85%A7%E5%9B%BE%E8%B4%B4%E5%9B%BE%E5%8F%8A%E5%85%B6%E8%AE%A1%E7%AE%97%E6%96%B9%E6%B3%95">1、辐照图贴图及其计算方法</h3> 
+<p>由于基于图像的照明算法捕获某些（全局）环境的照明，因此其输入被认为是环境照明的更精确形式，甚至是全局照明的粗略近似。 这使得 IBL 对于 PBR 来说很有趣，因为当我们考虑环境照明时，物体看起来在物理上更加准确。</p> 
+<p>为了开始将 IBL 引入我们的 PBR 系统，让我们再次快速浏览一下反射率方程：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="119" src="https://images2.imgbox.com/cf/c9/phiEOtX4_o.png" width="923"></p> 
+<p>如前所述，我们的主要目标是求解半球Ω上所有入射光方向的积分wi。 求解上一章中的积分很容易，因为我们事先知道确切的几个光线方向wi有助于积分。 然而这一次，每个来自周围环境的入射光方向wi都可能会产生一些辐射，从而使求解积分变得不那么简单。 这给我们求解积分提出了两个主要要求：</p> 
+<ul><li>我们需要某种方法来检索给定任何方向向量 wi 的场景的辐射亮度。</li><li>求解积分需要快速且实时。</li></ul> 
+<p>现在，第一个要求相对简单。 我们已经暗示过，但表示环境或场景的辐照度的一种方法是采用（已处理的）环境立方体贴图的形式。 给定这样一个立方体贴图，我们可以将立方体贴图的每个纹理像素可视化为一个发射光源。 通过使用任意方向向量 wi 对该立方体贴图进行采样，我们从该方向检索场景的辐射。</p> 
+<p>那么给定任意方向向量 wi 获取场景的辐射亮度就很简单：</p> 
+<pre><code>vec3 radiance = texture(_cubemapEnvironment, w_i).rgb;  </code></pre> 
+<p>尽管如此，求解积分要求我们不仅从一个方向采样环境贴图，而且从半球上Ω所有可能的方向wi采样，这对于每个片段着色器调用来说都太昂贵了。 为了以更有效的方式求解积分，我们需要预处理或预计算大部分计算。 为此，我们必须更深入地研究反射率方程：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="118" src="https://images2.imgbox.com/52/ee/cXmaOUfE_o.png" width="986"></p> 
+<p>仔细研究反射率方程，我们发现BRDF 的漫反射 kd和镜面 ks项彼此独立，我们可以将积分一分为二：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="116" src="https://images2.imgbox.com/0b/35/EOY7fWtK_o.png" width="1081"></p> 
+<p>通过将积分分成两部分，我们可以分别关注漫反射和镜面反射项； 本章的重点是漫反射积分。</p> 
+<p>仔细观察漫反射积分，我们发现漫反射朗伯项是一个常数项（颜色 c、 折射率 kd<br> ,和 π在积分上是常数）并且不依赖于任何积分变量。 鉴于此，我们可以将常数项移出漫反射积分：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="108" src="https://images2.imgbox.com/9a/55/ZVcxgLu5_o.png" width="899"></p> 
+<p>这给了我们一个仅依赖 wi 的积分（假设 p位于环境贴图的中心）。 有了这些知识，我们就可以计算或预先计算一个新的立方体贴图，该立方体贴图存储在每个采样方向（或纹素）上卷积得到的漫反射积分结果。</p> 
+<p>卷积是考虑数据集中的所有其他条目，对数据集中的每个条目进行一些计算； 数据集是场景的辐射度或环境贴图。 因此，对于立方体贴图中的每个采样方向，我们遍历半球 Ω 上的所有其他采样方向。</p> 
+<p>为了对环境贴图进行卷积，我们通过离散采样半球Ω上大量方向 wi 来采样方向并平均它们的亮度来求解每个输出 wo 的积分。我们采样的半球朝向输出 wo。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="259" src="https://images2.imgbox.com/96/86/lQZd53VB_o.png" width="350"></p> 
+<p>这个预先计算的立方体贴图，存储每个采样方向 wo的积分结果，可以被认为是场景的所有间接漫射光的预先计算的总和，该场景击中沿方向 wo 对齐的某个表面。 这样的立方体贴图被称为辐照度贴图（irradiance map），因为卷积立方体贴图有效地允许我们从任何方向直接采样场景的（预先计算的）辐照度。</p> 
+<p>辐射率方程还取决于位置 p，我们假设它位于辐照度图的中心。 这确实意味着所有漫射间接光必须来自单个环境贴图，这可能会打破现实的幻觉（尤其是在室内）。 渲染引擎通过在整个场景中放置反射探针来解决这个问题，其中每个反射探针计算其周围环境的辐照度图。 这样，位置 p 处的辐照度（和辐射亮度）是其最近的反射探头之间的插值辐照度。 目前，我们假设我们总是从环境贴图的中心进行采样。</p> 
+<p>下面是立方体贴图环境贴图及其生成的辐照度贴图的示例（由<a href="http://www.indiedb.com/features/using-image-based-lighting-ibl" rel="nofollow" title="WAVE引擎">WAVE引擎</a>提供），对每个方向w0的场景辐照度进行平均：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="300" src="https://images2.imgbox.com/fc/81/yOUpA6DG_o.png" width="800"></p> 
+<p>通过将卷积结果存储在每个立方体贴图纹理元素中（在 wo 的方向上），辐照度图显示有点像环境的平均颜色或照明显示。 从该环境贴图的任何方向采样将为我们提供场景在该特定方向的辐照度。</p> 
+<h3 id="2%E3%80%81pbr-%E5%92%8C-hdr">2、PBR 和 HDR</h3> 
+<p>我们在前一章中简要介绍了这一点：在 PBR 管道中考虑场景照明的高动态范围非常重要。 由于 PBR 的大部分输入基于真实的物理属性和测量结果，因此将入射光值与其物理等效值紧密匹配是有意义的。 无论我们对每种灯的辐射通量进行有根据的猜测还是使用它们的直接物理等效值，简单灯泡或太阳之间的差异都是显着的。 如果不在 HDR 渲染环境中工作，就不可能正确指定每个灯光的相对强度。</p> 
+<p>那么，PBR 和 HDR 齐头并进，但它们与基于图像的照明有何关系呢？ 我们在前一章中已经看到，在 HDR 中使用 PBR 相对容易。 然而，对于基于图像的照明，我们将环境的间接光强度基于环境立方体贴图的颜色值，我们需要某种方法将照明的高动态范围存储到环境贴图中。</p> 
+<p>到目前为止，我们一直使用的环境贴图（例如用作天空盒的立方体贴图）处于低动态范围 (LDR)。 我们直接使用各个人脸图像中的颜色值（范围在 0.0 到 1.0 之间），并按原样进行处理。 虽然这对于视觉输出可能效果很好，但当将它们作为物理输入参数时，它就不起作用了。</p> 
+<h3 id="3%E3%80%81%E8%BE%90%E5%B0%84%E5%BA%A6-hdr-%E6%96%87%E4%BB%B6%E6%A0%BC%E5%BC%8F">3、辐射度 HDR 文件格式</h3> 
+<p>现在我们介绍辐射文件格式。 辐射度文件格式（扩展名为 .hdr）将包含所有 6 个面的完整立方体贴图存储为浮点数据。 这允许我们指定 0.0 到 1.0 范围之外的颜色值，以便为灯光提供正确的颜色强度。 该文件格式还使用巧妙的技巧来存储每个浮点值，不是每个通道 32 位值，而是每个通道 8 位，使用颜色的 Alpha 通道作为指数（这确实会带来精度损失）。 这工作得很好，但需要解析程序将每种颜色重新转换为其等效的浮点颜色。</p> 
+<p>有相当多的辐射 HDR 环境贴图可以从<a href="http://hdri.bimant.com/" rel="nofollow" title="Bimant HDRI">Bimant HDRI</a>等来源免费获得，你可以在下面看到一个示例：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="398" src="https://images2.imgbox.com/1b/60/azEXWCQ7_o.png" width="800"></p> 
+<p>这可能并不完全符合你的预期，因为图像出现扭曲，并且没有显示我们之前见过的环境贴图的 6 个单独的立方体贴图（cubemap）面中的任何一个。 该环境贴图从球体投影到平面上，以便我们可以更轻松地将环境存储到称为等距矩形贴图（equirectangular map）的单个图像中。 这确实有一个小警告，因为大部分视觉分辨率存储在水平视图方向上，而在底部和顶部方向上保留的较少。 在大多数情况下，这是一个不错的折衷方案，因为对于几乎所有渲染器，你都会在水平观看方向上发现大多数有趣的照明和周围环境。</p> 
+<h3 id="4%E3%80%81hdr-%E5%92%8C-stbimageh">4、HDR 和 stb_image.h</h3> 
+<p>直接加载 HDR 图像需要对<a href="http://radsite.lbl.gov/radiance/refer/Notes/picture_format.html" rel="nofollow" title="文件格式">文件格式</a>有一定的了解，这并不是太困难，但仍然很麻烦。 对我们来说幸运的是，流行的头文件库 <a href="https://github.com/nothings/stb/blob/master/stb_image.h" title="stb_image.h ">stb_image.h </a>支持直接将辐射度 HDR 图像作为浮点值数组加载，这完全符合我们的需求。 将 <code>stb_image</code> 添加到你的项目后，加载 HDR 图像现在非常简单，如下所示：</p> 
+<pre><code>#include "stb_image.h"
+[...]
+
+stbi_set_flip_vertically_on_load(true);
+int width, height, nrComponents;
+float *data = stbi_loadf("newport_loft.hdr", &amp;width, &amp;height, &amp;nrComponents, 0);
+unsigned int hdrTexture;
+if (data)
+{
+    glGenTextures(1, &amp;hdrTexture);
+    glBindTexture(GL_TEXTURE_2D, hdrTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, width, height, 0, GL_RGB, GL_FLOAT, data); 
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    stbi_image_free(data);
+}
+else
+{
+    std::cout &lt;&lt; "Failed to load HDR image." &lt;&lt; std::endl;
+}  </code></pre> 
+<p><code>stb_image.h</code> 自动将 HDR 值映射到浮点值列表：默认情况下，每个通道 32 位，每个颜色 3 个通道。 这就是我们将等距矩形 HDR 环境贴图存储到 2D 浮点纹理所需的全部内容。</p> 
+<h3 id="5%E3%80%81%E4%BB%8E%E7%AD%89%E8%B7%9D%E7%9F%A9%E5%BD%A2%E5%88%B0%E7%AB%8B%E6%96%B9%E4%BD%93%E8%B4%B4%E5%9B%BE">5、从等距矩形到立方体贴图</h3> 
+<p>可以直接使用等距矩形贴图进行环境查找，但这些操作可能相对昂贵，在这种情况下，直接立方体贴图样本的性能更高。 因此，在本章中，我们首先将等距柱状图像转换为立方体贴图以进行进一步处理。 请注意，在此过程中，我们还展示了如何对等距柱状图进行采样，就像它是 3D 环境地图一样，在这种情况下，你可以自由选择自己喜欢的解决方案。</p> 
+<p>要将等距柱状图图像转换为立方体贴图，我们需要渲染一个（单位）立方体，并将等距柱状图从内部投影到立方体的所有面上，并获取立方体每个侧面的 6 个图像作为立方体贴图面。 该立方体的顶点着色器只是按原样渲染立方体，并将其本地位置作为 3D 样本向量传递给片段着色器：</p> 
+<pre><code>#version 330 core
+layout (location = 0) in vec3 aPos;
+
+out vec3 localPos;
+
+uniform mat4 projection;
+uniform mat4 view;
+
+void main()
+{
+    localPos = aPos;  
+    gl_Position =  projection * view * vec4(localPos, 1.0);
+}</code></pre> 
+<p>对于片段着色器，我们为立方体的每个部分着色，就像我们将等距柱状图整齐地折叠到立方体的每一侧一样。 为了实现这一点，我们将片段的采样方向从立方体的本地位置插值，然后使用该方向向量和一些三角函数（球面到笛卡尔）对等距柱状图进行采样，就好像它是立方体贴图本身一样。 我们直接将结果存储到立方体面的片段上，这应该是我们需要做的全部：</p> 
+<pre><code>#version 330 core
+out vec4 FragColor;
+in vec3 localPos;
+
+uniform sampler2D equirectangularMap;
+
+const vec2 invAtan = vec2(0.1591, 0.3183);
+vec2 SampleSphericalMap(vec3 v)
+{
+    vec2 uv = vec2(atan(v.z, v.x), asin(v.y));
+    uv *= invAtan;
+    uv += 0.5;
+    return uv;
+}
+
+void main()
+{		
+    vec2 uv = SampleSphericalMap(normalize(localPos)); // make sure to normalize localPos
+    vec3 color = texture(equirectangularMap, uv).rgb;
+    
+    FragColor = vec4(color, 1.0);
+}
+</code></pre> 
+<p>如果在给定 HDR 等距柱状图的情况下在场景中心渲染一个立方体，将得到如下所示的内容：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="443" src="https://images2.imgbox.com/69/13/VXGFTJBg_o.png" width="600"></p> 
+<p>这表明我们有效地将等距矩形图像映射到立方体形状，但还不能帮助我们将源 HDR 图像转换为立方体贴图纹理。 为了实现这一点，我们必须渲染同一个立方体 6 次，查看立方体的每个单独的面，同时使用帧缓冲区对象记录其视觉结果：</p> 
+<pre><code>unsigned int captureFBO, captureRBO;
+glGenFramebuffers(1, &amp;captureFBO);
+glGenRenderbuffers(1, &amp;captureRBO);
+
+glBindFramebuffer(GL_FRAMEBUFFER, captureFBO);
+glBindRenderbuffer(GL_RENDERBUFFER, captureRBO);
+glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, 512, 512);
+glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, captureRBO);  </code></pre> 
+<p>当然，我们还生成相应的立方体贴图颜色纹理，为其 6 个面中的每一个面预先分配内存：</p> 
+<pre><code>unsigned int envCubemap;
+glGenTextures(1, &amp;envCubemap);
+glBindTexture(GL_TEXTURE_CUBE_MAP, envCubemap);
+for (unsigned int i = 0; i &lt; 6; ++i)
+{
+    // note that we store each face with 16 bit floating point values
+    glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB16F, 
+                 512, 512, 0, GL_RGB, GL_FLOAT, nullptr);
+}
+glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);</code></pre> 
+<p>然后剩下要做的就是将等距矩形 2D 纹理捕获到立方体贴图面上。</p> 
+<p>我不会详细介绍之前在帧缓冲区和点阴影章节中讨论的代码细节主题，但它实际上可以归结为设置 6 个不同的视图矩阵（面向立方体的每一面），设置一个投影矩阵 90 度的视场来捕获整个面，并渲染立方体 6 次，将结果存储在浮点帧缓冲区中：</p> 
+<pre><code>glm::mat4 captureProjection = glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, 10.0f);
+glm::mat4 captureViews[] = 
+{
+   glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3( 1.0f,  0.0f,  0.0f), glm::vec3(0.0f, -1.0f,  0.0f)),
+   glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(-1.0f,  0.0f,  0.0f), glm::vec3(0.0f, -1.0f,  0.0f)),
+   glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3( 0.0f,  1.0f,  0.0f), glm::vec3(0.0f,  0.0f,  1.0f)),
+   glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3( 0.0f, -1.0f,  0.0f), glm::vec3(0.0f,  0.0f, -1.0f)),
+   glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3( 0.0f,  0.0f,  1.0f), glm::vec3(0.0f, -1.0f,  0.0f)),
+   glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3( 0.0f,  0.0f, -1.0f), glm::vec3(0.0f, -1.0f,  0.0f))
+};
+
+// convert HDR equirectangular environment map to cubemap equivalent
+equirectangularToCubemapShader.use();
+equirectangularToCubemapShader.setInt("equirectangularMap", 0);
+equirectangularToCubemapShader.setMat4("projection", captureProjection);
+glActiveTexture(GL_TEXTURE0);
+glBindTexture(GL_TEXTURE_2D, hdrTexture);
+
+glViewport(0, 0, 512, 512); // don't forget to configure the viewport to the capture dimensions.
+glBindFramebuffer(GL_FRAMEBUFFER, captureFBO);
+for (unsigned int i = 0; i &lt; 6; ++i)
+{
+    equirectangularToCubemapShader.setMat4("view", captureViews[i]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 
+                           GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, envCubemap, 0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    renderCube(); // renders a 1x1 cube
+}
+glBindFramebuffer(GL_FRAMEBUFFER, 0);  </code></pre> 
+<p>我们获取帧缓冲区的颜色附件，并为立方体贴图的每个面切换其纹理目标，直接将场景渲染到立方体贴图的其中一个面。 一旦这个例程完成（我们只需要做一次），立方体贴图 envCubemap 应该是我们原始 HDR 图像的立方体贴图环境版本。</p> 
+<p>让我们通过编写一个非常简单的天空盒着色器来测试立方体贴图来显示我们周围的立方体贴图：</p> 
+<pre><code>#version 330 core
+layout (location = 0) in vec3 aPos;
+
+uniform mat4 projection;
+uniform mat4 view;
+
+out vec3 localPos;
+
+void main()
+{
+    localPos = aPos;
+
+    mat4 rotView = mat4(mat3(view)); // remove translation from the view matrix
+    vec4 clipPos = projection * rotView * vec4(localPos, 1.0);
+
+    gl_Position = clipPos.xyww;
+}</code></pre> 
+<p>请注意此处的 xyww 技巧，它确保渲染的立方体片段的深度值始终为 1.0，即最大深度值，如立方体贴图章节中所述。 请注意，我们需要将深度比较函数更改为 GL_LEQUAL：</p> 
+<pre><code>glDepthFunc(GL_LEQUAL);  </code></pre> 
+<p>然后片段着色器使用立方体的本地片段位置直接对立方体贴图环境贴图进行采样：</p> 
+<pre><code>#version 330 core
+out vec4 FragColor;
+
+in vec3 localPos;
+  
+uniform samplerCube environmentMap;
+  
+void main()
+{
+    vec3 envColor = texture(environmentMap, localPos).rgb;
+    
+    envColor = envColor / (envColor + vec3(1.0));
+    envColor = pow(envColor, vec3(1.0/2.2)); 
+  
+    FragColor = vec4(envColor, 1.0);
+}</code></pre> 
+<p>我们使用直接对应于要采样的正确方向向量的插值顶点立方体位置对环境贴图进行采样。 由于相机的平移组件被忽略，因此在立方体上渲染此着色器应该为你提供作为不移动背景的环境贴图。 此外，由于我们直接将环境贴图的 HDR 值输出到默认的 LDR 帧缓冲区，因此我们希望正确地对颜色值进行色调映射。 此外，默认情况下，几乎所有 HDR 贴图都处于线性颜色空间中，因此我们需要在写入默认帧缓冲区之前应用伽玛校正。</p> 
+<p>现在在之前渲染的球体上渲染采样的环境贴图应该如下所示：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="445" src="https://images2.imgbox.com/21/fd/hA0vRA3I_o.png" width="600"></p> 
+<p>嗯...我们花了相当多的设置才到达这里，但我们成功地读取了 HDR 环境贴图，将其从等距柱状图映射转换为立方体贴图，并将 HDR 立方体贴图作为天空盒渲染到场景中。 此外，我们设置了一个小型系统来渲染立方体贴图的所有 6 个面，在对环境贴图进行卷积时我们将再次需要它。 你可以在<a href="https://learnopengl.com/code_viewer_gh.php?code=src/6.pbr/2.1.1.ibl_irradiance_conversion/ibl_irradiance_conversion.cpp" rel="nofollow" title="这里">这里</a>找到整个转换过程的源代码。</p> 
+<h3 id="6%E3%80%81%E7%AB%8B%E6%96%B9%E4%BD%93%E8%B4%B4%E5%9B%BE%E5%8D%B7%E7%A7%AF">6、立方体贴图卷积</h3> 
+<p>正如本章开头所述，我们的主要目标是在给定立方体贴图环境贴图形式的场景辐照度的情况下，求解所有漫反射间接光照的积分。 我们知道可以通过在方向 wi 上采样 HDR 环境贴图得到场景L(p,wi)在特定方向上的辐射亮度。为了求解积分，我们必须从半球 Ω 内所有可能的方向对场景的辐射率进行采样。</p> 
+<p>然而，在计算上不可能从每个可能的方向对环境的照明进行采样，理论上可能的方向数量是无限的。 然而，我们可以通过取有限数量的方向或样本（均匀间隔或从半球内随机取）来近似方向的数量，以获得辐照度的相当准确的近似值，从而有效求解积分。</p> 
+<p>然而，实时执行此操作仍然太昂贵，因为样本数量需要非常大才能获得不错的结果，因此我们希望预先计算这一点。 由于半球的方向决定了我们捕获辐照度的位置，因此我们可以预先计算围绕所有出射方向的每个可能的半球方向的辐照度。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="119" src="https://images2.imgbox.com/48/ec/Veir9GJu_o.png" width="900"></p> 
+<p>给定光照通道中任意方向向量 wi，我们可以对预先计算的辐照度图进行采样，以检索 wi 方向的总漫射辐照度。 为了确定片段表面的间接漫射（辐照）光量，我们检索围绕其表面法线定向的半球的总辐照度。 获取场景的辐照度就很简单：</p> 
+<pre><code>vec3 irradiance = texture(irradianceMap, N).rgb;</code></pre> 
+<p>现在，为了生成辐照度贴图，我们需要对环境的照明进行卷积以转换为立方体贴图。 假设对于每个片段，表面的半球方向为法向量 N，对立方体贴图进行卷积等于计算朝向N的半球Ω每个方向 wi 的总平均辐射率：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="259" src="https://images2.imgbox.com/77/66/ueiLZJO3_o.png" width="350"></p> 
+<p>值得庆幸的是，本章所有繁琐的设置并非全无意义，因为我们现在可以直接获取转换后的立方体贴图，在片段着色器中对其进行卷积，并使用渲染到所有 6 个面的帧缓冲区将其结果捕获到新的立方体贴图中 方向。 由于我们已经设置了将等距矩形环境贴图转换为立方体贴图，因此我们可以采用完全相同的方法，但使用不同的片段着色器：</p> 
+<pre><code>#version 330 core
+out vec4 FragColor;
+in vec3 localPos;
+
+uniform samplerCube environmentMap;
+
+const float PI = 3.14159265359;
+
+void main()
+{		
+    // the sample direction equals the hemisphere's orientation 
+    vec3 normal = normalize(localPos);
+  
+    vec3 irradiance = vec3(0.0);
+  
+    [...] // convolution code
+  
+    FragColor = vec4(irradiance, 1.0);
+}</code></pre> 
+<p>其中environmentMap 是从等距柱状投影HDR 环境贴图转换而来的HDR 立方体贴图。</p> 
+<p>有很多方法可以对环境贴图进行卷积，但在本章中，我们将为沿半球 Ω 的每个立方体贴图纹理元素生成固定数量的样本向量，并对结果进行平均。 固定数量的样本向量将均匀分布在半球内部。 请注意，积分是一个连续函数，在给定固定数量的样本向量的情况下对其函数进行离散采样将是一个近似值。 我们使用的样本向量越多，我们就越能逼近积分。</p> 
+<p>反射率方程的积分针对立体角 dw ，这是相当困难的，因此我们将在其等效球坐标 θ 和 ψ上积分。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="297" src="https://images2.imgbox.com/87/34/HDCUbYra_o.png" width="541"></p> 
+<p>我们使用极方位角 ψ围绕半球在 0 和 2π间采样，并使用倾角 θ在0和π/2间采样。这将为我们提供更新的反射率积分：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="109" src="https://images2.imgbox.com/15/62/J4Raf9Jq_o.png" width="972"></p> 
+<p>求解积分需要我们在半球 Ω 内获取固定数量的离散样本并对他们的结果进行平均。 这会将积分转换为基于黎曼和的离散形式：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="111" src="https://images2.imgbox.com/18/6a/kJU4S1Yy_o.png" width="1017"></p> 
+<p>当我们离散地采样两个球面值时，每个样本将近似或平均半球上的一个区域，如之前的图像所示。 请注意（由于球形的一般特性）天顶角 θ 越高，半球的离散样本区域就越小，当样本区域向中心顶部汇聚时。 为了补偿较小的区域，我们通过按 sinθ 缩放面积来权衡其贡献。</p> 
+<p>给定积分的球坐标对半球进行离散采样可转换为以下片段代码：</p> 
+<pre><code>vec3 irradiance = vec3(0.0);  
+
+vec3 up    = vec3(0.0, 1.0, 0.0);
+vec3 right = normalize(cross(up, normal));
+up         = normalize(cross(normal, right));
+
+float sampleDelta = 0.025;
+float nrSamples = 0.0; 
+for(float phi = 0.0; phi &lt; 2.0 * PI; phi += sampleDelta)
+{
+    for(float theta = 0.0; theta &lt; 0.5 * PI; theta += sampleDelta)
+    {
+        // spherical to cartesian (in tangent space)
+        vec3 tangentSample = vec3(sin(theta) * cos(phi),  sin(theta) * sin(phi), cos(theta));
+        // tangent space to world
+        vec3 sampleVec = tangentSample.x * right + tangentSample.y * up + tangentSample.z * N; 
+
+        irradiance += texture(environmentMap, sampleVec).rgb * cos(theta) * sin(theta);
+        nrSamples++;
+    }
+}
+irradiance = PI * irradiance * (1.0 / float(nrSamples));</code></pre> 
+<p>我们指定一个固定的sampleDelta delta值来遍历半球； 减少或增加样本增量将分别提高或降低准确性。</p> 
+<p>在两个循环中，我们采用两个球面坐标将它们转换为 3D 笛卡尔样本向量，将样本从切线转换为围绕法线定向的世界空间，并使用此样本向量直接对 HDR 环境贴图进行采样。 我们将每个样本结果添加到辐照度中，最后除以采样总数，得到平均采样辐照度。 请注意，我们通过 cos(theta) 缩放采样颜色值，因为角度较大时光线较弱，并通过 sin(theta) 缩放采样颜色值，以考虑较高半球区域中较小的样本区域。</p> 
+<p>现在剩下要做的就是设置 OpenGL 渲染代码，以便我们可以对之前捕获的 envCubemap 进行卷积。 首先，我们创建辐照度立方体贴图。同样，我们只需在渲染循环之前执行一次：</p> 
+<pre><code>unsigned int irradianceMap;
+glGenTextures(1, &amp;irradianceMap);
+glBindTexture(GL_TEXTURE_CUBE_MAP, irradianceMap);
+for (unsigned int i = 0; i &lt; 6; ++i)
+{
+    glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB16F, 32, 32, 0, 
+                 GL_RGB, GL_FLOAT, nullptr);
+}
+glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);</code></pre> 
+<p>由于辐照度图均匀地平均所有周围的辐射度，因此它没有很多高频细节，因此我们可以以低分辨率 (32x32) 存储该图，并让 OpenGL 的线性过滤完成大部分工作。 接下来，我们将捕获帧缓冲区重新缩放到新的分辨率：</p> 
+<pre><code>glBindFramebuffer(GL_FRAMEBUFFER, captureFBO);
+glBindRenderbuffer(GL_RENDERBUFFER, captureRBO);
+glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, 32, 32);</code></pre> 
+<p>使用卷积着色器，我们以与捕获环境立方体贴图类似的方式渲染环境贴图：</p> 
+<pre><code>irradianceShader.use();
+irradianceShader.setInt("environmentMap", 0);
+irradianceShader.setMat4("projection", captureProjection);
+glActiveTexture(GL_TEXTURE0);
+glBindTexture(GL_TEXTURE_CUBE_MAP, envCubemap);
+
+glViewport(0, 0, 32, 32); // don't forget to configure the viewport to the capture dimensions.
+glBindFramebuffer(GL_FRAMEBUFFER, captureFBO);
+for (unsigned int i = 0; i &lt; 6; ++i)
+{
+    irradianceShader.setMat4("view", captureViews[i]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 
+                           GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, irradianceMap, 0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    renderCube();
+}
+glBindFramebuffer(GL_FRAMEBUFFER, 0);  </code></pre> 
+<p>现在，在这个例程之后，我们应该有一个预先计算的辐照度图，我们可以直接将其用于基于漫反射图像的照明。 为了查看我们是否成功地对环境贴图进行了卷积，我们将用环境贴图替换辐照度贴图作为天空盒的环境采样器：</p> 
+<p></p> 
+<p>如果它看起来像环境贴图的严重模糊版本，则说明你已成功对环境贴图进行了卷积。</p> 
+<p><img alt="" height="524" src="https://images2.imgbox.com/97/63/BHzfiIEw_o.png" width="600"></p> 
+<h3 id="7%E3%80%81pbr-%E5%92%8C%E9%97%B4%E6%8E%A5%E8%BE%90%E7%85%A7%E5%BA%A6%E7%85%A7%E6%98%8E">7、PBR 和间接辐照度照明</h3> 
+<p>辐照度图表示从所有周围间接光累积的反射率积分的漫射部分。 由于光线不是来自直接光源，而是来自周围环境，因此我们将漫反射和镜面间接照明都视为环境照明，取代了之前设置的常数项。</p> 
+<p>首先，确保将预先计算的辐照度图添加为立方体采样器：</p> 
+<pre><code>uniform samplerCube irradianceMap;</code></pre> 
+<p>给定包含场景所有间接漫射光的辐照度图，检索影响片段的辐照度就像给定表面法线的单个纹理样本一样简单：</p> 
+<pre><code>// vec3 ambient = vec3(0.03);
+vec3 ambient = texture(irradianceMap, N).rgb;</code></pre> 
+<p>然而，由于间接照明同时包含漫反射和镜面部分（正如我们从反射率方程的分割版本中看到的那样），我们需要相应地权衡漫反射部分。 与我们在上一章中所做的类似，我们使用菲涅尔方程来确定表面的间接反射率，从中推导出折射（或漫反射）比：</p> 
+<pre><code>vec3 kS = fresnelSchlick(max(dot(N, V), 0.0), F0);
+vec3 kD = 1.0 - kS;
+vec3 irradiance = texture(irradianceMap, N).rgb;
+vec3 diffuse    = irradiance * albedo;
+vec3 ambient    = (kD * diffuse) * ao; </code></pre> 
+<p>由于环境光来自围绕法线 N 的半球内的所有方向，因此没有单个中途矢量来确定菲涅耳响应。 为了仍然模拟菲涅耳，我们根据法线向量和视图向量之间的角度计算菲涅耳。 然而，之前我们使用受表面粗糙度影响的微表面半程矢量作为菲涅耳方程的输入。 由于我们目前不考虑粗糙度，因此表面的反射率最终总是相对较高。 间接光遵循与直接光相同的属性，因此我们预计较粗糙的表面在表面边缘上的反射较弱。 因此，间接菲涅尔反射强度在粗糙的非金属表面上显得不那么明显（出于演示目的，稍微夸大了）：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="118" src="https://images2.imgbox.com/da/a8/zhZiBngh_o.png" width="800"></p> 
+<p>我们可以通过在 Fresnel-Schlick 方程中注入粗糙度项来缓解这个问题，如 Sébastien Lagarde 所描述的：</p> 
+<pre><code>vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness)
+{
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}  </code></pre> 
+<p>通过在计算菲涅尔响应时考虑表面的粗糙度，环境光代码最终为：</p> 
+<pre><code>vec3 kS = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness); 
+vec3 kD = 1.0 - kS;
+vec3 irradiance = texture(irradianceMap, N).rgb;
+vec3 diffuse    = irradiance * albedo;
+vec3 ambient    = (kD * diffuse) * ao; </code></pre> 
+<p>正如你所看到的，实际的基于图像的光照计算非常简单，只需要单个立方体贴图纹理查找； 大部分工作是预先计算或对辐照度图进行卷积。</p> 
+<p>如果我们从 PBR 光照章节中获取初始场景，其中每个球体都有垂直增加的金属和水平增加的粗糙度值，并添加基于漫反射图像的光照，它看起来有点像这样：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="526" src="https://images2.imgbox.com/93/b1/yLSqFjfW_o.png" width="600"></p> 
+<p>它看起来仍然有点奇怪，因为更多的金属球体需要某种形式的反射才能正确地开始看起来像金属表面（因为金属表面不反射漫射光），目前仅（几乎）来自点光源。 尽管如此，你已经可以看出球体在环境中确实感觉更到位（特别是在环境贴图之间切换时），因为表面响应会根据环境的环境照明做出反应。</p> 
+<p>可以在<a href="https://learnopengl.com/code_viewer_gh.php?code=src/6.pbr/2.1.2.ibl_irradiance/ibl_irradiance.cpp" rel="nofollow" title="此处">此处</a>找到所讨论主题的完整源代码。 在下一章中，我们将添加反射率积分的间接镜面反射部分，此时我们将真正看到 PBR 的强大功能。</p> 
+<hr> 
+<p>原文链接：<a href="http://www.bimant.com/blog/envmap-theory-and-impl/" rel="nofollow" title="环境贴图原理及实现 - BimAnt">环境贴图原理及实现 - BimAnt</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/07e0be8f7d4c779cce175669d5a57a1f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">UEFI 基础教程 （一） - 基于QEMU搭建UEFI开发环境(win/linux)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ac85b458a4da4fd52b3f907ba1320d71/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">用爬虫抓取数据违法吗</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

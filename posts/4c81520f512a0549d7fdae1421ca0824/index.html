@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>并发编程（volatile关键词，实现重入锁） - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="并发编程（volatile关键词，实现重入锁）" />
+<meta property="og:description" content="1.关键词volatile的理解 首先我们看看如下代码：
+public class Voliate { private static int MAX_VALUE = 5; private static int init_value = 0; public static void main(String[] args) { new Thread(()-&gt;{ int localValue = init_value; while (localValue &lt;= MAX_VALUE){ if(init_value != localValue){ System.out.println(&#34;the init_value is updated : &#34; &#43; init_value); localValue = init_value; } } },&#34;Reader&#34;).start(); new Thread(()-&gt;{ int localValue = init_value; while (localValue &lt;= MAX_VALUE){ System.out.println(&#34;the init_value is changed : &#34; &#43; localValue &#43;&#43;); init_value = localValue; try { TimeUnit." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/4c81520f512a0549d7fdae1421ca0824/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2018-08-19T20:32:22+08:00" />
+<meta property="article:modified_time" content="2018-08-19T20:32:22+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">并发编程（volatile关键词，实现重入锁）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h3>1.关键词volatile的理解</h3> 
+<p style="text-indent:50px;">首先我们看看如下代码：</p> 
+<pre class="has"><code class="language-java">public class Voliate {
+    private static int MAX_VALUE = 5;
+    private static int init_value = 0;
+
+    public static void main(String[] args) {
+        new Thread(()-&gt;{
+            int localValue = init_value;
+            while (localValue &lt;= MAX_VALUE){
+                if(init_value != localValue){
+                    System.out.println("the init_value is updated : " + init_value);
+                    localValue = init_value;
+                }
+            }
+        },"Reader").start();
+
+        new Thread(()-&gt;{
+            int localValue = init_value;
+            while (localValue &lt;= MAX_VALUE){
+
+                    System.out.println("the init_value is changed : " + localValue ++);
+                    init_value = localValue;
+
+                try {
+                    TimeUnit.SECONDS.sleep(1);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        },"Updater").start();
+    }
+
+}</code></pre> 
+<p>按照我们的想法我们可以以为上面的结果可能第一个线程和第二个线程都有会打印值，但是真实的结果是无论怎么运行只有第二个线程打印了信息：</p> 
+<p><img alt="" class="has" height="192" src="https://images2.imgbox.com/9a/1f/0ONqEkyB_o.png" width="475"></p> 
+<p>从上面的结果可以看出来对于上面的线程，在下面线程进行值的更改后它并没有感知到值的变化，因此无法打印信息，那么接下来我们修改一下代码：</p> 
+<pre class="has"><code>private static int init_value = 0;</code></pre> 
+<p>改为</p> 
+<pre class="has"><code>private static volatile int init_value = 0;</code></pre> 
+<p>再看运行结果：</p> 
+<p><img alt="" class="has" height="203" src="https://images2.imgbox.com/e6/14/gS03sKJP_o.png" width="325"></p> 
+<p>可以看到两个线程的打印信息都有了，这里我们可以看出来在第二个线程进行更改值后第一个线程立马就能读取到修改后的值；</p> 
+<p>接下来我们看看这个到底是怎么回事：</p> 
+<h4>1.1 首先我们了解下CPU cache 模型</h4> 
+<p style="text-indent:50px;"><img alt="" class="has" height="425" src="https://images2.imgbox.com/6c/4b/yCJIEn4P_o.png" width="371"></p> 
+<p style="text-indent:50px;">CPU缓存现在主流的是3级缓存,越靠近CPU的缓存读写速度越快，L1缓存被分为L1i和L2i这两个缓存是有专门的缓存用途。</p> 
+<p style="text-indent:50px;">CPU操作自身缓存的速度远大于操作主内存的速度，CPU cache模型只要是为了解决CPU直接读取主内存效率低而设计的；</p> 
+<p style="text-indent:50px;">那么在程序运行的过程中，CPU会将运算所需要的数据复制一份到CPU cache中，运算只是对CPU cache中的数据进行操作，操作完后再将CPU cache中的数据回写到主存当中，CPU和主存的交互如下：</p> 
+<p style="text-indent:50px;"> </p> 
+<p style="text-indent:50px;"><img alt="" class="has" height="411" src="https://images2.imgbox.com/76/ed/i8QSBstX_o.png" width="367"></p> 
+<h4>1.2 Java内存模型</h4> 
+<p style="text-indent:50px;">与CPU cache类似，它又如下规定：</p> 
+<p style="text-indent:50px;">1） 共享变量存储于主内存中，所有的线程都可以进行访问</p> 
+<p style="text-indent:50px;">2） 每个线程都有自己的私有的工作内存称之为本地内存</p> 
+<p style="text-indent:50px;">3） 工作内存只存储该线程对共享变量的副本</p> 
+<p style="text-indent:50px;">4）线程不能操作主内存变量只能操作本地内存的变量副本</p> 
+<p style="text-indent:50px;">模型图如下：</p> 
+<p style="text-indent:50px;"><img alt="" class="has" height="353" src="https://images2.imgbox.com/16/40/2DtuNSbK_o.png" width="339"></p> 
+<p style="text-indent:50px;">程序运行是，他也是通过和CPU cache一样的操作，先将所需数据复制到本地的内存中，然后操作本地内存的数据，之后在回写到主内存当中；</p> 
+<p style="text-indent:50px;">可能在真实的情况下，程序运用到了上面的这两种缓存模型，他们的交互图如下：</p> 
+<p style="text-indent:50px;"><img alt="" class="has" height="249" src="https://images2.imgbox.com/de/eb/vyj2yKvJ_o.png" width="475"></p> 
+<p style="text-indent:50px;">由上图可以看出来，由于程序的运行经历的这么多的缓存，那么在多线程的情况下肯定会出现缓存不一致的问题，这就导致了之前的第一个线程无法正常打印日志信息的问题；</p> 
+<p style="text-indent:50px;">那么使用volatile后他是如何正常打印，以及volatile起到了什么作用呢？</p> 
+<h4>1.3  volatile的作用</h4> 
+<p style="text-indent:50px;">       Java使用volatile来保证可见性，当一个变量被volatile修饰后，这个变量就是共享资源，在多线程环境下，当一个线程对这个共享对象进行修改后，他会立马回写修改内容到主存中并且他会告诉其他线程（即CPU）他们的缓存中的此共享对象是已经失效了，需要重新去获取，其他线程知道这个消息后会立马去主存中获取这个最新的数据，因此就到达了数据可见性的效果</p> 
+<p style="text-indent:50px;">针对上面我们的例子理解volatile作用</p> 
+<p style="text-indent:50px;">1). 第一个线程从主存中获取init_value为0，并且将它缓存到本地内存当中</p> 
+<p style="text-indent:50px;">2).第二个线程将本地内存中的init_value变为1然后立即刷新到主存当中</p> 
+<p style="text-indent:50px;">3).第一个线程本地的init_value缓存失效，立即过去主存中的数据，拿到最新的值</p> 
+<p style="text-indent:50px;"> </p> 
+<h3>2.通过继承Lock接口如何实现自定义锁</h3> 
+<pre class="has"><code class="language-java">package com.lsm.thread.thread.t1.util;
+
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+
+/**
+ * 自定义锁
+ */
+public class MyLock implements Lock{
+
+    private boolean isLocked = false;
+
+    @Override
+    public synchronized void lock() {
+        /**
+         * 自旋判断是否锁已被释放
+         */
+        while (isLocked){
+            try {
+                wait();
+
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+
+        /**
+         * 更新锁的状态
+         */
+        isLocked = true;
+    }
+
+
+    @Override
+    public synchronized void unlock() {
+        isLocked = false;
+        /**
+         * 唤醒其他线程进行锁的获取
+         */
+        notify();
+    }
+
+    @Override
+    public void lockInterruptibly() throws InterruptedException {
+
+    }
+
+    @Override
+    public boolean tryLock() {
+        return false;
+    }
+
+    @Override
+    public boolean tryLock(long time, TimeUnit unit) throws InterruptedException {
+        return false;
+    }
+
+    @Override
+    public Condition newCondition() {
+        return null;
+    }
+}
+</code></pre> 
+<p>这里我们只重写lock()方法和unlock()方法，代码简单一目了然</p> 
+<p>接下里我们看测试类：</p> 
+<pre class="has"><code class="language-java"> private MyLock myLock = new MyLock();
+
+ public void aAdd(){
+        myLock.lock();
+        a++;
+        myLock.unlock();
+    }
+
+    public void printA(){
+        myLock.lock();
+        System.out.println(" a is : " + a);
+        myLock.unlock();
+    }
+public static void main(String[] args) {
+        Threadt4 threadt4 = new Threadt4();
+        Thread thread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                System.out.println(Thread.currentThread().getName() + " : " );
+                threadt4.aAdd();
+            }
+        });
+        thread.start();
+
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                System.out.println(Thread.currentThread().getName() + " : " );
+                threadt4.printA();
+            }
+        }).start();
+    }</code></pre> 
+<p>上面我们是定义了一把公共的锁以及一个数据自增以及获取数据的方法，程序正常运行,结果正常：</p> 
+<p><img alt="" class="has" height="86" src="https://images2.imgbox.com/ad/b7/GJiTA99X_o.png" width="263"></p> 
+<p>但我们上面的自定义锁无法实现锁重入如下图：</p> 
+<pre class="has"><code>public void getA(){
+        myLock.lock();
+        System.out.println("this is a : ");
+        
+        /**
+         * 再a中调用使用了同一把锁的b（）方法：模拟锁重入
+         */
+        getB();
+        myLock.unlock();
+    }
+
+
+public void getB(){
+        myLock.lock();
+        System.out.println("this is b");
+        myLock.unlock();
+    }
+
+
+public static void main(String[] args) {
+        Threadt4 threadt4 = new Threadt4();
+        Thread thread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                threadt4.getA();
+            }
+        });
+        thread.start();
+    }</code></pre> 
+<p>如上面的代码我们在使用mylock锁的a方法中调用同样使用mylock的b方法，模拟了锁重入，运行结果如下<br><img alt="" class="has" height="152" src="https://images2.imgbox.com/0a/40/fAHB2Bl6_o.png" width="317"></p> 
+<p>当他执行了a方法后，程序一直待运行，原因是因为在a方法调用了mylock的lock()方法后在未执行unlock方法释放锁之前调用了b方法，而此时b.lock（）方法一直在等待这a释放锁，因此b程序一直在等待资源释放，a也一直在等待的b执行完毕，因此就出现了方法无法正常结束；</p> 
+<p>那么我们该如何实现一个可重入锁呢？</p> 
+<h4>2.1 什么是重入锁？</h4> 
+<p style="text-indent:50px;">重入锁是，一个同一个线程在调用使用同一把锁的资源时可立即获取到锁而不造成线程阻塞（可根据上面的代码理解：getA()和getB()是使用了同一把锁的资源；</p> 
+<p style="text-indent:50px;">实现原理：</p> 
+<p style="text-indent:50px;">我们需要在锁中判断是否当前的线程是否是上一次获取了锁的线程，如果是那么我们就让他执行下面的操作，如果不是我们将让他等待上一个线程释放资源后再竞争锁；以及我们记录下当前线程重复多少次持有这把锁，当重复获取到的锁都释放后才最终的将这把锁释放</p> 
+<p style="text-indent:50px;">对MyLock.java改动如下</p> 
+<pre class="has"><code class="language-java">package com.lsm.thread.thread.t1.util;
+
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+
+/**
+ * 自定义锁
+ */
+public class MyLock1 implements Lock{
+
+    private boolean isLocked = false;
+    private Thread lastThread = null;
+    private int count  = 0;
+
+    @Override
+    public synchronized void lock() {
+        
+        Thread currentThread = Thread.currentThread();
+
+        /**
+         * 自旋判断是否锁已被释放
+         * 判断释放线程和上一个获取锁的线程一致
+         */
+        while (isLocked &amp;&amp; !currentThread.equals(lastThread)){
+            try {
+                wait();
+
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+        lastThread = currentThread;
+        count ++;
+
+        /**
+         * 更新锁的状态
+         */
+        isLocked = true;
+    }
+
+
+    @Override
+    public synchronized void unlock() {
+        Thread currentThread = Thread.currentThread();
+        /**
+         * 只有同一个线程才能进行锁的释放不是的话，跳过
+         */
+        if(currentThread.equals(lastThread)){
+            count -- ;
+            if(count == 0){
+                isLocked = false;
+                /**
+                 * 唤醒其他线程进行锁的获取
+                 */
+                notify();
+            }
+        }
+        
+    }
+
+    @Override
+    public void lockInterruptibly() throws InterruptedException {
+
+    }
+
+    @Override
+    public boolean tryLock() {
+        return false;
+    }
+
+    @Override
+    public boolean tryLock(long time, TimeUnit unit) throws InterruptedException {
+        return false;
+    }
+
+    @Override
+    public Condition newCondition() {
+        return null;
+    }
+}
+</code></pre> 
+<p>主要改动是加上了一个线程的变量用来记录和判断是否当前的线程是已获取锁的线程，以及一个记录当前线程重复持有锁的次数；</p> 
+<p>再执行上面的测试我们将发现程序不会一直等待，完美运行</p> 
+<p><img alt="" class="has" height="131" src="https://images2.imgbox.com/59/89/JGNxEoni_o.png" width="391"></p> 
+<p>到这里我们了解到基本的重入锁，也实现了一个简单的重入锁；</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/895eb38350e0092395ad994a60887c4f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">无法启动此程序，因为计算机中丢失 api-ms-win-crt-runtime-l1-1-0.dll 的解决办法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/770588b09a4db60b0f8815734c5d4041/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">java——工具与配置</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

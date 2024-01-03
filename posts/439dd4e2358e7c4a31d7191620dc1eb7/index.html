@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink编码：FlinkSQL全面指南 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Flink编码：FlinkSQL全面指南" />
+<meta property="og:description" content="文章目录 1. FlinkSQL定位2. 流与表的对偶性3. 持续查询/增量计算4. 回撤流5. Flink 1.11关于SQL的增强5.1 DDL写法5.2 主键5.3 Catalog 6. JOIN算子6.1 双流JOIN原理6.1.1 Inner Join6.1.2 Left Join6.1.3 State数据结构 7. 窗口7.1 OverWindow7.1.1 基于数据条目的overwindow7.1.2 基于时间的overwindow 7.2 GroupWindow7.2.1 滚动窗口7.2.2 滑动窗口7.2.3 Session窗口 1. FlinkSQL定位 通过SQL开发人员可以只关注业务逻辑，学习成本低，容易理解，而且内置了很多的优化规则，可以简化开发复杂度，通过SQL还能在高层应用上实现真正的批流一体。
+Hive SQL，Spark SQL，Flink SQL给开发人员带来了极大便捷，让开发人员只需关注业务场景，而无需关注复杂的API编写。
+2. 流与表的对偶性 以下是利用FlinkSQL做CDC的场景，mysql表可以转成CDC流，CDC流又可以落盘成mysql表。
+表的重要属性：schema，data，DML操作时间/时间字段
+流的重要属性：schema（debezium、canal、ogg），data，processTime/eventTime
+流与表具备相同的特征，可以信息无损的相互转换，我称之为流表对偶(duality)性。流与表的对偶性，是flinkSQL的理论基石。而理解流与表的对偶性的前提，是要充分理解FlinkSQL的增量查询和双流join原理，见下节。
+参考：https://developer.aliyun.com/article/667566?spm=a2c6h.13262185.0.0.36a07e18Wn3kay
+3. 持续查询/增量计算 流上的数据源源不断的流入，我们既不能等所有事件流入结束（永远不会结束）再计算，也不会每次来一条事件就像传统数据库一样将全部事件集合重新整体计算一次。
+在持续查询的计算过程中，Apache Flink采用增量计算的方式，也就是每次计算都会将计算结果存储到state中，下一条事件到来的时候利用上次计算的结果和当前的事件进行聚合计算。
+如以下案例：
+// 求订单总数和所有订单的总金额 select count(id) as cnt，sum(amount)as sumAmount from order_tab; 将count和sum更新到在state中；当最新一条数据到来时，count&#43;1，sum&#43;amount。
+4. 回撤流 Flink中，Kafka Source/Sink是非回撤流，Group By是回撤流。所谓回撤流，就是可以更新历史数据的流，更新历史数据并不是将发往下游的历史数据进行更改，要知道，已经发往下游的消息是追不回来的。更新历史数据的含义是，在得知某个Key（接在Key BY / Group By后的字段）对应数据已经存在的情况下，如果该Key对应的数据再次到来，会生成一条delete消息和一条新的insert消息发往下游。
+聚合算子和Sink算子都有回撤的概念，但是又不尽相同。聚合算子的回撤用于聚合状态的更新，保证了FlinkSQL持续查询/增量查询的正确语义；Sink算子的回撤则更多的是应用于CDC场景，保证了CDC场景下的append、upsert、retract等语义的正确性。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/439dd4e2358e7c4a31d7191620dc1eb7/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-11-25T11:57:03+08:00" />
+<meta property="article:modified_time" content="2020-11-25T11:57:03+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink编码：FlinkSQL全面指南</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><ul><li><a href="#1_FlinkSQL_1" rel="nofollow">1. FlinkSQL定位</a></li><li><a href="#2__5" rel="nofollow">2. 流与表的对偶性</a></li><li><a href="#3__13" rel="nofollow">3. 持续查询/增量计算</a></li><li><a href="#4__28" rel="nofollow">4. 回撤流</a></li><li><a href="#5_Flink_111SQL_35" rel="nofollow">5. Flink 1.11关于SQL的增强</a></li><li><ul><li><a href="#51_DDL_36" rel="nofollow">5.1 DDL写法</a></li><li><a href="#52__58" rel="nofollow">5.2 主键</a></li><li><a href="#53_Catalog_92" rel="nofollow">5.3 Catalog</a></li></ul> 
+    </li><li><a href="#6_JOIN_113" rel="nofollow">6. JOIN算子</a></li><li><ul><li><a href="#61_JOIN_117" rel="nofollow">6.1 双流JOIN原理</a></li><li><ul><li><a href="#611_Inner_Join_123" rel="nofollow">6.1.1 Inner Join</a></li><li><a href="#612_Left_Join_129" rel="nofollow">6.1.2 Left Join</a></li><li><a href="#613_State_139" rel="nofollow">6.1.3 State数据结构</a></li></ul> 
+    </li></ul> 
+    </li><li><a href="#7__153" rel="nofollow">7. 窗口</a></li><li><ul><li><a href="#71_OverWindow_156" rel="nofollow">7.1 OverWindow</a></li><li><ul><li><a href="#711_overwindow_158" rel="nofollow">7.1.1 基于数据条目的overwindow</a></li><li><a href="#712_overwindow_182" rel="nofollow">7.1.2 基于时间的overwindow</a></li></ul> 
+     </li><li><a href="#72_GroupWindow_207" rel="nofollow">7.2 GroupWindow</a></li><li><ul><li><a href="#721__212" rel="nofollow">7.2.1 滚动窗口</a></li><li><a href="#722__235" rel="nofollow">7.2.2 滑动窗口</a></li><li><a href="#723_Session_257" rel="nofollow">7.2.3 Session窗口</a></li></ul> 
+    </li></ul> 
+   </li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h4><a id="1_FlinkSQL_1"></a>1. FlinkSQL定位</h4> 
+<p>通过SQL开发人员可以只关注业务逻辑，学习成本低，容易理解，而且内置了很多的优化规则，可以简化开发复杂度，通过SQL还能在高层应用上实现真正的批流一体。<br> Hive SQL，Spark SQL，Flink SQL给开发人员带来了极大便捷，让开发人员只需关注业务场景，而无需关注复杂的API编写。</p> 
+<h4><a id="2__5"></a>2. 流与表的对偶性</h4> 
+<p>以下是利用FlinkSQL做CDC的场景，mysql表可以转成CDC流，CDC流又可以落盘成mysql表。<br> <img src="https://images2.imgbox.com/e4/28/BqYi92jt_o.png" alt="在这里插入图片描述"><br> 表的重要属性：schema，data，DML操作时间/时间字段<br> 流的重要属性：schema（debezium、canal、ogg），data，processTime/eventTime<br> 流与表具备相同的特征，可以信息无损的相互转换，我称之为流表对偶(duality)性。流与表的对偶性，是flinkSQL的理论基石。而理解流与表的对偶性的前提，是要充分理解FlinkSQL的增量查询和双流join原理，见下节。</p> 
+<blockquote> 
+ <p>参考：https://developer.aliyun.com/article/667566?spm=a2c6h.13262185.0.0.36a07e18Wn3kay</p> 
+</blockquote> 
+<h4><a id="3__13"></a>3. 持续查询/增量计算</h4> 
+<p>流上的数据源源不断的流入，我们既不能等所有事件流入结束（永远不会结束）再计算，也不会每次来一条事件就像传统数据库一样将全部事件集合重新整体计算一次。</p> 
+<p>在持续查询的计算过程中，Apache Flink采用增量计算的方式，也就是每次计算都会将计算结果存储到state中，下一条事件到来的时候利用上次计算的结果和当前的事件进行聚合计算。</p> 
+<p>如以下案例：<br> <img src="https://images2.imgbox.com/36/5d/275T1oRV_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-sql"><span class="token comment">// 求订单总数和所有订单的总金额</span>
+<span class="token keyword">select</span> <span class="token function">count</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token keyword">as</span> cnt，<span class="token function">sum</span><span class="token punctuation">(</span>amount<span class="token punctuation">)</span><span class="token keyword">as</span> sumAmount <span class="token keyword">from</span> order_tab<span class="token punctuation">;</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/f2/c7/tO0nxsU7_o.png" alt="在这里插入图片描述"><br> 将count和sum更新到在state中；当最新一条数据到来时，count+1，sum+amount。</p> 
+<h4><a id="4__28"></a>4. 回撤流</h4> 
+<p>Flink中，Kafka Source/Sink是非回撤流，Group By是回撤流。所谓回撤流，就是可以更新历史数据的流，更新历史数据并不是将发往下游的历史数据进行更改，要知道，已经发往下游的消息是追不回来的。更新历史数据的含义是，在得知某个Key（接在Key BY / Group By后的字段）对应数据已经存在的情况下，如果该Key对应的数据再次到来，会生成一条delete消息和一条新的insert消息发往下游。</p> 
+<p>聚合算子和Sink算子都有回撤的概念，但是又不尽相同。聚合算子的回撤用于聚合状态的更新，保证了FlinkSQL持续查询/增量查询的正确语义；Sink算子的回撤则更多的是应用于CDC场景，保证了CDC场景下的append、upsert、retract等语义的正确性。</p> 
+<p>详情见上一篇文章<a href="https://blog.csdn.net/a1240466196/article/details/109975823">《回撤流》</a></p> 
+<h4><a id="5_Flink_111SQL_35"></a>5. Flink 1.11关于SQL的增强</h4> 
+<h5><a id="51_DDL_36"></a>5.1 DDL写法</h5> 
+<p>对 DDL 的 WITH 参数相对于 1.10 版本做了简化，从用户视角看上就是简化和规范了参数</p> 
+<table><thead><tr><th>Old Key （Flink 1.10）</th><th>New Key （Flink 1.11）</th></tr></thead><tbody><tr><td>connector.type</td><td>connector</td></tr><tr><td>connector.url</td><td>url</td></tr><tr><td>connector.table</td><td>table-name</td></tr><tr><td>connector.driver</td><td>driver</td></tr><tr><td>connector.username</td><td>username</td></tr><tr><td>connector.password</td><td>password</td></tr><tr><td>connector.read.partition.column</td><td>scan.partition.column</td></tr><tr><td>connector.read.partition.num</td><td>scan.partition.num</td></tr><tr><td>connector.read.partition.lower-bound</td><td>scan.partition.lower-bound</td></tr><tr><td>connector.read.partition.upper-bound</td><td>scan.partition.upper-bound</td></tr><tr><td>connector.read.fetch-size</td><td>scan.fetch-size</td></tr><tr><td>connector.lookup.cache.max-rows</td><td>lookup.cache.max-rows</td></tr><tr><td>connector.lookup.cache.ttl</td><td>lookup.cache.ttl</td></tr><tr><td>connector.lookup.max-retries</td><td>lookup.max-retries</td></tr><tr><td>connector.write.flush.max-rows</td><td>sink.buffer-flush.max-rows</td></tr><tr><td>connector.write.flush.interval</td><td>sink.buffer-flush.interval</td></tr><tr><td>connector.write.max-retries</td><td>sink.max-retries</td></tr></tbody></table> 
+<h5><a id="52__58"></a>5.2 主键</h5> 
+<p>Upsert操作需要主键约束来进行更新，Flink 1.10之前通过Group By语句推断主键，这种方式有一些情况是推断不出主键的，比如<code>Group By UDF(id)</code>，Flink1.11引入了主键约束语法</p> 
+<pre><code class="prism language-sql"><span class="token comment">-- Flink 1.10</span>
+<span class="token keyword">create</span> talbe MyUserTable<span class="token punctuation">(</span>
+	id <span class="token keyword">BIGINT</span><span class="token punctuation">,</span> name STRING<span class="token punctuation">,</span> age <span class="token keyword">INT</span>
+<span class="token punctuation">)</span> <span class="token keyword">WITH</span> <span class="token punctuation">(</span>
+	<span class="token string">'connector.type'</span><span class="token operator">=</span><span class="token string">'jdbc'</span><span class="token punctuation">,</span>
+  <span class="token string">'connector.url'</span><span class="token operator">=</span><span class="token string">'jdbc:mysql://localhost:3306/mydb'</span><span class="token punctuation">,</span>
+  <span class="token string">'connector.table'</span><span class="token operator">=</span><span class="token string">'users'</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">-- upsert write</span>
+<span class="token keyword">insert</span> <span class="token keyword">into</span> MyUserTable
+<span class="token keyword">select</span> id<span class="token punctuation">,</span> <span class="token function">max</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">max</span><span class="token punctuation">(</span>age<span class="token punctuation">)</span> <span class="token keyword">from</span> T <span class="token keyword">group</span> <span class="token keyword">by</span> id<span class="token punctuation">;</span>
+</code></pre> 
+<pre><code class="prism language-sql"><span class="token comment">-- Flink 1.11</span>
+<span class="token keyword">create</span> talbe MyUserTable<span class="token punctuation">(</span>
+	id <span class="token keyword">BIGINT</span><span class="token punctuation">,</span> name STRING<span class="token punctuation">,</span> age <span class="token keyword">INT</span><span class="token punctuation">,</span>
+  <span class="token comment">-- 设置主键，ENFORCED表示主键由用户确保正确，flink不去数据源做校验（测了一下，这里填错的也没关系，似乎只是一个启用upsert的开关而已）</span>
+  <span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span> <span class="token keyword">key</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token operator">NOT</span> ENFORCED
+<span class="token punctuation">)</span> <span class="token keyword">WITH</span> <span class="token punctuation">(</span>
+	<span class="token string">'connector'</span><span class="token operator">=</span><span class="token string">'jdbc'</span><span class="token punctuation">,</span>
+  <span class="token string">'url'</span><span class="token operator">=</span><span class="token string">'jdbc:mysql://localhost:330 6/mydb'</span><span class="token punctuation">,</span>
+  <span class="token string">'table-name'</span><span class="token operator">=</span><span class="token string">'users'</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">-- upsert write</span>
+<span class="token keyword">insert</span> <span class="token keyword">into</span> MyUserTable
+<span class="token keyword">select</span> id<span class="token punctuation">,</span> <span class="token function">max</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">max</span><span class="token punctuation">(</span>age<span class="token punctuation">)</span> <span class="token keyword">from</span> T <span class="token keyword">group</span> <span class="token keyword">by</span> id<span class="token punctuation">;</span>
+</code></pre> 
+<h5><a id="53_Catalog_92"></a>5.3 Catalog</h5> 
+<p>Flinksql和Table API在calcite validate阶段会对sql进行语法校验，此时需要用到catalog中维护的库、表、UDF、字段及类型等元数据。</p> 
+<p>用户需要手动创造DDL语句，如果表schema发生变化，则需要用户停止任务并修改DDL语句，比较繁琐。JDBC catalog通过JDBC协议连接关系型数据库，Flink可以自动检索表，不需要用户手动输入和修改。</p> 
+<p>Flink任务默认会创造一个内存中的catalog名为default_catalog，使用catalog自动更新元数据的场景还不多见，大部分场景还是通过ddl来定义表的元数据并存入default_catalog。因此目前flink1.11只支持postgresql这个唯一的JDBC catalog实现，且仅支持以下方法</p> 
+<pre><code class="prism language-java"><span class="token comment">// The supported methods by Postgres Catalog.</span>
+PostgresCatalog<span class="token punctuation">.</span><span class="token function">databaseExists</span><span class="token punctuation">(</span>String databaseName<span class="token punctuation">)</span>
+PostgresCatalog<span class="token punctuation">.</span><span class="token function">listDatabases</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+PostgresCatalog<span class="token punctuation">.</span><span class="token function">getDatabase</span><span class="token punctuation">(</span>String databaseName<span class="token punctuation">)</span>
+PostgresCatalog<span class="token punctuation">.</span><span class="token function">listTables</span><span class="token punctuation">(</span>String databaseName<span class="token punctuation">)</span>
+PostgresCatalog<span class="token punctuation">.</span><span class="token function">getTable</span><span class="token punctuation">(</span>ObjectPath tablePath<span class="token punctuation">)</span>
+PostgresCatalog<span class="token punctuation">.</span><span class="token function">tableExists</span><span class="token punctuation">(</span>ObjectPath tablePath<span class="token punctuation">)</span>
+</code></pre> 
+<blockquote> 
+ <p>参考：<br> https://ci.apache.org/projects/flink/flink-docs-release-1.11/zh/dev/table/catalogs.html<br> https://www.jianshu.com/p/aef22cf8e33f<br> https://blog.csdn.net/qq_31975963/article/details/109401740</p> 
+</blockquote> 
+<h4><a id="6_JOIN_113"></a>6. JOIN算子</h4> 
+<p><img src="https://images2.imgbox.com/8c/ab/lTvzdSpF_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>参考：https://www.cnblogs.com/cnki/p/10274532.html</p> 
+</blockquote> 
+<h5><a id="61_JOIN_117"></a>6.1 双流JOIN原理</h5> 
+<p>JOIN算子会开辟左右两个State进行数据存储，左右两边的数据到来时候，进行如下操作：</p> 
+<ul><li>LeftEvent到来存储到LState，RightEvent到来的时候存储到RState；</li><li>LeftEvent会去RightState进行JOIN，并发出所有JOIN之后的Event到下游；</li><li>RightEvent会去LeftState进行JOIN，并发出所有JOIN之后的Event到下游。</li></ul> 
+<h6><a id="611_Inner_Join_123"></a>6.1.1 Inner Join</h6> 
+<p><img src="https://images2.imgbox.com/20/71/KcOiDRTg_o.png" alt="在这里插入图片描述"></p> 
+<ol><li>右流比左流快，当数据1、2、3到来时，存入Rstate，且发现Lstate中没有可以join的数据</li><li>数据4到达，存入Lstate，并与Rstate中的所有数据进行join</li><li>数据5到达，存入Rstate，并与Lstate中的所有数据进行join</li></ol> 
+<h6><a id="612_Left_Join_129"></a>6.1.2 Left Join</h6> 
+<p><img src="https://images2.imgbox.com/f0/cc/WDOqZ0JO_o.png" alt="在这里插入图片描述"><br> left join与inner join原理基本类似，都是维护了左右两个state。</p> 
+<p>如果左流第一条数据先到达，发现Rstate中没有数据时，会将右流字段补充null值往下游发送，当右流第一次且仅在第一次发现Lstate中有可以join的数据时，会发送回撤消息，撤回含有null值的记录；</p> 
+<p>如果右流第一条数据先到达，则存入Rstate，不往下游发送数据。</p> 
+<blockquote> 
+ <p>注意：<br> 双流left join的回撤仅发生在左流第一条数据优先到达且右流第一次发现Lstate中有数据可以join的情况下，接下来并不会产生任何回撤消息，这里与聚合算子的回撤有些区别</p> 
+</blockquote> 
+<h6><a id="613_State_139"></a>6.1.3 State数据结构</h6> 
+<p><code>Map&lt;JoinKey, Map&lt;rowData, count&gt;&gt;</code></p> 
+<ul><li>第一级MAP的key是Join key，比如示例中的P001， value是流上面的所有完整事件;</li><li>第二级MAP的key是行数据，比如示例中的P001, 2，value是相同事件值的个数。</li></ul> 
+<p>数据结构的利用：</p> 
+<ul><li>记录重复记录 - 利用第二级MAP的value记录重复记录的个数，这样大大减少存储和读取</li><li>正向记录和撤回记录 - 利用第二级MAP的value记录，当count=0时候删除该元素</li><li>判断右边是否产生撤回记录 - 根据第一级MAP的value的size来判断是否产生撤回，只有size由0变成1的时候（右流中第一条和左可以JOIN的事件）才产生撤回</li></ul> 
+<blockquote> 
+ <p>参考： https://developer.aliyun.com/article/672760</p> 
+</blockquote> 
+<h4><a id="7__153"></a>7. 窗口</h4> 
+<p>flink中有两种window，一种是OverWindow，即传统数据库的标准开窗，每一个元素都对应一个窗口。一种是GroupWindow，目前在SQL中GroupWindow都是基于时间进行窗口划分的（datastream api中既可以基于时间，又可以基于数据条目）。</p> 
+<h5><a id="71_OverWindow_156"></a>7.1 OverWindow</h5> 
+<p>每来一条数据，就建一个窗口，具体有分为基于数据条目的和基于时间两种OverWindow。</p> 
+<h6><a id="711_overwindow_158"></a>7.1.1 基于数据条目的overwindow</h6> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> 
+    agg1<span class="token punctuation">(</span>col1<span class="token punctuation">)</span> <span class="token keyword">OVER</span><span class="token punctuation">(</span>
+     <span class="token punctuation">[</span><span class="token keyword">PARTITION</span> <span class="token keyword">BY</span> <span class="token punctuation">(</span>value_expression1<span class="token punctuation">,</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">,</span> value_expressionN<span class="token punctuation">)</span><span class="token punctuation">]</span> 
+     <span class="token keyword">ORDER</span> <span class="token keyword">BY</span> timeCol
+     <span class="token keyword">ROWS</span> 
+     <span class="token operator">BETWEEN</span> <span class="token punctuation">(</span><span class="token keyword">UNBOUNDED</span> <span class="token operator">|</span> <span class="token keyword">rowCount</span><span class="token punctuation">)</span> <span class="token keyword">PRECEDING</span> <span class="token operator">AND</span> <span class="token keyword">CURRENT</span> <span class="token keyword">ROW</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> colName<span class="token punctuation">,</span> 
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> 
+<span class="token keyword">FROM</span> Tab1
+</code></pre> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span>  
+    itemID<span class="token punctuation">,</span>
+    itemType<span class="token punctuation">,</span> 
+    onSellTime<span class="token punctuation">,</span> 
+    price<span class="token punctuation">,</span>  
+    <span class="token function">MAX</span><span class="token punctuation">(</span>price<span class="token punctuation">)</span> <span class="token keyword">OVER</span> <span class="token punctuation">(</span>
+        <span class="token keyword">PARTITION</span> <span class="token keyword">BY</span> itemType 
+        <span class="token keyword">ORDER</span> <span class="token keyword">BY</span> onSellTime 
+        <span class="token keyword">ROWS</span> <span class="token operator">BETWEEN</span> <span class="token number">2</span> <span class="token keyword">preceding</span> <span class="token operator">AND</span> <span class="token keyword">CURRENT</span> <span class="token keyword">ROW</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> maxPrice
+  <span class="token keyword">FROM</span> item_tab
+</code></pre> 
+<h6><a id="712_overwindow_182"></a>7.1.2 基于时间的overwindow</h6> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> 
+    agg1<span class="token punctuation">(</span>col1<span class="token punctuation">)</span> <span class="token keyword">OVER</span><span class="token punctuation">(</span>
+     <span class="token punctuation">[</span><span class="token keyword">PARTITION</span> <span class="token keyword">BY</span> <span class="token punctuation">(</span>value_expression1<span class="token punctuation">,</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">,</span> value_expressionN<span class="token punctuation">)</span><span class="token punctuation">]</span> 
+     <span class="token keyword">ORDER</span> <span class="token keyword">BY</span> timeCol
+     RANGE 
+     <span class="token operator">BETWEEN</span> <span class="token punctuation">(</span><span class="token keyword">UNBOUNDED</span> <span class="token operator">|</span> timeInterval<span class="token punctuation">)</span> <span class="token keyword">PRECEDING</span> <span class="token operator">AND</span> <span class="token keyword">CURRENT</span> <span class="token keyword">ROW</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> colName<span class="token punctuation">,</span> 
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> 
+<span class="token keyword">FROM</span> Tab1
+</code></pre> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span>  
+    itemID<span class="token punctuation">,</span>
+    itemType<span class="token punctuation">,</span> 
+    onSellTime<span class="token punctuation">,</span> 
+    price<span class="token punctuation">,</span>  
+    <span class="token function">MAX</span><span class="token punctuation">(</span>price<span class="token punctuation">)</span> <span class="token keyword">OVER</span> <span class="token punctuation">(</span>
+        <span class="token keyword">PARTITION</span> <span class="token keyword">BY</span> itemType 
+        <span class="token keyword">ORDER</span> <span class="token keyword">BY</span> rowtime 
+        RANGE <span class="token operator">BETWEEN</span> <span class="token keyword">INTERVAL</span> <span class="token string">'2'</span> <span class="token keyword">MINUTE</span> <span class="token keyword">preceding</span> <span class="token operator">AND</span> <span class="token keyword">CURRENT</span> <span class="token keyword">ROW</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> maxPrice
+  <span class="token keyword">FROM</span> item_tab
+</code></pre> 
+<h5><a id="72_GroupWindow_207"></a>7.2 GroupWindow</h5> 
+<p>与OverWindow每条数据对应一个窗口不同，GroupWindow通过Window中的assigner组件进行窗口的划分以及数据落入窗口的选择。详情请参看<a href="https://blog.csdn.net/a1240466196/article/details/108334436">《窗口原理详解》</a></p> 
+<p>与DataStream API不同，目前Flink SQL只支持基于时间的GroupWindow，不支持基于数据条目的GroupWindow。</p> 
+<h6><a id="721__212"></a>7.2.1 滚动窗口</h6> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> 
+    <span class="token punctuation">[</span>gk<span class="token punctuation">]</span><span class="token punctuation">,</span>
+    <span class="token punctuation">[</span>TUMBLE_START<span class="token punctuation">(</span>timeCol<span class="token punctuation">,</span> size<span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">,</span> 
+    <span class="token punctuation">[</span>TUMBLE_END<span class="token punctuation">(</span>timeCol<span class="token punctuation">,</span> size<span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">,</span> 
+    agg1<span class="token punctuation">(</span>col1<span class="token punctuation">)</span><span class="token punctuation">,</span> 
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> 
+    aggn<span class="token punctuation">(</span>colN<span class="token punctuation">)</span>
+<span class="token keyword">FROM</span> Tab1
+<span class="token keyword">GROUP</span> <span class="token keyword">BY</span> <span class="token punctuation">[</span>gk<span class="token punctuation">]</span><span class="token punctuation">,</span> TUMBLE<span class="token punctuation">(</span>timeCol<span class="token punctuation">,</span> size<span class="token punctuation">)</span>
+</code></pre> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span>  
+    region<span class="token punctuation">,</span>
+    TUMBLE_START<span class="token punctuation">(</span>rowtime<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'2'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> winStart<span class="token punctuation">,</span>  
+    TUMBLE_END<span class="token punctuation">(</span>rowtime<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'2'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> winEnd<span class="token punctuation">,</span>  
+    <span class="token function">COUNT</span><span class="token punctuation">(</span>region<span class="token punctuation">)</span> <span class="token keyword">AS</span> pv
+<span class="token keyword">FROM</span> pageAccess_tab 
+<span class="token keyword">GROUP</span> <span class="token keyword">BY</span> region<span class="token punctuation">,</span> TUMBLE<span class="token punctuation">(</span>rowtime<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'2'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span>
+</code></pre> 
+<h6><a id="722__235"></a>7.2.2 滑动窗口</h6> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> 
+    <span class="token punctuation">[</span>gk<span class="token punctuation">]</span><span class="token punctuation">,</span> 
+    <span class="token punctuation">[</span>HOP_START<span class="token punctuation">(</span>timeCol<span class="token punctuation">,</span> slide<span class="token punctuation">,</span> size<span class="token punctuation">)</span><span class="token punctuation">]</span> <span class="token punctuation">,</span>  
+    <span class="token punctuation">[</span>HOP_END<span class="token punctuation">(</span>timeCol<span class="token punctuation">,</span> slide<span class="token punctuation">,</span> size<span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">,</span>
+    agg1<span class="token punctuation">(</span>col1<span class="token punctuation">)</span><span class="token punctuation">,</span> 
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> 
+    aggN<span class="token punctuation">(</span>colN<span class="token punctuation">)</span> 
+<span class="token keyword">FROM</span> Tab1
+<span class="token keyword">GROUP</span> <span class="token keyword">BY</span> <span class="token punctuation">[</span>gk<span class="token punctuation">]</span><span class="token punctuation">,</span> HOP<span class="token punctuation">(</span>timeCol<span class="token punctuation">,</span> slide<span class="token punctuation">,</span> size<span class="token punctuation">)</span>
+</code></pre> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span>  
+  HOP_START<span class="token punctuation">(</span>rowtime<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'5'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'10'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> winStart<span class="token punctuation">,</span>  
+  HOP_END<span class="token punctuation">(</span>rowtime<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'5'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'10'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> winEnd<span class="token punctuation">,</span>  
+  <span class="token function">SUM</span><span class="token punctuation">(</span>accessCount<span class="token punctuation">)</span> <span class="token keyword">AS</span> accessCount  
+<span class="token keyword">FROM</span> pageAccessCount_tab 
+<span class="token keyword">GROUP</span> <span class="token keyword">BY</span> HOP<span class="token punctuation">(</span>rowtime<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'5'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'10'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span>
+</code></pre> 
+<h6><a id="723_Session_257"></a>7.2.3 Session窗口</h6> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> 
+    <span class="token punctuation">[</span>gk<span class="token punctuation">]</span><span class="token punctuation">,</span> 
+    SESSION_START<span class="token punctuation">(</span>timeCol<span class="token punctuation">,</span> gap<span class="token punctuation">)</span> <span class="token keyword">AS</span> winStart<span class="token punctuation">,</span>  
+    SESSION_END<span class="token punctuation">(</span>timeCol<span class="token punctuation">,</span> gap<span class="token punctuation">)</span> <span class="token keyword">AS</span> winEnd<span class="token punctuation">,</span>
+    agg1<span class="token punctuation">(</span>col1<span class="token punctuation">)</span><span class="token punctuation">,</span>
+     <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> 
+    aggn<span class="token punctuation">(</span>colN<span class="token punctuation">)</span>
+<span class="token keyword">FROM</span> Tab1
+<span class="token keyword">GROUP</span> <span class="token keyword">BY</span> <span class="token punctuation">[</span>gk<span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token keyword">SESSION</span><span class="token punctuation">(</span>timeCol<span class="token punctuation">,</span> gap<span class="token punctuation">)</span>
+</code></pre> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span>  
+    region<span class="token punctuation">,</span> 
+    SESSION_START<span class="token punctuation">(</span>rowtime<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'3'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> winStart<span class="token punctuation">,</span>  
+    SESSION_END<span class="token punctuation">(</span>rowtime<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'3'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> winEnd<span class="token punctuation">,</span> 
+    <span class="token function">COUNT</span><span class="token punctuation">(</span>region<span class="token punctuation">)</span> <span class="token keyword">AS</span> pv  
+<span class="token keyword">FROM</span> pageAccessSession_tab
+<span class="token keyword">GROUP</span> <span class="token keyword">BY</span> region<span class="token punctuation">,</span> <span class="token keyword">SESSION</span><span class="token punctuation">(</span>rowtime<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'3'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span>
+</code></pre> 
+<blockquote> 
+ <p>参考：<br> https://developer.aliyun.com/article/670202?spm=a2c6h.13262185.0.0.91027e18Q8W1oA<br> https://www.cnblogs.com/woodytu/p/4709020.html</p> 
+</blockquote>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/31797b282f6e4aefc9a8686600b6de3b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">web 打印条码 有虚线_【Dynamic Web TWAIN教程】条码读取器（上）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e998039729ac176613751bae26684d98/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">iview一级菜单、二级菜单、三级菜单路由配置</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

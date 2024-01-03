@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>手动构建APK流程 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="手动构建APK流程" />
+<meta property="og:description" content="先忽略构建中的细节，先对主流程有个大致了解。
+如下图所示（方形:表示文件，菱形:表示操作）
+整个构建分为两个主要操作：编译(Compile)、打包(APK Package)编译 ：编译器(Compiler)通过编译 源码 、AIDL文件 、资源文件 、依赖包，最终生成Dex文件和编译后的资源文件。打包 ：打包器(APK Packager)利用签名文件(KeyStore)和上一步编译过程中生成的Dex文件、编译后的资源文件打包成最终的APK文件。 （方形:表示文件，椭圆:表示工具及操作）
+上面这张图，显示了更为详细的构建流程。以虚线为界，前半部分描述了 编译流程 ，后半部分则描述了 打包流程。
+下面具体分析构建流，分为七步（其中编译1-4、打包5-7）：
+使用aapt工具，编译res/文件，生成编译后的二进制资源文件（.ap_文件）、R.java文件。(目前新版使用aapt2工具,R.java也替换成了R.jar)使用aidl工具，根据aidl文件生成对应的Java接口文件使用*Java Compiler工具，Java Compiler（俗称javac）将R.java、项目中的代码、Aidl接口文件编译成.class文件。使用dex工具，将上一步产生的.class文件和第三方依赖中的.class编译成.dex文件。(目前新版使用d8工具）使用apkbuilder工具，将编译后的资源（.ap_文件）、dex文件及其他资源文件(例如：so文件、asset文件等)，压缩成一个.apk文件。使用Jarsigner工具，读取签名文件，对上一步中产生的apk文件进行签名，生成一个已签名的apk文件。使用zipalign工具,对已签名的apk文件进行体积优化（只有v1签名才有这一步，v2签名的apk会在zipalign后签名被破坏）。
+可以参照第二张图中所展示的图片来解读这张流程图。 以椭圆（工具及操作）为线索，按照之前说的构建流程来理解此图。aapt、aidl、javac、dex、apkbuilder Jarsigner、zipalign是不是很熟悉？左边这一大块是关于Render Script、ndk编译的，我们暂时可以将其忽略（相信你读完本篇后不忽略的情况下，也可以自己分析了），只知道它提供.so文件和部分Java文件。
+首先，看看左下角，椭圆操作分为三种：Gradle插件提供（由task完成）、Build工具提供、JDK自带
+以aapt为例，深入分析更详细的构建流程：
+在aapt之前，Gradle插件中的各类Merge类的Task会对Manifest、Res、Assets进行合并，这些被合并的资源可能来自于项目内部、android.jar、arr等第三方。这些合并后的文件作为输入文件，在经过appt编译后，编译后的资源文件、R.java文件,同时aapt也负责合并产生各类的混淆文件。
+另外，在javac与dex操作之间多了一个proguard（混淆），proguard读取.class文件，生成混淆后的.class文件，交给dex(或d8)。
+当我们点击运行的时候gradle是怎么实现上述构建流程的？当我们运行assembleRelease命令进行打包时，咦？这一串是啥玩意？对着上面分析的流程你就知道是啥玩意了。
+//以下两个task是预编译工作，暂不关心 &gt; Task :app:preBuild UP-TO-DATE &gt; Task :app:preReleaseBuild UP-TO-DATE //aidl编译 &gt; Task :app:compileReleaseAidl NO-SOURCE //生成BuildConfig文件 &gt; Task :app:generateReleaseBuildConfig //编译Renderscrip,暂不关心（感兴趣的可以去探究Renderscrip） &gt; Task :app:compileReleaseRenderscript NO-SOURCE //* &gt; Task :app:javaPreCompileRelease //生成资源文件并合并 &gt; Task :app:generateReleaseResValues &gt; Task :app:generateReleaseResources &gt; Task :app:createReleaseCompatibleScreenManifests &gt; Task :app:extractDeepLinksRelease &gt; Task :app:processReleaseManifest &gt; Task :app:prepareLintJar UP-TO-DATE &gt; Task :app:checkReleaseDuplicateClasses &gt; Task :app:desugarReleaseFileDependencies &gt; Task :app:mergeReleaseResources //产生build/intermediates/compile_and_runtime_not_namespaced_r_class_jar/release/R." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/a5001426aa2ac588933d5c037a9bd576/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-09-08T18:04:53+08:00" />
+<meta property="article:modified_time" content="2021-09-08T18:04:53+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">手动构建APK流程</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>先忽略构建中的细节，先对主流程有个大致了解。</p> 
+<p>如下图所示（方形:表示文件，菱形:表示操作）</p> 
+<ol><li>整个构建分为两个主要操作：编译(Compile)、打包(APK Package)</li><li>编译 ：编译器(Compiler)通过编译 源码 、AIDL文件 、资源文件 、依赖包，最终生成Dex文件和编译后的资源文件。</li><li>打包 ：打包器(APK Packager)利用签名文件(KeyStore)和上一步编译过程中生成的Dex文件、编译后的资源文件打包成最终的APK文件。</li></ol> 
+<div align="center"> 
+ <img src="https://images2.imgbox.com/30/47/BdMH6DfD_o.png" width="60%"> 
+</div> 
+<div align="center"> 
+ <img src="https://images2.imgbox.com/f4/e6/0GYwTcPD_o.png" width="90%"> 
+</div> 
+<p>（方形:表示文件，椭圆:表示工具及操作）<br> 上面这张图，显示了更为详细的构建流程。以虚线为界，前半部分描述了 编译流程 ，后半部分则描述了 打包流程。</p> 
+<p>下面具体分析构建流，分为七步（其中编译1-4、打包5-7）：</p> 
+<ol><li>使用aapt工具，编译res/文件，生成编译后的二进制资源文件（.ap_文件）、R.java文件。(目前新版使用aapt2工具,R.java也替换成了R.jar)</li><li>使用aidl工具，根据aidl文件生成对应的Java接口文件</li><li>使用*Java Compiler工具，Java Compiler（俗称javac）将R.java、项目中的代码、Aidl接口文件编译成.class文件。</li><li>使用dex工具，将上一步产生的.class文件和第三方依赖中的.class编译成.dex文件。(目前新版使用d8工具）</li><li>使用apkbuilder工具，将编译后的资源（.ap_文件）、dex文件及其他资源文件(例如：so文件、asset文件等)，压缩成一个.apk文件。</li><li>使用Jarsigner工具，读取签名文件，对上一步中产生的apk文件进行签名，生成一个已签名的apk文件。</li><li>使用zipalign工具,对已签名的apk文件进行体积优化（只有v1签名才有这一步，v2签名的apk会在zipalign后签名被破坏）。<br> <img src="https://images2.imgbox.com/2b/13/wJZg69K5_o.png" alt="在这里插入图片描述"><br> 可以参照第二张图中所展示的图片来解读这张流程图。</li></ol> 
+<p>以椭圆（工具及操作）为线索，按照之前说的构建流程来理解此图。aapt、aidl、javac、dex、apkbuilder Jarsigner、zipalign是不是很熟悉？左边这一大块是关于Render Script、ndk编译的，我们暂时可以将其忽略（相信你读完本篇后不忽略的情况下，也可以自己分析了），只知道它提供.so文件和部分Java文件。</p> 
+<p>首先，看看左下角，椭圆操作分为三种：Gradle插件提供（由task完成）、Build工具提供、JDK自带</p> 
+<p>以aapt为例，深入分析更详细的构建流程：</p> 
+<p>在aapt之前，Gradle插件中的各类Merge类的Task会对Manifest、Res、Assets进行合并，这些被合并的资源可能来自于项目内部、android.jar、arr等第三方。这些合并后的文件作为输入文件，在经过appt编译后，编译后的资源文件、R.java文件,同时aapt也负责合并产生各类的混淆文件。</p> 
+<p>另外，在javac与dex操作之间多了一个proguard（混淆），proguard读取.class文件，生成混淆后的.class文件，交给dex(或d8)。</p> 
+<p>当我们点击运行的时候gradle是怎么实现上述构建流程的？当我们运行assembleRelease命令进行打包时，咦？这一串是啥玩意？对着上面分析的流程你就知道是啥玩意了。</p> 
+<pre><code class="prism language-bash">//以下两个task是预编译工作，暂不关心
+<span class="token operator">&gt;</span> Task :app:preBuild UP-TO-DATE
+<span class="token operator">&gt;</span> Task :app:preReleaseBuild UP-TO-DATE
+
+//aidl编译
+<span class="token operator">&gt;</span> Task :app:compileReleaseAidl NO-SOURCE
+
+//生成BuildConfig文件
+<span class="token operator">&gt;</span> Task :app:generateReleaseBuildConfig
+
+//编译Renderscrip,暂不关心（感兴趣的可以去探究Renderscrip）
+<span class="token operator">&gt;</span> Task :app:compileReleaseRenderscript NO-SOURCE
+//*
+<span class="token operator">&gt;</span> Task :app:javaPreCompileRelease
+
+//生成资源文件并合并
+<span class="token operator">&gt;</span> Task :app:generateReleaseResValues
+<span class="token operator">&gt;</span> Task :app:generateReleaseResources
+<span class="token operator">&gt;</span> Task :app:createReleaseCompatibleScreenManifests
+<span class="token operator">&gt;</span> Task :app:extractDeepLinksRelease
+<span class="token operator">&gt;</span> Task :app:processReleaseManifest
+<span class="token operator">&gt;</span> Task :app:prepareLintJar UP-TO-DATE
+<span class="token operator">&gt;</span> Task :app:checkReleaseDuplicateClasses
+<span class="token operator">&gt;</span> Task :app:desugarReleaseFileDependencies
+<span class="token operator">&gt;</span> Task :app:mergeReleaseResources
+
+//产生build/intermediates/compile_and_runtime_not_namespaced_r_class_jar/release/R.jar文件
+<span class="token operator">&gt;</span> Task :app:processReleaseResources
+
+//javac将java编译成Class文件
+<span class="token operator">&gt;</span> Task :app:compileReleaseJavaWithJavac
+
+//将资源文件编译并生成resource.arsc文件，并放入.ap_文件中<span class="token punctuation">(</span>./app/build/intermediates/processed_res/release/out/resources-release.ap_<span class="token punctuation">)</span>
+<span class="token operator">&gt;</span> Task :app:compileReleaseSources
+
+<span class="token operator">&gt;</span> Task :app:lintVitalRelease
+
+//dex工具将.class文件编程传.dex文件
+<span class="token operator">&gt;</span> Task :app:dexBuilderRelease
+
+//合并非res/的资源文件及assets文件
+<span class="token operator">&gt;</span> Task :app:mergeExtDexRelease
+<span class="token operator">&gt;</span> Task :app:mergeReleaseShaders
+<span class="token operator">&gt;</span> Task :app:compileReleaseShaders NO-SOURCE
+<span class="token operator">&gt;</span> Task :app:generateReleaseAssets UP-TO-DATE
+<span class="token operator">&gt;</span> Task :app:mergeReleaseAssets
+<span class="token operator">&gt;</span> Task :app:processReleaseJavaRes NO-SOURCE
+<span class="token operator">&gt;</span> Task :app:collectReleaseDependencies
+<span class="token operator">&gt;</span> Task :app:sdkReleaseDependencyData
+<span class="token operator">&gt;</span> Task :app:mergeReleaseJniLibFolders
+<span class="token operator">&gt;</span> Task :app:mergeReleaseNativeLibs
+<span class="token operator">&gt;</span> Task :app:stripReleaseDebugSymbols NO-SOURCE
+<span class="token operator">&gt;</span> Task :app:mergeReleaseJavaResource
+
+//合并.dex文件
+<span class="token operator">&gt;</span> Task :app:mergeDexRelease
+
+//将.dex文件、.ap_打包进以及非res资源文件打包进.apk文件中并签名
+<span class="token operator">&gt;</span> Task :app:packageRelease
+
+使用zipalign对apk进行体积优化
+<span class="token operator">&gt;</span> Task :app:assembleRelease
+</code></pre> 
+<p>解到构建流程后，现在 放弃 自动构建apk，使用手动构建apk。步骤如下：</p> 
+<ol><li>编译项目中的res资源文件(assets除外)，生成对应二进制资源文件，并将这些二进制文件打包进res.zip文件中 <code>$aapt2 compile -o build/res.zip --dir ./app/src/main/res</code></li><li>将res.zip文件与sdk进行连接，生成.ap_文件(包含编译好的资源文件、manifest文件、arsc文件)和R.java文件，<code>$aapt2 link build/res.zip -I $ANDROID_HOME/platforms/android-21/android.jar --java build --manifest ./app/src/main/AndroidManifest.xml -o build/app-debug.ap_</code></li><li>将java文件编译成.class文件<code>$javac -d build -cp $ANDROID_HOME/platforms/android-21/android.jar com/*/.java</code></li><li>将上一步中生成的.class文件编译成.dex文件<code>$d8 --output build/ --lib $ANDROID_HOME/platforms/android-21/android.jar build/com/example/application/*.class</code></li><li>使用zip命令打包第(2)步中的.ap_资源文件与第(4)步中的.dex文件，打包成一个未签名的apk<code>$zip -j build/app-debug.ap_ build/classes.dex</code></li><li>修改.ap_为.apk，并使用apksigner对apk进行签名<code>$apksign -ks ~/.android/debug.keystore build/app-debug.apk</code></li></ol> 
+<p>aapt、aidl、javac、dex、apkbuilder Jarsigner、zipalign这些工具和Gradle插件的task是什么关系呢？</p> 
+<p>答：Gradle插件自动化构建的过程,就是在Task中直接或间接地调用这些手动打包过程中使用的工具。</p> 
+<p>至此APK的构建流程基本分析完毕，读者可以根据gradle插件的源码进一步了解gradle插件打包的具体操作。</p> 
+<p>可以在build.gradle文件中，写入如下代码，输出每个Task对应的类，然后查看Task的具体工作：</p> 
+<pre><code class="prism language-c"><span class="token comment">//build.gradle</span>
+gradle<span class="token punctuation">.</span>taskGraph<span class="token punctuation">.</span>whenReady <span class="token punctuation">{<!-- --></span>
+    it<span class="token punctuation">.</span>allTasks<span class="token punctuation">.</span>each <span class="token punctuation">{<!-- --></span> task <span class="token operator">-&gt;</span>
+        <span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"Task Name : ${task.name}"</span><span class="token punctuation">)</span>
+        task<span class="token punctuation">.</span>dependsOn<span class="token punctuation">.</span>each<span class="token punctuation">{<!-- --></span> t<span class="token operator">-&gt;</span>
+            println <span class="token string">"-----${t.class}"</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">//def outputFileStr = task.outputs.files.getAsPath();</span>
+     <span class="token comment">//def inputFileStr = task.inputs.files.getAsPath()</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+dependencies <span class="token punctuation">{<!-- --></span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    testImplementation <span class="token string">"com.android.tools.build:gradle:4.0.0"</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>为什么运行时偶尔遇到第三方.so文件丢失, 刚才还好好的，突然又不行了？</p> 
+<pre><code class="prism language-bash">//运行如下两条命令即可
+<span class="token variable">$rm</span> -rf ./app/build/intermediates/merged_native_libs
+<span class="token variable">$rm</span> -rf ~/.gradle/caches/build-cache-1
+
+</code></pre> 
+<p>解释：当依赖第三方包时，第三方包首先被下载至<code>~/.gradle/caches/modules-2</code>这个缓存目录，然后解压到 <code>~/.gradle/caches/transforms-2/files-2.1</code>文件中，最后将解压文件与项目中的文件进行合并，合并后在<code>~/.gradle/caches/build-cache-1</code>文件中将文件进行备份(以压缩包的形式进行备份，以备下次使用)。<br> <code>.so</code>在编译时会合并进 <code>./app/build/intermediates/merged_native_libs</code>目录，<code>.so</code>丢失的大部分原因是由于合并出错导致，所以删除合并文件和备份文件，然gradle重新执行合并任务即可。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/60bd0b87ab2fa81001f23592a7a94ebf/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">js-cookie二次过期后二次设置失效</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/28e168edfe688e9b0483932cc3072395/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">latex中如何设置页边距和页眉页脚？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

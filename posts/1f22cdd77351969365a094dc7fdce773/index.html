@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>JVM学习（十四）：垃圾收集器（万字介绍CMS、G1） - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="JVM学习（十四）：垃圾收集器（万字介绍CMS、G1）" />
+<meta property="og:description" content="目录
+一、垃圾收集器们 二、CMS(Concurrent-Mark-Sweep)：低延迟
+2.1 什么是CMS 2.2 CMS工作流程 2.3 详细描述 2.4 CMS的优缺点 2.4.1 优点 2.4.2 弊端 2.5 CMS常用参数 三、G1（Garbage First）收集器：区域化分代式 3.1 什么是G1 3.2 G1的工作原理
+3.3 G1的特点 3.4 G1的优缺点
+3.4.1 优点 3.4.2 总结 3.5 G1回收器的使用场景
+3.6 分区region——化整为零 3.6.1 单个Region 3.6.2 指针碰撞 3.6.3 TLAB 3.7 G1的垃圾回收过程概述
+3.7.1 主要环节 3.7.2 Young GC
+3.7.3 老年代并发标记
+3.7.4 混合回收
+3.7.5 Remember Set 3.8 年轻代GC
+3.8.1 dirty card queue（脏卡表队列）
+3.9 并发标记
+3.10 混合回收 3.11 可选的垃圾回收过程：Full GC 3.12 G1常用的参数 四、革命性的ZGC" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/1f22cdd77351969365a094dc7fdce773/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-06-03T01:07:56+08:00" />
+<meta property="article:modified_time" content="2023-06-03T01:07:56+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">JVM学习（十四）：垃圾收集器（万字介绍CMS、G1）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="%E4%B8%80%E3%80%81%E5%9E%83%E5%9C%BE%E6%94%B6%E9%9B%86%E5%99%A8%E4%BB%AC%C2%A0-toc" style="margin-left:0px;"><a href="#%E4%B8%80%E3%80%81%E5%9E%83%E5%9C%BE%E6%94%B6%E9%9B%86%E5%99%A8%E4%BB%AC%C2%A0" rel="nofollow">一、垃圾收集器们 </a></p> 
+<p id="%E4%BA%8C%E3%80%81CMS(Concurrent-Mark-Sweep)%EF%BC%9A%E4%BD%8E%E5%BB%B6%E8%BF%9F-toc" style="margin-left:0px;"><a href="#%E4%BA%8C%E3%80%81CMS%28Concurrent-Mark-Sweep%29%EF%BC%9A%E4%BD%8E%E5%BB%B6%E8%BF%9F" rel="nofollow">二、CMS(Concurrent-Mark-Sweep)：低延迟</a></p> 
+<p id="2.1%20%E4%BB%80%E4%B9%88%E6%98%AFCMS%C2%A0-toc" style="margin-left:40px;"><a href="#2.1%20%E4%BB%80%E4%B9%88%E6%98%AFCMS%C2%A0" rel="nofollow">2.1 什么是CMS </a></p> 
+<p id="2.2%20CMS%E5%B7%A5%E4%BD%9C%E6%B5%81%E7%A8%8B%C2%A0-toc" style="margin-left:40px;"><a href="#2.2%20CMS%E5%B7%A5%E4%BD%9C%E6%B5%81%E7%A8%8B%C2%A0" rel="nofollow">2.2 CMS工作流程 </a></p> 
+<p id="2.3%20%E8%AF%A6%E7%BB%86%E6%8F%8F%E8%BF%B0%C2%A0-toc" style="margin-left:40px;"><a href="#2.3%20%E8%AF%A6%E7%BB%86%E6%8F%8F%E8%BF%B0%C2%A0" rel="nofollow">2.3 详细描述 </a></p> 
+<p id="2.4%20CMS%E7%9A%84%E4%BC%98%E7%BC%BA%E7%82%B9%C2%A0-toc" style="margin-left:40px;"><a href="#2.4%20CMS%E7%9A%84%E4%BC%98%E7%BC%BA%E7%82%B9%C2%A0" rel="nofollow">2.4 CMS的优缺点 </a></p> 
+<p id="2.4.1%20%E4%BC%98%E7%82%B9%C2%A0-toc" style="margin-left:80px;"><a href="#2.4.1%20%E4%BC%98%E7%82%B9%C2%A0" rel="nofollow">2.4.1 优点 </a></p> 
+<p id="2.4.2%20%E5%BC%8A%E7%AB%AF%C2%A0-toc" style="margin-left:80px;"><a href="#2.4.2%20%E5%BC%8A%E7%AB%AF%C2%A0" rel="nofollow">2.4.2 弊端 </a></p> 
+<p id="2.5%20CMS%E5%B8%B8%E7%94%A8%E5%8F%82%E6%95%B0%C2%A0-toc" style="margin-left:40px;"><a href="#2.5%20CMS%E5%B8%B8%E7%94%A8%E5%8F%82%E6%95%B0%C2%A0" rel="nofollow">2.5 CMS常用参数 </a></p> 
+<p id="%E4%B8%89%E3%80%81G1%EF%BC%88Garbage%20First%EF%BC%89%E6%94%B6%E9%9B%86%E5%99%A8%EF%BC%9A%E5%8C%BA%E5%9F%9F%E5%8C%96%E5%88%86%E4%BB%A3%E5%BC%8F%C2%A0-toc" style="margin-left:0px;"><a href="#%E4%B8%89%E3%80%81G1%EF%BC%88Garbage%20First%EF%BC%89%E6%94%B6%E9%9B%86%E5%99%A8%EF%BC%9A%E5%8C%BA%E5%9F%9F%E5%8C%96%E5%88%86%E4%BB%A3%E5%BC%8F%C2%A0" rel="nofollow">三、G1（Garbage First）收集器：区域化分代式 </a></p> 
+<p id="3.1%20%E4%BB%80%E4%B9%88%E6%98%AFG1%C2%A0-toc" style="margin-left:40px;"><a href="#3.1%20%E4%BB%80%E4%B9%88%E6%98%AFG1%C2%A0" rel="nofollow">3.1 什么是G1 </a></p> 
+<p id="3.2%20G1%E7%9A%84%E5%B7%A5%E4%BD%9C%E5%8E%9F%E7%90%86-toc" style="margin-left:40px;"><a href="#3.2%20G1%E7%9A%84%E5%B7%A5%E4%BD%9C%E5%8E%9F%E7%90%86" rel="nofollow">3.2 G1的工作原理</a></p> 
+<p id="3.3%20G1%E7%9A%84%E7%89%B9%E7%82%B9%C2%A0-toc" style="margin-left:40px;"><a href="#3.3%20G1%E7%9A%84%E7%89%B9%E7%82%B9%C2%A0" rel="nofollow">3.3 G1的特点 </a></p> 
+<p id="3.4%20G1%E7%9A%84%E4%BC%98%E7%BC%BA%E7%82%B9-toc" style="margin-left:40px;"><a href="#3.4%20G1%E7%9A%84%E4%BC%98%E7%BC%BA%E7%82%B9" rel="nofollow">3.4 G1的优缺点</a></p> 
+<p id="3.4.1%20%E4%BC%98%E7%82%B9%C2%A0-toc" style="margin-left:80px;"><a href="#3.4.1%20%E4%BC%98%E7%82%B9%C2%A0" rel="nofollow">3.4.1 优点 </a></p> 
+<p id="3.4.2%20%E6%80%BB%E7%BB%93%C2%A0-toc" style="margin-left:80px;"><a href="#3.4.2%20%E6%80%BB%E7%BB%93%C2%A0" rel="nofollow">3.4.2 总结 </a></p> 
+<p id="3.5%20G1%E5%9B%9E%E6%94%B6%E5%99%A8%E7%9A%84%E4%BD%BF%E7%94%A8%E5%9C%BA%E6%99%AF-toc" style="margin-left:40px;"><a href="#3.5%20G1%E5%9B%9E%E6%94%B6%E5%99%A8%E7%9A%84%E4%BD%BF%E7%94%A8%E5%9C%BA%E6%99%AF" rel="nofollow">3.5 G1回收器的使用场景</a></p> 
+<p id="3.6%20%E5%88%86%E5%8C%BAregion%E2%80%94%E2%80%94%E5%8C%96%E6%95%B4%E4%B8%BA%E9%9B%B6%C2%A0-toc" style="margin-left:40px;"><a href="#3.6%20%E5%88%86%E5%8C%BAregion%E2%80%94%E2%80%94%E5%8C%96%E6%95%B4%E4%B8%BA%E9%9B%B6%C2%A0" rel="nofollow">3.6 分区region——化整为零 </a></p> 
+<p id="3.6.1%20%E5%8D%95%E4%B8%AARegion%C2%A0-toc" style="margin-left:80px;"><a href="#3.6.1%20%E5%8D%95%E4%B8%AARegion%C2%A0" rel="nofollow">3.6.1 单个Region </a></p> 
+<p id="3.6.2%20%E6%8C%87%E9%92%88%E7%A2%B0%E6%92%9E%C2%A0-toc" style="margin-left:80px;"><a href="#3.6.2%20%E6%8C%87%E9%92%88%E7%A2%B0%E6%92%9E%C2%A0" rel="nofollow">3.6.2 指针碰撞 </a></p> 
+<p id="3.6.3%20TLAB%C2%A0-toc" style="margin-left:80px;"><a href="#3.6.3%20TLAB%C2%A0" rel="nofollow">3.6.3 TLAB </a></p> 
+<p id="3.7%20G1%E7%9A%84%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E8%BF%87%E7%A8%8B%E6%A6%82%E8%BF%B0-toc" style="margin-left:40px;"><a href="#3.7%20G1%E7%9A%84%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E8%BF%87%E7%A8%8B%E6%A6%82%E8%BF%B0" rel="nofollow">3.7 G1的垃圾回收过程概述</a></p> 
+<p id="3.7.1%20%E4%B8%BB%E8%A6%81%E7%8E%AF%E8%8A%82%C2%A0-toc" style="margin-left:80px;"><a href="#3.7.1%20%E4%B8%BB%E8%A6%81%E7%8E%AF%E8%8A%82%C2%A0" rel="nofollow">3.7.1 主要环节 </a></p> 
+<p id="3.7.2%20Young%20GC-toc" style="margin-left:80px;"><a href="#3.7.2%20Young%20GC" rel="nofollow">3.7.2 Young GC</a></p> 
+<p id="3.7.3%C2%A0%E8%80%81%E5%B9%B4%E4%BB%A3%E5%B9%B6%E5%8F%91%E6%A0%87%E8%AE%B0-toc" style="margin-left:80px;"><a href="#3.7.3%C2%A0%E8%80%81%E5%B9%B4%E4%BB%A3%E5%B9%B6%E5%8F%91%E6%A0%87%E8%AE%B0" rel="nofollow">3.7.3 老年代并发标记</a></p> 
+<p id="3.7.4%20%E6%B7%B7%E5%90%88%E5%9B%9E%E6%94%B6-toc" style="margin-left:80px;"><a href="#3.7.4%20%E6%B7%B7%E5%90%88%E5%9B%9E%E6%94%B6" rel="nofollow">3.7.4 混合回收</a></p> 
+<p id="3.7.5%20Remember%20Set%C2%A0-toc" style="margin-left:80px;"><a href="#3.7.5%20Remember%20Set%C2%A0" rel="nofollow">3.7.5 Remember Set </a></p> 
+<p id="3.8%C2%A0%20%E5%B9%B4%E8%BD%BB%E4%BB%A3GC-toc" style="margin-left:40px;"><a href="#3.8%C2%A0%20%E5%B9%B4%E8%BD%BB%E4%BB%A3GC" rel="nofollow">3.8  年轻代GC</a></p> 
+<p id="3.8.1%C2%A0dirty%20card%20queue%EF%BC%88%E8%84%8F%E5%8D%A1%E8%A1%A8%E9%98%9F%E5%88%97%EF%BC%89-toc" style="margin-left:80px;"><a href="#3.8.1%C2%A0dirty%20card%20queue%EF%BC%88%E8%84%8F%E5%8D%A1%E8%A1%A8%E9%98%9F%E5%88%97%EF%BC%89" rel="nofollow">3.8.1 dirty card queue（脏卡表队列）</a></p> 
+<p id="3.9%20%E5%B9%B6%E5%8F%91%E6%A0%87%E8%AE%B0-toc" style="margin-left:40px;"><a href="#3.9%20%E5%B9%B6%E5%8F%91%E6%A0%87%E8%AE%B0" rel="nofollow">3.9 并发标记</a></p> 
+<p id="3.10%20%E6%B7%B7%E5%90%88%E5%9B%9E%E6%94%B6%C2%A0-toc" style="margin-left:40px;"><a href="#3.10%20%E6%B7%B7%E5%90%88%E5%9B%9E%E6%94%B6%C2%A0" rel="nofollow">3.10 混合回收 </a></p> 
+<p id="3.11%20%E5%8F%AF%E9%80%89%E7%9A%84%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E8%BF%87%E7%A8%8B%EF%BC%9AFull%20GC%C2%A0-toc" style="margin-left:40px;"><a href="#3.11%20%E5%8F%AF%E9%80%89%E7%9A%84%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E8%BF%87%E7%A8%8B%EF%BC%9AFull%20GC%C2%A0" rel="nofollow">3.11 可选的垃圾回收过程：Full GC </a></p> 
+<p id="3.12%20G1%E5%B8%B8%E7%94%A8%E7%9A%84%E5%8F%82%E6%95%B0%C2%A0-toc" style="margin-left:40px;"><a href="#3.12%20G1%E5%B8%B8%E7%94%A8%E7%9A%84%E5%8F%82%E6%95%B0%C2%A0" rel="nofollow">3.12 G1常用的参数 </a></p> 
+<p id="%E5%9B%9B%E3%80%81%E9%9D%A9%E5%91%BD%E6%80%A7%E7%9A%84ZGC-toc" style="margin-left:0px;"><a href="#%E5%9B%9B%E3%80%81%E9%9D%A9%E5%91%BD%E6%80%A7%E7%9A%84ZGC" rel="nofollow">四、革命性的ZGC</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<p> </p> 
+<h2 id="%E4%B8%80%E3%80%81%E5%9E%83%E5%9C%BE%E6%94%B6%E9%9B%86%E5%99%A8%E4%BB%AC%C2%A0">一、垃圾收集器们 </h2> 
+<p>        本文重点介绍CMS和G1，至于前面出现的其他GC就不多介绍了。只是简单地提一下：</p> 
+<p>        收集的区域： </p> 
+<p> <img alt="" height="143" src="https://images2.imgbox.com/68/5d/qKirhyWU_o.png" width="542"></p> 
+<p>        配合关系： </p> 
+<p><img alt="" height="333" src="https://images2.imgbox.com/64/15/1JJc6LFF_o.png" width="590"></p> 
+<p>        总结：</p> 
+<p><img alt="" height="191" src="https://images2.imgbox.com/e3/4f/4gCc5P7U_o.png" width="652">  </p> 
+<ul><li>如果想要最小化地使用内存和并行开销，请选Serial GC</li><li>如果想要最大化应用程序的吞吐量，请选Parallel GC</li><li>如果你想要最小化GC的中断或停顿时间，请选CMS GC </li></ul> 
+<h2 id="%E4%BA%8C%E3%80%81CMS(Concurrent-Mark-Sweep)%EF%BC%9A%E4%BD%8E%E5%BB%B6%E8%BF%9F">二、CMS(Concurrent-Mark-Sweep)：低延迟</h2> 
+<h3 id="2.1%20%E4%BB%80%E4%B9%88%E6%98%AFCMS%C2%A0">2.1 什么是CMS </h3> 
+<p>        在JDK 1.5时期，Hotspot推出了一款在强交互应用中几乎可认为有划时代意义的垃圾收集器:CMS (Concurrent-Mark-Sweep)收集器，这款收集器是HotSpot虚拟机中第一款真正意义上的并发收集器，它<strong>第一次实现了让垃圾收集线程与用户线程同时工作</strong>。</p> 
+<p>        CMS收集器的关注点是<strong>尽可能缩短垃圾收集时用户线程的停顿时间</strong>。停顿时间越短（低延迟）就越适合与用户交互的程序，良好的响应速度能提升用户体验。目前很大一部分的Java应用集中在互联网站或者<strong>B/S系统的服务端上，这类应用尤其重视服务的响应速度</strong>，希望系统停顿时间最短，以给用户带来较好的体验。CMS收集器就非常符合这类应用的需求。</p> 
+<p>        CMS的垃圾收集算法采用标记-清除算法，并且也会"Stop-the-world" </p> 
+<h3 id="2.2%20CMS%E5%B7%A5%E4%BD%9C%E6%B5%81%E7%A8%8B%C2%A0">2.2 CMS工作流程 </h3> 
+<p><img alt="" height="196" src="https://images2.imgbox.com/1e/17/abHnPoYv_o.png" width="600"></p> 
+<p>        CMS整个过程比之前的收集器要复杂,整个过程分为4个主要阶段，即初始标记阶段、并发<br> 标记阶段、重新标记阶段和并发清除阶段。</p> 
+<ul><li>初始标记（Initial-Mark）阶段：在这个阶段中，程序中所有的工作线程都将会因为“stop-the-world”机制而出现短暂的暂停，这个阶段的主要任务<strong>仅仅只是标记出GC Roots能直接关联到的对象</strong>。一旦标记完成之后就会恢复之前被暂停的所有应用线程。由于直接关联对象比较小，所以这里的<strong>速度非常快</strong>。</li><li>并发标记(Concurrent-Mark）阶段：从GC Roots的<strong>直接关联对象</strong>开始遍历整个对象图的过程，这个过程<strong>耗时较长</strong>但是<strong>不需要停顿用户线程</strong>，可以与垃圾收集线程一起并发运行。</li><li>重新标记（Remark)阶段：由于在并发标记阶段中，程序的工作线程会和垃圾收集线程同时运行或者交叉运行，因此<strong>为了修正并发标记期间，因用户程序继续运作而导致标记产生变动的那一部分对象的标记记录</strong>，这个阶段的停顿时间通常会比初始标记阶段稍长一些，但也远比并发标记阶段的时间短。</li><li>并发清除(Concurrent-Sweep）阶段：此阶段清理删除掉标记阶段判断的已经死亡的对象，释放内存空间。由于不需要移动存活对象，所以这个阶段也是可以与用户线程同时并发的</li></ul> 
+<h3 id="2.3%20%E8%AF%A6%E7%BB%86%E6%8F%8F%E8%BF%B0%C2%A0">2.3 详细描述 </h3> 
+<p>        尽管CNS收集器采用的是并发回收（非独占式)，但是在其<strong>初始化标记和再次标记这两个阶段中仍然需要执行“Stop-the-World”机制</strong>暂停程序中的工作线程，不过暂停时间并不会太长，因此可以说明目前所有的垃圾收集器都做不到完全不需要“stop-the-world”，只是尽可能地缩短暂停时间。</p> 
+<p>        <strong>因为最耗费时间的并发标记与并发清除阶段都不需要暂停工作，所以整体的回收是低停顿的</strong>。另外，由于在垃圾收集阶段用户线程没有中断，所以<strong>在CMS回收过程中，还应该确保应用程序用户线程有足够的内存可用</strong>。因此，CMS收集器不能像其他收集器那样等到老年代几乎完全被填满了再进行收集，而是<strong>当堆内存使用率达到某一阈值时，便开始进行回收</strong>，以确保应用程序在CMS工作过程中依然有足够的空间支持应用程序运行。要是CMS运行期间预留的内存无法满足程序需要，就会出现一次“<strong>Concurrent Mode Failure</strong>”失败，这时虚拟机将启动后备预案：临时启用Serial Old 收集器来重新进行老年代的垃圾收集，这样停顿时间就很长了。</p> 
+<p>        CMS收集器的垃圾收集算法采用的是<strong>标记-清除算法</strong>，这意味着每次执行完内存回收后，由于被执行内存回收的无用对象所占用的内存空间极有可能是不连续的一些内存块，不可避免地将会产生一些内存碎片。那么CMS在为新对象分配内存空间时，将无法使用指针碰撞（Bump the Pointer）技术，而只能够选择空闲列表（Free List）执行内存分配。</p> 
+<p>        既然Mark Sweep会造成内存碎片,那么为什么不把算法换成Mark Compact呢？答案其实很简答，因为当并发清除的时候，用compact整理内存的话，原来的用户线程使用的内存还怎么用呢?要保证用户线程能继续执行，前提的它运行的资源不受影响。Mark Compact更适合“stop the world”这种场景下使用。</p> 
+<h3 id="2.4%20CMS%E7%9A%84%E4%BC%98%E7%BC%BA%E7%82%B9%C2%A0">2.4 CMS的优缺点 </h3> 
+<h4 id="2.4.1%20%E4%BC%98%E7%82%B9%C2%A0">2.4.1 优点 </h4> 
+<ul><li>并发收集</li><li>低延迟 </li></ul> 
+<h4 id="2.4.2%20%E5%BC%8A%E7%AB%AF%C2%A0">2.4.2 弊端 </h4> 
+<p>1）<strong>会产生内存碎片</strong>，导致并发清除后，用户线程可用的空间不足。在无法分配大对象的情况下，不得不提前触发Full GC。</p> 
+<p>2）<strong>CMS收集器对CPU资源非常敏感</strong>。在开发阶段，它虽然不会导致用户线程停顿，但是会因为占用了一部分线程而导致应用程序变慢，总吞吐量会降低。</p> 
+<p>3)   <strong>CMS收集器无法处理浮动垃圾</strong>。可能出现 “Concurrent Mode Failure” 失败而导致另一次Full GC的产生。在并发标记阶段由于程序的工作线程和垃圾收集线程是同时运行或者交叉运行的，那么<strong>在并发标记阶段如果产生新的垃圾对象，CMS经无法对这些垃圾对象进行标记</strong>，最终会导致这些新产生的垃圾对象没有被及时回收，从而<strong>只能在下一次执行GC时释放</strong>这些之前未被回收的内存空间。 </p> 
+<h3 id="2.5%20CMS%E5%B8%B8%E7%94%A8%E5%8F%82%E6%95%B0%C2%A0">2.5 CMS常用参数 </h3> 
+<ul><li><strong>-XX:+UseConcMarkSweepGC</strong>                     <strong>手动指定使用CMS 收集器执行内存回收任务</strong>。开启该参数后会自动将-XX:+UseParNewGc打开。即: ParNew ( Young区用)+CMS (old区用)+serial old的组合</li><li><strong>-XX: CMSInitiatingOccupanyFraction </strong>       <strong>设置堆内存使用率的阈值，一旦达到该阈值，便开始进行回收</strong>。JDK5及以前版本的默认值为68，即当老年代的空间使用率达到68%时，会执行一次CMS回收。JDK6及以上版本默认值为92%。如果内存增长缓慢，则可以设置一个稍大的值，大的阈值可以有效降低CMS的触发频率，减少老年代回收的次数可以较为明显地改善应用程序性能。反之，如果应用程序内存使用率增长很快，则应该降低这个阈值，以避免频繁触发老年代串行收集器。因此通过该选项便可以有效降低Full GC的执行次数</li><li><strong>-XX:+UseCMSCompactAtFullCollection</strong>    <strong>用于指定在执行完Full GC后对内存空间进行压缩整理，以此避免内存碎片的产生</strong>。不过由于内存压缩整理过程无法并发执行，所带来的问题就是停顿时间变得更长了</li><li><strong>-XX:CMSFullGCsBeforeCompaction         设置在执行多少次Full GC后队内存空间进行压缩整理</strong>。</li><li><strong>-XX: ParallelCMSThreads                          设置CMS的线程数量</strong>。CMS 默认启动的线程数是（ParallelGCThreads+3) / 4，ParallelGcThreads 是年轻代并行收集器的线程数。当CPU资源比较紧张时，受到CMS收集器线程的影响，应用程序的性能在垃圾回收阶段可能会非常糟糕。 </li></ul> 
+<h2 id="%E4%B8%89%E3%80%81G1%EF%BC%88Garbage%20First%EF%BC%89%E6%94%B6%E9%9B%86%E5%99%A8%EF%BC%9A%E5%8C%BA%E5%9F%9F%E5%8C%96%E5%88%86%E4%BB%A3%E5%BC%8F%C2%A0">三、G1（Garbage First）收集器：区域化分代式 </h2> 
+<h3 id="3.1%20%E4%BB%80%E4%B9%88%E6%98%AFG1%C2%A0">3.1 什么是G1 </h3> 
+<p>        既然我们已经有了前面几个强大的GC，为什么还要发布Garbage First (G1)GC？原因就在于应用程序所应对的<strong>业务越来越庞大、复杂，用户越来越多</strong>，没有GC就不能保证应用程序正常进行，而经常造成STW的GC又跟不上实际的需求，所以才会不断地尝试对GC进行优化。与此同时，为了适应现在<strong>不断扩大的内存和不断增加的处理器数量</strong>，进一步降低暂停时间(pause time)，同时兼顾良好的吞吐量。</p> 
+<p>        G1(Garbage-First）是一款<strong>面向服务端应用</strong>的垃圾收集器，主要<strong>针对配备多核CPU及大容量内存的机器</strong>，以极高概率满足GC停顿时间的同时，还兼具高吞吐量的性能特征。它在JDK1.7版本正式被启用，移除了Experimental的标识，是JDK 9以后的默认垃圾回收器，取代了CMS回收器以及Parallel + Parallel old组合。被oracle官方称为“全功能的垃圾收集器”。与此同时，CMS已经在JDK 9中被标记为废弃(deprecated)。在jdk8中还不是默认的垃圾回收器，需要使用-XX:+UseG1GC来启用。</p> 
+<p>        G1 (Garbage-First）垃圾回收器是当今收集器技术发展的最前沿成果之一。官方给G1设定的目标是<strong>在延迟可控的情况下获得尽可能高的吞吐量</strong>，所以才担当起“全功能收集器”的重任与期望。</p> 
+<h3 id="3.2%20G1%E7%9A%84%E5%B7%A5%E4%BD%9C%E5%8E%9F%E7%90%86">3.2 G1的工作原理</h3> 
+<p>        G1是一个并行回收器，它把堆内存分割为很多不相关的区域(Region)（物理上不连续的）。使用不同的Region来表示Eden、幸存者0区，幸存者1区，老年代等。G1 GC有计划地避免在整个Java堆中进行全区域的垃圾收集。他跟踪各个Region里面的垃圾堆积的价值大小(回收所获得的空间大小以及回收所需时间的经验值)，在后台维护一个优先列表，<strong>每次根据允许的收集时间，优先回收价值最大的Region</strong>。</p> 
+<p>        由于这种方式的侧重点在于回收垃圾最大量的区间（Region)，所以我们给他起一个名字：垃圾优先（Garbage First) 。</p> 
+<p>        G1中提供了三种垃圾回收模式: YoungGC、Mixed GC和Full GC，在不同的条件下被触发。 </p> 
+<h3 id="3.3%20G1%E7%9A%84%E7%89%B9%E7%82%B9%C2%A0">3.3 G1的特点 </h3> 
+<p>        与其他GC收集器相比，G1使用了全新的分区算法，其特点如下所示：</p> 
+<ul><li>并行与并发 
+  <ul><li>并行性: G1在回收期间，可以有多个GC线程同时工作，有效利用多核计算能力。此时用户线程STW</li><li>并发性: G1拥有与应用程序交替执行的能力，部分工作可以和应用程序同时执行，因此，一般来说，不会在整个回收阶段发生完全阻塞应用程序的情况</li></ul></li><li>分代收集 
+  <ul><li>从分代上看，G1依然属于分代型垃圾回收器，它会区分年轻代和老年代，年轻代依然有Eden区和Survivor区。但从堆的结构上看，它不要求整个Eden区、年轻代或者老年代都是连续的，也不再坚持固定大小和固定数量。</li><li>将堆空间分为若干个区域(Region)，这些区域中包含了逻辑上的年轻代和老年代和之前的各类回收器不同，它同时兼顾年轻代和老年代。其他回收器要么工作在年轻代，要么工作在老年代; </li></ul></li></ul> 
+<p><img alt="" height="207" src="https://images2.imgbox.com/4f/66/1F9wMr6U_o.png" width="597"></p> 
+<p>        HotSpot垃圾收集器里，除了G1以外，其他的垃圾收集器使用内置的JVM线程执行GC的多线程操作，而G1 GC可以采用应用线程承担后台运行的GC工作，即当JVM的GC线程处理速度慢时，系统会调用应用程序线程帮助加速垃圾回收过程。         </p> 
+<h3 id="3.4%20G1%E7%9A%84%E4%BC%98%E7%BC%BA%E7%82%B9">3.4 G1的优缺点</h3> 
+<h4 id="3.4.1%20%E4%BC%98%E7%82%B9%C2%A0">3.4.1 优点 </h4> 
+<ul><li>空间整合</li></ul> 
+<p>        CMS：“标记-清除”算法、内存碎片、若干次GC后进行一次碎片整理</p> 
+<p>        G1将内存划分为一个个的region。内存的回收是以region作为基本单位的。<strong>Region之间是复制算法</strong>，但<strong>整体上实际可看作是标记-压缩算法</strong>，两种算法都可以避免内存碎片。这种特性有利于程序长时间运行，分配大对象时不会因为无法找到连续内存空间而提前触发下一次GC。尤其是当Java堆非常大的时候，G1的优势更加明显。</p> 
+<ul><li>可预测的停顿时间模型（即:软实时soft real-time)</li></ul> 
+<p>        这是G1 相对于CMS 的另一大优势，G1除了追求低停顿外，还能建立可预测的停顿时间模型，能让使用者明确指定在一个长度为 M 毫秒的时间片段内，消耗在垃圾收集上的时间不得超过N毫秒。</p> 
+<p>        由于分区的原因，G1可以只选取部分区域进行内存回收，这样缩小了回收的范围，因此对于全局停顿情况的发生也能得到较好的控制。G1 跟踪各个Region里面的垃圾堆积的价值大小（回收所获得的空间大小以及回收所需时间的经验值），<strong>在后台维护一个优先列表，每次根据允许的收集时间，优先回收价值最大的Region</strong>。保证了G1 收集器在有限的时间内可以获取尽可能高的收集效率。</p> 
+<h4 id="3.4.2%20%E6%80%BB%E7%BB%93%C2%A0">3.4.2 总结 </h4> 
+<p>        G1未必能做到CMS在最好情况下的延时停顿，但是最差情况要好很多。相较于CMS，G1还不具备全方位、压倒性优势。比如在用户程序运行过程中，G1无论是为了垃圾收集产生的内存占用（Footprint）还是程序运行时的额外执行负载（overload）都要比CMS要高。从经验上来说，在小内存应用上CMS的表现大概率会优于G1，而G1在大内存应用上则发挥其优势。平衡点在6-8GB之间。 </p> 
+<h3 id="3.5%20G1%E5%9B%9E%E6%94%B6%E5%99%A8%E7%9A%84%E4%BD%BF%E7%94%A8%E5%9C%BA%E6%99%AF">3.5 G1回收器的使用场景</h3> 
+<ul><li>面向服务端应用，针对具有大内存、多处理器的机器。(在普通大小的堆里表现并不惊喜)</li><li>需要低GC延迟，并具有大堆的应用程序提供解决方案；如:在堆大小约6GB或更大时，可预测的暂停时间可以低于0.5秒;(G1通过每次只清理一部分而不是全部的Region的增量式清理来保证每次GC停顿时间不会过长）。</li><li>在下面的情况时，使用G1可能比CMS好: 
+  <ul><li>超过50%的Java堆被活动数据占用</li><li>对象分配频率或年代提升频率变化很大</li><li>GC停顿时间过长(长于0.5至1秒)。</li></ul></li></ul> 
+<h3 id="3.6%20%E5%88%86%E5%8C%BAregion%E2%80%94%E2%80%94%E5%8C%96%E6%95%B4%E4%B8%BA%E9%9B%B6%C2%A0">3.6 分区region——化整为零 </h3> 
+<h4 id="3.6.1%20%E5%8D%95%E4%B8%AARegion%C2%A0">3.6.1 单个Region </h4> 
+<p>        使用G1收集器时，它将整个Java堆划分成约2048个<strong>大小相同</strong>的独立Region块，每个Region块大小根据堆空间的实际大小而定，整体被控制在1MB到32MB之间，且为2的N次幂，即1MB，2MB，4MB，8MB，16MB，32MB。<strong> </strong><span style="color:#fe2c24;">如果设置了Region数量，那么Region大小就不是固定的，但是大小肯定是2的幂次方，并且在1~32M之间;如果设置了Region大小，那么Region数量就不是固定的，但是肯定是2048附近。</span>region块的大小可以通过-XX:G1HeapRegionSize设定。<strong>所有的Region大小相同，且在JVM生命周期内不会被改变</strong>。</p> 
+<p>        虽然G1还保留有新生代和老年代的概念，但新生代和老年代不再是物理隔离的了，它们都是一部分Region(不需要连续）的集合。通过Region的动态分配方式实现逻辑上的连续。</p> 
+<p>        Region只能是Eden、Survivor、Humongous中的一种，但是它的身份不是固定的，谁来占用那么这个Region就是谁的。一个region 有可能属于Eden，Survivor或者 Old/Tenured 内存区域。但是一个region只可能属于一个角色。3.3图中的E表示该region属于Eden内存区域，s表示属于survivor内存区域，o表示属于old内存区域。图中空白的表示未使用的内存空间。G1垃圾收集器还增加了一种新的内存区域，叫做 Humongous内存区域，如图中的H块。主要用于存储大对象，如果超过1.5个region，就放到H。      </p> 
+<p>        设置H的原因：对于堆中的大对象，默认直接会被分配到老年代，但是如果它是一个短期存在的大对象就会对垃圾收集器造成负面影响。为了解决这个问题，G1划分了一个Humongous区，它用来专门存放大对象。如果一个H区装不下一个大对象，那么G1会寻找连续的H区来存储。为了能找到连续的H区，有时候不得不启动Full GC。G1的大多数行为都把H区作为老年代的一部分来看待。</p> 
+<h4 id="3.6.2%20%E6%8C%87%E9%92%88%E7%A2%B0%E6%92%9E%C2%A0">3.6.2 指针碰撞 </h4> 
+<p>        单个Region使用指针碰撞的方式来放数据。allocated是已经使用的内存空间， top就是指针的位置, unallocate是没有使用的内存空间。</p> 
+<p><img alt="" height="182" src="https://images2.imgbox.com/13/25/4hSUUgwi_o.png" width="508"></p> 
+<h4 id="3.6.3%20TLAB%C2%A0">3.6.3 TLAB </h4> 
+<p>        虽然存在分区Region，但是依然有线程独有的TLAB空间，,这样可以保证多个线程对对象修改可以并行操作。</p> 
+<p><img alt="" height="193" src="https://images2.imgbox.com/2d/13/jM26GMn3_o.png" width="499"></p> 
+<p>        想了解TLAB可以看看我这篇博客的5.3：<a href="https://blog.csdn.net/m0_49499183/article/details/130394407?ops_request_misc=&amp;request_id=eeec6add401c4fc48bf013a10514f824&amp;biz_id=&amp;utm_medium=distribute.pc_search_result.none-task-blog-2~blog~koosearch~default-1-130394407-null-null.268%5Ev1%5Econtrol&amp;utm_term=TLAB&amp;spm=1018.2226.3001.4450" title="JVM学习（九）：堆（万字剖析）_玉面大蛟龙">JVM学习（九）：堆（万字剖析）_玉面大蛟龙</a> </p> 
+<h3 id="3.7%20G1%E7%9A%84%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E8%BF%87%E7%A8%8B%E6%A6%82%E8%BF%B0">3.7 G1的垃圾回收过程概述</h3> 
+<h4 id="3.7.1%20%E4%B8%BB%E8%A6%81%E7%8E%AF%E8%8A%82%C2%A0">3.7.1 主要环节 </h4> 
+<p>        G1 GC的垃圾回收过程主要包括如下三个环节:</p> 
+<ul><li>年轻代GC (Young GC)</li><li>老年代并发标记过程(Concurrent Marking)</li><li>混合回收(Mixed GC)</li><li>(如果需要，单线程、独占式、高强度的Full Gc还是继续存在的。它针对GC的评估失败提供了一种失败保护机制，即强力回收。) </li></ul> 
+<p><img alt="" height="224" src="https://images2.imgbox.com/36/a9/nvoEPT05_o.png" width="589"></p> 
+<p>        按照 young gc -&gt; young gc + concurrent mark-&gt; Mixed GC顺序，进行垃圾回收。</p> 
+<h4 id="3.7.2%20Young%20GC">3.7.2 Young GC</h4> 
+<p>        应用程序分配内存，当年轻代的Eden区用尽时开始年轻代回收过程；G1的年轻代收集阶段是一个并行的独占式收集器。在年轻代回收期，G1 GC暂停所有应用程序线程，启动多线程执行年轻代回收。<strong>然后从年轻代区间移动存活对象到survivor区间或者老年区间，也有可能是两个区间都会涉及</strong>。</p> 
+<h4 id="3.7.3%C2%A0%E8%80%81%E5%B9%B4%E4%BB%A3%E5%B9%B6%E5%8F%91%E6%A0%87%E8%AE%B0">3.7.3 老年代并发标记</h4> 
+<p>        当堆内存使用达到-XX:InitiatingHeapOccupancyPercent（默认45%）时，开始老年代并发标记过程。</p> 
+<h4 id="3.7.4%20%E6%B7%B7%E5%90%88%E5%9B%9E%E6%94%B6">3.7.4 混合回收</h4> 
+<p>        标记完成马上开始混合回收过程。对于一个混合回收期，G1 GC从老年区间移动存活对象到空闲区间，这些空闲区间也就成为了老年代的一部分。和年轻代不同，老年代的G1回收器和其他GC不同，<strong>G1的老年代回收器不需要整个老年代被回收，一次只需要扫描/回收一小部分老年代的Region就可以了</strong>（在规定时间内挑选价值高的回收）。同时，这个老年代Region是和年轻代一起被回收的。</p> 
+<p>        举个例子:一个web服务器，Java进程最大堆内存为4G，每分钟响应1500个请求，每45秒钟会新分配大约2G的内存。G1会每45秒钟进行一次年轻代回收，每31个小时整个堆的使用率会达到45%，会开始老年代并发标记过程，标记完成后开始四到五次的混合回收。 </p> 
+<h4 id="3.7.5%20Remember%20Set%C2%A0">3.7.5 Remember Set </h4> 
+<ul><li>为什么要有Remember Set</li></ul> 
+<p>        主要是要解决一个对象被不同区域引用的问题：一个Region不可能是孤立的，一个Region中的对象可能被其他任意Region中对象引用，判断对象存活时，是否需要扫描整个Java堆才能保证准确？在其他的分代收集器，也存在这样的问题（而G1更突出)：回收新生代也不得不同时扫描老年代，这样明显会降低Minor GC的效率; </p> 
+<ul><li>使用Remember Set 解决问题</li></ul> 
+<p>        无论G1还是其他分代收集器，JVM都是使用Remembered Set来避免全局扫描。每个Region都有一个对应的Remembered Set；每次Reference类型数据写操作时，都会产生一个写屏障（Write Barrier）暂时中断操作，然后检查将要写入的引用指向的对象是否和该Reference类型数据在不同的Region(其他收集器：检查老年代对象是否引用了新生代对象）。如果不同，通过CardTable把相关引用信息记录到引用指向对象的所在Region对应的Remembered Set中；当进行垃圾收集时，在GC根节点的枚举范围加入Remembered Set，就可以保证不进行全局扫描，也不会有遗漏。 </p> 
+<p><img alt="" height="256" src="https://images2.imgbox.com/92/cf/KaQTl0bU_o.png" width="625"></p> 
+<p>        上页提到的Remebered Set就是上述Reset，上页提到的Reference类型就是引用类型，其中Reset的作用是记录当前Region中哪些对象被外部引用指向，比如Old区中的对象会指向Eden区的对象，然后当我们要回收某个Region的时候，直接遍历当前Region中的所有对象就可以了，然后针对性的去找到那些指向当前对象的其他对象，最终确定当前对象是否是根可达的。如果不是，那就应该被删除，其实之前的垃圾回收器都涉及到这个问题，当进行Minor GC的时候，通过GC Roots查找的时候还需要遍历OId区的对象，毕竟Old区对象也可能会指向Eden区对象。但是G1通过Rset避免了全堆的扫描，当引用类型数据写操作时，先暂时中断，然后判断当前引用类型数据是否被其他对象所指向，如果不被指向，那就直接放在Region中就可以了；如果被其他对象指向，那么还要判断这个对象是在当前要插入的Region中，还是在其他Region中。如果在其他Region中，那就需要使用CardTable把当前引用类型数据的指向信息放在Rset中，也就是形成上面的虚线连线；如果在当前Region中，那就不需要指向了，毕竟到时候我们会进行遍历查找根可达对象，那肯定会找到的，所以这种情况也是直接放在Region中就可以了。</p> 
+<h3 id="3.8%C2%A0%20%E5%B9%B4%E8%BD%BB%E4%BB%A3GC">3.8  年轻代GC</h3> 
+<p>        JVM启动时，G1先准备好Eden区，程序在运行过程中不断创建对象到Eden区，当Eden空间耗尽时，G1会启动一次年轻代垃圾回收过程。年轻代垃圾回收只会回收Eden区和Survivor区。</p> 
+<p>        首先G1停止应用程序的执行(Stop-The-world） ，创建回收集(collection set，是指需要被回收的内存分段的集合），年轻代回收过程的回收集包含年轻代Eden区和Survivor区所有的内存分段。 </p> 
+<p>        然后开始如下回收过程：</p> 
+<p>        1、<strong>第一阶段，扫描根</strong>。可以体现Rset作用：避免全堆扫描。根是指static变量指向的对象，正在执行的方法调用链条上的局部变量等。根引用连同RSet记录的外部引用作为扫描存活对象的入口。</p> 
+<p>        2、<strong>第二阶段，更新RSet</strong>。作用:保证Rset中的数据准确性。处理dirty card queue(见3.8.1)中的card，更新RSet。此阶段完成后，RSet可以准确的反映老年代对所在的内存分段中对象的引用。</p> 
+<p>        3、<strong>第三阶段，处理RSet</strong>。作用：根可达性遍历的一部分。识别被老年代对象指向的Eden中的对象，这些被指向的Eden中的对象被认为是存活的对象。</p> 
+<p>        4、<strong>第四阶段，复制对象</strong>。说明：新生代使用复制算法。此阶段，对象树被遍历，Eden区内存段中存活的对象会被复制到survivor区中空的内存分段，Survivor区内存段中存活的对象如果年龄未达阈值，年龄会加1，达到阈值会被会被复制到old区中空的内存分段。如果survivor空间不够，Eden空间的部分数据会直接晋升到老年代空间。</p> 
+<p>        5、<strong>第五阶段，处理引用</strong>。处理Soft，weak，Phantom，Final，JNI Weak 等引用。最终Eden空间的数据为空（见备注），GC停止工作，而目标内存中的对象都是连续存储的，没有碎片，所以复制过程可以达到内存整理的效果，减少碎片。 </p> 
+<p>        备注： 空Eden: Eden变成空的，那它就变成了无主Region，因此会被记录到空链表中，等待下一次被分配。</p> 
+<h4 id="3.8.1%C2%A0dirty%20card%20queue%EF%BC%88%E8%84%8F%E5%8D%A1%E8%A1%A8%E9%98%9F%E5%88%97%EF%BC%89">3.8.1 dirty card queue（脏卡表队列）</h4> 
+<ul><li>什么是脏卡表队列 </li></ul> 
+<p>        对于应用程序的引用赋值语句obiect.field=object（其中object.field=object中的第一个object代表老年代中的对象，而第二个object代表Eden区中的对象），JVM会在之前和之后执行特殊的操作以在dirty card queue中入队一个保存了对象引用信息的card。在年轻代回收的时候，G1会对Dirty Card Queue中所有的card进行处理，以更新RSet， 保证RSet实时准确的反映引用关系。</p> 
+<ul><li>脏卡表队列的意义</li></ul> 
+<p>        那为什么不在引用赋值语句处直接更新RSet呢？这是为了性能的需要，RSet的处理需要线程同步，开销会很大，使用队列性能会好很多。</p> 
+<ul><li>脏卡表队列的作用</li></ul> 
+<p>        Reset更新需要线程同步，所以开销会很大，因此不能实时更新，因此我们需要把引用对象被其他对象引用的关系放在一个脏卡表队列中，当年轻代回收的时候会进行STW，所以我们也正好把脏卡表队列中的值更新到Rset中，这样不仅没有涉及到开销问题,还可以保证Rset中的数据是准确的。</p> 
+<h3 id="3.9%20%E5%B9%B6%E5%8F%91%E6%A0%87%E8%AE%B0">3.9 并发标记</h3> 
+<p>        1．<strong>初始标记阶段</strong>：标记从根节点直接可达的对象。这个阶段是STW的，并且会触发一次年轻代GC。</p> 
+<p>        2．<strong>根区域扫描(Root Region Scanning)</strong> : G1 GC扫描survivor区直接可达的老年代区域对象，并标记被引用的对象。这一过程必须在young GC之前完成。主要扫描哪些老年代对象是可达：毕竟我们进行young GC的时候会移动Survivor区，移动之后就找不到哪些老年代对象是可达的了。</p> 
+<p>        3.  <strong>并发标记(Concurrent Marking)</strong>：在整个堆中进行并发标记(和应用程序并发执行)，此过程可能被young GC中断。在并发标记阶段，<strong>若发现区域对象中的所有对象都是垃圾，那这个区域会被立即回收</strong>。同时，并发标记过程中，会计算每个区域的对象活性(区域中存活对象的比例)。</p> 
+<p>        4．<strong>再次标记(Remark)</strong>：由于应用程序持续进行，需要修正上一次的标记结果。是STW的。G1中采用了比CMS更快的初始快照算法：snapshot-at-the-beginning (SATB)。原因:并发标记不准确</p> 
+<p>        5．<strong>独占清理(cleanup，STW)</strong>：计算各个区域的存活对象和GC回收比例，并进行排序，识别可以混合回收的区域。为下阶段做铺垫。是STW的。其实是一个统计计算过程，不会涉及垃圾清理。</p> 
+<p>        6.  <strong>并发清理阶段</strong>：识别并清理完全空闲的区域。</p> 
+<h3 id="3.10%20%E6%B7%B7%E5%90%88%E5%9B%9E%E6%94%B6%C2%A0">3.10 混合回收 </h3> 
+<p>        当越来越多的对象晋升到老年代old region时，为了避免堆内存被耗尽，虚拟机会触发一个混合的垃圾收集器，即Mixed GC， 该算法并不是一个Old<br> GC，除了回收整个Young Region，还会回收一部分的Old Region。这里需要注意：是部分老年代，而不是全部老年代。可以选择哪些Old Region进行收集，从而可以对垃圾回收的耗时时间进行控制。也要注意的是Mixed GC并不是Full GC。 </p> 
+<p><img alt="" height="285" src="https://images2.imgbox.com/19/6f/asgbKfl1_o.png" width="329"></p> 
+<p>        并发标记结束以后，老年代中百分百为垃圾的内存分段被回收了，部分为垃圾的内存分段被计算了出来。默认情况下，这些老年代的内存分段会分8次（可以通过-XX:G1MixedGCCountTarget设置）被回收。</p> 
+<p>        混合回收的回收集(Collection Set)包括八分之一的老年代内存分段，Eden区内存分段，Survivor区内存分段。混合回收的算法和年轻代回收的算法完全一样，只是回收集多了老年代的内存分段。具体过程请参考上面的年轻代回收过程。</p> 
+<p>        由于老年代中的内存分段默认分8次回收，G1会优先回收垃圾多的内存分段。垃圾占内存分段比例越高的，越会被先回收。并且有一个阈值会决定内存分段是否被回收：-XX:G1MixedGCLiveThresholdPercent，默认为65%，意思是垃圾占内存分段比例要达到65%才会被回收。如果垃圾占比太低，意味着存活的对象占比高，在复制的时候会花费更多的时间，则该region不会被回收。</p> 
+<p>        混合回收并不一定要进行8次。有一个阈值-XX:G1HeapWastePercent，默认值为10%，意思是允许整个堆内存中有10%的空间被浪费，意味着如果发现可以回收的垃圾占堆内存的比例低于10%，则不再进行混合回收。因为GC会花费很多的时间但是回收的内存却很少。</p> 
+<h3 id="3.11%20%E5%8F%AF%E9%80%89%E7%9A%84%E5%9E%83%E5%9C%BE%E5%9B%9E%E6%94%B6%E8%BF%87%E7%A8%8B%EF%BC%9AFull%20GC%C2%A0">3.11 可选的垃圾回收过程：Full GC </h3> 
+<p>        G1的初衷就是要避免Full GC的出现。但是如果上述方式不能正常工作，G1会停止应用程序的执行(Stop-The-world），使用单线程的内存回收算法进行垃圾回收，性能会非常差，应用程序停顿时间会很长。</p> 
+<p>        要避免Full GC的发生，一旦发生需要进行调整。什么时候会发生Full GC呢？比如堆内存太小，当G1在复制存活对象的时候没有空的内存分段可用，则会回退到full gc，这种情况可以通过增大内存解决。</p> 
+<p>        导致G1 Full GC的原因可能有:</p> 
+<ul><li>Evacuation的时候没有足够的to-space来存放晋升的对象。解决:加大堆空间</li><li>并发处理过程完成之前空间耗尽。解决:调小触发并发GC周期的Java堆占用阈值（默认是45%)</li><li>最大GC停顿时间太短，导致在规定的时间间隔内无法完成垃圾回收，也会导致Full GC。解决︰加大最大GC停顿时间 </li></ul> 
+<h3 id="3.12%20G1%E5%B8%B8%E7%94%A8%E7%9A%84%E5%8F%82%E6%95%B0%C2%A0">3.12 G1常用的参数 </h3> 
+<p>        前三个最常用。 </p> 
+<ul><li>-XX:+UseG1GC                                       手动指定使用G1收集器执行内存回收任务。</li><li>-XX:G1HeapRegionSize                          设置每个Region的大小。值是2的幂，范围是1MB到32MB之间，目标是根据最小的Java堆大小划分出约2048个区域。默认是堆内存的1/2000。</li><li>-XX:MaxGCPauseMillis                           设置期望达到的最大GC停顿时间指标(JVM会尽力实现，但不保证达到)。默认值是200ms</li><li>-XX: ParallelGCThread                           设置STW时GC线程数的值。最多设置为8</li><li>-XX:ConcGCThreads                              设置并发标记的线程数。将n设置为并行垃圾回收线程数(ParallelGcThreads)的1/4左右。</li><li>-XX: InitiatingHeapOccupancyPercent    设置触发并发GC周期的Java堆占用率阈值。超过此值，就触发GC。默认值是45。 </li></ul> 
+<h2 id="%E5%9B%9B%E3%80%81%E9%9D%A9%E5%91%BD%E6%80%A7%E7%9A%84ZGC">四、革命性的ZGC</h2> 
+<p>        ZGC的目标是在<strong>尽可能对吞吐量影响不大的前提下，实现在任意堆内存大小下都可以把垃圾收集的停顿时间限制在10ms以内的低延迟</strong>。《深入理解Java虚拟机》一书中这样定义ZGC：ZGC收集器是一款基于Region内存布局的，（暂时）不设分代的，使用了读屏障、染色指针和内存多重映射等技术来实现<strong>可并发的标记-压缩算法</strong>的，以低延迟为首要目标的一款垃圾收集器。</p> 
+<p>        ZGC的工作过程可以分为4个阶段:并发标记-并发预备重分配-并发重分配-并发重映射等。</p> 
+<p>        ZGC几乎在所有地方并发执行的，除了初始标记的是STW的。所以停顿时间几乎就耗费在初始标记上，这部分的实际时间是非常少的。 </p> 
+<p>        ZGC未来将成为服务端、大内存、低延迟应用的首选垃圾收集器。 </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/396b099c81f84057c3eb2a6a3aca5f1c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Python中的类和对象是什么关系？</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/2ac7ae3e5b0904884e727b9e83cecc95/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">STL模型转有限元网格</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

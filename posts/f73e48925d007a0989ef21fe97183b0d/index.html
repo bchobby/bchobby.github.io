@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【STM32】基于HAL库的中断详细学习 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【STM32】基于HAL库的中断详细学习" />
+<meta property="og:description" content="目录 1.中断概述
+1.1中断相关概念
+1.2 STM32中断系统
+2 .HAL库的中断处理
+2.1 HAL 库的中断封装
+2.2 外部中断处理流程
+3.外部中断的HAL库定义
+3.1. 外部中断的数据类型
+3.2. 外部中断的接口函数
+1.中断概述 在计算机系统中，处理器常常需要与外部设备进行数据传输。常见的数据传输方式有以下四种：
+1. 无条件方式
+处理器不必了解外部设备的状态，直接进行数据传输，适用于指示灯和按键等简单设备。
+2. 查询方式
+常用于处理器与慢速外部设备之间的数据传输。处理器与外部设备进行传输数据之前，先检查外部设备的状态。如果外部设备处于“准备好”状态（输入设备）或“空闲”状态（输出设备）时，才进行数据传输。否则将循环查询外部设备的状态，直到外部设备就绪。在查询过程中，处理器无法执行其他任务，利用率较低。
+3. 中断方式
+处理器不主动查询外部设备的状态，而是让外部设备在数据准备好之后，再通知处理器。这样，处理器在没接到外部设备通知前只管做自己的事情，只有接到通知时才执行外部设备的数据传输工作。在中断方式中，处理器和外部设备均可并行工作，从而提高了处理器的利用率。
+4. 直接存储器访问方式（DMA）
+DMA方式是在处理器内部建立片内外设和内存之间的数据传输通道，传输过程不需要处理器参与。DMA方式由硬件实现，特别适合于批量数据传输的场合。
+1.1中断相关概念 1.中断的定义
+为了更好地描述中断，我们以一个日常生活中的例子来说明。假设，你在家里阅读时，突然接到快递员的电话，通知你领取快递。这时，你需要记录当前阅读的页码，然后暂停阅读工作，转而去领取快递。快递领取之后，你再返回家里，根据记录的页码继续阅读。
+类似的，在处理器执行程序的过程中，被处理器内部或外部事件所打断，暂停当前程序的执行，转而去执行该事件对应的处理程序，这个处理过程称为中断。
+在中断过程中，引发中断的事件称为中断源；当前正在执行的程序称为主程序；主程序被暂停的位置称为断点；事件所对应的处理程序称为中断服务程序（interrupt service routine，ISR）。中断过程的示意图如图所示。
+2.中断的作用
+最初，中断技术引入到计算机系统，主要是为了解决快速处理器与慢速外部设备之间的数据传输问题。例如，打印数据时，处理器传输数据的速度较快，而打印机打印数据的速度较慢。如果不采用中断技术，处理器将经常处于等待状态，利用率较低。采用中断技术后，处理器向打印机传输数据后，就可以去处理其他的事务。当打印机打印完当前的数据后，再发出中断请求，处理器才予以响应。此时，处理器将暂停执行当前程序，转而执行向打印机传输下一批数据的程序，传输完成后又返回原来的程序执行。由于在打印机打印数据的过程中，处理器可以并行处理其他的事务，从而提高了处理器的工作效率。
+随着计算机技术的应用，人们发现中断技术不仅解决了处理器和外部设备的数据传输问题，还具备以下优点：
+1.分时操作
+处理器可以分时为多个外部设备服务，提高了计算机的利用率。
+2.实时响应
+处理器能够及时处理系统的随机事件，提高了系统的实时性。
+3.可靠性高
+处理器具有处理设备故障及掉电等突发事件的能力，提高了系统的可靠性。
+3.中断优先级和中断嵌套
+在实际应用中，处理器需要处理多个来自不同中断源的中断申请，不同中断源的中断申请在紧迫度上可能不尽相同，因此处理器需要在系统中设置中断源的优先等级，也就是中断优先级。
+在某一时刻，有多个中断源同时发出中断申请时，处理器只处理其中优先级最高的中断源。当处理器正在运行某一个中断源对应的中断服务程序时，出现了另一个中断源的中断申请。如果后者的优先级低于前者，处理器将不予理睬。反之，处理器将立刻响应后者，这种方式称为中断的嵌套。
+4.中断服务程序和中断向量表
+在介绍中断的概念时，我们将中断发生时所执行的特定程序称为中断服务程序，英文缩写ISR。中断服务程序一般由用户编写，主要内容是该中断发生时需要执行的具体任务。以定时中断实现指示灯的闪烁为例，在发生定时中断时，需要切换指示灯的状态。那么定时中断所对应的中断服务程序的主要内容就是切换指示灯的状态。
+在计算机系统中，当某一个中断源提出中断申请后，处理器要如何准确地找到这个中断源所对应的中断服务程序呢？首先，为了区分各个中断源，计算机系统为每一个中断源分配了一个编号，这个编号称为中断类型号。接着，对于系统需要响应的每一个中断源，都预先编写好对应的中断服务程序。最后，按照中断类型号，从小到大将所有中断服务程序的入口地址（函数名）依次排列，组合为一张表格的形式，这个表格就称为中断向量表，而中断服务程序的入口地址称为中断向量。
+中断向量表通常位于存储器的零地址处。当某一个中断源发出中断申请时，处理器根据识别到的中断类型号查找中断向量表，找到对应的表项。表项的内容就是该中断所对应的中断服务程序的入口地址，然后跳转到该地址执行具体的中断处理任务。
+从理解的角度上看，我们可以把中断向量表看作一个数组：每一个数组元素的内容就是中断服务程序的入口地址，数组元素的下标相当于每一个中断的中断类型号。
+5.中断响应过程
+了解了中断的相关概念后，我们可以总结出中断响应的完整步骤：
+① 中断源发出中断请求。
+② 判断处理器是否允许中断，以及该中断源是否被屏蔽。
+③ 多个中断同时申请时，需要进行优先级排队。
+④ 处理器暂停当前程序，保护断点地址和处理器的当前状态，根据中断类型号，查找中断向量表，转到对应的中断服务程序。
+⑤ 执行具体的中断处理任务。
+⑥ 恢复被保护的处理器状态，执行中断返回指令，回到被暂停程序的断点地址处。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/f73e48925d007a0989ef21fe97183b0d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-01-09T02:02:01+08:00" />
+<meta property="article:modified_time" content="2023-01-09T02:02:01+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【STM32】基于HAL库的中断详细学习</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2 id="main-toc" style="text-align:center;"><strong>目录</strong></h2> 
+<p id="1.%E4%B8%AD%E6%96%AD%E6%A6%82%E8%BF%B0-toc" style="margin-left:0px;"><a href="#1.%E4%B8%AD%E6%96%AD%E6%A6%82%E8%BF%B0" rel="nofollow">1.中断概述</a></p> 
+<p id="1.1%E4%B8%AD%E6%96%AD%E7%9B%B8%E5%85%B3%E6%A6%82%E5%BF%B5-toc" style="margin-left:40px;"><a href="#1.1%E4%B8%AD%E6%96%AD%E7%9B%B8%E5%85%B3%E6%A6%82%E5%BF%B5" rel="nofollow">1.1中断相关概念</a></p> 
+<p id="1.2%20STM32%E4%B8%AD%E6%96%AD%E7%B3%BB%E7%BB%9F-toc" style="margin-left:40px;"><a href="#1.2%20STM32%E4%B8%AD%E6%96%AD%E7%B3%BB%E7%BB%9F" rel="nofollow">1.2 STM32中断系统</a></p> 
+<p id="2%20.HAL%E5%BA%93%E7%9A%84%E4%B8%AD%E6%96%AD%E5%A4%84%E7%90%86-toc" style="margin-left:0px;"><a href="#2%20.HAL%E5%BA%93%E7%9A%84%E4%B8%AD%E6%96%AD%E5%A4%84%E7%90%86" rel="nofollow">2 .HAL库的中断处理</a></p> 
+<p id="2.1%20HAL%20%E5%BA%93%E7%9A%84%E4%B8%AD%E6%96%AD%E5%B0%81%E8%A3%85-toc" style="margin-left:40px;"><a href="#2.1%20HAL%20%E5%BA%93%E7%9A%84%E4%B8%AD%E6%96%AD%E5%B0%81%E8%A3%85" rel="nofollow">2.1 HAL 库的中断封装</a></p> 
+<p id="2.2%20%E5%A4%96%E9%83%A8%E4%B8%AD%E6%96%AD%E5%A4%84%E7%90%86%E6%B5%81%E7%A8%8B-toc" style="margin-left:40px;"><a href="#2.2%20%E5%A4%96%E9%83%A8%E4%B8%AD%E6%96%AD%E5%A4%84%E7%90%86%E6%B5%81%E7%A8%8B" rel="nofollow">2.2 外部中断处理流程</a></p> 
+<p id="3.%E5%A4%96%E9%83%A8%E4%B8%AD%E6%96%AD%E7%9A%84HAL%E5%BA%93%E5%AE%9A%E4%B9%89-toc" style="margin-left:0px;"><a href="#3.%E5%A4%96%E9%83%A8%E4%B8%AD%E6%96%AD%E7%9A%84HAL%E5%BA%93%E5%AE%9A%E4%B9%89" rel="nofollow">3.外部中断的HAL库定义</a></p> 
+<p id="3.1.%20%E5%A4%96%E9%83%A8%E4%B8%AD%E6%96%AD%E7%9A%84%E6%95%B0%E6%8D%AE%E7%B1%BB%E5%9E%8B-toc" style="margin-left:40px;"><a href="#3.1.%20%E5%A4%96%E9%83%A8%E4%B8%AD%E6%96%AD%E7%9A%84%E6%95%B0%E6%8D%AE%E7%B1%BB%E5%9E%8B" rel="nofollow">3.1. 外部中断的数据类型</a></p> 
+<p id="3.2.%20%E5%A4%96%E9%83%A8%E4%B8%AD%E6%96%AD%E7%9A%84%E6%8E%A5%E5%8F%A3%E5%87%BD%E6%95%B0-toc" style="margin-left:40px;"><a href="#3.2.%20%E5%A4%96%E9%83%A8%E4%B8%AD%E6%96%AD%E7%9A%84%E6%8E%A5%E5%8F%A3%E5%87%BD%E6%95%B0" rel="nofollow">3.2. 外部中断的接口函数</a></p> 
+<hr> 
+<h2 id="1.%E4%B8%AD%E6%96%AD%E6%A6%82%E8%BF%B0" style="margin-left:0;text-align:justify;">1.中断概述</h2> 
+<p style="margin-left:.0001pt;text-align:justify;">在计算机系统中，处理器常常需要与外部设备进行数据传输。常见的数据传输方式有以下四种：</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#ff0000;">1. </span><span style="color:#ff0000;">无条件方式</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">处理器不必了解外部设备的状态，直接进行数据传输，适用于指示灯和按键等简单设备。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#ff0000;">2. </span><span style="color:#ff0000;">查询方式</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">常用于处理器与慢速外部设备之间的数据传输。处理器与外部设备进行传输数据之前，先检查外部设备的状态。如果外部设备处于“准备好”状态（输入设备）或“空闲”状态（输出设备）时，才进行数据传输。否则将循环查询外部设备的状态，直到外部设备就绪。在查询过程中，处理器无法执行其他任务，利用率较低。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#ff0000;">3. </span><span style="color:#ff0000;">中断方式</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">处理器不主动查询外部设备的状态，而是让外部设备在数据准备好之后，再通知处理器。这样，处理器在没接到外部设备通知前只管做自己的事情，只有接到通知时才执行外部设备的数据传输工作。在中断方式中，处理器和外部设备均可并行工作，从而提高了处理器的利用率。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#ff0000;">4. </span><span style="color:#ff0000;">直接存储器访问方式（DMA）</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">DMA方式是在处理器内部建立片内外设和内存之间的数据传输通道，传输过程不需要处理器参与。DMA方式由硬件实现，特别适合于批量数据传输的场合。</p> 
+<h3 id="1.1%E4%B8%AD%E6%96%AD%E7%9B%B8%E5%85%B3%E6%A6%82%E5%BF%B5" style="margin-left:0;text-align:justify;">1.1中断相关概念</h3> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>1.中断的定义</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">为了更好地描述中断，我们以一个日常生活中的例子来说明。假设，你在家里阅读时，突然接到快递员的电话，通知你领取快递。这时，你需要记录当前阅读的页码，然后暂停阅读工作，转而去领取快递。快递领取之后，你再返回家里，根据记录的页码继续阅读。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">类似的，在处理器执行程序的过程中，被处理器内部或外部事件所打断，暂停当前程序的执行，转而去执行该事件对应的处理程序，这个处理过程称为中断。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在中断过程中，引发中断的事件称为中断源；当前正在执行的程序称为主程序；主程序被暂停的位置称为断点；事件所对应的处理程序称为中断服务程序（interrupt service routine，ISR）。中断过程的示意图如图所示。</p> 
+<p class="img-center"><img alt="" height="302" src="https://images2.imgbox.com/57/c8/UYrjteFG_o.png" width="291"></p> 
+<p></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>2.中断的作用</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">最初，中断技术引入到计算机系统，主要是为了解决快速处理器与慢速外部设备之间的数据传输问题。例如，打印数据时，处理器传输数据的速度较快，而打印机打印数据的速度较慢。如果不采用中断技术，处理器将经常处于等待状态，利用率较低。采用中断技术后，处理器向打印机传输数据后，就可以去处理其他的事务。当打印机打印完当前的数据后，再发出中断请求，处理器才予以响应。此时，处理器将暂停执行当前程序，转而执行向打印机传输下一批数据的程序，传输完成后又返回原来的程序执行。由于在打印机打印数据的过程中，处理器可以并行处理其他的事务，从而提高了处理器的工作效率。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">随着计算机技术的应用，人们发现中断技术不仅解决了处理器和外部设备的数据传输问题，还具备以下优点：</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#ff0000;">1.</span><span style="color:#ff0000;">分时操作</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">处理器可以分时为多个外部设备服务，提高了计算机的利用率。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#ff0000;">2.</span><span style="color:#ff0000;">实时响应</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">处理器能够及时处理系统的随机事件，提高了系统的实时性。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#ff0000;">3.</span><span style="color:#ff0000;">可靠性高</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">处理器具有处理设备故障及掉电等突发事件的能力，提高了系统的可靠性。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>3.中断优先级和中断嵌套</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">在实际应用中，处理器需要处理多个来自不同中断源的中断申请，不同中断源的中断申请在紧迫度上可能不尽相同，因此处理器需要在系统中设置中断源的优先等级，也就是中断优先级。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在某一时刻，有多个中断源同时发出中断申请时，处理器只处理其中优先级最高的中断源。当处理器正在运行某一个中断源对应的中断服务程序时，出现了另一个中断源的中断申请。如果后者的优先级低于前者，处理器将不予理睬。反之，处理器将立刻响应后者，这种方式称为中断的嵌套。</p> 
+<p class="img-center"><img alt="" height="432" src="https://images2.imgbox.com/7a/25/A2LiB5TO_o.png" width="661"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>4.中断服务程序和中断向量表</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">在介绍中断的概念时，我们将中断发生时所执行的特定程序称为中断服务程序，英文缩写ISR。中断服务程序一般由用户编写，主要内容是该中断发生时需要执行的具体任务。以定时中断实现指示灯的闪烁为例，在发生定时中断时，需要切换指示灯的状态。那么定时中断所对应的中断服务程序的主要内容就是切换指示灯的状态。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在计算机系统中，当某一个中断源提出中断申请后，处理器要如何准确地找到这个中断源所对应的中断服务程序呢？首先，为了区分各个中断源，计算机系统为每一个中断源分配了一个编号，这个编号称为中断类型号。接着，对于系统需要响应的每一个中断源，都预先编写好对应的中断服务程序。最后，按照中断类型号，从小到大将所有中断服务程序的入口地址（函数名）依次排列，组合为一张表格的形式，这个表格就称为中断向量表，而中断服务程序的入口地址称为中断向量。</p> 
+<p>中断向量表通常位于存储器的零地址处。当某一个中断源发出中断申请时，处理器根据识别到的中断类型号查找中断向量表，找到对应的表项。表项的内容就是该中断所对应的中断服务程序的入口地址，然后跳转到该地址执行具体的中断处理任务。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">从理解的角度上看，我们可以把中断向量表看作一个数组：每一个数组元素的内容就是中断服务程序的入口地址，数组元素的下标相当于每一个中断的中断类型号。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>5.中断响应过程</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">了解了中断的相关概念后，我们可以总结出中断响应的完整步骤：</p> 
+<p style="margin-left:.0001pt;text-align:justify;">① 中断源发出中断请求。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">② 判断处理器是否允许中断，以及该中断源是否被屏蔽。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">③ 多个中断同时申请时，需要进行优先级排队。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">④ 处理器暂停当前程序，保护断点地址和处理器的当前状态，根据中断类型号，查找中断向量表，转到对应的中断服务程序。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">⑤ 执行具体的中断处理任务。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">⑥ 恢复被保护的处理器状态，执行中断返回指令，回到被暂停程序的断点地址处。</p> 
+<h3 id="1.2%20STM32%E4%B8%AD%E6%96%AD%E7%B3%BB%E7%BB%9F" style="margin-left:0;text-align:justify;">1.2 STM32中断系统</h3> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>1.嵌套向量中断控制器</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">中断可以由硬件或者软件触发。在ARM处理器中，把能够打断当前代码执行流程的事件分为异常（exception）和中断（interrupt）两类。二者的区别在于：中断是由内核外部产生的，一般由硬件触发，比如定时器中断和外部中断等。而异常通常是内核自身产生的，大多由软件触发，比如除法出错异常，预取指失败等。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在基于Cortex-M内核设计的ARM处理器中提供了一个专用的硬件模块：嵌套向量中断控制器（nested vectored interrupt controller，NVIC）用来管理全部的异常和中断。通过对NVIC的编程，可以实现中断的使能、中断优先级的设置以及中断触发方式的选择等功能。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">NVIC利用中断通道来管理各类中断，中断源通过中断通道向内核发出中断申请，这些中断通道已经固定分配给内核异常和片内外设。每一个中断通道对应一个中断服务程序，按照中断优先级的顺序组成了STM32微控制器的中断向量表。不同型号的STM32微控制器支持的中断通道各不相同，下表给出了STM32F411芯片的中断向量表。由于篇幅所限,这里只给出了部分的中断向量表，完整的中断向量表可以查阅芯片的参考手册。</p> 
+<table align="center" border="1" cellspacing="0"><tbody><tr><td style="background-color:#e7e6e6;border-color:#000000;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">编号</p> </td><td style="background-color:#e7e6e6;border-color:#000000;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">默认优先级</p> </td><td style="background-color:#e7e6e6;border-color:#000000;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">优先级类型</p> </td><td style="background-color:#e7e6e6;border-color:#000000;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">名称</p> </td><td style="background-color:#e7e6e6;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">说明</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">0</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">—</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">—</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">—</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">栈空间起始地址</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">1</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">-3</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">固定</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">Reset</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">复位中断</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">2</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">-2</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">固定</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">NMI</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">不可屏蔽中断</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">3</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">-1</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">固定</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">HardFault</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">类型错误中断</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">4</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">0</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">可设置</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">MemManage</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">存储器管理</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">5</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">1</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">可设置</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">BusFault.</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">总线错误</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">6</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">2</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">可设置</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">UsageFault</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">未定义的指令或非法状态</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">7~10</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">—</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">—</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">—</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">保留</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">11</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">3</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">可设置</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">SVCall</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">通过SWI指令调用的系统服务</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">12</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">4</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">可设置</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">DebugMonitor</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">调试监控器</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">13</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">—</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">—</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">—</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">保留</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">14</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">5</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">可设置</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">PendSV</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">可挂起的系统服务请求</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">15</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">6</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">可设置</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">SysTick</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">系统节拍定时器</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">16</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">7</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">可设置</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">WWDG</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">窗口看门狗中断</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">17</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">8</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">可设置</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">PVD</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">可编程电压检测中断</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">22</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">13</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">可设置</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">EXTI0</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">EXTI线0中断</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">44</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">35</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">可设置</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">TIM2</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">TIM2全局中断</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">54</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">45</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">可设置</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">UART2</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">UART2全局中断</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">56</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">47</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">可设置</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">EXTI15_10</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">EXTI线[15:10]中断</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">……</p> </td></tr><tr><td style="vertical-align:top;width:34.4pt;"> <p style="margin-left:.0001pt;text-align:center;">101</p> </td><td style="vertical-align:top;width:64.9pt;"> <p style="margin-left:.0001pt;text-align:center;">92</p> </td><td style="vertical-align:top;width:69.5pt;"> <p style="margin-left:.0001pt;text-align:center;">可设置</p> </td><td style="vertical-align:top;width:86.4pt;"> <p style="margin-left:.0001pt;text-align:center;">SPI5</p> </td><td style="vertical-align:top;width:160.1pt;"> <p style="margin-left:.0001pt;text-align:center;">SPI5全局中断</p> </td></tr></tbody></table> 
+<p> 从表中可以看出，除了复位中断、不可屏蔽中断和类型错误中断的中断优先级是固定的外，其余中断源的中断优先级均可设置。对于每一个中断源而言，按照它在中断向量表中的位置，给出了一个默认的中断优先级，编号越小的优先级越高。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在HAL库提供的启动文件startup_stm32fxxx.s（xxx表示片型号）中已经创建了中断向量表，并规定了各个中断源所对应中断服务程序的名称，用户只需要根据该名称编写实际的中断处理任务即可。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="background-color:#ffff00;">注意：由于STM32微控制器片内集成的外设较多，而中断通道的数量有限，因此会出现多个外设共享同一个中断通道的情况。对于单个外设而言，它通常具备若干个可以引起中断的中断源。比如定时器就具备更新中断、捕获中断和匹配中断等多个中断源。-</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>2. STM32中断优先级设置</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">中断源通过中断通道向内核发出中断申请，设置中断源的优先级实际上是设置中断通道的优先级。中断通道的优先级通过NVIC中的中断优先级寄存器NVIC_IP进行设置，该寄存器是8位，理论上可以配置256个中断优先级。STM32微控制器只使用了其中的高4位，并分成了两个优先级：抢占优先级（preempition priority）和子优先级（subpriority）。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="background-color:#ffff00;">抢占优先级：无关中断产生的先后，只比较优先级的高低。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="background-color:#ffff00;">子优先级：就是响应优先级，响应优先级主要给出了一种响应的优先队列。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="background-color:#ffff00;">具有高抢占式优先级的中断可以在具有低抢占式优先级的中断处理过程中被响应，即中断嵌套，或者说高抢占式优先级的中断可以嵌套低抢占式优先级的中断。</span><span style="background-color:#00ffff;">通俗的理解就是，低抢占优先级的中断处理正在执行，来了一个高抢占式优先级的中断，即去执行高抢占式优先级的中断，执行完毕后，再去执行低抢占优先级的中断。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="background-color:#ffff00;">当两个中断源的抢占式优先级相同时，这两个中断将没有嵌套关系，当一个中断到来后，如果正在处理另一个中断，这个后到来的中断就要等到前一个中断处理完之后才能被处理。如果这两个中断同时到达，则中断控制器根据他们的响应优先级高低来决定先处理哪一个；如果他们的抢占式优先级和响应优先级都相等，则根据他们在中断表中的排位顺序决定先处理哪一个。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">具体的分组情况如下：</p> 
+<p style="margin-left:.0001pt;text-align:justify;">第0组：所有4位用于指定子优先级。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">第1组：最高1位用于指定抢占优先级，后面3位用于指定子优先级。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">第2组：最高2位用于指定抢占优先级，后面2位用于指定子优先级。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">第3组：最高3位用于指定抢占优先级，后面1位用于指定子优先级。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">第4组：所有4位于指定抢占优先级。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">不同分组情况下，抢占优先级和子优先级的等级划分如下表所示。</p> 
+<table border="1" cellspacing="0"><tbody><tr><td style="background-color:#e7e6e6;border-color:#000000;width:163.05pt;"> <p style="margin-left:.0001pt;text-align:center;">优先级分组</p> </td><td style="background-color:#e7e6e6;border-color:#000000;width:113.45pt;"> <p style="margin-left:.0001pt;text-align:center;">抢占优先级</p> </td><td style="background-color:#e7e6e6;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:center;">子优先级</p> </td></tr><tr><td style="vertical-align:top;width:163.05pt;"> <p style="margin-left:.0001pt;text-align:center;">第0组：NVIC_PriorityGroup_0</p> </td><td style="vertical-align:top;width:113.45pt;"> <p style="margin-left:.0001pt;text-align:center;">无</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:center;">4位/16级（0~15）</p> </td></tr><tr><td style="vertical-align:top;width:163.05pt;"> <p style="margin-left:.0001pt;text-align:center;">第1组：NVIC_PriorityGroup_1</p> </td><td style="vertical-align:top;width:113.45pt;"> <p style="margin-left:.0001pt;text-align:center;">1位/2级（0~1）</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:center;">3位18级（0~7）</p> </td></tr><tr><td style="vertical-align:top;width:163.05pt;"> <p style="margin-left:.0001pt;text-align:center;">第2组：NVIC_PriorityGroup_2</p> </td><td style="vertical-align:top;width:113.45pt;"> <p style="margin-left:.0001pt;text-align:center;">2位/4级（0~3）</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:center;">2位/4级（0~3）</p> </td></tr><tr><td style="vertical-align:top;width:163.05pt;"> <p style="margin-left:.0001pt;text-align:center;">第3组：NVIC_PriorityGroup_3</p> </td><td style="vertical-align:top;width:113.45pt;"> <p style="margin-left:.0001pt;text-align:center;">3位/8级（0~7）</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:center;">1位12级（0~1）</p> </td></tr><tr><td style="vertical-align:top;width:163.05pt;"> <p style="margin-left:.0001pt;text-align:center;">第4组：NVIC_PriorityGroup_4</p> </td><td style="vertical-align:top;width:113.45pt;"> <p style="margin-left:.0001pt;text-align:center;">4位/16级（0~15）</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:center;">无</p> </td></tr></tbody></table> 
+<p style="margin-left:.0001pt;text-align:justify;">在判断一个中断的优先级时，需要综合考虑这两个优先级。当多个中断同时提出中断申请时，抢占优先级高的中断会优先得到执行。如果抢占优先级相同，则比较子优先级；子优先级高的中断会优先得到执行。如果抢占优先级和子优先级都相同的话，就根据各中断在中断向量表中的位置来确定，中断向量表中靠前的中断优先得到执行。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在HAL库的初始化过程中，HAL库初始化函数HAL_Init()将优先级分组设置为第4组，即只有0~15共16级抢占式优先级，没有子优先级。编号越小的优先级越高：0号为最高，15号为最低。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>3.外部中断控制器</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">对于一些涉及GPIO引脚的电平变化或者来自RTC和USB等外设的唤醒事件所引发的中断，在STM32微控制器内部专门设计了一个外部中断控制器（EXTI）进行管理EXTI提供了23个外部中断线（EXTI Line），其中0~15号外部中断线用于GPIO引脚，其余16 ~22号外部中断线则用于RTC和USB等外设的唤醒事件。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">外部中断控制器的结构如图所示。</p> 
+<p style="margin-left:.0001pt;text-align:center;"></p> 
+<p style="margin-left:.0001pt;text-align:center;"><img alt="" height="709" src="https://images2.imgbox.com/fe/9a/FuufNUFE_o.png" width="905"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">从图可以看到，外部中断控制器一共包括以下6个模块：</p> 
+<p style="margin-left:.0001pt;text-align:justify;">编号①是外部中断线，这些外部中断线可以通过寄存器的配置与一个GPIO引脚相连或者连接到RTC和USB等外设的唤醒事件。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">编号②是一个边沿检测电路。它根据用户设置的边沿检测条件来输出信号：当检测到边沿跳变时，输出有效信号1；没有检测到边沿跳变时,输出无效信号0。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">编号③是一个或门电路。它的一个输入端来自边沿检测电路，另一个输人端来自软件中断事件寄存器。或门的设计可以允许用户通过程序来触发外部中断。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">编号④是一个与门电路。它的一个输人端来自编号3或门电路的输出，另一个输人端来自中断掩码寄存器。当中断掩码寄存器输出为0时，与门被封锁，无法输出中断申请信号。当中断掩码寄存器输出为1时，与门开放，可以输出中断申请信号。因此这个电路模块起到了中断使能的功能。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">编号⑤是中断请求挂起寄存器。当编号④的与门电路输出为1时，寄存器的对应位将会置1，作为该外部中断线的中断标志位，表明有中断发生。处理器完成本次中断处理后，必须要对该寄存器的对应位写入1，以清除本次中断的中断标志位，从而避免对同一次中断的重复响应。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">编号⑥是将中断请求挂起寄存器的内容输出到NVIC，由NVIC来完成后续的中断处理。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>4.外部中断</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">当STM32的GPIO引脚和0~15号外部中断线连接后，此时的GPIO引脚就具备外部中断的功能中断的触发方式可以选择上升沿触发、下降沿触发或双边沿触发。为了叙述方便，我们把通过GPIO引脚产生的中断简称为外部中断。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">STM32的GPIO引脚数量众多，以STM32F411RET6为例，其GPIO引脚多达50个，但是提供给GPIO引脚使用的外部中断线只有16个。为了解决这个矛盾STM32按照引脚的编号对GPIO引脚进行了分组：尾号相同的引脚作为一组，通过一个多路选择器连接到1个外部中断线，即PAx、PBx、PCx、PDx、PEx、PFx、PGx和PHx作为一组连接到外部中断线x(EXTIx)，x的取值范围是0~15。</p> 
+<p style="margin-left:.0001pt;text-align:center;"><img alt="" height="623" src="https://images2.imgbox.com/ff/9f/SDd7CQe7_o.png" width="541"></p> 
+<p></p> 
+<p style="margin-left:.0001pt;text-align:justify;">由于 GPIO 引脚按组进行了分类，同组的引脚只能使用其中一个与外部中断线连接具备外部中断功能。例如，PA0、PB0、PC0、PD0、PE0、PF0、PG0和PH0这些引脚作为一组,<span style="background-color:#ffff00;">如果我们使用PA0引脚作为外部中断引脚，那么该组的其余引脚就不能作为外部中断引脚使用。因此，从本质上讲，可供用户同时使用的外部中断引脚最多只有16个。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">在上图中还可以看出，NVIC为EXTI所管理的16个外部中断线提供了7个中断通道。外部中断线0(EXTI0)、外部中断线1(EXTI1)、外部中断线2(EXTI2)、外部中断线3(EXTI3)和外部中断线4(EXTI4)，这5个外部中断线可以连接到独立的中断通道具有独立的中断服务程序。外部中断线5至外部中断线9(EXTI5-EXTI9)则连接到同一个中断通道EXTI9_5_IRQ，共享同一个中断服务程序。外部中断线10至外部中断线15(EXTI10~EXTI15)也是连接到同一个中断通道EXTI1510R，共享同一个中断服务程序。对于共享中断通道(中断服务程序)的外部中断线,在进行中断处理前，还需要判断是哪一个GPIO引脚触发的本次外部中断。</p> 
+<h2 id="2%20.HAL%E5%BA%93%E7%9A%84%E4%B8%AD%E6%96%AD%E5%A4%84%E7%90%86" style="margin-left:0;text-align:justify;">2 .HAL库的中断处理</h2> 
+<h3 id="2.1%20HAL%20%E5%BA%93%E7%9A%84%E4%B8%AD%E6%96%AD%E5%B0%81%E8%A3%85" style="margin-left:0;text-align:justify;">2.1 HAL 库的中断封装</h3> 
+<p style="margin-left:.0001pt;text-align:justify;">在上一节中我们介绍了中断的处理过程：当中断发生时，处理器暂停当前程序，根据中断类型号在中断向量表中查找中断服务程序的入口地址，进而执行中断服务程序。执行完成后，返回断点处执行原程序。虽然上述的操作大部分是由硬件完成，但是在针对具体外设的中断处理中，还需要用户完成以下的编程步骤：</p> 
+<p style="margin-left:.0001pt;text-align:justify;">① 设置中断触发条件。如外部中断的边沿触发，定时器更新中断的时间间隔。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">② 设置中断优先等级。系统中存在多个中断时，需要根据任务的紧迫程度，设置不同的中断优先级。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">③ 使能外设的某个中断。微控制器片内集成的外设一般都有多个中断源，这些中断源的使能由外设的寄存器控制。例如，串口通信的发送数据寄存器空中断TXE和发送完成中断TC的使能，就是由串口控制寄存器CR1中的TXEIE位和TCIE位控制。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">④ 判断中断源。对于有多个中断源的外设，进入中断服务程序后,需要根据中断标志来判断具体发生了哪一种中断。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">⑤ 清除中断标志。发生中断后，相应的中断标志位置位，以便MCU查询。这些中断标志要注意及时清除，避免重复进入中断。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">⑥ 编写程序。用户根据实际项目的需求来编写中断发生时应该执行的操作。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在上述的六个中断编程步骤中，借助CubeMX软件可以通过图形化的设置方式完成前三个步骤，而后三个步骤可以借助HAL库提供的接口函数进一步简化。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在HAL库中，将中断的处理过程进行了重新的封装，主要有以下几点：</p> 
+<p style="margin-left:.0001pt;text-align:justify;">1.统一定义了各个外设的中断通用处理所两数HAL_PPP_IRQHandler()（PPP代表外设名称）。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">2.在中断通用处理函数HAL_PPP_IRQHandler()中完成中断标志的判断和清除。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">3.将中断中需要执行的操作以回调函数的形式提供给用户，回调函数由中断通用处理函数调用。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="background-color:#ffff00;">回调函数是一个通过函数指针调用的函数。如果把一个函数的指针（即函数的地址）作为另一个函数的参数时，当这个指针被用来调用其所指向的函数时，这个被调用的函数就称为回调函数。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">我们通过一个例子来进一步说明回调函数的概念。假设有三个函数：Func1、Func2和 Func3。函数Func1调用函数Func2，同时将函数Func3作为形参传递给Func2，此时，Fun1 可以看作是应用层函数，Func2可以看作是中间层函数，Func3则称为回调函数。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在实际的程序设计中，回调函数一般位于用户程序中，和主程序同属于应用层，而回调函数的调用方通常是第三方提供的库函数。<span style="background-color:#ffff00;">回调函数的执行，相当于从库函数调用应用层的函数，因此称为回调。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">回调函数一般用于执行具体的操作，需要用户根据实际项目的需求来编写。无法封装到第三方的库函数里面。因此，库函数提供一个函数指针作为入口参数，主程序将回调函数像参数一样传入库函数。这样一来，只要改变传进库函数的参数，就可以实现不同的功能，并且不需要修改库函数的代码，确保了应用层和库函数的解耦。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">以中断服务程序的处理为例：判断中断源，清除中断标志这些流程对任何一个中断都相同的。但是，某一个中断发生之后执行什么具体的操作，却各不相同。比如，1s的定时中断到了，是开启一个指示灯，还是使蜂鸣器鸣响，都由用户根据实际项目的需求来编写。因此，HAL库将中断中需要执行的操作以回调函数的形式提供给用户，简化了中断服务程序的设计。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">HAL库在设计回调函数的时候，采用了更为巧妙的方法：在需要使用回调函数的地方，预定义了一个默认的回调函数，该函数的属性设计为“weak”，函数内部不执行任何操作。<span style="background-color:#ffff00;">weak</span><span style="background-color:#ffff00;">属性的函数表示：如果该函数没有在其他文件中定义，则使用该函数；如果用户在其他地方定义了该函数，则使用用户定义的函数。</span>当用户需要使用回调函数时，可以在应用程序中重新定义一个同名的回调函数，在函数中实现具体的操作。这样，编译器在编译的时候，就会选择用户重新定义的回调函数。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">在利用CubeMX软件生成的MDK工程中，与中断处理相关的文件一共有两个：</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#ff0000;">1.</span><span style="color:#ff0000;">启动文件：startup_stm32fxxx.s (xxx表示芯片型号)</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">在启动文件中，创建了中断向量表，并预先为每一个中断编写了中断服务程序。这些断服务程序的内部都是死循环，不执行任何具体操作，其目的只是为了初始化中断向量表。中断服务程序的属性设置为“weak”，用户可以在用户文件中重新定义一个同名函数作为实际执行的中断服务程序。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#ff0000;">2.</span><span style="color:#ff0000;">中断服务程序文件：stm32fxxx_it.c (xxx表示芯片型号)</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">中断服务程序文件用于存放各个中断实际执行的中断服务程序，这些中断服务程序可以分成两个部分：</p> 
+<p style="margin-left:.0001pt;text-align:justify;">第一部分是Cortex-M内核处理器的异常处理程序，包括不可屏蔽中断（NMI）类型错误（HardFault）以及系统节拍定时器中断（Systick）等。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">第二部分是微控制器片内外设的中断服务程序。在使用CubeMX软件进行初始化配置时，如果使能了某一个外设的中断功能，那么在生成代码时,对应外设的中断服务程序将会自动添加到stm32fxxx_it.c文件中，在中断服务程序中再调用该外设所对应的中断通用处理函数HAL_PPP_IRQHandler()。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="background-color:#ffff00;">注意：中断服务程序的函数名在中断向量表中已经由ST公司预先规定，用户必须按照这个规定的函数名来编写中断服务程序。发生中断时，中断服务程序才能被正确调用。</span></p> 
+<h3 id="2.2%20%E5%A4%96%E9%83%A8%E4%B8%AD%E6%96%AD%E5%A4%84%E7%90%86%E6%B5%81%E7%A8%8B" style="margin-left:0;text-align:justify;">2.2 外部中断处理流程</h3> 
+<p style="margin-left:.0001pt;text-align:justify;">下面我们以GPIO引脚触发的外部中断为例，来详细分析一下HAL库的中断处理流程。假设芯片型号为STM32F411，设置引脚PC0和PC13为外部中断功能（即PC0和PC13与对应的外部中断线EXTI0和EXTI13相连），并使能对应的外部中断。当引脚PC0或PC13出现电平变化时，将触发外部中断，具体的执行过程如下：</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>1. 查找中断向量表，跳转到中断服务程序</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">微控制器暂停当前程序的执行，根据中断向量表跳转到EXTIO_IRQHandler()（外部中断线0的中断服务程序）或者EXTI15 10_IRQHandler()（外部中断线10~15的中断服务程序）执行，具体执行哪一个中断服务程序由中断发生的先后顺序及中断的优先级决定。启动文件startup_stm32f411xe.s的中断向量表中预先定义了外部中断线所对应的中断服务程序，如表所示。这些定义的函数都加入了weak属性。</p> 
+<table border="1" cellspacing="0"><tbody><tr><td style="background-color:#d0cece;border-color:#000000;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">外部中断线</p> </td><td style="background-color:#d0cece;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">中断服务程序名称</p> </td></tr><tr><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">外部中断线0(EXTILine0)</p> </td><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">EXTI0_IROHandler</p> </td></tr><tr><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">外部中断线1(EXTI Line 1)</p> </td><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">EXTI1_IROHandler</p> </td></tr><tr><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">外部中断线2(EXTI Line 2)</p> </td><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">EXTI2_IRQHandler</p> </td></tr><tr><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">外部中断线 3(EXTI Lie 3)</p> </td><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">EXTI3_IROHandler</p> </td></tr><tr><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">外部中断线4(EXTI Line 4)</p> </td><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">EXTI9_5_IRQHandler</p> </td></tr><tr><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">外部中断线 5~9(EXTI Line[9:5])</p> </td><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">EXTI4_IRQHandler</p> </td></tr><tr><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">外部中断线 10~15( EXTI Line[ 15:10])</p> </td><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">EXTI15_10_IROHandler</p> </td></tr></tbody></table> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>2.执行中断服务程序</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">启动文件startup_stm32f411xe.s中定义的中断服务程序默认为死循环，不执行任何具体操作。由于这些函数定义为weak属性，因此用户可以在stm32f4xx_it.c文件中重新定义与该函数同名的中断服务程序。当中断发发生时，将执行在stm32f4xx_it.c文件中重新定义的中断服务程序。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">我们在CubeMX软件中使能外部中断线发的中断功能后，将在stm32f4xx_it.c文件中自动添加相关的外部<span style="background-color:#ffff00;">中断服务程序</span>，具体代码支如程序清单所示。</p> 
+<pre><code class="language-cpp">/*
+* @brief This function handles EXTI line0 interrupt.
+*/
+void EXTI0_IRQHandler(void) // 外部中断线日的中断服务程序 
+{
+HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_0); // 调用外部中断通用处理函数
+}
+/*
+*@brief This function handles EXTI line[15:10] interrupts.
+*/
+void EXTI15_10_IRQHandler(void) // 外部中断线 10~15 的中断服务程序 
+{
+HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_13); // 调用外部中断通用处理函数
+}
+</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>3. 执行外部中断通用处理函数</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">进入外部中断服务程序EXTIO_IRQHa andler()或EXTI15_10_IRQHandler()后，都将调用HAL库提供的外部中断通用处理函数数HAL_GPIO_EXTI_IRQHandler()。该函数作为HAL库提供的外部中断接口函数，在stm32f4xx_hal_gpio.c文件中定义。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">由于所有通过GPIO引脚触发的外部中断都会调用外部中断通用处理函数，因此在函数内部需要判断本次中断具体是由哪一个GPIO引脚触发的，并清除对应的中断标志最后再调用外部中断回调函数HAL_GPIO_ EXTI_Callback()完成具体的中断处理任务。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="background-color:#ffff00;">外部中断通用处理函数</span>的代码如程序清单所示。</p> 
+<pre><code class="language-cpp">/*
+* @brief This function handle s EXTI interrupt request.
+* @param GPIO_Pin Specifes the pins connected EXTI line
+* @retval None
+*/
+void HAL_GPIO_EXTI_IRQHandler(uint16_t GPIO_Pin)
+{
+/* EXTI line interrupt detected */
+if(__HAL_GPIO_EXTI_GET_IT(GPIO_Pin)!= RESET)// 检测对应的中断标志是否置位
+{
+_HAL_GPIO_EXTI_CLEAR_IT(GPIO_Pin); // 清除对应的中断标志 
+HAL_GPIO_EXTI_Callback(GPIO_Pin); // 调用回调函数执行具体任务 
+}
+}
+</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>4.默认的外部中断回调函数</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">外部中断回调函数HAL_GPIO_EXTI Callback()用于完成具体的中断处理任务。该函数也是HAL库提供的外部中断接口函数数，在stm32f4xx_hal_gpio.c文件中定义。默认的外部中断回调函数添加了weak属性，函数内部没有任何可执行代码，仅仅有一个避免编译器警告的语句：UNUSED(GPIO_Pin)。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="background-color:#ffff00;">默认的外部中断回调函数</span>的代码如程序清单所示。</p> 
+<pre><code class="language-cpp">/*
+* @brief EXTI line detection callbacks.
+* @param GPIO_Pin Specifes the pins connected EXTI line
+* @retval None
+*/
+_weak void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+/* Prevent unused argument(s) compilation warning */
+UNUSED(GPIO_Pin);
+/*NOTE:This function Should not be modifed, when the callback is needed,
+the HAL_GPIO_EXTI_Callback could be implemented in the user file*/
+}
+</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>5.执行用户编写的外部中断回调函数</strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">用户需要在main.c文件中重新编写外部中断回调函数HAL_GPIO_EXTI_Callback()，来完成具体的中断处理任务。中断回调函数一般添加在/* USER CODE BEGIN4*/和/* USER CODE END4*/之间。由于所有通过于GPIO引脚触发的外部中断都会调用该回调函数，因此在回调函数内部，需要根据入口参参数GPIO_Pin判断是哪一个GPIO引脚触发的本次外部中断，然后再执行不同的中断处理任务。如果用户设置了多个GPIO引脚产生外部中断，则可以使用switch-case多分支语句进行判断。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="background-color:#ffff00;">外部中断回调函数的示例代码</span>如程序法清单所示。</p> 
+<pre><code class="language-cpp">/* USER CODE BEGIN 4 */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+switch(GPIO_Pin)
+{
+case GPIO_PIN_0: // 引脚 PCO 对应的中断处理任务 
+/* GPIO_PIN_0 EXTI handling */
+break;
+case GPIO_PIN_13:
+/*GPIO_PIN_13 EXTI handling */ // 引脚 PC13 对应的中断处理任务 
+break;
+case GPIO_PIN_X; // 引脚x对应的中断处理任务 
+/* GPIO_PIN_X EXTI handling */ 
+break;
+……
+default:
+break;
+}
+}
+/* USER CODE END 4 */
+
+</code></pre> 
+<p style="margin-left:.0001pt;text-align:justify;">根据上述的分析，我们可以用下图来更加清晰地展示HAL库的外部中断处理流程。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">从下图可以看到，发生外部中断时处理器在中断向量表找到所对应的中断服务程序，在中断服务程序内部调用外部中断通通用处理函数HAL_GPIO_EXTI_IRQHandler( )，最后再调用外部中断回调函数HAL_GP O_EXTICallback()来完成具体的中断处理任务。</p> 
+<p style="margin-left:.0001pt;text-align:center;"><img alt="" height="427" src="https://images2.imgbox.com/61/54/pGgnsAHg_o.png" width="967"></p> 
+<p>在HAL库的外部中断处理流程中，外部中断回调函数HAL_GPIO_EXTI_Callback()是放在main.c文件中，作为应用程序的一部分，而它的调用却是由HAL库提供的接口函数触发的，即库函数反过来调用应用层的函类数，因此称为回调函数。</p> 
+<p>借助CubeMX软件和HAL库，用户的中中断编程步骤大大简化，只需要利用CubeMX软件进行中断的相关配置，包括中断触发条件、中断优先级以及中断使能等，最后在中断回调函数中编写具体的中断处理任务即可。</p> 
+<h2 id="3.%E5%A4%96%E9%83%A8%E4%B8%AD%E6%96%AD%E7%9A%84HAL%E5%BA%93%E5%AE%9A%E4%B9%89" style="margin-left:0;text-align:justify;">3.外部中断的HAL库定义</h2> 
+<p style="margin-left:.0001pt;text-align:justify;">由于外部中断主要是利用GPIO引脚实现，因此与外部中断相关的HAL库定义都放在GPIO外设文件中：外部中断的数据类型位于 stm32f4xx_hal_gpio.h文件中，外部中断的接口函数位于 stm32f4xx_hal_gpio.c 文件中。</p> 
+<h3 id="3.1.%20%E5%A4%96%E9%83%A8%E4%B8%AD%E6%96%AD%E7%9A%84%E6%95%B0%E6%8D%AE%E7%B1%BB%E5%9E%8B" style="margin-left:0;text-align:justify;">3.1. 外部中断的数据类型</h3> 
+<p style="margin-left:.0001pt;text-align:justify;">HAL库中与外部中断相关的数据类型主要是外部中断触发方式的定义，这些定义作为引脚初始化数据类型GPIO_InitTypeDef中成员变量Mode增加的定义，用来选择外部中断的触发方式：上升沿触发、下降沿触发或双边沿触发，具体定义如下表所示。</p> 
+<table align="center" border="1" cellspacing="0"><tbody><tr><td style="background-color:#d0cece;border-color:#000000;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">定义</p> </td><td style="background-color:#d0cece;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">含义</p> </td></tr><tr><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">GPIO_MODE IT RISING</p> </td><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">上升沿触发</p> </td></tr><tr><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">GPIO MODE IT FALLING</p> </td><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">下降沿触发</p> </td></tr><tr><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">GPIO MODE IT RISING FALLING</p> </td><td style="vertical-align:top;width:207.4pt;"> <p style="margin-left:.0001pt;text-align:center;">双边沿触发</p> </td></tr></tbody></table> 
+<h3 id="3.2.%20%E5%A4%96%E9%83%A8%E4%B8%AD%E6%96%AD%E7%9A%84%E6%8E%A5%E5%8F%A3%E5%87%BD%E6%95%B0" style="margin-left:0;text-align:justify;">3.2. 外部中断的接口函数</h3> 
+<p style="margin-left:.0001pt;text-align:justify;">HAL库中与外部中断相关的常用接口函数有两个：</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#ff0000;">1.</span><span style="color:#ff0000;">外部中断通用处理函数(HAL_GPIO_EXTI_IRQHandler)</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">GPIO_EXTI IRQHandler()该函数是所有外部中断发生后的通用处理函数。任何一个外部中断发生后，都会通过中断向量表中的外部中断服务程序调用该函数。在函数内部会进行GPIO引脚的判断,并清除对应的中断标志，最后调用外部中断回调函数 HAL_GPIOLEXTI_Callback()完成具体的中断处理任务。具体描述如下表所示：</p> 
+<table border="1" cellspacing="0"><tbody><tr><td colspan="2" style="background-color:#d0cece;width:414.8pt;"> <p style="margin-left:.0001pt;text-align:center;">接口函数：HAL_GPIO_EXTI_IRQHandler</p> </td></tr><tr><td style="vertical-align:top;width:2cm;"> <p style="margin-left:.0001pt;text-align:center;">函数原型</p> </td><td style="vertical-align:top;width:358.1pt;"> <p style="margin-left:.0001pt;text-align:center;">void HAL_GPIO_EXTI_IROHandler(uint16_t GPIO_Pin )</p> </td></tr><tr><td style="vertical-align:top;width:2cm;"> <p style="margin-left:.0001pt;text-align:center;">功能描述</p> </td><td style="vertical-align:top;width:358.1pt;"> <p style="margin-left:.0001pt;text-align:center;">所有外部中断发生后的通用处理函数</p> </td></tr><tr><td style="width:2cm;"> <p style="margin-left:.0001pt;text-align:center;">入口参数</p> </td><td style="vertical-align:top;width:358.1pt;"> <p style="margin-left:.0001pt;text-align:center;">GPIO_Pin：连接到外部中断线的GPIO脚取值范围是GPIO_PIN_0~GPIO_PINL15</p> </td></tr><tr><td style="vertical-align:top;width:2cm;"> <p style="margin-left:.0001pt;text-align:center;">返回值</p> </td><td style="vertical-align:top;width:358.1pt;"> <p style="margin-left:.0001pt;text-align:center;">无</p> </td></tr><tr><td style="width:2cm;"> <p style="margin-left:.0001pt;text-align:center;">注意事项</p> </td><td style="vertical-align:top;width:358.1pt;"> <p style="margin-left:.0001pt;text-align:center;">1.所有外部中断服务程序均调用该函数完成中断处理</p> <p style="margin-left:.0001pt;text-align:center;">2.函数内部根据 GPIO_Pin 的取值判断中断源并清除对应的中断标志</p> <p style="margin-left:.0001pt;text-align:center;">3.函数内部调用外部中断回调函数 HAL_GPIOEXTI Callback()完成具体的中断处理任务</p> <p style="margin-left:.0001pt;text-align:center;">4.该函数由 CubeMX软件自动生成</p> </td></tr></tbody></table> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#ff0000;">2. </span><span style="color:#ff0000;">外部中断回调函数（HAL_GPIO_EXTI_Calback）</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">该函数用于执行具体的中断处理任务，即发生中断后应该完成的具体操作。任何一个外部中断发生后，都会调用外部中断回调函数，因此在函数内部需要先判断是哪一个引脚触发的本次外部中断，然后执行具体的中断处理任务。具体描述如下表所示。</p> 
+<table border="1" cellspacing="0"><tbody><tr><td colspan="2" style="background-color:#d0cece;width:414.8pt;"> <p style="margin-left:.0001pt;text-align:center;">接口函数：HAL_GPIO_EXTI_Callback</p> </td></tr><tr><td style="vertical-align:top;width:2cm;"> <p style="margin-left:.0001pt;text-align:center;">函数原型</p> </td><td style="vertical-align:top;width:358.1pt;"> <p style="margin-left:.0001pt;text-align:center;">void HAL_GPIO_EXTI_Callback(int16 t GPIO Pin)</p> </td></tr><tr><td style="vertical-align:top;width:2cm;"> <p style="margin-left:.0001pt;text-align:center;">功能描述</p> </td><td style="vertical-align:top;width:358.1pt;"> <p style="margin-left:.0001pt;text-align:center;">外部中断回调函数，用户在该函娄内编写具体的中断处理任务</p> </td></tr><tr><td style="width:2cm;"> <p style="margin-left:.0001pt;text-align:center;">入口参数</p> </td><td style="vertical-align:top;width:358.1pt;"> <p style="margin-left:.0001pt;text-align:center;">GPIO_Pin：连接到外部中断线的GPIO脚取值范围是GPIO_PIN_0~GPIO_PINL15</p> </td></tr><tr><td style="vertical-align:top;width:2cm;"> <p style="margin-left:.0001pt;text-align:center;">返回值</p> </td><td style="vertical-align:top;width:358.1pt;"> <p style="margin-left:.0001pt;text-align:center;">无</p> </td></tr><tr><td style="width:2cm;"> <p style="margin-left:.0001pt;text-align:center;">注意事项</p> </td><td style="vertical-align:top;width:358.1pt;"> <p style="margin-left:.0001pt;text-align:center;">1.该函数由外部中断通用处理函数HAL_GPIO_EXTIIROHandler()调用</p> <p style="margin-left:.0001pt;text-align:center;">2.函数内部先根据GPIO_Pin的值来判断中断源，然后执行对应的中断处理任务</p> <p style="margin-left:.0001pt;text-align:center;">3.该函数由用户根据实际需求编写</p> </td></tr></tbody></table> 
+<p>具体中断例子可以看这篇文章：</p> 
+<p><a class="link-info" href="https://blog.csdn.net/weixin_45015121/article/details/127113028?spm=1001.2014.3001.5502" title="【学习记录】STM32学习记录（四）中断系统和外部中断">【学习记录】STM32学习记录（四）中断系统和外部中断</a></p> 
+<p> <a class="link-info" href="https://blog.csdn.net/weixin_45015121/article/details/128608086?spm=1001.2014.3001.5502" title="【学习记录】STM32中断进阶任务：按键控制指示灯闪烁频率">【学习记录】STM32中断进阶任务：按键控制指示灯闪烁频率</a></p> 
+<p> </p> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/537672dc0ef029d49c4a97857bc26130/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【学习记录】STM32中断进阶任务：按键控制指示灯闪烁频率</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/35623c8ba57397d8870df7a8557f7d2c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Maven配置报错The JAVA_HOME environment variable is not defined correctly</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

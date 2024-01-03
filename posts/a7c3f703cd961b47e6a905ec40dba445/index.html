@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Linux下thread编程 (一) - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Linux下thread编程 (一)" />
+<meta property="og:description" content="作者：Sam （甄峰） sam_code@hotmail.com
+Sam前些天在提供一个库给别的公司时，因为不喜欢使用pthread_jion等函数，被人骂为垃圾程序。呵呵，之前因为在写多thread程序时，习惯让每个thread都为detach属性，这样他们就可以自我管理。而不需要再由别人回收资源。呵呵，不说这么多了，把POSIX thread方面的东西记下来吧。
+Linux下thread历史（Old pthread与NPTL）：
+Linux创建之初，并不能真正支持thread. LinuxThreads 项目使用clone()这个系统调用实现对thread的模拟。在_clone本来的意图是创建一个可定义各种配置的对当前进程的拷贝。LinuxThreads项目则利用了这一点，配置了一个与调用进程拥有相同地址空间的拷贝，把它作为一个thread. 所以，常常有人说，linux下面没有进程线程之分，其实就是这个意思。但这个方法也有问题，尤其是在信号处理、调度和进程间同步原语方面都存在问题。另外，这个线程模型也不符合 POSIX 的要求。
+如果要改进LinuxThread. 很明显，需要kernel层的支持。IBM和RedHat分别进行了研究，随着IBM的放弃，RedHat的Native POSIX Thread Library（NPTL）就成唯一的解决方案了。这就是NPTL。
+LinuxThreads 最初的设计相信相关进程之间的上下文切换速度很快，因此每个内核线程足以处理很多相关的用户级线程。这就导致了一对一 线程模型的革命。
+LinuxThreads 设计细节的一些基本理念：
+LinuxThreads 非常出名的一个特性就是管理线程（manager thread）。管理线程可以满足以下要求：
+系统必须能够响应终止信号并杀死整个进程。 以堆栈形式使用的内存回收必须在线程完成之后进行。因此，线程无法自行完成这个过程。 终止线程必须进行等待，这样它们才不会进入僵尸状态。 线程本地数据的回收需要对所有线程进行遍历；这必须由管理线程来进行。 如果主线程需要调用 pthread_exit()，那么这个线程就无法结束。主线程要进入睡眠状态，而管理线程的工作就是在所有线程都被杀死之后来唤醒这个主线程。 为了维护线程本地数据和内存，LinuxThreads 使用了进程地址空间的高位内存（就在堆栈地址之下）。
+原语的同步是使用信号 来实现的。例如，线程会一直阻塞，直到被信号唤醒为止。
+在克隆系统的最初设计之下，LinuxThreads 将每个线程都是作为一个具有惟一进程 ID 的进程实现的。
+终止信号可以杀死所有的线程。LinuxThreads 接收到终止信号之后，管理线程就会使用相同的信号杀死所有其他线程（进程）。
+根据 LinuxThreads 的设计，如果一个异步信号被发送了，那么管理线程就会将这个信号发送给一个线程。如果这个线程现在阻塞了这个信号，那么这个信号也就会被挂起。这是因为管理线程无法将这个信号发送给进程；相反，每个线程都是作为一个进程在执行。线程之间的调度是由内核调度器来处理的。 LinuxThreads 及其局限性
+LinuxThreads 的设计通常都可以很好地工作；但是在压力很大的应用程序中，它的性能、可伸缩性和可用性都会存在问题。下面让我们来看一下 LinuxThreads 设计的一些局限性：
+它使用管理线程来创建线程，并对每个进程所拥有的所有线程进行协调。这增加了创建和销毁线程所需要的开销。
+由于它是围绕一个管理线程来设计的，因此会导致很多的上下文切换的开销，这可能会妨碍系统的可伸缩性和性能。
+由于管理线程只能在一个 CPU 上运行，因此所执行的同步操作在 SMP 或 NUMA 系统上可能会产生可伸缩性的问题。
+由于线程的管理方式，以及每个线程都使用了一个不同的进程 ID，因此 LinuxThreads 与其他与 POSIX 相关的线程库并不兼容。
+信号用来实现同步原语，这会影响操作的响应时间。另外，将信号发送到主进程的概念也并不存在。因此，这并不遵守 POSIX 中处理信号的方法。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/a7c3f703cd961b47e6a905ec40dba445/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2009-06-26T13:59:00+08:00" />
+<meta property="article:modified_time" content="2009-06-26T13:59:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Linux下thread编程 (一)</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="articleBody" class="articleContent"> 
+ <p>作者：Sam （甄峰）  <a href="mailto:sam_code@hotmail.com" rel="nofollow"><span style="color: #186b9e;">sam_code@hotmail.com</span></a></p> 
+ <p> </p> 
+ <p>Sam前些天在提供一个库给别的公司时，因为不喜欢使用pthread_jion等函数，被人骂为垃圾程序。呵呵，之前因为在写多thread程序时，习惯让每个thread都为detach属性，这样他们就可以自我管理。而不需要再由别人回收资源。呵呵，不说这么多了，把POSIX thread方面的东西记下来吧。</p> 
+ <p> </p> 
+ <p><strong><span style="font-size: 24px;">Linux下thread历史（Old pthread与NPTL）：</span></strong></p> 
+ <p>Linux创建之初，并不能真正支持thread. LinuxThreads 项目使用clone()这个系统调用实现对thread的模拟。在_clone本来的意图是创建一个可定义各种配置的对当前进程的拷贝。LinuxThreads项目则利用了这一点，配置了一个与调用进程拥有相同地址空间的拷贝，把它作为一个thread. 所以，常常有人说，linux下面没有进程线程之分，其实就是这个意思。但这个方法也有问题，尤其是在信号处理、调度和进程间同步原语方面都存在问题。另外，这个线程模型也不符合 POSIX 的要求。</p> 
+ <p> </p> 
+ <p>如果要改进LinuxThread. 很明显，需要kernel层的支持。IBM和RedHat分别进行了研究，随着IBM的放弃，RedHat的Native POSIX Thread Library（NPTL）就成唯一的解决方案了。这就是NPTL。</p> 
+ <p> </p> 
+ <p> </p> 
+ <p> </p> 
+ <p> </p> 
+ <p>LinuxThreads 最初的设计相信相关进程之间的上下文切换速度很快，因此每个内核线程足以处理很多相关的用户级线程。这就导致了<em>一对一</em> 线程模型的革命。</p> 
+ <p> </p> 
+ <p>LinuxThreads 设计细节的一些基本理念：</p> 
+ <p> </p> 
+ <p>LinuxThreads 非常出名的一个特性就是<em>管理线程（manager thread）</em>。管理线程可以满足以下要求：</p> 
+ <ul><li>系统必须能够响应终止信号并杀死整个进程。 </li><li>以堆栈形式使用的内存回收必须在线程完成之后进行。因此，线程无法自行完成这个过程。 </li><li>终止线程必须进行等待，这样它们才不会进入僵尸状态。 </li><li>线程本地数据的回收需要对所有线程进行遍历；这必须由管理线程来进行。 </li><li>如果主线程需要调用 <code>pthread_exit()</code>，那么这个线程就无法结束。主线程要进入睡眠状态，而管理线程的工作就是在所有线程都被杀死之后来唤醒这个主线程。 </li></ul> 
+ <ul><li>为了维护线程本地数据和内存，LinuxThreads 使用了进程地址空间的高位内存（就在堆栈地址之下）。<br></li><li>原语的同步是使用<em>信号</em> 来实现的。例如，线程会一直阻塞，直到被信号唤醒为止。<br></li><li>在克隆系统的最初设计之下，LinuxThreads 将每个线程都是作为一个具有惟一进程 ID 的进程实现的。<br></li><li>终止信号可以杀死所有的线程。LinuxThreads 接收到终止信号之后，管理线程就会使用相同的信号杀死所有其他线程（进程）。<br></li><li>根据 LinuxThreads 的设计，如果一个异步信号被发送了，那么管理线程就会将这个信号发送给一个线程。如果这个线程现在阻塞了这个信号，那么这个信号也就会被挂起。这是因为管理线程无法将这个信号发送给进程；相反，每个线程都是作为一个进程在执行。</li><li>线程之间的调度是由内核调度器来处理的。 </li></ul> 
+ <p> </p> 
+ <p><a name="N100A7"><span style="font-size: 16px; color: #990000;"><strong><span style="text-decoration: underline;">LinuxThreads 及其局限性</span></strong></span></a></p> 
+ <p>LinuxThreads 的设计通常都可以很好地工作；但是在压力很大的应用程序中，它的性能、可伸缩性和可用性都会存在问题。下面让我们来看一下 LinuxThreads 设计的一些局限性：</p> 
+ <ul><li>它使用管理线程来创建线程，并对每个进程所拥有的所有线程进行协调。这增加了创建和销毁线程所需要的开销。<br></li><li>由于它是围绕一个管理线程来设计的，因此会导致很多的上下文切换的开销，这可能会妨碍系统的可伸缩性和性能。<br></li><li>由于管理线程只能在一个 CPU 上运行，因此所执行的同步操作在 SMP 或 NUMA 系统上可能会产生可伸缩性的问题。<br></li><li>由于线程的管理方式，以及每个线程都使用了一个不同的进程 ID，因此 LinuxThreads 与其他与 POSIX 相关的线程库并不兼容。<br></li><li>信号用来实现同步原语，这会影响操作的响应时间。另外，将信号发送到主进程的概念也并不存在。因此，这并不遵守 POSIX 中处理信号的方法。<br></li><li>LinuxThreads 中对信号的处理是按照每线程的原则建立的，而不是按照每进程的原则建立的，这是因为每个线程都有一个独立的进程 ID。由于信号被发送给了一个专用的线程，因此信号是<em>串行化的</em> —— 也就是说，信号是透过这个线程再传递给其他线程的。这与 POSIX 标准对线程进行并行处理的要求形成了鲜明的对比。例如，在 LinuxThreads 中，通过 <code>kill()</code> 所发送的信号被传递到一些单独的线程，而不是集中整体进行处理。这意味着如果有线程阻塞了这个信号，那么 LinuxThreads 就只能对这个线程进行排队，并在线程开放这个信号时在执行处理，而不是像其他没有阻塞信号的线程中一样立即处理这个信号。<br></li><li>由于 LinuxThreads 中的每个线程都是一个进程，因此用户和组 ID 的信息可能对单个进程中的所有线程来说都不是通用的。例如，一个多线程的 <code>setuid()</code>/<code>setgid()</code> 进程对于不同的线程来说可能都是不同的。<br></li><li>有一些情况下，所创建的多线程核心转储中并没有包含所有的线程信息。同样，这种行为也是每个线程都是一个进程这个事实所导致的结果。如果任何线程发生了问题，我们在系统的核心文件中只能看到这个线程的信息。不过，这种行为主要适用于早期版本的 LinuxThreads 实现。<br></li><li>由于每个线程都是一个单独的进程，因此 /proc 目录中会充满众多的进程项，而这实际上应该是线程。<br></li><li>由于每个线程都是一个进程，因此对每个应用程序只能创建有限数目的线程。例如，在 IA32 系统上，可用进程总数 —— 也就是可以创建的线程总数 —— 是 4,090。<br></li><li>由于计算线程本地数据的方法是基于堆栈地址的位置的，因此对于这些数据的访问速度都很慢。另外一个缺点是用户无法可信地指定堆栈的大小，因为用户可能会意外地将堆栈地址映射到本来要为其他目的所使用的区域上了。<em>按需增长（grow on demand）</em> 的概念（也称为<em>浮动堆栈</em> 的概念）是在 2.4.10 版本的 Linux 内核中实现的。在此之前，LinuxThreads 使用的是固定堆栈。 </li></ul> 
+ <p> </p> 
+ <p> </p> 
+ <p> </p> 
+ <p> </p> 
+ <p><a name="N100FD"><span style="text-decoration: underline;"><span style="color: #186b9e;">关于 NPTL</span></span></a></p> 
+ <p>NPTL，或称为 Native POSIX Thread Library，是 Linux 线程的一个新实现，它克服了 LinuxThreads 的缺点，同时也符合 POSIX 的需求。与 LinuxThreads 相比，它在性能和稳定性方面都提供了重大的改进。与 LinuxThreads 一样，NPTL 也实现了一对一的模型。</p> 
+ <p>Ulrich Drepper 和 Ingo Molnar 是 Red Hat 参与 NPTL 设计的两名员工。他们的总体设计目标如下：</p> 
+ <ul><li>这个新线程库应该兼容 POSIX 标准。<br></li><li>这个线程实现应该在具有很多处理器的系统上也能很好地工作。<br></li><li>为一小段任务创建新线程应该具有很低的启动成本。<br></li><li>NPTL 线程库应该与 LinuxThreads 是二进制兼容的。注意，为此我们可以使用 <code>LD_ASSUME_KERNEL</code>，这会在本文稍后进行讨论。<br></li><li>这个新线程库应该可以利用 NUMA 支持的优点。 </li></ul> 
+ <p><a name="N10127"><span style="text-decoration: underline;"><span style="color: #186b9e;">NPTL 的优点</span></span></a></p> 
+ <p>与 LinuxThreads 相比，NPTL 具有很多优点：</p> 
+ <ul><li>NPTL 没有使用管理线程。管理线程的一些需求，例如向作为进程一部分的所有线程发送终止信号，是并不需要的；因为内核本身就可以实现这些功能。内核还会处理每个线程堆栈所使用的内存的回收工作。它甚至还通过在清除父线程之前进行等待，从而实现对所有线程结束的管理，这样可以避免僵尸进程的问题。<br></li><li>由于 NPTL 没有使用管理线程，因此其线程模型在 NUMA 和 SMP 系统上具有更好的可伸缩性和同步机制。<br></li><li>使用 NPTL 线程库与新内核实现，就可以避免使用信号来对线程进行同步了。为了这个目的，NPTL 引入了一种名为 <em>futex</em> 的新机制。futex 在共享内存区域上进行工作，因此可以在进程之间进行共享，这样就可以提供进程间 POSIX 同步机制。我们也可以在进程之间共享一个 futex。这种行为使得进程间同步成为可能。实际上，NPTL 包含了一个 <code>PTHREAD_PROCESS_SHARED</code> 宏，使得开发人员可以让用户级进程在不同进程的线程之间共享互斥锁。<br></li><li>由于 NPTL 是 POSIX 兼容的，因此它对信号的处理是按照每进程的原则进行的；<code>getpid()</code> 会为所有的线程返回相同的进程 ID。例如，如果发送了 <code>SIGSTOP</code> 信号，那么整个进程都会停止；使用 LinuxThreads，只有接收到这个信号的线程才会停止。这样可以在基于 NPTL 的应用程序上更好地利用调试器，例如 GDB。<br></li><li>由于在 NPTL 中所有线程都具有一个父进程，因此对父进程汇报的资源使用情况（例如 CPU 和内存百分比）都是对整个进程进行统计的，而不是对一个线程进行统计的。<br></li><li>NPTL 线程库所引入的一个实现特性是对 ABI（应用程序二进制接口）的支持。这帮助实现了与 LinuxThreads 的向后兼容性。这个特性是通过使用 <code>LD_ASSUME_KERNEL</code> 实现的，下面就来介绍这个特性。 </li></ul> 
+ <p> </p> 
+ <p> Sam对上面的这些描述其实很多也不是很清楚，放在这里作为备份，未来理解多了，慢慢读。</p> 
+ <p> </p> 
+ <p><a name="N10195"><span style="text-decoration: underline;"><span style="color: #186b9e;">GNU_LIBPTHREAD_VERSION 宏</span></span></a></p> 
+ <p>大部分现代 Linux 发行版都预装了 LinuxThreads 和 NPTL，因此它们提供了一种机制来在二者之间进行切换。要查看您的系统上正在使用的是哪个线程库，请运行下面的命令：</p> 
+ <p><code>$ getconf GNU_LIBPTHREAD_VERSION</code></p> 
+ <p>这会产生类似于下面的输出结果：</p> 
+ <p><code>NPTL 0.34</code></p> 
+ <p>或者：</p> 
+ <p><code>linuxthreads-0.10</code></p> 
+ <p> </p> 
+ <p><code><a name="N101B3"><span style="text-decoration: underline;"><span style="color: #186b9e;">Linux 发行版所使用的线程模型、glibc 版本和内核版本</span></span></a></code></p> 
+ <p>表 1 列出了一些流行的 Linux 发行版，以及它们所采用的线程实现的类型、glibc 库和内核版本。</p> 
+ <p> </p> 
+ <table border="0" cellspacing="0" cellpadding="0" width="100%"><caption> 
+   <strong><span style="color: #ffffff;">表 1. Linux 发行版及其线程实现</span></strong> 
+  </caption><tbody><tr><th>线程实现</th><th>C 库</th><th>发行版</th><th>内核</th></tr><tr><td>LinuxThreads 0.7, 0.71 (for libc5)</td><td>libc 5.x</td><td>Red Hat 4.2</td><td> </td></tr><tr><td>LinuxThreads 0.7, 0.71 (for glibc 2)</td><td>glibc 2.0.x</td><td>Red Hat 5.x</td><td> </td></tr><tr><td>LinuxThreads 0.8</td><td>glibc 2.1.1</td><td>Red Hat 6.0</td><td> </td></tr><tr><td>LinuxThreads 0.8</td><td>glibc 2.1.2</td><td>Red Hat 6.1 and 6.2</td><td> </td></tr><tr><td>LinuxThreads 0.9</td><td> </td><td>Red Hat 7.2</td><td>2.4.7</td></tr><tr><td>LinuxThreads 0.9</td><td>glibc 2.2.4</td><td>Red Hat 2.1 AS</td><td>2.4.9</td></tr><tr><td>LinuxThreads 0.10</td><td>glibc 2.2.93</td><td>Red Hat 8.0</td><td>2.4.18</td></tr><tr><td>NPTL 0.6</td><td>glibc 2.3</td><td>Red Hat 9.0</td><td>2.4.20</td></tr><tr><td>NPTL 0.61</td><td>glibc 2.3.2</td><td>Red Hat 3.0 EL</td><td>2.4.21</td></tr><tr><td>NPTL 2.3.4</td><td>glibc 2.3.4</td><td>Red Hat 4.0</td><td>2.6.9</td></tr><tr><td>LinuxThreads 0.9</td><td>glibc 2.2</td><td>SUSE Linux Enterprise Server 7.1</td><td>2.4.18</td></tr><tr><td>LinuxThreads 0.9</td><td>glibc 2.2.5</td><td>SUSE Linux Enterprise Server 8</td><td>2.4.21</td></tr><tr><td>LinuxThreads 0.9</td><td>glibc 2.2.5</td><td>United Linux</td><td>2.4.21</td></tr><tr><td>NPTL 2.3.5</td><td>glibc 2.3.3</td><td>SUSE Linux Enterprise Server 9</td><td>2.6.5</td></tr></tbody></table> 
+ <p> </p> 
+ <p>注意，从 2.6.x 版本的内核和 glibc 2.3.3 开始，NPTL 所采用的版本号命名约定发生了变化：这个库现在是根据所使用的 glibc 的版本进行编号的。</p> 
+ <p> </p> 
+ <p><strong>Sam记得好像某篇文章讲，从2.6 kernel开始，NPTL支持被加入。只需要glibc用NPTL就可以了。就算我们的系统里装上了NPTL库，也不会影响原来的程序，就算是那些老的程序，即使用了linuxthreads的头文件且在编译，连接的时候使用了linuxthreads的库的程序，我们也能够让它在执行的时候，动态连接到我们的NPTL库。从而发挥NPTL的作用。</strong></p> 
+ <p> </p> 
+ <p><strong>另外，从GNU libc 2.4开始使用了NPTL方式，但Kernel版本需要 Linux 2.6.0以上。</strong></p> 
+ <p><strong>所以判断一个嵌入式平台是否支持NPTL，首先看kernel版本号，如果低于2.6.则肯定不支持NPTL.(因为如果kernel不支持NPTL. 则libc再怎么做都没办法)。其次看libc版本号。即/lib/libc.so.xxxx</strong></p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4ea9cc787fd5daab425a94f91b8f1460/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Visual Studio 2010 C&#43;&#43; 0x</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/3cc6d390d784998ef37e2b3b32114e52/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">tpcc　计算实例</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

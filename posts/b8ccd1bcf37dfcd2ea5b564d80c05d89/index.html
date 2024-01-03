@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink实时电商数仓（十） - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Flink实时电商数仓（十）" />
+<meta property="og:description" content="common模块回顾 app BaseApp: 作为其他子模块中使用Flink - StreamAPI的父类，实现了StreamAPI中的通用逻辑，在其他子模块中只需编写关于数据处理的核心逻辑。BaseSQLApp: 作为其他子模块中使用Flink- SQLAPI的父类。在里面设置了使用SQL API的环境、并行度、检查点等固定逻辑。 bean：存放其他子模块中使用到的javaBean对象，因为如果一直使用jsonObject对象调用数据的话，需要使用类似getString(&#34;字段名&#34;)的方式，没有直接使用javaBean对象那么方便。constant 存储字符串常量为了保证一致性，如果某个常量修改时，只需在这里修改即可对整个项目进行修改 function DorisMapFunction：将javaBean对象转换为对应的json字符串对象，并且将驼峰式命名方式修改为蛇形命名方式。便于写入doris。 util DateFormateUtilFlinkSinkUtilFlinkSourceUtilHBaseUtilIkUtilJdbcUtilSQLUtil getUpsertKafakaSQL: 一定要声明主键，支持撤回流getDorisSinkSQL: 用于写入Doris dim层回顾 Flink-cdc监控mysql中的维度配置表将监控的数据流做成广播流将广播流和读取数据的主流进行connect主流数据根据广播流的配置信息进行分流，注意需要先提前缓存一次配置表信息达到动态拆分数据表的效果 dwd层FlinkSQL回顾 注意join时会将所有数据都存储到内存中，需要考虑设置TTL大表join小表时，可以考虑使用lookup join如果数据流有明确的先后关系时，考虑使用Interval join 在支付成功模块，由于订单详情表处理时已经存在撤回流，但支付成功模块也是使用left join方式调用订单详情数据，会导致产生两次撤回流。在后续dws层处理时，要注意对数据进行去重过滤。
+dws层回顾 如何判断使用FlinkSQL还是StreamAPI 如果比较标准化, 比如简单的开窗聚合，一般使用FlinkSQL如果需要使用状态处理数据，比如判断是否为独立用户，使用StreamAPI 交易域sku粒度订单下单各窗口汇总 需求分析：从Kafka订单明细主题读取数据，过滤null数据并按照唯一键对数据去重，按照SKU维度分组，统计原始金额、活动减免金额、优惠券减免金额和订单金额，并关联维度信息，将数据写入Doris交易域SKU粒度下单各窗口汇总表
+思路分析：
+方案一：按照订单ID进行分组，根据业务逻辑设置定时器取最后一个数据进行发送方案二：将度量值存放到状态中，每次新数据到达时，将新的度量值减去状态中的度量值 具体实现
+因为需要使用状态，故使用BaseApp; 设置端口号10029，并发度4，消费者组为类名，消费者主题名称为dwd订单详情读取dwd下单主题数据， stream.print()过滤清洗: 去掉null数据, stream.flatMap(new FlatMapFunction&lt;&gt;())ts: 水位线，不能为空；进行位数的修正，如果是10位的，使用 jsonObj.put(&#34;ts&#34;, ts*1000)id: keyby的关键字，不能为空sku_id: group by的粒度关键字，也不能为空 添加水位线 网络延迟5L添加数据的泛型，提取数据中的ts，作为水位线（注意观察ts的位数，需要为13位，毫秒级） 修正度量值，转换数据结构 使用id关键字进行分组使用process算子中的状态来进行处理stream.process(new KeyedProcessFunction&lt;&gt;)，返回值为对应的javabean对象在状态中存储上一次的度量值大小，只保存30秒在processElement()方法中获取状态中的度量值，使用前需要判空，如果为空设置为0，之后才能进行数值计算。创建对应的bean对象，度量值都减去状态中的度量值和更新状态中当前的度量值 分组开窗聚合 使用skuId进行keyby分组后使用window算子进行开窗,设置窗口时间，注意Time属于org.apache.flink.streaming.api.windowing.time.Time.seconds()使用reduce算子进行聚合计算, 聚合时需要累积所有度量值new ProcessWindowFunction()获取窗口信息, startTime, EndTime, curTime, 获取到后写入javaBean对象中 关联维度信息 先分组聚合再关联维度信息的原因：关联维度信息需要join操作，是很耗费性能的大操作。先聚合数据能大幅度减少数据量。启动HBase，查看对的sku_info表中是否存储着对应的维度信息获取外部连接，需要使用生命周期方法(open，close在整个算子执行过程中只运行一次);对应的关联维度信息，即RichMapFunction()在map方法中使用HBase的API读取表格数据，使用读取到的字段补全原本的信息 创建HBase的API：读取表格数据 get 获取table创建get对象调用get方法获取数据写入jsonObj 写出到Doris 维度关联优化 旁路缓存：独立缓存服务有（redis, memcache）." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/b8ccd1bcf37dfcd2ea5b564d80c05d89/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2024-01-02T16:22:13+08:00" />
+<meta property="article:modified_time" content="2024-01-02T16:22:13+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink实时电商数仓（十）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="common_2"></a>common模块回顾</h2> 
+<ol><li>app 
+  <ul><li>BaseApp: 作为其他子模块中使用Flink - StreamAPI的父类，实现了StreamAPI中的通用逻辑，在其他子模块中只需编写关于数据处理的核心逻辑。</li><li>BaseSQLApp: 作为其他子模块中使用Flink- SQLAPI的父类。在里面设置了使用SQL API的环境、并行度、检查点等固定逻辑。</li></ul> </li><li>bean：存放其他子模块中使用到的javaBean对象，因为如果一直使用jsonObject对象调用数据的话，需要使用类似<code>getString("字段名")</code>的方式，没有直接使用javaBean对象那么方便。</li><li>constant 
+  <ul><li>存储字符串常量</li><li>为了保证一致性，如果某个常量修改时，只需在这里修改即可对整个项目进行修改</li></ul> </li><li>function 
+  <ul><li>DorisMapFunction：将javaBean对象转换为对应的json字符串对象，并且将驼峰式命名方式修改为蛇形命名方式。便于写入doris。</li></ul> </li><li>util 
+  <ul><li>DateFormateUtil</li><li>FlinkSinkUtil</li><li>FlinkSourceUtil</li><li>HBaseUtil</li><li>IkUtil</li><li>JdbcUtil</li><li>SQLUtil 
+    <ul><li>getUpsertKafakaSQL: 一定要声明主键，支持撤回流</li><li>getDorisSinkSQL: 用于写入Doris</li></ul> </li></ul> </li></ol> 
+<h2><a id="dim_23"></a>dim层回顾</h2> 
+<ul><li>Flink-cdc监控mysql中的维度配置表</li><li>将监控的数据流做成广播流</li><li>将广播流和读取数据的主流进行connect</li><li>主流数据根据广播流的配置信息进行分流，注意需要先提前缓存一次配置表信息</li><li>达到动态拆分数据表的效果</li></ul> 
+<h2><a id="dwdFlinkSQL_31"></a>dwd层FlinkSQL回顾</h2> 
+<ul><li>注意join时会将所有数据都存储到内存中，需要考虑设置TTL</li><li>大表join小表时，可以考虑使用lookup join</li><li>如果数据流有明确的先后关系时，考虑使用Interval join</li></ul> 
+<blockquote> 
+ <p>在支付成功模块，由于订单详情表处理时已经存在撤回流，但支付成功模块也是使用left join方式调用订单详情数据，会导致产生两次撤回流。在后续dws层处理时，要注意对数据进行去重过滤。</p> 
+</blockquote> 
+<h2><a id="dws_39"></a>dws层回顾</h2> 
+<ul><li>如何判断使用FlinkSQL还是StreamAPI 
+  <ul><li>如果比较标准化, 比如简单的开窗聚合，一般使用FlinkSQL</li><li>如果需要使用状态处理数据，比如判断是否为独立用户，使用StreamAPI</li></ul> </li></ul> 
+<h2><a id="sku_46"></a>交易域sku粒度订单下单各窗口汇总</h2> 
+<ul><li> <p>需求分析：从Kafka订单明细主题读取数据，过滤null数据并按照唯一键对数据去重，按照SKU维度分组，统计原始金额、活动减免金额、优惠券减免金额和订单金额，并关联维度信息，将数据写入Doris交易域SKU粒度下单各窗口汇总表</p> </li><li> <p>思路分析：</p> 
+  <ul><li>方案一：按照订单ID进行分组，根据业务逻辑设置定时器取最后一个数据进行发送</li><li>方案二：将度量值存放到状态中，每次新数据到达时，将新的度量值减去状态中的度量值</li></ul> </li><li> <p>具体实现</p> 
+  <ul><li>因为需要使用状态，故使用BaseApp; 设置端口号10029，并发度4，消费者组为类名，消费者主题名称为dwd订单详情</li><li>读取dwd下单主题数据， <code>stream.print()</code></li><li>过滤清洗: 
+    <ul><li>去掉null数据, <code>stream.flatMap(new FlatMapFunction&lt;&gt;())</code></li><li>ts: 水位线，不能为空；进行位数的修正，如果是10位的，使用 <code>jsonObj.put("ts", ts*1000)</code></li><li>id: keyby的关键字，不能为空</li><li>sku_id: group by的粒度关键字，也不能为空</li></ul> </li><li>添加水位线 
+    <ul><li>网络延迟5L</li><li>添加数据的泛型，提取数据中的ts，作为水位线（注意观察ts的位数，需要为13位，毫秒级）</li></ul> </li><li>修正度量值，转换数据结构 
+    <ul><li>使用id关键字进行分组</li><li>使用process算子中的状态来进行处理<code>stream.process(new KeyedProcessFunction&lt;&gt;)</code>，返回值为对应的javabean对象</li><li>在状态中存储上一次的度量值大小，只保存30秒</li><li>在<code>processElement()</code>方法中获取状态中的度量值，使用前需要判空，如果为空设置为0，之后才能进行数值计算。</li><li>创建对应的bean对象，度量值都减去状态中的度量值和更新状态中当前的度量值</li></ul> </li><li>分组开窗聚合 
+    <ul><li>使用skuId进行keyby</li><li>分组后使用<code>window</code>算子进行开窗,设置窗口时间，注意Time属于<code>org.apache.flink.streaming.api.windowing.time.Time.seconds()</code></li><li>使用reduce算子进行聚合计算, 聚合时需要累积所有度量值</li><li><code>new ProcessWindowFunction()</code>获取窗口信息, startTime, EndTime, curTime, 获取到后写入javaBean对象中</li></ul> </li><li>关联维度信息 
+    <ul><li>先分组聚合再关联维度信息的原因：关联维度信息需要join操作，是很耗费性能的大操作。先聚合数据能大幅度减少数据量。</li><li>启动HBase，查看对的sku_info表中是否存储着对应的维度信息</li><li>获取外部连接，需要使用生命周期方法(open，close在整个算子执行过程中只运行一次);对应的关联维度信息，即RichMapFunction()</li><li>在<code>map</code>方法中使用HBase的API读取表格数据，使用读取到的字段补全原本的信息</li></ul> </li><li>创建HBase的API：读取表格数据 get 
+    <ul><li>获取table</li><li>创建get对象</li><li>调用get方法</li><li>获取数据写入jsonObj</li></ul> </li><li>写出到Doris</li></ul> </li></ul> 
+<h2><a id="_89"></a>维度关联优化</h2> 
+<ol><li>旁路缓存：独立缓存服务有（redis, memcache）.<br> <img src="https://images2.imgbox.com/1f/40/SDk6MyNf_o.png" alt="在这里插入图片描述"></li></ol> 
+<ul><li>使用旁路缓存时要注意保持数据的一致性，如果数据发生修改和删除，直接删除redis中的数据。</li></ul> 
+<h2><a id="_95"></a>同步+旁路缓存模式</h2> 
+<ol><li>引入Jedis相关依赖</li></ol> 
+<pre><code class="prism language-xml"><span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>redis.clients<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>jedis<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+</code></pre> 
+<ol start="2"><li>创建Redis工具类RedisUtil</li><li>在RichMapFunction中的open和close方法中获取和关闭HBase和Redisd的连接。</li><li>拼接对应的redisRowKey</li><li>读取Redis缓存的数据，jsonObj的字符串</li><li>判断redis读取到的数据是否为空 
+  <ul><li>没有数据：需要读取HBase；<code>jsonObj = HBaseUtil.getCells()</code>, 读取到数据后，使用<code>jedis.setex()</code>存储到redis</li><li>redis有缓存，直接返回</li></ul> </li><li>进行维度关联</li></ol> 
+<h2><a id="DimHBase_115"></a>Dim层写入HBase修正</h2> 
+<ul><li>在dim层将数据写入HBase时，需要同时获取Redis的连接。</li><li>判断redis中的缓存是否发生变化 
+  <ul><li>判断数据类型是修改或删除时，删除Redis中对应的数据</li><li>拼写数据的rowkey</li><li>使用<code>jedis.del(rediskey)</code>来删除</li></ul> </li></ul>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f40c5699ee9477870e674f6483aa0b04/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">（node-red）pm2的日志管理及使用pm2-logrotate进行日志分割</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c7a863853cd613aa3e0fb7f8570a1f58/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">HTTPS是什么？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

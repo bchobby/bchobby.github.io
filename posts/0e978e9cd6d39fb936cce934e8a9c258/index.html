@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>基于STM32结合CubeMX学习Free-RT-OS的源码之深入学习软件定时器实现过程 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="基于STM32结合CubeMX学习Free-RT-OS的源码之深入学习软件定时器实现过程" />
+<meta property="og:description" content="概述 关于在CUBEMX上的配置 介绍 软件定时器基于硬件定时器实现。
+软件定时器允许设置一段时间，当设置的时间到达之后就执行指定的功能函数，被定时器
+调用的这个功能函数叫做定时器的回调函数。回调函数的两次执行间隔叫做定时器的定时周期，
+简而言之，软件定时器的定时周期到了以后就会执行回调函数。
+Free RT OS基于systick中断产生计数值。软件定时其开始计数，当计数值到了所设置的时间时执行回调函数。
+在RT-Thread中 软件定时器的定时回调函数直接放到了systick的中断回调函数里进行处理，但Free-RT-OS并没有这样做，主要原因是在于不知道定时处理回调函数需要花费多少时间，使得systick的节拍受到影响。
+那么软件定时器是如何处理回调函数的?
+答:Free RT OS创建了一个管理软件定时器的任务，叫做DaemonTask 也被称为守护任务，由它处理软件定时器的定时回调函数。
+Free RT OS允许用户自己选择是否使用软件定时器。
+当选择使用软件定时器时，Free RTOS内部的具体流程： Free RT OS为管理软件定时器创建的 守护任务，定时器链表，超时链表，定时器命令队列。对应下面的代码。
+具体过程：
+1 ： 当使用了软件定时器，则在开启调度器时，创建Daemon Task(守护任务)
+osKernelStart() -&gt;vTaskStartScheduler()（启动调度器）-&gt; xTimerCreateTimerTask(); （创建守护任务)
+创建守护任务
+2：守护任务内部定时任务的函数入口 prvTimerTask
+3： 同时在创建内部调用 prvCheckForValidListAndQueue
+prvCheckForValidListAndQueue (创建定时器命令队列，创建当前定时器链表和超时定时器链表。
+4：守护任务的函数入口 prvTimerTask
+查询计时器列表，看看它是否包含任何计时器，如果包含，获取下一个计时器将过期的时间。如果计时器已过期，则处理它。否则，阻塞此任务。直到计时器过期或收到命令为止。处理软件定时器的命令接受。（开启，关闭，调整周期，复位） 到这，已经能摸清除软件定时器工作流程的大概了。
+以上都是RTOS内部为管理软件定时器所做的辅助工作。
+再看看创建软件定时器：
+软件定时器刚创建处于休眠态。
+调用开启软件定时器的API(xTimerStart)后则把封装一个message对象 ,写入定时器命令队列。（这个定时器命令队列就是在守护函数中所创建的那个）
+#define xTimerStart( xTimer, xTicksToWait ) xTimerGenericCommand( ( xTimer ), tmrCOMMAND_START, ( xTaskGetTickCount() ), NULL, ( xTicksToWait ) )" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/0e978e9cd6d39fb936cce934e8a9c258/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-11-16T20:39:35+08:00" />
+<meta property="article:modified_time" content="2022-11-16T20:39:35+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">基于STM32结合CubeMX学习Free-RT-OS的源码之深入学习软件定时器实现过程</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>概述</h2> 
+<h3>关于在CUBEMX上的配置</h3> 
+<p><img alt="" height="840" src="https://images2.imgbox.com/4f/33/XgR8DG7e_o.png" width="738"></p> 
+<p></p> 
+<p></p> 
+<p><img alt="" height="752" src="https://images2.imgbox.com/73/3c/JURsl7sF_o.png" width="1200"></p> 
+<h3> 介绍</h3> 
+<p>        软件定时器基于硬件定时器实现。</p> 
+<p>        软件定时器允许设置一段时间，当设置的时间到达之后就执行指定的功能函数，被定时器<br> 调用的这个功能函数叫做定时器的回调函数。回调函数的两次执行间隔叫做定时器的定时周期，<br> 简而言之，软件定时器的定时周期到了以后就会执行回调函数。</p> 
+<p>        Free RT OS基于systick中断产生计数值。软件定时其开始计数，当计数值到了所设置的时间时执行回调函数。</p> 
+<p><strong>        在RT-Thread中 软件定时器的定时回调函数直接放到了systick的中断回调函数里进行处理，但Free-RT-OS并没有这样做，主要原因是在于<span style="color:#fe2c24;">不知道定时处理回调函数需要花费多少时间，使得systick的节拍受到影响。</span></strong></p> 
+<p><strong>那么软件定时器是如何处理回调函数的?</strong></p> 
+<blockquote> 
+ <p><em>答:Free RT OS创建了一个管理软件定时器的任务，叫做DaemonTask 也被称为守护任务，由它处理软件定时器的定时回调函数。</em><br>  </p> 
+</blockquote> 
+<p></p> 
+<p>        Free RT OS允许用户自己选择是否使用软件定时器。</p> 
+<p>当选择使用软件定时器时，Free RTOS内部的具体流程：  </p> 
+<p><strong>Free RT OS为管理软件定时器创建的 守护任务，定时器链表，超时链表，定时器命令队列。对应下面的代码。</strong></p> 
+<p><img alt="" height="332" src="https://images2.imgbox.com/0e/da/KpKAUil1_o.png" width="998"></p> 
+<p>具体过程：</p> 
+<p>1 ：  当使用了软件定时器，则在开启调度器时，创建<strong>Daemon Task(守护任务)</strong></p> 
+<p> osKernelStart() -&gt;vTaskStartScheduler()（启动调度器）-&gt;    xTimerCreateTimerTask(); （创建守护任务)</p> 
+<p>创建守护任务</p> 
+<p><img alt="" height="347" src="https://images2.imgbox.com/22/55/aEl4ENU0_o.png" width="792"></p> 
+<p>2：守护任务内部定时任务的函数入口   <strong>prvTimerTask</strong></p> 
+<p><img alt="" height="692" src="https://images2.imgbox.com/73/cf/wkI9loMc_o.png" width="1200"></p> 
+<p>3： 同时在创建内部调用 <strong> prvCheckForValidListAndQueue</strong></p> 
+<p> <strong> prvCheckForValidListAndQueue</strong>  (创建定时器命令队列，创建当前定时器链表和超时定时器链表。</p> 
+<p><img alt="" height="553" src="https://images2.imgbox.com/5d/b0/AN85y4gp_o.png" width="1200"></p> 
+<p>  </p> 
+<p>4：守护任务的函数入口 <strong>prvTimerTask</strong></p> 
+<blockquote> 
+ <ul><li><em><span style="color:#fe2c24;">查询计时器列表，看看它是否包含任何计时器，如果包含，获取下一个计时器将过期的时间。</span></em></li><li><em><span style="color:#fe2c24;">如果计时器已过期，则处理它。否则，阻塞此任务。直到计时器过期或收到命令为止。</span></em></li><li><em><span style="color:#fe2c24;">处理软件定时器的命令接受。（开启，关闭，调整周期，复位）</span></em></li></ul> 
+</blockquote> 
+<p></p> 
+<p><strong>到这，已经能摸清除软件定时器工作流程的大概了。</strong></p> 
+<p></p> 
+<p><strong>以上都是RTOS内部为管理软件定时器所做的辅助工作。</strong></p> 
+<p>再看看创建软件定时器：</p> 
+<p>软件定时器刚创建处于休眠态。</p> 
+<p><img alt="" height="89" src="https://images2.imgbox.com/a9/55/hyKiiMjo_o.png" width="1029"></p> 
+<p>        调用开启软件定时器的API(xTimerStart)后则把封装一个message对象 ,写入<strong>定时器命令队列</strong>。（这个<strong>定时器命令队列</strong>就是在守护函数中所创建的那个）</p> 
+<blockquote> 
+ <p>#define xTimerStart( xTimer, xTicksToWait )      xTimerGenericCommand( ( xTimer ), tmrCOMMAND_START, ( xTaskGetTickCount() ), NULL, ( xTicksToWait ) )</p> 
+ <p> //这个开启软件定时器的函数向定时器服务任务发送相应命令</p> 
+</blockquote> 
+<p></p> 
+<p><strong>调用宏 xTimerGenericCommand( ( xTimer ) 发message到定时器命令队列</strong></p> 
+<p><img alt="" height="680" src="https://images2.imgbox.com/09/52/4R85krn9_o.png" width="1200"></p> 
+<p>       </p> 
+<p>     同理，停止某个软件定时器,调整软件定时器的定时周期也是通过写命令队列的方式实现。</p> 
+<blockquote> 
+ <p><em><strong>        不能在软件定时器的回调函数中调用会阻塞当前任务的API.(如不能调用 vTaskDelay()、vTaskDelayUnti()，还有一些访问队列或者信号量的非零阻塞时间的 API 函数也不能调用。） </strong></em><br>  </p> 
+ <p>为什么？因为软件定时器的回调函数都依赖于守护任务去处理实现其回调函数，在软件定时器的回调函数中阻塞则意味在守护任务中阻塞，守护任务将无法继续管理所有的软件定时器。</p> 
+</blockquote> 
+<p> </p> 
+<p>再剖析守护任务的回调函数。</p> 
+<p><img alt="" height="251" src="https://images2.imgbox.com/ac/21/BrrvBU1x_o.png" width="838"></p> 
+<p> </p> 
+<p>   prvGetNextExpireTime  获取定时器下一次超时时间。</p> 
+<p><strong>定时器列表（pxCurrentTimerList）按定时器的溢出时间按升序排列，最前面的任务首先超时。</strong></p> 
+<pre><code class="language-cpp">static TickType_t prvGetNextExpireTime( BaseType_t * const pxListWasEmpty )
+{
+TickType_t xNextExpireTime;
+
+	/* Timers are listed in expiry time order, with the head of the list
+	referencing the task that will expire first.  Obtain the time at which
+	the timer with the nearest expiry time will expire.  If there are no
+	active timers then just set the next expire time to 0.  That will cause
+	this task to unblock when the tick count overflows, at which point the
+	timer lists will be switched and the next expiry time can be
+	re-assessed.  */
+	*pxListWasEmpty = listLIST_IS_EMPTY( pxCurrentTimerList );
+	if( *pxListWasEmpty == pdFALSE )
+	{
+		xNextExpireTime = listGET_ITEM_VALUE_OF_HEAD_ENTRY( pxCurrentTimerList );
+	}
+	else
+	{
+		/* Ensure the task unblocks when the tick count rolls over. */
+		xNextExpireTime = ( TickType_t ) 0U;
+	}
+
+	return xNextExpireTime;
+}</code></pre> 
+<p></p> 
+<p>prvProcessTimerOrBlock()  //处理软件定时器任务（溢出超时）  |  让软件定时器阻塞（未溢出）</p> 
+<p>过程:</p> 
+<p>取出当前systick的计数值，stm32默认以systick作为os的时基，而systick是24位计数器。</p> 
+<p>把获取到的计数值与上一次进行比较，正常情况是现在的计数值&gt;上一次计数值。若小于则计数值发生了溢出。</p> 
+<pre><code class="language-cpp">static void prvProcessTimerOrBlockTask( const TickType_t xNextExpireTime, BaseType_t xListWasEmpty )
+{
+TickType_t xTimeNow;
+BaseType_t xTimerListsWereSwitched;
+
+	vTaskSuspendAll();
+	{
+		/* Obtain the time now to make an assessment as to whether the timer
+		has expired or not.  If obtaining the time causes the lists to switch
+		then don't process this timer as any timers that remained in the list
+		when the lists were switched will have been processed within the
+		prvSampleTimeNow() function. */
+		xTimeNow = prvSampleTimeNow( &amp;xTimerListsWereSwitched );
+		if( xTimerListsWereSwitched == pdFALSE )
+		{
+			/* The tick count has not overflowed, has the timer expired? */
+			if( ( xListWasEmpty == pdFALSE ) &amp;&amp; ( xNextExpireTime &lt;= xTimeNow ) )
+			{
+				( void ) xTaskResumeAll();
+				prvProcessExpiredTimer( xNextExpireTime, xTimeNow );
+			}
+			else
+			{
+				/* The tick count has not overflowed, and the next expire
+				time has not been reached yet.  This task should therefore
+				block to wait for the next expire time or a command to be
+				received - whichever comes first.  The following line cannot
+				be reached unless xNextExpireTime &gt; xTimeNow, except in the
+				case when the current timer list is empty. */
+				if( xListWasEmpty != pdFALSE )
+				{
+					/* The current timer list is empty - is the overflow list
+					also empty? */
+					xListWasEmpty = listLIST_IS_EMPTY( pxOverflowTimerList );
+				}
+
+				vQueueWaitForMessageRestricted( xTimerQueue, ( xNextExpireTime - xTimeNow ), xListWasEmpty );
+
+				if( xTaskResumeAll() == pdFALSE )
+				{
+					/* Yield to wait for either a command to arrive, or the
+					block time to expire.  If a command arrived between the
+					critical section being exited and this yield then the yield
+					will not cause the task to block. */
+					portYIELD_WITHIN_API();
+				}
+				else
+				{
+					mtCOVERAGE_TEST_MARKER();
+				}
+			}
+		}
+		else
+		{
+			( void ) xTaskResumeAll();
+		}
+	}
+}</code></pre> 
+<p></p> 
+<p>处理软件定时器溢出任务（这个函数是最为关键的函数,更新下一次溢出值,并插入正确的链表中）</p> 
+<pre><code class="language-cpp">static void prvProcessExpiredTimer( const TickType_t xNextExpireTime, const TickType_t xTimeNow )
+{
+BaseType_t xResult;
+Timer_t * const pxTimer = ( Timer_t * ) listGET_OWNER_OF_HEAD_ENTRY( pxCurrentTimerList );
+
+	/* Remove the timer from the list of active timers.  A check has already
+	been performed to ensure the list is not empty. */
+	( void ) uxListRemove( &amp;( pxTimer-&gt;xTimerListItem ) );
+	traceTIMER_EXPIRED( pxTimer );
+
+	/* If the timer is an auto reload timer then calculate the next
+	expiry time and re-insert the timer in the list of active timers. */
+	if( pxTimer-&gt;uxAutoReload == ( UBaseType_t ) pdTRUE )
+	{
+		/* The timer is inserted into a list using a time relative to anything
+		other than the current time.  It will therefore be inserted into the
+		correct list relative to the time this task thinks it is now. */
+		if( prvInsertTimerInActiveList( pxTimer, ( xNextExpireTime + pxTimer-&gt;xTimerPeriodInTicks ), xTimeNow, xNextExpireTime ) != pdFALSE )
+		{
+			/* The timer expired before it was added to the active timer
+			list.  Reload it now.  */
+			xResult = xTimerGenericCommand( pxTimer, tmrCOMMAND_START_DONT_TRACE, xNextExpireTime, NULL, tmrNO_DELAY );
+			configASSERT( xResult );
+			( void ) xResult;
+		}
+		else
+		{
+			mtCOVERAGE_TEST_MARKER();
+		}
+	}
+	else
+	{
+		mtCOVERAGE_TEST_MARKER();
+	}
+
+	/* Call the timer callback. */
+	pxTimer-&gt;pxCallbackFunction( ( TimerHandle_t ) pxTimer );
+}</code></pre> 
+<p></p> 
+<p>prvProcessReceiveCommands()   //对定时器命令队列中的数据进行处理。</p> 
+<p>遍历并处理定时器命令队列的所有message。</p> 
+<pre><code class="language-cpp">static void	prvProcessReceivedCommands( void )
+{
+DaemonTaskMessage_t xMessage;
+Timer_t *pxTimer;
+BaseType_t xTimerListsWereSwitched, xResult;
+TickType_t xTimeNow;
+
+	while( xQueueReceive( xTimerQueue, &amp;xMessage, tmrNO_DELAY ) != pdFAIL ) /*lint !e603 xMessage does not have to be initialised as it is passed out, not in, and it is not used unless xQueueReceive() returns pdTRUE. */
+	{
+		#if ( INCLUDE_xTimerPendFunctionCall == 1 )
+		{
+			/* Negative commands are pended function calls rather than timer
+			commands. */
+			if( xMessage.xMessageID &lt; ( BaseType_t ) 0 )
+			{
+				const CallbackParameters_t * const pxCallback = &amp;( xMessage.u.xCallbackParameters );
+
+				/* The timer uses the xCallbackParameters member to request a
+				callback be executed.  Check the callback is not NULL. */
+				configASSERT( pxCallback );
+
+				/* Call the function. */
+				pxCallback-&gt;pxCallbackFunction( pxCallback-&gt;pvParameter1, pxCallback-&gt;ulParameter2 );
+			}
+			else
+			{
+				mtCOVERAGE_TEST_MARKER();
+			}
+		}
+		#endif /* INCLUDE_xTimerPendFunctionCall */
+
+		/* Commands that are positive are timer commands rather than pended
+		function calls. */
+		if( xMessage.xMessageID &gt;= ( BaseType_t ) 0 )
+		{
+			/* The messages uses the xTimerParameters member to work on a
+			software timer. */
+			pxTimer = xMessage.u.xTimerParameters.pxTimer;
+
+			if( listIS_CONTAINED_WITHIN( NULL, &amp;( pxTimer-&gt;xTimerListItem ) ) == pdFALSE ) /*lint !e961. The cast is only redundant when NULL is passed into the macro. */
+			{
+				/* The timer is in a list, remove it. */
+				( void ) uxListRemove( &amp;( pxTimer-&gt;xTimerListItem ) );
+			}
+			else
+			{
+				mtCOVERAGE_TEST_MARKER();
+			}
+
+			traceTIMER_COMMAND_RECEIVED( pxTimer, xMessage.xMessageID, xMessage.u.xTimerParameters.xMessageValue );
+
+			/* In this case the xTimerListsWereSwitched parameter is not used, but
+			it must be present in the function call.  prvSampleTimeNow() must be
+			called after the message is received from xTimerQueue so there is no
+			possibility of a higher priority task adding a message to the message
+			queue with a time that is ahead of the timer daemon task (because it
+			pre-empted the timer daemon task after the xTimeNow value was set). */
+			xTimeNow = prvSampleTimeNow( &amp;xTimerListsWereSwitched );
+
+			switch( xMessage.xMessageID )
+			{
+				case tmrCOMMAND_START :
+			    case tmrCOMMAND_START_FROM_ISR :
+			    case tmrCOMMAND_RESET :
+			    case tmrCOMMAND_RESET_FROM_ISR :
+				case tmrCOMMAND_START_DONT_TRACE :
+					/* Start or restart a timer. */
+					if( prvInsertTimerInActiveList( pxTimer,  xMessage.u.xTimerParameters.xMessageValue + pxTimer-&gt;xTimerPeriodInTicks, xTimeNow, xMessage.u.xTimerParameters.xMessageValue ) != pdFALSE )
+					{
+						/* The timer expired before it was added to the active
+						timer list.  Process it now. */
+						pxTimer-&gt;pxCallbackFunction( ( TimerHandle_t ) pxTimer );
+						traceTIMER_EXPIRED( pxTimer );
+
+						if( pxTimer-&gt;uxAutoReload == ( UBaseType_t ) pdTRUE )
+						{
+							xResult = xTimerGenericCommand( pxTimer, tmrCOMMAND_START_DONT_TRACE, xMessage.u.xTimerParameters.xMessageValue + pxTimer-&gt;xTimerPeriodInTicks, NULL, tmrNO_DELAY );
+							configASSERT( xResult );
+							( void ) xResult;
+						}
+						else
+						{
+							mtCOVERAGE_TEST_MARKER();
+						}
+					}
+					else
+					{
+						mtCOVERAGE_TEST_MARKER();
+					}
+					break;
+
+				case tmrCOMMAND_STOP :
+				case tmrCOMMAND_STOP_FROM_ISR :
+					/* The timer has already been removed from the active list.
+					There is nothing to do here. */
+					break;
+
+				case tmrCOMMAND_CHANGE_PERIOD :
+				case tmrCOMMAND_CHANGE_PERIOD_FROM_ISR :
+					pxTimer-&gt;xTimerPeriodInTicks = xMessage.u.xTimerParameters.xMessageValue;
+					configASSERT( ( pxTimer-&gt;xTimerPeriodInTicks &gt; 0 ) );
+
+					/* The new period does not really have a reference, and can
+					be longer or shorter than the old one.  The command time is
+					therefore set to the current time, and as the period cannot
+					be zero the next expiry time can only be in the future,
+					meaning (unlike for the xTimerStart() case above) there is
+					no fail case that needs to be handled here. */
+					( void ) prvInsertTimerInActiveList( pxTimer, ( xTimeNow + pxTimer-&gt;xTimerPeriodInTicks ), xTimeNow, xTimeNow );
+					break;
+
+				case tmrCOMMAND_DELETE :
+					/* The timer has already been removed from the active list,
+					just free up the memory if the memory was dynamically
+					allocated. */
+					#if( ( configSUPPORT_DYNAMIC_ALLOCATION == 1 ) &amp;&amp; ( configSUPPORT_STATIC_ALLOCATION == 0 ) )
+					{
+						/* The timer can only have been allocated dynamically -
+						free it again. */
+						vPortFree( pxTimer );
+					}
+					#elif( ( configSUPPORT_DYNAMIC_ALLOCATION == 1 ) &amp;&amp; ( configSUPPORT_STATIC_ALLOCATION == 1 ) )
+					{
+						/* The timer could have been allocated statically or
+						dynamically, so check before attempting to free the
+						memory. */
+						if( pxTimer-&gt;ucStaticallyAllocated == ( uint8_t ) pdFALSE )
+						{
+							vPortFree( pxTimer );
+						}
+						else
+						{
+							mtCOVERAGE_TEST_MARKER();
+						}
+					}
+					#endif /* configSUPPORT_DYNAMIC_ALLOCATION */
+					break;
+
+				default	:
+					/* Don't expect to get here. */
+					break;
+			}
+		}
+	}
+}</code></pre> 
+<p></p> 
+<p></p> 
+<p>参考:</p> 
+<p><a href="https://cdn.modb.pro/db/250950" rel="nofollow" title="FreeRTOS源码探析之——软件定时器 - 墨天轮 (modb.pro)">FreeRTOS源码探析之——软件定时器 - 墨天轮 (modb.pro)</a></p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3af97fc05a0f479355b38ce045233c1f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">阿里字体图标库的使用</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/82e96a9cbbd8baf1179dc94b8d950247/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">fastgithub</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

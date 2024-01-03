@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Clickhouse-file：基于Clickhouse-local实现Clickhouse高效写入数据 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Clickhouse-file：基于Clickhouse-local实现Clickhouse高效写入数据" />
+<meta property="og:description" content="前言 ClickHouse是一个用于OLAP（在线分析处理）的列式数据库管理系统，它专门为大数据量和高并发场景而设计。ClickHouse具有快速的扫描和聚合海量数据的能力，并且支持高并发查询，使其在处理数据分析任务方面比传统的行存储数据库更具优势。ClickHouse是一个开源项目，可以在较少的硬件资源上运行，并且可以轻松地水平扩展，以适应不断增长的数据量和流量。在快速增大的数据量的情况下，使用传统的数据写入模式，如：JDBC、CSV，会增大Clickhouse服务的数据解析压力。那是否有方法一方面能够提升数据写入量，另一方面减少Clickhouse的服务数据解析、写入压力呢？
+1. 常用clickhouse flink connector 基于Clickhouse-jdbc 使用官方提供的Clickhouse-jdbc驱动，通过SQL的形式将数据提交到Clickhouse服务器。优势是灵活性最高，但是在大数据量写入的情况下该方法会触发频繁的后台文件合并，甚至会出现“too many parts”的错误，同时大量的SQL解析对Clickhouse服务器有影响。
+官方插件（基于CSV） 将数据源流转化为CSV格式数据，并通过Http请求批量发送到Clickhouse。优势在于不需要任何驱动依赖，格式简单。缺点是稳定性差，对网络稳定性要求高
+项目地址：GitHub - ivi-ru/flink-clickhouse-sink: Flink sink for Clickhouse
+基于clickhouse-file插件 Clickhouse-file插件，其主要实现方式是，将数据写入到CSV文件，然后通过Clickhouse-local将CSV数据文件转换为Clickhouse-file数据文件，然后将CLickhouse-file上传到远程Clickhouse服务器，用户通过Clickhouse查询数据。其优势是处理大数据量速度快，并且由于在本地生成数据文件，对Clickhouse服务器压力相对较小。缺点是配置复杂度高，通用性较差。其相对于JDBC模式的显著优势是，处理海量数据对服务器造成的压力较小。现在已开源Clickhouse-file的产品有：ClickhouseFile | Apache SeaTunnel，项目仓库地址：seatunnel/seatunnel-connectors-v2/connector-clickhouse · GitHub
+2. Clickhouse-file模式 基于Clickhouse-file 模式的，其主要实现方式是，将数据写入到CSV文件，然后通过Clickhouse-local将CSV数据文件转换为Clickhouse-file数据文件，然后将CLickhouse-file上传到远程Clickhouse服务器，用户通过Clickhouse查询数据。现在已开源的积压Clickhouse-file的项目有：ClickhouseFile | Apache SeaTunnel
+2.1 基于Clickhouse file模式处理流程 Clickhouse Sink接收到源端数据源数据流
+根据本地缓存的集群的数据分片策略，将数据分别写入到不同的本地缓存CSV文件
+在同步执行数据快照时或缓存已满，使用Clickhouse Local将加载缓存的CSV数据文件，并生成本地Clickhouse文件
+将Clickhouse本地文件，通过文件传输工具rsync传输到远程Clickhouse数据目录
+数据文件Attach到Clickhouse Server，用户可以从Clickhouse中查询数据
+2.2 关键技术组件 clickhouse-local clickhouse local，开发人员可以直接从命令行使用SQL命令（使用clickhouse SQL方言），提供了一种简单高效的方式来访问clickhouse功能，而无需完整安装clickhouse。用户可以使用clickhouse在不连接clickhouse服务器的情况下，生成clickhouse文件数据，并且支持大多数clickhouse engine。根据这个特性，我们可以在本地将数据通过clickhouse local工具，在本地生成clickhouse数据文件，此文件传输到远程clickhouse数据目录，用户即可查询新的数据。
+​ 参考资料：clickhouse-local | ClickHouse Docs
+clickhouse 临时文件传输到clickhouse服务器
+支持两种文件传输方式：rsync、scp
+相同点：
+均是基于ssh协议的安全传输工具。都可以通过远程主机的IP地址或域名进行连接，并且需要用户名和密码进行身份验证。传输数据时都会使用加密技术来保证数据的安全性。 不同点：
+scp只支持文件传输，而rsync除了可以传输文件，还可以传输目录、链接、设备文件等。rsync比scp更加灵活，能够自动检测并同步源和目标之间的差异，只传输发生变化的部分，从而提高传输效率。rsync复制时可以指定多个源目录，将它们合并到一个目的目录中，而scp只能传输单个文件或目录。rsync还支持增量备份，并且可以在网络传输中断后恢复传输，而scp则不支持这些特性。 Linux rsync Linux rsync是一种用于文件同步和备份的命令行工具。它能够快速、可靠地将本地或远程计算机之间的文件进行同步，同时可以压缩数据传输并保证数据完整性。rsync的主要优点包括增量备份、支持复制硬链接和符号链接、支持过滤器以排除或包含特定文件和目录等功能。使用rsync可以帮助用户快速而有效地管理和备份文件，特别是在需要将文件从一个位置复制到另一个位置的情况下，比如在服务器之间同步数据。
+Rsync可用于镜像数据、增量备份、在系统之间复制文件，并可替代scp、sftp和cp命令。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/19e682e4646c4e2c23d492c1f34965ab/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-06-08T23:54:23+08:00" />
+<meta property="article:modified_time" content="2023-06-08T23:54:23+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Clickhouse-file：基于Clickhouse-local实现Clickhouse高效写入数据</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="_2"></a>前言</h3> 
+<blockquote> 
+ <p>ClickHouse是一个用于OLAP（在线分析处理）的列式数据库管理系统，它专门为大数据量和高并发场景而设计。ClickHouse具有快速的扫描和聚合海量数据的能力，并且支持高并发查询，使其在处理数据分析任务方面比传统的行存储数据库更具优势。ClickHouse是一个开源项目，可以在较少的硬件资源上运行，并且可以轻松地水平扩展，以适应不断增长的数据量和流量。在快速增大的数据量的情况下，使用传统的数据写入模式，如：JDBC、CSV，会增大Clickhouse服务的数据解析压力。那是否有方法一方面能够提升数据写入量，另一方面减少Clickhouse的服务数据解析、写入压力呢？</p> 
+</blockquote> 
+<h3><a id="1_clickhouse_flink_connector_6"></a>1. 常用clickhouse flink connector</h3> 
+<ul><li>基于Clickhouse-jdbc</li></ul> 
+<blockquote> 
+ <p>使用官方提供的Clickhouse-jdbc驱动，通过SQL的形式将数据提交到Clickhouse服务器。优势是灵活性最高，但是在大数据量写入的情况下该方法会触发频繁的后台文件合并，甚至会出现“too many parts”的错误，同时大量的SQL解析对Clickhouse服务器有影响。</p> 
+</blockquote> 
+<ul><li>官方插件（基于CSV）</li></ul> 
+<blockquote> 
+ <p>将数据源流转化为CSV格式数据，并通过Http请求批量发送到Clickhouse。优势在于不需要任何驱动依赖，格式简单。缺点是稳定性差，对网络稳定性要求高</p> 
+</blockquote> 
+<p>项目地址：<a href="https://github.com/ivi-ru/flink-clickhouse-sink">GitHub - ivi-ru/flink-clickhouse-sink: Flink sink for Clickhouse</a></p> 
+<ul><li>基于clickhouse-file插件</li></ul> 
+<blockquote> 
+ <p>Clickhouse-file插件，其主要实现方式是，将数据写入到CSV文件，然后通过Clickhouse-local将CSV数据文件转换为Clickhouse-file数据文件，然后将CLickhouse-file上传到远程Clickhouse服务器，用户通过Clickhouse查询数据。其优势是处理大数据量速度快，并且由于在本地生成数据文件，对Clickhouse服务器压力相对较小。缺点是配置复杂度高，通用性较差。其相对于JDBC模式的显著优势是，处理海量数据对服务器造成的压力较小。现在已开源Clickhouse-file的产品有：<a href="https://seatunnel.apache.org/docs/2.3.1/connector-v2/sink/ClickhouseFile" rel="nofollow">ClickhouseFile | Apache SeaTunnel</a>，项目仓库地址：<a href="https://github.com/apache/seatunnel/tree/bdbc66a2bc6032453e2990294e12d7476f3ad952/seatunnel-connectors-v2/connector-clickhouse">seatunnel/seatunnel-connectors-v2/connector-clickhouse · GitHub</a></p> 
+</blockquote> 
+<h3><a id="2_Clickhousefile_24"></a>2. Clickhouse-file模式</h3> 
+<blockquote> 
+ <p>基于Clickhouse-file 模式的，其主要实现方式是，将数据写入到CSV文件，然后通过Clickhouse-local将CSV数据文件转换为Clickhouse-file数据文件，然后将CLickhouse-file上传到远程Clickhouse服务器，用户通过Clickhouse查询数据。现在已开源的积压Clickhouse-file的项目有：<a href="https://seatunnel.apache.org/docs/2.3.1/connector-v2/sink/ClickhouseFile" rel="nofollow">ClickhouseFile | Apache SeaTunnel</a></p> 
+</blockquote> 
+<h4><a id="21_Clickhouse_file_28"></a>2.1 基于Clickhouse file模式处理流程</h4> 
+<ol><li> <p>Clickhouse Sink接收到源端数据源数据流</p> </li><li> <p>根据本地缓存的集群的数据分片策略，将数据分别写入到不同的本地缓存CSV文件</p> </li><li> <p>在同步执行数据快照时或缓存已满，使用Clickhouse Local将加载缓存的CSV数据文件，并生成本地Clickhouse文件</p> </li><li> <p>将Clickhouse本地文件，通过文件传输工具rsync传输到远程Clickhouse数据目录</p> </li><li> <p>数据文件Attach到Clickhouse Server，用户可以从Clickhouse中查询数据</p> </li></ol> 
+<p><img src="https://images2.imgbox.com/9c/14/zAvIx5of_o.png" alt="图1"></p> 
+<h4><a id="22__45"></a>2.2 关键技术组件</h4> 
+<ul><li><strong>clickhouse-local</strong></li></ul> 
+<blockquote> 
+ <p>clickhouse local，开发人员可以直接从命令行使用SQL命令（使用clickhouse SQL方言），提供了一种简单高效的方式来访问clickhouse功能，而无需完整安装clickhouse。用户可以使用clickhouse在不连接clickhouse服务器的情况下，生成clickhouse文件数据，并且支持大多数clickhouse engine。根据这个特性，我们可以在本地将数据通过clickhouse local工具，在本地生成clickhouse数据文件，此文件传输到远程clickhouse数据目录，用户即可查询新的数据。</p> 
+</blockquote> 
+<p>​ 参考资料：<a href="https://clickhouse.com/docs/en/operations/utilities/clickhouse-local" rel="nofollow">clickhouse-local | ClickHouse Docs</a></p> 
+<ul><li> <p><strong>clickhouse 临时文件传输到clickhouse服务器</strong></p> <p>支持两种文件传输方式：<strong>rsync</strong>、<strong>scp</strong></p> 
+  <ul><li> <p>相同点：</p> 
+    <ul><li>均是基于ssh协议的安全传输工具。</li><li>都可以通过远程主机的IP地址或域名进行连接，并且需要用户名和密码进行身份验证。</li><li>传输数据时都会使用加密技术来保证数据的安全性。</li></ul> </li><li> <p>不同点：</p> 
+    <ul><li>scp只支持文件传输，而rsync除了可以传输文件，还可以传输目录、链接、设备文件等。</li><li>rsync比scp更加灵活，能够自动检测并同步源和目标之间的差异，只传输发生变化的部分，从而提高传输效率。</li><li>rsync复制时可以指定多个源目录，将它们合并到一个目的目录中，而scp只能传输单个文件或目录。</li><li>rsync还支持增量备份，并且可以在网络传输中断后恢复传输，而scp则不支持这些特性。</li></ul> </li></ul> </li></ul> 
+<ol><li><strong>Linux rsync</strong></li></ol> 
+<blockquote> 
+ <p>Linux rsync是一种用于文件同步和备份的命令行工具。它能够快速、可靠地将本地或远程计算机之间的文件进行同步，同时可以压缩数据传输并保证数据完整性。rsync的主要优点包括增量备份、支持复制硬链接和符号链接、支持过滤器以排除或包含特定文件和目录等功能。使用rsync可以帮助用户快速而有效地管理和备份文件，特别是在需要将文件从一个位置复制到另一个位置的情况下，比如在服务器之间同步数据。</p> 
+ <p>Rsync可用于镜像数据、增量备份、在系统之间复制文件，并可替代scp、sftp和cp命令。</p> 
+</blockquote> 
+<ul><li> <p>本地文件传输到远程：</p> <pre><code class="prism language-shell"><span class="token function">rsync</span> -a /opt/media/ remote_user@remote_host_or_ip:/opt/media/
+</code></pre> </li><li> <p>远程文件传输到本地：</p> <pre><code class="prism language-shell"><span class="token function">rsync</span> -a remote_user@remote_host_or_ip:/opt/media/ /opt/media/
+</code></pre> </li></ul> 
+<p>参考资料：<a href="https://linuxize.com/post/how-to-use-rsync-for-local-and-remote-data-transfer-and-synchronization/" rel="nofollow">Rsync Command in Linux with Examples | Linuxize</a></p> 
+<ol start="2"><li><strong>scp</strong></li></ol> 
+<blockquote> 
+ <p>基于SSH协议的安全文件传输命令，它可以在本地与远程系统之间复制文件和目录。</p> 
+</blockquote> 
+<ul><li> <p>本地文件传输到远程：</p> <pre><code class="prism language-shell"><span class="token function">scp</span> /opt/media/ remote_user@remote_host_or_ip:/opt/media/
+</code></pre> </li><li> <p>远程文件传输到本地：</p> <pre><code class="prism language-shell"><span class="token function">scp</span> remote_user@remote_host_or_ip:/opt/media//opt/media/
+</code></pre> </li></ul> 
+<h3><a id="3__104"></a>3. 实战</h3> 
+<blockquote> 
+ <p>场景：将本地生成的CSV文件，通过Clickhouse-file导入到远程Clickhouse服务器</p> 
+</blockquote> 
+<ol><li> <p>在clickhouse存在表<code>my_first_table</code></p> <pre><code class="prism language-sql"><span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> my_first_table
+<span class="token punctuation">(</span>
+    user_id UInt32<span class="token punctuation">,</span>
+    message String<span class="token punctuation">,</span>
+    <span class="token keyword">timestamp</span> <span class="token keyword">DateTime</span>
+<span class="token punctuation">)</span>
+<span class="token keyword">ENGINE</span> <span class="token operator">=</span> ReplacingMergeTree
+<span class="token keyword">PARTITION</span> <span class="token keyword">BY</span> toYYYYMMDD<span class="token punctuation">(</span><span class="token keyword">timestamp</span><span class="token punctuation">)</span>
+<span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span> user_id
+</code></pre> </li><li> <p>本地新增CSV文件<code> test_tmp.csv</code>，并写入数据</p> </li></ol> 
+<pre><code class="prism language-shell"><span class="token builtin class-name">echo</span> -e <span class="token string">"1,wang,2023-05-11 10:00:00<span class="token entity" title="\n">\n</span>2,zhang,2023-05-12 11:00:00<span class="token entity" title="\n">\n</span>3,sun,2023-05-13 12:00:00"</span> <span class="token operator">&gt;</span> /Users/vhicool/data/test_tmp.csv
+</code></pre> 
+<ol start="3"><li>通过clickhouse local将CSV文件转换为Clickhouse-file</li></ol> 
+<pre><code class="prism language-shell">./clickhouse <span class="token builtin class-name">local</span> --file <span class="token string">"/Users/vhicool/data/test_tmp.csv"</span>  -S <span class="token string">"user_id UInt32,message String,timestamp DateTime"</span> -N <span class="token string">"test_tmp_table"</span> <span class="token punctuation">\</span>
+-q <span class="token string">"CREATE TABLE IF NOT EXISTS my_first_table
+(user_id UInt32,message String,timestamp DateTime) 
+ENGINE = ReplacingMergeTree
+PARTITION BY toYYYYMMDD(timestamp)
+PRIMARY KEY user_id; 
+INSERT INTO my_first_table select  user_id,message,timestamp from test_tmp_table"</span>   <span class="token punctuation">\</span>
+--path <span class="token string">"/Users/vhicool/data/test_tmp_file1"</span>
+</code></pre> 
+<p>此时我们到`/Users/vhicool/data/test_tmp_file1/目录下，可以查看当前生成的Clickhouse-file。</p> 
+<pre><code class="prism language-shell">data/_local/
+└── my_first_table
+    ├── 20230511_1_1_0
+    ├── 20230512_2_2_0
+    ├── 20230513_3_3_0
+    ├── detached
+    └── format_version.tx
+</code></pre> 
+<ol start="4"><li>将Clickhouse-file文件复制到Clickhouse服务器数据目录</li></ol> 
+<pre><code class="prism language-shell"><span class="token function">cp</span> -r /Users/vhicool/data/test_tmp_file1/data/_local/my_first_table/*_*_*_* data/default/my_first_table/detached/
+</code></pre> 
+<ol start="5"><li> <p>将数据文件ATTACH到Clickhouse数据表中</p> <pre><code class="prism language-sql"><span class="token keyword">local</span> :<span class="token punctuation">)</span> <span class="token keyword">ALTER</span> <span class="token keyword">TABLE</span> my_first_table ATTACH PART <span class="token string">'20230511_1_1_0'</span>
+<span class="token keyword">local</span> :<span class="token punctuation">)</span> <span class="token keyword">ALTER</span> <span class="token keyword">TABLE</span> my_first_table ATTACH PART <span class="token string">'20230512_2_2_0'</span>
+<span class="token keyword">local</span> :<span class="token punctuation">)</span> <span class="token keyword">ALTER</span> <span class="token keyword">TABLE</span> my_first_table ATTACH PART <span class="token string">'20230513_3_3_0'</span>
+</code></pre> <p>查询导入的数据</p> <pre><code class="prism language-sql"><span class="token keyword">local</span> :<span class="token punctuation">)</span>  <span class="token keyword">SELECT</span> <span class="token operator">*</span> <span class="token keyword">FROM</span> my_first_table
+
+┌─user_id─┬─message─┬───────────<span class="token keyword">timestamp</span>─┐
+│       <span class="token number">2</span> │ zhang   │ <span class="token number">2023</span><span class="token operator">-</span><span class="token number">05</span><span class="token operator">-</span><span class="token number">12</span> <span class="token number">11</span>:<span class="token number">00</span>:<span class="token number">00</span> │
+└─────────┴─────────┴─────────────────────┘
+┌─user_id─┬─message─┬───────────<span class="token keyword">timestamp</span>─┐
+│       <span class="token number">1</span> │ wang    │ <span class="token number">2023</span><span class="token operator">-</span><span class="token number">05</span><span class="token operator">-</span><span class="token number">11</span> <span class="token number">10</span>:<span class="token number">00</span>:<span class="token number">00</span> │
+└─────────┴─────────┴─────────────────────┘
+┌─user_id─┬─message─┬───────────<span class="token keyword">timestamp</span>─┐
+│       <span class="token number">3</span> │ sun     │ <span class="token number">2023</span><span class="token operator">-</span><span class="token number">05</span><span class="token operator">-</span><span class="token number">13</span> <span class="token number">12</span>:<span class="token number">00</span>:<span class="token number">00</span> │
+└─────────┴─────────┴─────────────────────┘
+
+<span class="token number">3</span> <span class="token keyword">rows</span> <span class="token operator">in</span> <span class="token keyword">set</span><span class="token punctuation">.</span> Elapsed: <span class="token number">0.002</span> sec<span class="token punctuation">.</span>
+
+</code></pre> <p>查询数据分片</p> <pre><code class="prism language-sql">
+<span class="token keyword">local</span> :<span class="token punctuation">)</span>  <span class="token keyword">SELECT</span>
+    <span class="token keyword">partition</span><span class="token punctuation">,</span>
+    name<span class="token punctuation">,</span>
+    <span class="token keyword">rows</span>
+<span class="token keyword">FROM</span> system<span class="token punctuation">.</span>parts
+<span class="token keyword">WHERE</span> <span class="token keyword">table</span> <span class="token operator">=</span> <span class="token string">'my_first_table'</span>
+
+┌─<span class="token keyword">partition</span>─┬─name───────────┬─<span class="token keyword">rows</span>─┐
+│ <span class="token number">20230511</span>  │ <span class="token number">20230511</span>_1_1_0 │    <span class="token number">1</span> │
+│ <span class="token number">20230512</span>  │ <span class="token number">20230512</span>_2_2_0 │    <span class="token number">1</span> │
+│ <span class="token number">20230513</span>  │ <span class="token number">20230513</span>_3_3_0 │    <span class="token number">1</span> │
+└───────────┴────────────────┴──────┘
+
+<span class="token number">3</span> <span class="token keyword">rows</span> <span class="token operator">in</span> <span class="token keyword">set</span><span class="token punctuation">.</span> Elapsed: <span class="token number">0.003</span> sec<span class="token punctuation">.</span>
+</code></pre> </li></ol> 
+<p><strong>参考资料</strong></p> 
+<p><a href="https://clickhouse.com/docs/zh/interfaces/formats" rel="nofollow">flink官方写入数据支持的格式</a><br> <a href="https://blog.csdn.net/weixin_40104766/article/details/121323882">clickhouse之数据写入问题_clickhouse insert/jdbc</a><br> <a href="https://seatunnel.apache.org/zh-CN/blog/2022/05/10/ClickHouse/" rel="nofollow">百亿级数据同步，如何基于 SeaTunnel 的 ClickHouse 实现？ | Apache SeaTunnel</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8df6e5b81fc4455fbc0d6cc893463a8b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">package.json与package-lock.json区别需不需要被.gitignore文件忽略</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/64cf74644eec6df6e0f5a9574d7e08cc/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">大模型时代下智能文档处理核心技术大揭秘</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

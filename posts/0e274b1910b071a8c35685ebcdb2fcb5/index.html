@@ -1,0 +1,1027 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>STM32学习笔记（六）丨TIM定时器及其应用（输入捕获丨测量PWM波形的频率和占空比） - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="STM32学习笔记（六）丨TIM定时器及其应用（输入捕获丨测量PWM波形的频率和占空比）" />
+<meta property="og:description" content="本篇文章包含的内容 一、输入捕获1.1 输入捕获简介1.2 输入捕获通道的工作原理1.3 输入捕获的主从触发模式1.4 输入捕获和PWMI结构 二、频率的测量方法2.1 测频法2.2 测周法2.3 测频法和测周法的误差分析 三、输入捕获测量PWM波形的频率和占空比3.1 输入捕获相关库函数3.2 输入捕获IC测量频率3.3 PWMI模式同时测量频率和占空比3.4 测周法测量频率性能评估 ​ 本次课程采用单片机型号为STM32F103C8T6。
+​ 课程链接：江科大自化协 STM32入门教程
+往期笔记链接：
+STM32学习笔记（一）丨建立工程丨GPIO 通用输入输出
+STM32学习笔记（二）丨STM32程序调试丨OLED的使用
+STM32学习笔记（三）丨中断系统丨EXTI外部中断
+STM32学习笔记（四）丨TIM定时器及其应用（定时中断、内外时钟源选择）
+STM32学习笔记（五）丨TIM定时器及其应用（输出比较丨PWM驱动呼吸灯、舵机、直流电机）
+如果上一篇笔记的内容为史诗级副本，本篇文章的内容我愿称之为传说级副本（三）。
+一、输入捕获 1.1 输入捕获简介 输入捕获，即Input Capture，英文缩写为IC。输入捕获模式下，当通道输入引脚出现指定电平跳变（可以定义为上升沿、下降沿）时，当前CNT的值将被锁存到CCR中（这就是“捕获”的含义），可用于测量PWM波形的频率、占空比、脉冲间隔、电平持续时间等参数。在这里，“脉冲间隔、电平持续时间”和“频率、占空比”是互相对应的关系。每个高级定时器和通用定时器都拥有4各输入捕获通道，且二者没有区别。
+输入捕获模块可以配置为PWMI（PWM输入）模式和主从触发模式。PWMI模式是专门用来同时测量PWM波形的频率和占空比的。主从触发模式可以实现对频率或占空比的硬件的全自动测量，不占用软件资源，可以极大地减轻CPU的压力。
+在定时器中，输入捕获和输出比较共用同一个引脚和同一个CCR，故在使用时，对同一个TIM定时器而言，输入捕获和输出比较功能只能使用一个，不能同时使用。
+1.2 输入捕获通道的工作原理 接下来分析输入捕获通道的工作原理。输入信号首先进入输入滤波器和边沿检测器。这个滤波器和定时器的外部时钟模式2的输入滤波原理类似，它可以避免一些高频的毛刺信号造成误触发。在博主的文章STM32学习笔记（四）丨TIM定时器及其应用（定时中断、内外时钟源选择）中有较为详细的说明：
+在定时器的外部信号输入引脚一般都有一个滤波器来消除信号的抖动干扰，它的工作原理是：在一个固定的时钟频率 f f f下进行采样，如果连续 N N N个采样点都是相同的电平，就代表输入信号稳定了，就将采样值输出到下一级电路；如果 N N N个采样点不全都相同，就说明信号有抖动，这时保持上一次的输出，或直接输出低电平。 这样就能保证输出信号在一定程度上的滤波。这里的采样频率 f f f和采样点数 N N N都是滤波器的参数，频率越低，采样点数越多，滤波效果就越好，不过相应的信号延迟就越大。
+在实际应用时，通过改变TIMx_CCMR1寄存器的IC1F位就可以配置不同的滤波频率。
+边沿检测部分和外部中断类似，可以选择高电平触发，或者低电平触发。当触发指定的电平时，边沿检测电路就会触发后续的电路执行动作。
+在CH1，CH2，CH3之间跨接了一个异或门，它实际上是为三相无刷电机服务的。无刷电机拥有三个霍尔传感器检测转子的位置，可以根据转子的位置进行换相，通过将异或门的三个输入端与三个霍尔传感器相连接，此时的定时器就称为无刷电机的接口定时器，取驱动换相电路工作。这部分内容暂时不涉及，仅作了解即可。
+CH3、CH4的输入滤波和边沿检测电路的结构与CH1、CH2类似。图中用一个方框代表了输入滤波和边沿检测，但实际上这里有两套相同的电路结构。CH1通道的一个输入滤波和边沿检测接到TI1FP1（Timer Input 1 Filter Polarity 1，可连接到IC1），另一个输入滤波和边沿检测接到TI1FP2（Timer Input 1 Filter Polarity 2，可连接到IC2）；同样，CH2通道的一个输入滤波和边沿检测接到TI2FP1（可连接到IC1），另一个输入滤波和边沿检测接到TI1FP2（可连接到IC2）。这样“交叉连接”的目的主要有以下两点：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/0e274b1910b071a8c35685ebcdb2fcb5/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-01-13T18:30:57+08:00" />
+<meta property="article:modified_time" content="2023-01-13T18:30:57+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">STM32学习笔记（六）丨TIM定时器及其应用（输入捕获丨测量PWM波形的频率和占空比）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atelier-sulphurpool-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>本篇文章包含的内容</h4> 
+ <ul><li><a href="#_14" rel="nofollow">一、输入捕获</a></li><li><ul><li><a href="#11__15" rel="nofollow">1.1 输入捕获简介</a></li><li><a href="#12__20" rel="nofollow">1.2 输入捕获通道的工作原理</a></li><li><a href="#13__39" rel="nofollow">1.3 输入捕获的主从触发模式</a></li><li><a href="#14_PWMI_47" rel="nofollow">1.4 输入捕获和PWMI结构</a></li></ul> 
+  </li><li><a href="#_60" rel="nofollow">二、频率的测量方法</a></li><li><ul><li><a href="#21__63" rel="nofollow">2.1 测频法</a></li><li><a href="#22__67" rel="nofollow">2.2 测周法</a></li><li><a href="#23__71" rel="nofollow">2.3 测频法和测周法的误差分析</a></li></ul> 
+  </li><li><a href="#PWM_78" rel="nofollow">三、输入捕获测量PWM波形的频率和占空比</a></li><li><ul><li><a href="#31__80" rel="nofollow">3.1 输入捕获相关库函数</a></li><li><a href="#32_IC_121" rel="nofollow">3.2 输入捕获IC测量频率</a></li><li><a href="#33_PWMI_286" rel="nofollow">3.3 PWMI模式同时测量频率和占空比</a></li><li><a href="#34__406" rel="nofollow">3.4 测周法测量频率性能评估</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<p>​  本次课程采用单片机型号为STM32F103C8T6。<br> ​  课程链接：<a href="https://www.bilibili.com/video/BV1th411z7sn/?spm_id_from=333.1007.top_right_bar_window_custom_collection.content.click&amp;vd_source=18c37c72e6749d20ab58052b38ba2976" rel="nofollow">江科大自化协 STM32入门教程</a></p> 
+<hr> 
+<p>  往期笔记链接：<br>   <a href="http://t.csdn.cn/CAIRv" rel="nofollow">STM32学习笔记（一）丨建立工程丨GPIO 通用输入输出</a><br>   <a href="http://t.csdn.cn/tou5p" rel="nofollow">STM32学习笔记（二）丨STM32程序调试丨OLED的使用</a><br>   <a href="http://t.csdn.cn/zy9in" rel="nofollow">STM32学习笔记（三）丨中断系统丨EXTI外部中断</a><br>   <a href="http://t.csdn.cn/WdRrr" rel="nofollow">STM32学习笔记（四）丨TIM定时器及其应用（定时中断、内外时钟源选择）</a><br>   <a href="https://blog.csdn.net/weixin_62179882/article/details/128525547">STM32学习笔记（五）丨TIM定时器及其应用（输出比较丨PWM驱动呼吸灯、舵机、直流电机）</a></p> 
+<hr> 
+<p>  如果上一篇笔记的内容为史诗级副本，本篇文章的内容我愿称之为<strong>传说级副本（三）</strong>。</p> 
+<hr> 
+<h2><a id="_14"></a>一、输入捕获</h2> 
+<h3><a id="11__15"></a>1.1 输入捕获简介</h3> 
+<p>  输入捕获，即Input Capture，英文缩写为IC。<strong>输入捕获模式下，当通道输入引脚出现指定电平跳变（可以定义为上升沿、下降沿）时，当前CNT的值将被锁存到CCR中（这就是“捕获”的含义），可用于测量PWM波形的频率、占空比、脉冲间隔、电平持续时间等参数</strong>。在这里，“脉冲间隔、电平持续时间”和“频率、占空比”是互相对应的关系。每个高级定时器和通用定时器都拥有4各输入捕获通道，且二者没有区别。<br>   输入捕获模块可以配置为<strong>PWMI（PWM输入）模式</strong>和<strong>主从触发模式</strong>。<mark>PWMI模式是专门用来<strong>同时测量PWM波形的频率和占空比</strong>的。主从触发模式可以实现对频率或占空比的<strong>硬件的全自动测量</strong>，不占用软件资源，可以极大地减轻CPU的压力。</mark><br> <img src="https://images2.imgbox.com/96/9b/6vvWC3MY_o.png" alt="在这里插入图片描述"><br>   在定时器中，输入捕获和输出比较共用同一个引脚和同一个CCR，故在使用时，<mark>对同一个TIM定时器而言，输入捕获和输出比较功能只能使用一个，不能同时使用</mark>。</p> 
+<h3><a id="12__20"></a>1.2 输入捕获通道的工作原理</h3> 
+<p>  接下来分析输入捕获通道的工作原理。输入信号首先进入输入滤波器和边沿检测器。这个滤波器和定时器的外部时钟模式2的输入滤波原理类似，它可以避免一些高频的毛刺信号造成误触发。在博主的文章<a href="https://blog.csdn.net/weixin_62179882/article/details/128462610">STM32学习笔记（四）丨TIM定时器及其应用（定时中断、内外时钟源选择）</a>中有较为详细的说明：</p> 
+<blockquote> 
+ <p>  在定时器的外部信号输入引脚一般都有一个滤波器来消除信号的抖动干扰，它的工作原理是：<mark>在一个固定的时钟频率<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+         
+           f 
+          
+         
+        
+          f 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span></span></span></span></span>下进行采样，如果连续<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+         
+           N 
+          
+         
+        
+          N 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span></span></span></span></span>个采样点都是相同的电平，就代表输入信号稳定了，就将采样值输出到下一级电路；如果<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+       
+        
+         
+         
+           N 
+          
+         
+        
+          N 
+         
+        
+      </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span></span></span></span></span>个采样点不全都相同，就说明信号有抖动，这时保持上一次的输出，或直接输出低电平。</mark> 这样就能保证输出信号在一定程度上的滤波。这里的采样频率<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          f 
+         
+        
+       
+         f 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span></span></span></span></span>和采样点数<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          N 
+         
+        
+       
+         N 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span></span></span></span></span>都是滤波器的参数，频率越低，采样点数越多，滤波效果就越好，不过相应的信号延迟就越大。<br>   在实际应用时，通过改变TIMx_CCMR1寄存器的IC1F位就可以配置不同的滤波频率。<br> <img src="https://images2.imgbox.com/c1/e0/9dD1i6Wm_o.png" alt="在这里插入图片描述"></p> 
+</blockquote> 
+<p>  边沿检测部分和外部中断类似，可以选择高电平触发，或者低电平触发。当触发指定的电平时，边沿检测电路就会触发后续的电路执行动作。</p> 
+<blockquote> 
+ <p>  在CH1，CH2，CH3之间跨接了一个异或门，它实际上是为三相无刷电机服务的。无刷电机拥有三个霍尔传感器检测转子的位置，可以根据转子的位置进行换相，通过将异或门的三个输入端与三个霍尔传感器相连接，此时的定时器就称为无刷电机的接口定时器，取驱动换相电路工作。这部分内容暂时不涉及，仅作了解即可。</p> 
+</blockquote> 
+<p>  CH3、CH4的输入滤波和边沿检测电路的结构与CH1、CH2类似。图中用一个方框代表了输入滤波和边沿检测，但实际上这里有两套相同的电路结构。CH1通道的一个输入滤波和边沿检测接到TI1FP1（Timer Input 1 Filter Polarity 1，可连接到IC1），另一个输入滤波和边沿检测接到TI1FP2（Timer Input 1 Filter Polarity 2，可连接到IC2）；同样，CH2通道的一个输入滤波和边沿检测接到TI2FP1（可连接到IC1），另一个输入滤波和边沿检测接到TI1FP2（可连接到IC2）。这样“交叉连接”的目的主要有以下两点：</p> 
+<ul><li><strong>可以灵活切换后续捕获电路的输入</strong>：同一个捕获电路可以选择捕获CH1的输入信号，也可以选择捕获CH2的输入信号</li><li><strong>可以把一个引脚的输入同时映射到两个捕获单元</strong>：PWMI模式的经典结构。</li></ul> 
+<p>  此外，TRC信号也可以作为捕获信号的输入。这个设计同样是为无刷电机的驱动设计的。了解即可，这里暂时不涉及。<br>   信号进入捕获单元后，经过一个预分频器就可以控制CCR对CNT进行捕获操作了。捕获信号同时会触发一个事件，这个事件会在状态寄存器置标志位，同时也可以触发中断。<br>   输入捕获通道1的详细框图如下所示：<br> <img src="https://images2.imgbox.com/c0/9e/yppocZSQ_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="13__39"></a>1.3 输入捕获的主从触发模式</h3> 
+<p><img src="https://images2.imgbox.com/8e/b8/QLn72jAT_o.png" alt="在这里插入图片描述"><br>   CCR对CNT进行捕获之后，需要对CNT进行一次清0操作，这样每次捕获得到的值才是测周法（下文有讲解）两个上升沿（下降沿）之间的时间间隔。这个清0操作，就需要用到主从触发模式来自动完成。由输入捕获通道1的详细框图可得：经过滤波和极性选择的TI1FP1信号和经过滤波的边沿信号TI1F_ED都可以通向从模式控制器，之后便可以通过硬件电路自动完成CNT的清0操作。<br>   <strong>主从触发模式，即主模式、从模式和触发源选择三个功能的简称</strong>。主模式可以将定时器内部的信号映射到TRGO引脚，用于触发其他外设的操作；从模式可以接收其他外设或自身外设的一些信号，用于触发自己的一些操作（定时器的运行）；触发源选择，即选择从模式的触发信号源功能，也可以认为它是从模式的一部分。<br>   在从模式下，可以通过触发源选择功能选择一个信号产生TRGI信号，之后去触发从模式。关于主从模式的详细说明可以参见手册：<br> <img src="https://images2.imgbox.com/08/15/lWK745nA_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/6f/66/xZIXLSD1_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/d9/78/oJedGAmX_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="14_PWMI_47"></a>1.4 输入捕获和PWMI结构</h3> 
+<p>  下图是输出捕获模式测频率的基本结构图。下图清晰地展示了输入捕获模式测量频率的过程，同时也是编程的逻辑基础。在这里我们只使用了一个通道，所以它只能测量频率。<br>   首先，配置时基单元，启动寄存器，则CNT就会在时钟驱动下不断自增。我们使用CNT来计数，间接实现计时的功能。经过预分频后的时钟频率，就是测周法的标准频率<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          f 
+         
+        
+          c 
+         
+        
+       
+      
+        f_c 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.1076em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">c</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>。之后，GPIO输入一个待测的方波信号，经过TI1FP1为上升沿触发，之后数据选择器选择直连通道，分频器选择不分频。当TI1FP1出现上升沿之后，CNT的值就会被CCR1捕获；同时触发源选择模块选择TI1FP1为触发信号，从模式选择复位操作。则<strong>TI1FP1信号完成两个操作：捕获CNT的值到CCR1中、清零CNT</strong>。当然这里存在先后顺序，先进行捕获后进行清0；或者存在非阻塞的同时转移。当电路不断工作是，CCR1中的值始终是最新一个周期的计数值，即测周法的计次数 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         N 
+        
+       
+      
+        N 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span></span></span></span></span>。</p> 
+<blockquote> 
+ <p>  这里需要注意以下两点：</p> 
+ <ol><li>CNT的计数值是有上限的。由于ARR最大为65535，故CNT最大也只能计65535个数。如果信号频率太低，CNT的计数值可能会溢出。</li><li>从模式的触发源选择中有TI1FP1和TI2FP2，但是没有TI3和TI4的信号。所以如果要使用从模式自从清零CNT，就必须使用CH1或CH2作为输入。对于CH3和CH4，就只能开启捕获中断，在中断中手动清0了（程序会处于频繁中断的状态，比较占用软件资源）。</li></ol> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/a4/ba/1qZIDMcl_o.png" alt="在这里插入图片描述"><br>   通过将一个引脚的信号映射到两个输入捕获单元，将TI1FP2配置为下降沿触发，就可以同时测量PWM波形的频率和占空比了，如下图所示，占空比：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          D 
+         
+        
+          u 
+         
+        
+          t 
+         
+        
+          y 
+         
+        
+          = 
+         
+         
+          
+          
+            C 
+           
+          
+            C 
+           
+           
+           
+             R 
+            
+           
+             2 
+            
+           
+          
+          
+          
+            C 
+           
+          
+            C 
+           
+           
+           
+             R 
+            
+           
+             1 
+            
+           
+          
+         
+        
+          × 
+         
+        
+          100 
+         
+        
+          % 
+         
+        
+       
+         Duty = \frac {CCR_2} {CCR_1} \times 100 \% 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8778em; vertical-align: -0.1944em;"></span><span class="mord mathnormal" style="margin-right: 0.0278em;">D</span><span class="mord mathnormal">u</span><span class="mord mathnormal">t</span><span class="mord mathnormal" style="margin-right: 0.0359em;">y</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 2.1963em; vertical-align: -0.836em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.3603em;"><span class="" style="top: -2.314em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0715em;">CC</span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0077em;">R</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: -0.0077em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">1</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.677em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0715em;">CC</span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0077em;">R</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: -0.0077em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.836em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">100%</span></span></span></span></span></span><br> <img src="https://images2.imgbox.com/26/e3/qc5VcvFz_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_60"></a>二、频率的测量方法</h2> 
+<p><img src="https://images2.imgbox.com/5e/09/L7KmYwfT_o.png" alt="在这里插入图片描述"><br>   对于测频率而言，STM32只能测量数字信号（高电平3.3V，低电平0V）。如果要测量模拟信号（例如一个正弦波）的频率，还需要在测量之前使信号通过一个信号预处理电路。可以使用继承运放搭接一个比较器，也可以使信号通过一个施密特触发器，将模拟信号转换为数字信号（保证二者频率相同），之后再输入给STM32测量信号频率。如果需要测量的信号电压较高，则还需要考虑隔离的问题，使用隔离放大器、电压互感器等元件，隔离高压端和低压端，保证电路的安全。</p> 
+<h3><a id="21__63"></a>2.1 测频法</h3> 
+<p>  测频法的测试方法是：在闸门时间 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         T 
+        
+       
+      
+        T 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.1389em;">T</span></span></span></span></span> 内，对上升沿（也可以是下降沿）计次，得到 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         N 
+        
+       
+      
+        N 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span></span></span></span></span>，则测量频率：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           𝑓 
+          
+         
+           𝑥 
+          
+         
+        
+          = 
+         
+         
+         
+           𝑁 
+          
+         
+           𝑇 
+          
+         
+        
+       
+         𝑓_𝑥=\frac𝑁 𝑇 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.1076em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 2.0463em; vertical-align: -0.686em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.3603em;"><span class="" style="top: -2.314em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">T</span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.677em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.109em;">N</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.686em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span></span></span></span></span></span><br>   例如，可以定义闸门时间闸门时间 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         T 
+        
+       
+         = 
+        
+       
+         1 
+        
+       
+         s 
+        
+       
+      
+        T=1s 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.1389em;">T</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">1</span><span class="mord mathnormal">s</span></span></span></span></span> ，则在一秒中得到的上升沿的个数（完整的一个周期的信号个数）就是频率。对应之前的代码，可以使用对射式红外传感器计次的代码（详见<a href="https://blog.csdn.net/weixin_62179882/article/details/128438802">STM32学习笔记（三）丨中断系统丨EXTI外部中断</a>），将待测信号接入一个外部中断，在外部中断中计次数不断自增；再使用定时器定时1s产生中断，在中断中将计数值保存并清0。这部分比较简单，这里不再演示。</p> 
+<h3><a id="22__67"></a>2.2 测周法</h3> 
+<p>  测周法的测试方法是：两个上升沿内，以标准频率 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          f 
+         
+        
+          c 
+         
+        
+       
+      
+        f_c 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.1076em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">c</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 计次，得到 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         N 
+        
+       
+      
+        N 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span></span></span></span></span> ，则测量频率：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           𝑓 
+          
+         
+           𝑥 
+          
+         
+        
+          = 
+         
+         
+          
+          
+            𝑓 
+           
+          
+            𝑐 
+           
+          
+         
+           𝑁 
+          
+         
+        
+       
+         𝑓_𝑥 = \frac {𝑓_𝑐} 𝑁 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.1076em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 2.0574em; vertical-align: -0.686em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.3714em;"><span class="" style="top: -2.314em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.109em;">N</span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.677em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.1076em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">c</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.686em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span></span></span></span></span></span><br>   测周法的基本思想是：<strong>周期的倒数就是频率</strong>。如果我们能用定时器测量出一个周期的时间（相邻上升沿或相邻下降沿的间隔时间），取倒数即得到测量频率。<mark>输入捕获模块采用测周法进行测量。</mark></p> 
+<h3><a id="23__71"></a>2.3 测频法和测周法的误差分析</h3> 
+<p>  根据上图可以清晰地看出，<strong>测频法适用于测量高频信号，测周法适用于测量低频信号</strong>。<br>   对于测频法，当被测频率过低，会导致 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         N 
+        
+       
+      
+        N 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span></span></span></span></span> 很小，此时的误差非常大；对于测周法，当被测频率过高（<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          f 
+         
+        
+          x 
+         
+        
+       
+      
+        f_x 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.1076em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 和 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          f 
+         
+        
+          c 
+         
+        
+       
+      
+        f_c 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.1076em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">c</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 非常接近），在 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          f 
+         
+        
+          x 
+         
+        
+       
+      
+        f_x 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.1076em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 的一个周期内只能得到一个很小的 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         N 
+        
+       
+      
+        N 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span></span></span></span></span> ，此时的误差也非常大。<br>   由于测量原理的差异，一般而言，<strong>测频法的结果更新频率会比较慢，但是数值较为稳定；测周法的结果更新频率较快，数据跳变也比较灵敏</strong>。从原理上看，测频法自带一个均值滤波的功能，如果在闸门时间 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         T 
+        
+       
+      
+        T 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.1389em;">T</span></span></span></span></span> 内被测频率有变化，测频法得到的实际是这一段闸门时间内的平均频率；而测周法只测量一个周期，故其结果会受噪声的影响，波动会比较大。所以，对于测频法和测周法的一个共同点是：<mark><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          N 
+         
+        
+       
+         N 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span></span></span></span></span> 越大，误差就越小</mark>。在两种方法中，计次都可能会产生<mark>正负1误差</mark>。在测频法的一个闸门时间内，并不是每一个被测信号的周期都是完整的；测周法的标准计数信号的信号也不一定是被测信号的整数倍，所以它也不一定是每一个都完整的。对于上述的两种情况，都会出现多计一个数或者少计一个数的情况，所以会产生正负1误差。<br>   如何在不同情况下正确选择测频法和测周法呢？我们有以下一个参数来考量：<mark>中界频率，测频法和测周法误差相等的频率点</mark>。由于两种方法的误差都与 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         N 
+        
+       
+      
+        N 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span></span></span></span></span> 的正负1误差有关，所以当两种方法计次的N相同时，两种方法的误差也就相同。消去两种方法公式中的 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         N 
+        
+       
+      
+        N 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span></span></span></span></span>，可得：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           f 
+          
+         
+           m 
+          
+         
+        
+          = 
+         
+         
+         
+           f 
+          
+         
+           x 
+          
+         
+        
+          = 
+         
+         
+          
+           
+           
+             f 
+            
+           
+             c 
+            
+           
+          
+            T 
+           
+          
+         
+        
+       
+         f_m=f_x=\sqrt {\frac {f_c} T} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.1076em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">m</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.1076em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">x</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 2.44em; vertical-align: -0.7634em;"></span><span class="mord sqrt"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.6766em;"><span class="svg-align" style="top: -4.4em;"><span class="pstrut" style="height: 4.4em;"></span><span class="mord" style="padding-left: 1em;"><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.3714em;"><span class="" style="top: -2.314em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">T</span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.677em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.1076em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">c</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.686em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span></span></span><span class="" style="top: -3.6366em;"><span class="pstrut" style="height: 4.4em;"></span><span class="hide-tail" style="min-width: 1.02em; height: 2.48em;"> 
+            <svg width="400em" height="2.48em" viewbox="0 0 400000 2592" preserveaspectratio="xMinYMin slice"> 
+             <path d="M424,2478
+c-1.3,-0.7,-38.5,-172,-111.5,-514c-73,-342,-109.8,-513.3,-110.5,-514
+c0,-2,-10.7,14.3,-32,49c-4.7,7.3,-9.8,15.7,-15.5,25c-5.7,9.3,-9.8,16,-12.5,20
+s-5,7,-5,7c-4,-3.3,-8.3,-7.7,-13,-13s-13,-13,-13,-13s76,-122,76,-122s77,-121,77,-121
+s209,968,209,968c0,-2,84.7,-361.7,254,-1079c169.3,-717.3,254.7,-1077.7,256,-1081
+l0 -0c4,-6.7,10,-10,18,-10 H400000
+v40H1014.6
+s-87.3,378.7,-272.6,1166c-185.3,787.3,-279.3,1182.3,-282,1185
+c-2,6,-10,9,-24,9
+c-8,0,-12,-0.7,-12,-2z M1001 80
+h400000v40h-400000z"></path> 
+            </svg></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.7634em;"><span class=""></span></span></span></span></span></span></span></span></span></span><br> 式中， <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         T 
+        
+       
+      
+        T 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.1389em;">T</span></span></span></span></span> 是测频法的闸门时间， <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          f 
+         
+        
+          c 
+         
+        
+       
+      
+        f_c 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.1076em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">c</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 是测频法的标准频率。</p> 
+<h2><a id="PWM_78"></a>三、输入捕获测量PWM波形的频率和占空比</h2> 
+<h3><a id="31__80"></a>3.1 输入捕获相关库函数</h3> 
+<ol><li>输入捕获初始化配置</li></ol> 
+<pre><code class="prism language-c"><span class="token comment">// 输入捕获IC初始化函数</span>
+<span class="token comment">// 输入捕获有四个通道，但是只有一个初始化函数，通道选择在结构体成员变量中，这一点与输出比较不同</span>
+<span class="token keyword">void</span> <span class="token function">TIM_ICInit</span><span class="token punctuation">(</span>TIM_TypeDef<span class="token operator">*</span> TIMx<span class="token punctuation">,</span> TIM_ICInitTypeDef<span class="token operator">*</span> TIM_ICInitStruct<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">// 给IC初始化函数中的结构体参数赋一个默认值</span>
+<span class="token keyword">void</span> <span class="token function">TIM_ICStructInit</span><span class="token punctuation">(</span>TIM_ICInitTypeDef<span class="token operator">*</span> TIM_ICInitStruct<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">// 快速配置PWMI模式（自动将另一个通道配置为相反的模式）</span>
+<span class="token keyword">void</span> <span class="token function">TIM_PWMIConfig</span><span class="token punctuation">(</span>TIM_TypeDef<span class="token operator">*</span> TIMx<span class="token punctuation">,</span> TIM_ICInitTypeDef<span class="token operator">*</span> TIM_ICInitStruct<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">// 单独写入时基单元的PSC，第三个参数与预装载有关</span>
+<span class="token keyword">void</span> <span class="token function">TIM_PrescalerConfig</span><span class="token punctuation">(</span>TIM_TypeDef<span class="token operator">*</span> TIMx<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> Prescaler<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> TIM_PSCReloadMode<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">// 单独配置四个通道的预分频器，结构体中也可以配置，效果相同</span>
+<span class="token keyword">void</span> <span class="token function">TIM_SetIC1Prescaler</span><span class="token punctuation">(</span>TIM_TypeDef<span class="token operator">*</span> TIMx<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> TIM_ICPSC<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">TIM_SetIC2Prescaler</span><span class="token punctuation">(</span>TIM_TypeDef<span class="token operator">*</span> TIMx<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> TIM_ICPSC<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">TIM_SetIC3Prescaler</span><span class="token punctuation">(</span>TIM_TypeDef<span class="token operator">*</span> TIMx<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> TIM_ICPSC<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">TIM_SetIC4Prescaler</span><span class="token punctuation">(</span>TIM_TypeDef<span class="token operator">*</span> TIMx<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> TIM_ICPSC<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">// 分别读取四个通道的CCR的值（与输出比较中的TIM_SetComparex函数对应）</span>
+<span class="token class-name">uint16_t</span> <span class="token function">TIM_GetCapture1</span><span class="token punctuation">(</span>TIM_TypeDef<span class="token operator">*</span> TIMx<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token class-name">uint16_t</span> <span class="token function">TIM_GetCapture2</span><span class="token punctuation">(</span>TIM_TypeDef<span class="token operator">*</span> TIMx<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token class-name">uint16_t</span> <span class="token function">TIM_GetCapture3</span><span class="token punctuation">(</span>TIM_TypeDef<span class="token operator">*</span> TIMx<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token class-name">uint16_t</span> <span class="token function">TIM_GetCapture4</span><span class="token punctuation">(</span>TIM_TypeDef<span class="token operator">*</span> TIMx<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+</code></pre> 
+<ol start="2"><li>主从触发模式配置</li></ol> 
+<pre><code class="prism language-c"><span class="token comment">// 选择输入（从模式）触发源TRGI</span>
+<span class="token keyword">void</span> <span class="token function">TIM_SelectInputTrigger</span><span class="token punctuation">(</span>TIM_TypeDef<span class="token operator">*</span> TIMx<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> TIM_InputTriggerSource<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">// 选择输入（主模式）触发源TRGO</span>
+<span class="token keyword">void</span> <span class="token function">TIM_SelectOutputTrigger</span><span class="token punctuation">(</span>TIM_TypeDef<span class="token operator">*</span> TIMx<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> TIM_TRGOSource<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">// 选择从模式需要执行的操作</span>
+<span class="token keyword">void</span> <span class="token function">TIM_SelectSlaveMode</span><span class="token punctuation">(</span>TIM_TypeDef<span class="token operator">*</span> TIMx<span class="token punctuation">,</span> <span class="token class-name">uint16_t</span> TIM_SlaveMode<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="32_IC_121"></a>3.2 输入捕获IC测量频率</h3> 
+<p>  为了测量外部信号的频率和占空比，首先要产生一个信号以供测量。博主手头也没有信号发生器，在这里与课程中演示的操作相同，先使用PWM模块在PA0端口输出一个频率和占空比都可调的波形，之后在PA6端口测量该波形的频率和占空比。<br>   接线图和程序源码如下所示：<br> <img src="https://images2.imgbox.com/21/1b/edOA3DoY_o.jpg" alt="请添加图片描述"></p> 
+<ul><li><code>PWM.c</code></li></ul> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span>                  <span class="token comment">// Device header</span></span>
+
+<span class="token comment">/**
+  * @brief  PWM输出初始化函数
+  * @param  无
+  * @retval 无
+  */</span>
+<span class="token keyword">void</span> <span class="token function">PWM_Init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">RCC_APB1PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB1Periph_TIM2<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">RCC_APB2PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB2Periph_GPIOA<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">TIM_InternalClockConfig</span><span class="token punctuation">(</span>TIM2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// 时基单元初始化</span>
+	TIM_TimeBaseInitTypeDef TIM_TimeBaseInitStructure<span class="token punctuation">;</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_ClockDivision <span class="token operator">=</span> TIM_CKD_DIV1<span class="token punctuation">;</span>	
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_CounterMode <span class="token operator">=</span> TIM_CounterMode_Up<span class="token punctuation">;</span>	
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_Period <span class="token operator">=</span> <span class="token number">100</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">;</span>	<span class="token comment">// ARR，确定后即确定了分辨率，这里分辨率为1%</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_Prescaler <span class="token operator">=</span> <span class="token number">720</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">;</span>	<span class="token comment">// PSC（调节ARR和PSC都可以改变频率，而ARR同时影响占空比，故这里通过调节PSC来调节PWM波形的频率）</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_RepetitionCounter <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>	
+	<span class="token function">TIM_TimeBaseInit</span><span class="token punctuation">(</span>TIM2<span class="token punctuation">,</span> <span class="token operator">&amp;</span>TIM_TimeBaseInitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// GPIO初始化，输出端口为PA0</span>
+	GPIO_InitTypeDef GPIO_InitStructure<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Mode <span class="token operator">=</span> GPIO_Mode_AF_PP<span class="token punctuation">;</span>	<span class="token comment">// 复用推挽输出模式</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Pin <span class="token operator">=</span> GPIO_Pin_0<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Speed <span class="token operator">=</span> GPIO_Speed_50MHz<span class="token punctuation">;</span>
+	<span class="token function">GPIO_Init</span><span class="token punctuation">(</span>GPIOA<span class="token punctuation">,</span> <span class="token operator">&amp;</span>GPIO_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// OC初始化</span>
+	TIM_OCInitTypeDef TIM_OCInitStruct<span class="token punctuation">;</span>	
+	<span class="token function">TIM_OCStructInit</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>TIM_OCInitStruct<span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">// 结构体成员赋初始值</span>
+	TIM_OCInitStruct<span class="token punctuation">.</span>TIM_OCMode <span class="token operator">=</span> TIM_OCMode_PWM1<span class="token punctuation">;</span>
+	TIM_OCInitStruct<span class="token punctuation">.</span>TIM_OCPolarity <span class="token operator">=</span> TIM_OCPolarity_High<span class="token punctuation">;</span>	<span class="token comment">// OC输出极性（有效电平为高电平）</span>
+	TIM_OCInitStruct<span class="token punctuation">.</span>TIM_OutputState <span class="token operator">=</span> TIM_OutputState_Enable<span class="token punctuation">;</span>	<span class="token comment">// OC输出使能</span>
+	TIM_OCInitStruct<span class="token punctuation">.</span>TIM_Pulse <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>	<span class="token comment">// CCR</span>
+	<span class="token function">TIM_OC1Init</span><span class="token punctuation">(</span>TIM2<span class="token punctuation">,</span> <span class="token operator">&amp;</span>TIM_OCInitStruct<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">TIM_Cmd</span><span class="token punctuation">(</span>TIM2<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/**
+  * @brief  更改比较/捕获寄存器的值CCR（当 ARR + 1 == 100 时 CCR 即为占空比）
+  * @param  Compare 无符号16位整型数，注意：它只能是正数
+  * @retval 无
+  */</span>
+<span class="token keyword">void</span> <span class="token function">PWM_SetCompare1</span><span class="token punctuation">(</span><span class="token class-name">uint16_t</span> Compare<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">TIM_SetCompare1</span><span class="token punctuation">(</span>TIM2<span class="token punctuation">,</span> Compare<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/**
+  * @brief  更改与分频器的值
+  * @param  Prescaler 	写入的新预分频器的值
+  * @retval 无
+  */</span>
+<span class="token keyword">void</span> <span class="token function">PWM_SetPrescaler</span><span class="token punctuation">(</span><span class="token class-name">uint16_t</span> Prescaler<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">TIM_PrescalerConfig</span><span class="token punctuation">(</span>TIM2<span class="token punctuation">,</span> Prescaler<span class="token punctuation">,</span> TIM_PSCReloadMode_Immediate<span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">// 单独设置PSC（立刻生效）</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<ul><li><code>InputCapture.c</code></li></ul> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span>                  <span class="token comment">// Device header</span></span>
+
+<span class="token comment">/**
+  * @brief  输入捕获初始化函数
+  * @param  无
+  * @retval 无
+  */</span>
+<span class="token keyword">void</span> <span class="token function">IC_Init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// 1. 开启时钟</span>
+	<span class="token function">RCC_APB1PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB1Periph_TIM3<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">// 使用TIM2输出PWM波形，TIM3进行输入捕获</span>
+	<span class="token function">RCC_APB2PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB2Periph_GPIOA<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// 2. GPIO初始化</span>
+	GPIO_InitTypeDef GPIO_InitStructure<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Mode <span class="token operator">=</span> GPIO_Mode_IPU<span class="token punctuation">;</span>	<span class="token comment">// 上拉输入模式</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Pin <span class="token operator">=</span> GPIO_Pin_6<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Speed <span class="token operator">=</span> GPIO_Speed_50MHz<span class="token punctuation">;</span>
+	<span class="token function">GPIO_Init</span><span class="token punctuation">(</span>GPIOA<span class="token punctuation">,</span> <span class="token operator">&amp;</span>GPIO_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// 3. 配置时基单元</span>
+	<span class="token function">TIM_InternalClockConfig</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">// 选择内部时钟</span>
+	TIM_TimeBaseInitTypeDef TIM_TimeBaseInitStructure<span class="token punctuation">;</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_ClockDivision <span class="token operator">=</span> TIM_CKD_DIV1<span class="token punctuation">;</span>	
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_CounterMode <span class="token operator">=</span> TIM_CounterMode_Up<span class="token punctuation">;</span>	
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_Period <span class="token operator">=</span> <span class="token number">65536</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">;</span>	<span class="token comment">// ARR，该值应该设置的尽量大，防止计数溢出</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_Prescaler <span class="token operator">=</span> <span class="token number">72</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">;</span>	<span class="token comment">// PSC，它的值决定了测周法的标准频率fc，它的值要根据测量信号的频率范围来调整，这里fc为1MHz</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_RepetitionCounter <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>	
+	<span class="token function">TIM_TimeBaseInit</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span> <span class="token operator">&amp;</span>TIM_TimeBaseInitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// 4. 配置输入捕获单元</span>
+	TIM_ICInitTypeDef TIM_ICInitStruct<span class="token punctuation">;</span>
+	TIM_ICInitStruct<span class="token punctuation">.</span>TIM_Channel <span class="token operator">=</span> TIM_Channel_1<span class="token punctuation">;</span>					<span class="token comment">// IC通道</span>
+	TIM_ICInitStruct<span class="token punctuation">.</span>TIM_ICFilter <span class="token operator">=</span> <span class="token number">0xF</span><span class="token punctuation">;</span>							<span class="token comment">// 滤波属性（滤波检测频率应远高于被测频率）</span>
+	TIM_ICInitStruct<span class="token punctuation">.</span>TIM_ICPolarity <span class="token operator">=</span> TIM_ICPolarity_Rising<span class="token punctuation">;</span>		<span class="token comment">// 边沿检测</span>
+	TIM_ICInitStruct<span class="token punctuation">.</span>TIM_ICPrescaler <span class="token operator">=</span> TIM_ICPSC_DIV1<span class="token punctuation">;</span>				<span class="token comment">// 触发信号分频器</span>
+	TIM_ICInitStruct<span class="token punctuation">.</span>TIM_ICSelection <span class="token operator">=</span> TIM_ICSelection_DirectTI<span class="token punctuation">;</span>	<span class="token comment">// 配置数据选择器（这里选择直连通道）</span>
+	<span class="token function">TIM_ICInit</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span> <span class="token operator">&amp;</span>TIM_ICInitStruct<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// 5. 选择从模式的触发源</span>
+	<span class="token function">TIM_SelectInputTrigger</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span> TIM_TS_TI1FP1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// 6. 选择从模式触发后执行的操作</span>
+	<span class="token function">TIM_SelectSlaveMode</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span> TIM_SlaveMode_Reset<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// 7. 开启定时器</span>
+	<span class="token function">TIM_Cmd</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/**
+  * @brief  获取测得的频率
+  * @param  无 
+  * @retval 测得的频率
+  */</span>
+<span class="token class-name">uint32_t</span> <span class="token function">IC_GetFreq</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// 测周法标准频率为1MHz</span>
+	<span class="token keyword">return</span> <span class="token number">1000000</span> <span class="token operator">/</span> <span class="token function">TIM_GetCapture1</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">//	return 1000000 / (TIM_GetCapture1(TIM3) + 1)	// 面向结果编程否则逼死强迫症（？）</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<ul><li><code>main.c</code></li></ul> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span>                  <span class="token comment">// Device header</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Delay.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"OLED.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"PWM.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"InputCapture.h"</span></span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">OLED_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">IC_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">PWM_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">PWM_SetPrescaler</span><span class="token punctuation">(</span><span class="token number">720</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>			<span class="token comment">// Freq = 72M / (PSC + 1) / (ARR + 1)，这里ARR + 1 == 100</span>
+	<span class="token function">PWM_SetCompare1</span><span class="token punctuation">(</span><span class="token number">50</span><span class="token punctuation">)</span><span class="token punctuation">;</span>				<span class="token comment">// Duty = CCR / (ARR + 1)</span>
+	
+	<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"Freq:00000Hz"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">OLED_ShowNum</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">6</span><span class="token punctuation">,</span> <span class="token function">IC_GetFreq</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h3><a id="33_PWMI_286"></a>3.3 PWMI模式同时测量频率和占空比</h3> 
+<p>  接线图和程序源码如下所示：<br> <img src="https://images2.imgbox.com/30/f6/MkyExiCR_o.jpg" alt="请添加图片描述"></p> 
+<ul><li><code>PWM.c</code>与3.2中完全相同</li><li><code>InputCapture.c</code></li></ul> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span>                  <span class="token comment">// Device header</span></span>
+
+<span class="token comment">/**
+  * @brief  输出捕获PWMI模式初始化函数
+  * @param  无
+  * @retval 无
+  */</span>
+<span class="token keyword">void</span> <span class="token function">IC_Init</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// 1. 开启时钟</span>
+	<span class="token function">RCC_APB1PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB1Periph_TIM3<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">// 使用TIM2输出PWM波形，TIM3进行输入捕获</span>
+	<span class="token function">RCC_APB2PeriphClockCmd</span><span class="token punctuation">(</span>RCC_APB2Periph_GPIOA<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// 2. GPIO初始化</span>
+	GPIO_InitTypeDef GPIO_InitStructure<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Mode <span class="token operator">=</span> GPIO_Mode_IPU<span class="token punctuation">;</span>	<span class="token comment">// 上拉输入模式，防止信号干扰，且单片机为强下拉，弱上拉</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Pin <span class="token operator">=</span> GPIO_Pin_6<span class="token punctuation">;</span>
+	GPIO_InitStructure<span class="token punctuation">.</span>GPIO_Speed <span class="token operator">=</span> GPIO_Speed_50MHz<span class="token punctuation">;</span>
+	<span class="token function">GPIO_Init</span><span class="token punctuation">(</span>GPIOA<span class="token punctuation">,</span> <span class="token operator">&amp;</span>GPIO_InitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// 3. 配置时基单元</span>
+	<span class="token function">TIM_InternalClockConfig</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">// 选择内部时钟</span>
+	TIM_TimeBaseInitTypeDef TIM_TimeBaseInitStructure<span class="token punctuation">;</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_ClockDivision <span class="token operator">=</span> TIM_CKD_DIV1<span class="token punctuation">;</span>	
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_CounterMode <span class="token operator">=</span> TIM_CounterMode_Up<span class="token punctuation">;</span>	
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_Period <span class="token operator">=</span> <span class="token number">65536</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">;</span>	<span class="token comment">// ARR，该值应该设置的尽量大，防止计数溢出</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_Prescaler <span class="token operator">=</span> <span class="token number">72</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">;</span>	<span class="token comment">// PSC，它的值决定了测周法的标准频率fc，它的值要根据测量信号的频率范围来调整，这里fc为1MHz</span>
+	TIM_TimeBaseInitStructure<span class="token punctuation">.</span>TIM_RepetitionCounter <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>	
+	<span class="token function">TIM_TimeBaseInit</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span> <span class="token operator">&amp;</span>TIM_TimeBaseInitStructure<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// 4. 配置输入捕获单元</span>
+	<span class="token comment">// 通道1测量频率</span>
+	TIM_ICInitTypeDef TIM_ICInitStruct<span class="token punctuation">;</span>
+	TIM_ICInitStruct<span class="token punctuation">.</span>TIM_Channel <span class="token operator">=</span> TIM_Channel_1<span class="token punctuation">;</span>					<span class="token comment">// IC通道，通道1</span>
+	TIM_ICInitStruct<span class="token punctuation">.</span>TIM_ICFilter <span class="token operator">=</span> <span class="token number">0xF</span><span class="token punctuation">;</span>							
+	TIM_ICInitStruct<span class="token punctuation">.</span>TIM_ICPolarity <span class="token operator">=</span> TIM_ICPolarity_Rising<span class="token punctuation">;</span>		<span class="token comment">// 边沿检测，上升沿触发</span>
+	TIM_ICInitStruct<span class="token punctuation">.</span>TIM_ICPrescaler <span class="token operator">=</span> TIM_ICPSC_DIV1<span class="token punctuation">;</span>
+	TIM_ICInitStruct<span class="token punctuation">.</span>TIM_ICSelection <span class="token operator">=</span> TIM_ICSelection_DirectTI<span class="token punctuation">;</span>	<span class="token comment">// 配置数据选择器，直连通道</span>
+	<span class="token function">TIM_ICInit</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span> <span class="token operator">&amp;</span>TIM_ICInitStruct<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token comment">// 通道2测量占空比</span>
+	<span class="token function">TIM_PWMIConfig</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span> <span class="token operator">&amp;</span>TIM_ICInitStruct<span class="token punctuation">)</span><span class="token punctuation">;</span>	<span class="token comment">// 在该函数中会快捷地将另一个通道初始化为“相反”的配置，这个函数执行的操作和下面的操作是等价的</span>
+<span class="token comment">//	TIM_ICInitStruct.TIM_Channel = TIM_Channel_2;					// IC通道，通道2</span>
+<span class="token comment">//	TIM_ICInitStruct.TIM_ICFilter = 0xF;							</span>
+<span class="token comment">//	TIM_ICInitStruct.TIM_ICPolarity = TIM_ICPolarity_Falling;		// 边沿检测，下降沿触发</span>
+<span class="token comment">//	TIM_ICInitStruct.TIM_ICPrescaler = TIM_ICPSC_DIV1;				</span>
+<span class="token comment">//	TIM_ICInitStruct.TIM_ICSelection = TIM_ICSelection_IndirectTI;	// 配置数据选择器，交叉通道</span>
+<span class="token comment">//	TIM_ICInit(TIM3, &amp;TIM_ICInitStruct);</span>
+	
+	<span class="token comment">// 5. 选择从模式的触发源</span>
+	<span class="token function">TIM_SelectInputTrigger</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span> TIM_TS_TI1FP1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// 6. 选择从模式触发后执行的操作</span>
+	<span class="token function">TIM_SelectSlaveMode</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span> TIM_SlaveMode_Reset<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// 7. 开启定时器</span>
+	<span class="token function">TIM_Cmd</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">,</span> ENABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/**
+  * @brief  获取测得的频率
+  * @param  无 
+  * @retval 测得的频率
+  */</span>
+<span class="token class-name">uint32_t</span> <span class="token function">IC_GetFreq</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// 测周法标准频率为1MHz</span>
+	<span class="token keyword">return</span> <span class="token number">1000000</span> <span class="token operator">/</span> <span class="token function">TIM_GetCapture1</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//	return 1000000 / (TIM_GetCapture1(TIM3) + 1);	// 面向结果编程否则逼死强迫症（？）</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">/**
+  * @brief  获取测得的占空比
+  * @param  无 
+  * @retval 测得的占空比（百分之）
+  */</span>
+<span class="token class-name">uint32_t</span> <span class="token function">IC_GetDuty</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">return</span> <span class="token function">TIM_GetCapture2</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">)</span> <span class="token operator">*</span> <span class="token number">100</span> <span class="token operator">/</span> <span class="token function">TIM_GetCapture1</span><span class="token punctuation">(</span>TIM3<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//	return (TIM_GetCapture2(TIM3) + 1) * 100 / (TIM_GetCapture1(TIM3) + 1);</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<ul><li><code>main.c</code></li></ul> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"stm32f10x.h"</span>                  <span class="token comment">// Device header</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"Delay.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"OLED.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"PWM.h"</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">include</span> <span class="token string">"InputCapture.h"</span></span>
+
+<span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token function">OLED_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">IC_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token function">PWM_Init</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">PWM_SetPrescaler</span><span class="token punctuation">(</span><span class="token number">720</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>			<span class="token comment">// Freq = 72M / (PSC + 1) / (ARR + 1)，这里 ARR + 1 == 100</span>
+	<span class="token function">PWM_SetCompare1</span><span class="token punctuation">(</span><span class="token number">80</span><span class="token punctuation">)</span><span class="token punctuation">;</span>				<span class="token comment">// Duty = CCR / (ARR + 1)</span>
+	
+	<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"Freq:00000Hz"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">OLED_ShowString</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">"Duty:00%"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">OLED_ShowNum</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">6</span><span class="token punctuation">,</span> <span class="token function">IC_GetFreq</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">OLED_ShowNum</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">6</span><span class="token punctuation">,</span> <span class="token function">IC_GetDuty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h3><a id="34__406"></a>3.4 测周法测量频率性能评估</h3> 
+<ol><li>目前测量的标准频率<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           f 
+          
+         
+           c 
+          
+         
+        
+       
+         f_c 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.1076em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">c</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>为1MHz，且ARR设置为65535，故所能测量的最低频率为1M / 65535，这个值大概是15Hz，这就是频率测量的频率下限。如果要降低最低频率的限制，可以增大PSC，等效于降低<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           f 
+          
+         
+           c 
+          
+         
+        
+       
+         f_c 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.1076em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">c</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>。</li><li>支持测量频率的上限不是一个确定的值，当待测频率及其接近<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           f 
+          
+         
+           c 
+          
+         
+        
+       
+         f_c 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.1076em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">c</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>时，测量误差很大，这时的测量失去了原本的意义。实际的待测频率上限要根据对误差的要求来定。当待测频率很高时，可以考虑使用测频法测量。</li><li>在实际测量时，除正负1误差带来的系统误差外，晶振也会带来一些误差。在计次几百几万次之后，误差积累起来也会造成一定影响。目前使用的方法是“自己测自己”，所以不存在晶振误差，如果要测量外部信号，则数值有可能就会抖动了。</li></ol> 
+<hr> 
+<p>  <font color="orange"><strong>原创笔记，码字不易，欢迎点赞，收藏~ 如有谬误敬请在评论区不吝告知，感激不尽！博主将持续更新有关嵌入式开发、机器学习方面的学习笔记~</strong></font></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2f0116e0c3c7111a019ce9f709c7b71e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">docker容器自启与关闭自启</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/35afae266728adfb6df862a576df00be/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Spring Boot笔记（持续更新）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

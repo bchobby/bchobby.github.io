@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>ks8的数据管理---PV/PVC - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="ks8的数据管理---PV/PVC" />
+<meta property="og:description" content="1、背景 所谓容器的Volume,其实就是将一个宿主机上的目录跟一个容器里的目录绑定挂载在了一起；volume 提供了非常好的数据持久化方案，不过在可管理性上还有不足:
+要使用 Volume，Pod 必须事先知道Volume来自哪儿，需要提前创建；Pod 通常是由应用的开发人员维护，而 Volume 则通常是由存储系统的管理员维护。开发人员要获得上面的信息：要么询问管理员;要么自己就是管理员。 这样就带来一个管理上的问题：应用开发人员和系统管理员的职责耦合在一起了。如果系统规模较小或者对于开发环境这样的情况还可以接受。但当集群规模变大，特别是对于生成环境，考虑到效率和安全性，这就成了必须要解决的问题。
+2、PV 1）介绍 PersistentVolume（PV）是集群中已由管理员配置的一段网络存储。集群中的资源就像一个节点是一个集群资源。PV是诸如卷之类的卷插件，但其生命周期独立于使用PV的任何单个pod。该API对象捕获存储的实现细节，即NFS，iSCSI或云提供商特定的存储系统。
+PersistentVolumeClaim（PVC）是由用户进行存储的请求，PersistentVolumeClaim (PVC) 是对 PV 的申请 (Claim)， 它类似于pod。 Pod消耗节点资源，PVC消耗PV资源。Pod可以请求特定级别的资源（CPU和内存）。声明可以请求特定的大小和访问模式（例如，可以一次读/写或多次只读）。
+PVC和PV是一一对应的，有了 PersistentVolumeClaim，用户只需要告诉 Kubernetes 需要什么样的存储资源，而不必关心真正的空间从哪里分配，如何访问等底层细节信息。这些 Storage Provider 的底层信息交给管理员来处理，只有管理员才应该关心创建 PersistentVolume 的细节信息。
+虽然PersistentVolumeClaims允许用户使用抽象存储资源，但PersistentVolumes对于不同的问题，用户通常需要具有不同属性（例如性能）。群集管理员需要能够提供各种PersistentVolumes不同的方式，而不仅仅是大小和访问模式，而不会让用户了解这些卷的实现方式。对于这些需求，有StorageClass 资源。
+StorageClass为管理员提供了一种描述他们提供的存储的“类”的方法。 不同的类可能映射到服务质量级别，或备份策略，或者由群集管理员确定的任意策略。 Kubernetes本身对于什么类别代表是不言而喻的。 这个概念有时在其他存储系统中称为“配置文件”。
+2）生命周期 PV是群集中的资源。PVC是对这些资源的请求，并且还充当对资源的检查。PV和PVC之间的相互作用遵循以下生命周期：
+Provisioning ——&gt; Binding ——&gt;Using——&gt;Releasing——&gt;Recycling
+step1：供应准Provisioning—通过集群外的存储系统或者云平台来提供存储持久化支持。 静态提供Static：集群管理员创建多个PV。 它们携带可供集群用户使用的真实存储的详细信息。它们存在于Kubernetes API中，可用于消费。动态提供Dynamic：当管理员创建的静态PV都不匹配用户的PersistentVolumeClaim时，集群可能会尝试为PVC动态配置卷。此配置基于StorageClasses：PVC必须请求一个类，并且管理员必须已创建并配置该类才能进行动态配置。要求该类的声明有效地为自己禁用动态配置。 step2：绑定Binding—用户创建pvc并指定需要的资源和访问模式。在找到可用pv之前，pvc会保持未绑定状态。 step3：使用Using—用户可在pod中像volume一样使用pvc。 step4：释放Releasing—用户删除pvc来回收存储资源，pv将变成“released”状态。 由于还保留着之前的数据，这些数据需要根据不同的策略来处理，否则这些存储资源无法被其他pvc使用。
+step5：回收Recycling—pv可以设置三种回收策略：保留（Retain），回收（Recycle）和删除（Delete）。 保留策略：当删除与之绑定的PVC时候，这个PV被标记为released（PVC与PV解绑但还没有执行回收策略）且之前的数据依然保存在该PV上，但是该PV不可用，需要手动来处理这些数据并删除该PV。删除策略：当删除与之绑定的PVC时候。回收策略：这个在1.14版本中以及被废弃，取而代之的是推荐使用动态存储供给策略，它的功能是当删除与该PV关联的PVC时，自动删除该PV中的所有数据。 注：
+1&gt; PV必须先与POD创建，而且只能是网络存储不能属于任何Node，虽然它支持HostPath类型但由于你不知道POD会被调度到哪个Node上，所以你要定义HostPath类型的PV就要保证所有节点都要有HostPath中指定的路径。
+2&gt; 目前只有NFS和HostPath类型卷支持回收策略，AWS EBS,GCE PD,Azure Disk和Cinder支持删除(Delete)策略。
+3）PV 支持的类型 GCEPersistentDisk、NFS 、CephFS 、HostPath、Glusterfs 等
+4）PV卷阶段状态 Available：资源尚未被claim使用
+Bound：卷已经被绑定到claim了" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/dd6c131a3e3c3b672ecb3846459f54aa/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-04-30T17:13:35+08:00" />
+<meta property="article:modified_time" content="2020-04-30T17:13:35+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">ks8的数据管理---PV/PVC</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="1_0"></a>1、背景</h3> 
+<p>所谓容器的Volume,其实就是将一个宿主机上的目录跟一个容器里的目录绑定挂载在了一起；volume 提供了非常好的数据持久化方案，不过在可管理性上还有不足:</p> 
+<ol><li>要使用 Volume，Pod 必须事先知道Volume来自哪儿，需要提前创建；</li><li>Pod 通常是由应用的开发人员维护，而 Volume 则通常是由存储系统的管理员维护。开发人员要获得上面的信息：要么询问管理员;要么自己就是管理员。</li></ol> 
+<p>这样就带来一个管理上的问题：应用开发人员和系统管理员的职责耦合在一起了。如果系统规模较小或者对于开发环境这样的情况还可以接受。但当集群规模变大，特别是对于生成环境，考虑到效率和安全性，这就成了必须要解决的问题。</p> 
+<h3><a id="2PV_6"></a>2、PV</h3> 
+<h4><a id="1_7"></a>1）介绍</h4> 
+<p>PersistentVolume（PV）是集群中已由管理员配置的一段网络存储。集群中的资源就像一个节点是一个集群资源。PV是诸如卷之类的卷插件，但其生命周期独立于使用PV的任何单个pod。该API对象捕获存储的实现细节，即NFS，iSCSI或云提供商特定的存储系统。</p> 
+<p>PersistentVolumeClaim（PVC）是由用户进行存储的请求，PersistentVolumeClaim (PVC) 是对 PV 的申请 (Claim)， 它类似于pod。 Pod消耗节点资源，PVC消耗PV资源。Pod可以请求特定级别的资源（CPU和内存）。声明可以请求特定的大小和访问模式（例如，可以一次读/写或多次只读）。</p> 
+<p>PVC和PV是一一对应的，有了 PersistentVolumeClaim，用户只需要告诉 Kubernetes 需要什么样的存储资源，而不必关心真正的空间从哪里分配，如何访问等底层细节信息。这些 Storage Provider 的底层信息交给管理员来处理，只有管理员才应该关心创建 PersistentVolume 的细节信息。</p> 
+<p>虽然PersistentVolumeClaims允许用户使用抽象存储资源，但PersistentVolumes对于不同的问题，用户通常需要具有不同属性（例如性能）。群集管理员需要能够提供各种PersistentVolumes不同的方式，而不仅仅是大小和访问模式，而不会让用户了解这些卷的实现方式。对于这些需求，有StorageClass 资源。</p> 
+<p>StorageClass为管理员提供了一种描述他们提供的存储的“类”的方法。 不同的类可能映射到服务质量级别，或备份策略，或者由群集管理员确定的任意策略。 Kubernetes本身对于什么类别代表是不言而喻的。 这个概念有时在其他存储系统中称为“配置文件”。</p> 
+<h4><a id="2_17"></a>2）生命周期</h4> 
+<p>PV是群集中的资源。PVC是对这些资源的请求，并且还充当对资源的检查。PV和PVC之间的相互作用遵循以下生命周期：<br> Provisioning ——&gt; Binding ——&gt;Using——&gt;Releasing——&gt;Recycling</p> 
+<h5><a id="step1Provisioning_20"></a>step1：供应准Provisioning—通过集群外的存储系统或者云平台来提供存储持久化支持。</h5> 
+<ul><li><code>静态提供Static：集群管理员创建多个PV。 它们携带可供集群用户使用的真实存储的详细信息。它们存在于Kubernetes API中，可用于消费</code>。</li><li><code>动态提供Dynamic：当管理员创建的静态PV都不匹配用户的PersistentVolumeClaim时，集群可能会尝试为PVC动态配置卷。此配置基于StorageClasses：PVC必须请求一个类，并且管理员必须已创建并配置该类才能进行动态配置。要求该类的声明有效地为自己禁用动态配置</code>。</li></ul> 
+<h5><a id="step2Bindingpvcpvpvc_23"></a>step2：绑定Binding—用户创建pvc并指定需要的资源和访问模式。在找到可用pv之前，pvc会保持未绑定状态。</h5> 
+<h5><a id="step3Usingpodvolumepvc_24"></a>step3：使用Using—用户可在pod中像volume一样使用pvc。</h5> 
+<h5><a id="step4Releasingpvcpvreleased_25"></a>step4：释放Releasing—用户删除pvc来回收存储资源，pv将变成“released”状态。</h5> 
+<p>由于还保留着之前的数据，这些数据需要根据不同的策略来处理，否则这些存储资源无法被其他pvc使用。</p> 
+<h5><a id="step5RecyclingpvRetainRecycleDelete_27"></a>step5：回收Recycling—pv可以设置三种回收策略：保留（Retain），回收（Recycle）和删除（Delete）。</h5> 
+<ul><li><code>保留策略：当删除与之绑定的PVC时候，这个PV被标记为released（PVC与PV解绑但还没有执行回收策略）且之前的数据依然保存在该PV上，但是该PV不可用，需要手动来处理这些数据并删除该PV</code>。</li><li><code>删除策略：当删除与之绑定的PVC时候</code>。</li><li><code>回收策略：这个在1.14版本中以及被废弃，取而代之的是推荐使用动态存储供给策略，它的功能是当删除与该PV关联的PVC时，自动删除该PV中的所有数据</code>。</li></ul> 
+<p>注：<br> 1&gt; PV必须先与POD创建，而且只能是网络存储不能属于任何Node，虽然它支持HostPath类型但由于你不知道POD会被调度到哪个Node上，所以你要定义HostPath类型的PV就要保证所有节点都要有HostPath中指定的路径。<br> 2&gt; 目前只有NFS和HostPath类型卷支持回收策略，AWS EBS,GCE PD,Azure Disk和Cinder支持删除(Delete)策略。</p> 
+<h4><a id="3PV__35"></a>3）PV 支持的类型</h4> 
+<p>GCEPersistentDisk、NFS 、CephFS 、HostPath、Glusterfs 等</p> 
+<h4><a id="4PV_37"></a>4）PV卷阶段状态</h4> 
+<p>Available：资源尚未被claim使用<br> Bound：卷已经被绑定到claim了<br> Released：claim被删除，卷处于释放状态，但未被集群回收。<br> Failed：卷自动回收失败</p> 
+<h4><a id="5PV_42"></a>5）PV的访问模型</h4> 
+<p>accessModes：支持三种类型<br> ReadWriteMany（RWX） 多路读写，卷能被集群多个节点挂载并读写<br> ReadWriteOnce（RWO） 单路读写，卷只能被单一集群节点挂载读写<br> ReadOnlyMany（ROX） 多路只读，卷能被多个集群节点挂载且只能读<br> 这里的访问模型总共有三种，但是不同的存储类型支持的访问模型不同，具体支持什么需要查询官网。比如我们这里使用nfs，它支持全部三种。但是ISCI就不支持ReadWriteMany；HostPath就不支持ReadOnlyMany和ReadWriteMany。</p> 
+<h3><a id="3PVC_48"></a>3、PVC</h3> 
+<h4><a id="1_49"></a>1）介绍</h4> 
+<p>PVC是用户层面，作为对存储资源的需求申请，主要包括了存储空间大小、访问模式、PV的选择条件、存储类别等信息的设置</p> 
+<h4><a id="2PVCPVCyaml_51"></a>2）PVC的参数详解（PVC的yaml模板）</h4> 
+<pre><code class="prism language-bash">apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: 
+  name: test-pvc1
+spec: 
+  accessModes: 
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: nfs-stoarge
+  selector:
+  	matchLabels:
+  	  pv: test-pv1
+</code></pre> 
+<h4><a id="3PVC_68"></a>3）PVC参数说明</h4> 
+<p><code>spec.accessModes</code>：访问模式；描述用户应用对存储资源的访问权限。</p> 
+<ul><li>RWO：ReadWriteOnce，仅允许单个节点挂载进行读写；</li><li>ROX：ReadOnlyMany，允许多个节点挂载且只读；</li><li>RWX：ReadWriteMany，允许多个节点挂载进行读写；</li></ul> 
+<p><code>spec.resources.requests.storage</code>：资源请求的存储大小；<br> <code>spec.storageClassName</code>：存储卷模式，指定一个StorageClass资源对象的名称，具有特定类别的PV只能与请求了该类别的PVC进行绑定；（动态存储）；当然，也可以设置为spec.storageClassName=""，未设置特定类型的PV只能与不请求任何类型的PVC进行绑定（静态存储）。<br> <code>spec.selector.matchLabels</code>： PV的选择条件，可以通过标签匹配进行PV绑定；也可以通过<code>spec.selector.matchExpressions</code>：进行条件标签描述</p> 
+<h4><a id="4PVC_77"></a>4）PVC的生命周期</h4> 
+<p>PVC一共也有4个生命周期阶段：Available/Bound/Released/Failed<br> Available： 可用状态，无PV绑定；<br> Bound：绑定状态，已经和某个PV绑定；<br> Released：释放状态，被绑定的PV已删除，资源释放，但没有被集群回收；<br> Failed：失败状态，自动资源回收失败；</p> 
+<h4><a id="5PVC_83"></a>5）PVC的常用命令</h4> 
+<pre><code class="prism language-bash">kubectl create -f pvc.yaml   <span class="token comment"># 创建（yaml的方式）</span>
+kubectl delete pvc pvc_name  <span class="token comment"># 删除</span>
+kubectl get pvc              <span class="token comment"># 查看所有PVC</span>
+kubectl get pvc pvc_name     <span class="token comment"># 查看某个PVC</span>
+kubectl describe pvc pvc_name <span class="token comment"># 查看详情</span>
+</code></pre> 
+<p>注意： 若在某个命名空间下，以上命令可以加上-n ns_name</p> 
+<h3><a id="4PVCPVpvpvc_92"></a>4、PVC和PV进行绑定原则（pv和pvc的机制）</h3> 
+<h4><a id="1pvpvc_93"></a>1）pv和pvc绑定要求</h4> 
+<ol><li>PV和PVC的spec字段要匹配.比如PV的存储(storage)大小</li><li>PV和PVC的storageClassName字段必须一样</li><li>PV描述的是持久化存储卷 这个API对象主要定义的是一个持久化存储在宿主机上的目录,如一个NFS的挂载目录；PVC可以理解为持久化存储的，它提供了对某种持久化存储的描述,但不提供具体的实现</li><li>持久化存储的实现部分则由PV负责完成</li><li>PV与PVC进行绑定,其实就是将这个PV对象的名字,填在了PVC对象的spec.volumeName字段上<br> 当PV和PVC成功绑定后 Pod就能像使用hostPath等常规类型的Volume一样在YAML文件中使用PVC</li></ol> 
+<h4><a id="2_100"></a>2）共享存储的步骤</h4> 
+<p>Pod（Deployment等配置好PVC）—&gt;PVC—&gt;PV—&gt;存储资源。</p> 
+<h5><a id="1__102"></a>1&gt; 资源供应</h5> 
+<p>PVC使用存储资源可以通过静态绑定或者动态绑定，静态模式就是集权管理员预先创建对应的PV对存储特性进行设置；动态模式就是集权管理员预先创建好StorageClass资源对后端存储进行描述，PVC创建时对存储类型进行声明，PVC创建后，k8s会自动创建合适的PV与PVC进行绑定。</p> 
+<h5><a id="2__104"></a>2&gt; 资源绑定</h5> 
+<p>创建好PVC后，PVC会在已存在的PV中选择合适的PV进行绑定（可以通过标签进行特定绑定，也可以不通过标签，系统会自动选择合适（容量大小等参数）的PV进行绑定。），绑定成功，状态变成Bound，且该PV被对应的PVC独占绑定，不可以再被其他PVC绑定，除非该PVC释放。若在k8s系统中没有找到合适的PV，则PVC一直处于Pending状态。</p> 
+<h5><a id="3__106"></a>3&gt; 资源使用</h5> 
+<p>在Deployment等资源中，通过spec.template.spec.volumes:进行PVC挂载路径设置。</p> 
+<h5><a id="4__108"></a>4&gt; 资源释放</h5> 
+<p>删除PVC，与该PVC绑定的PV状态就会变成“Released”，该PVC在存储设备上的数据删除后，对应的PV才能与其他的PVC进行绑定。</p> 
+<h5><a id="5__110"></a>5&gt; 资源回收</h5> 
+<p>PV中可以通过spec.persistentVolumeReclaimPolicy设置回收策略，这个主要用于绑定的PVC删除后，资源释放后如何处理该PVC在存储设备上写入的数据。</p> 
+<ul><li>Retain：保留，删除PVC后，PV保留数据；</li><li>Recycle：回收空间，删除PVC后，简单的清除文件；（NFS和HostPath存储支持）；</li><li>Delete：删除，删除PVC后，与PV相连接的后端存储会删除数据；（AWS EBS、Azure Disk、Cinder volumes、GCE PD支持）。</li></ul> 
+<h3><a id="5_115"></a>5、案例演示</h3> 
+<h4><a id="1nfsnode2node3node4_116"></a>1）搭建nfs服务（node2|node3|node4均安装）</h4> 
+<pre><code class="prism language-bash">yum -y <span class="token function">install</span> nfs-utils
+<span class="token function">mkdir</span> -p /nfsdata
+<span class="token keyword">echo</span> <span class="token string">"/nfsdata *(rw,sync,no_root_squash)"</span> <span class="token operator">&gt;</span> /etc/exports
+systemctl start nfs-server <span class="token operator">&amp;&amp;</span> systemctl <span class="token function">enable</span> nfs-server
+showmount -e
+</code></pre> 
+<p><img src="https://images2.imgbox.com/31/3e/nsgoMuv8_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="2pvpvyamlmetadatalabels_125"></a>2）创建pv（pv的yaml需要有metadata.labels进行标签标记）</h4> 
+<p>cat node2-pv.yaml</p> 
+<pre><code class="prism language-bash">apiVersion: v1
+kind: PersistentVolume
+metadata:         <span class="token comment"># PV建立不要加名称空间，因为PV属于集群级别的</span>
+  name: pv1       <span class="token comment"># PV名称</span>
+  labels:         <span class="token comment"># 这些labels可以不定义</span>
+    name: pv1
+    storetype: nfs
+spec:              <span class="token comment"># 这里的spec和volumes里面的一样</span>
+  storageClassName: normal
+  accessModes:     <span class="token comment"># 设置访问模型</span>
+    - ReadWriteOnce
+    - ReadWriteMany
+    - ReadOnlyMany
+  capacity:         <span class="token comment"># 设置存储空间大小</span>
+    storage: 3Gi
+  persistentVolumeReclaimPolicy: Recycle  <span class="token comment"># 回收策略</span>
+  nfs:
+    path: /nfsdata
+    server: 10.10.0.110
+</code></pre> 
+<p>cat node3-pv.yaml</p> 
+<pre><code class="prism language-bash">apiVersion: v1
+kind: PersistentVolume
+metadata:         <span class="token comment"># PV建立不要加名称空间，因为PV属于集群级别的</span>
+  name: pv2       <span class="token comment"># PV名称</span>
+  labels:         <span class="token comment"># 这些labels可以不定义</span>
+    name: pv2
+    storetype: nfs
+spec:              <span class="token comment"># 这里的spec和volumes里面的一样</span>
+  storageClassName: normal
+  accessModes:     <span class="token comment"># 设置访问模型</span>
+    - ReadWriteOnce
+    - ReadWriteMany
+  capacity:         <span class="token comment"># 设置存储空间大小</span>
+    storage: 5Gi
+  persistentVolumeReclaimPolicy: Recycle  <span class="token comment"># 回收策略</span>
+  nfs:
+    path: /nfsdata
+    server: 10.10.0.111
+</code></pre> 
+<p>cat node4-pv.yaml</p> 
+<pre><code class="prism language-bash">apiVersion: v1
+kind: PersistentVolume
+metadata:         <span class="token comment"># PV建立不要加名称空间，因为PV属于集群级别的</span>
+  name: pv3       <span class="token comment"># PV名称</span>
+  labels:         <span class="token comment"># 这些labels可以不定义</span>
+    name: pv3
+    storetype: nfs
+spec:              <span class="token comment"># 这里的spec和volumes里面的一样</span>
+  storageClassName: normal
+  accessModes:     <span class="token comment"># 设置访问模型</span>
+    - ReadWriteOnce
+  capacity:         <span class="token comment"># 设置存储空间大小</span>
+    storage: 10Gi
+  persistentVolumeReclaimPolicy: Recycle  <span class="token comment"># 回收策略</span>
+  nfs:
+    path: /nfsdata
+    server: 10.10.0.112
+</code></pre> 
+<pre><code class="prism language-bash">kubectl apply -f node2-pv.yaml
+kubectl apply -f node3-pv.yaml
+kubectl apply -f node4-pv.yaml
+</code></pre> 
+<p><img src="https://images2.imgbox.com/c4/b6/VCPrapjh_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="3pvcpvpvyamlmetadatalabels_195"></a>3）创建pvc，绑定pv（pv的yaml需要有metadata.labels进行标签标记）</h4> 
+<p><img src="https://images2.imgbox.com/db/61/sbgcCcZM_o.png" alt="在这里插入图片描述"><br> 红框中可有可无（有则匹配到指定的pv上，也可以在pod中指定如3.4中的pod指定）</p> 
+<hr> 
+<p>分别创建三个pvc，如下所示：</p> 
+<p>cat pvc-vol.yaml</p> 
+<pre><code class="prism language-bash">apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc01   <span class="token comment"># pvc的名字</span>
+  namespace: default
+  labels: <span class="token comment"># 这些labels可以不定义</span>
+    name: pvc01
+    storetype: nfs
+    capacity: 3Gi
+spec:
+  storageClassName: normal
+  accessModes:  <span class="token comment"># PVC也需要定义访问模式，不过它的模式一定是和现有PV相同或者是它的子集，否则匹配不到PV</span>
+ 1. ReadWriteMany
+  resources: <span class="token comment"># 定义资源要求PV满足这个PVC的要求才会被匹配到</span>
+    requests:
+      storage: 3Gi  <span class="token comment"># 定义要求有多大空间</span>
+</code></pre> 
+<p>cat pvc-vol2.yaml</p> 
+<pre><code class="prism language-bash">apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc02   <span class="token comment"># pvc的名字</span>
+  namespace: default
+  labels: <span class="token comment"># 这些labels可以不定义</span>
+    name: pvc02
+    storetype: nfs
+    capacity: 1Gi
+spec:
+  storageClassName: normal
+  accessModes:  <span class="token comment"># PVC也需要定义访问模式，不过它的模式一定是和现有PV相同或者是它的子集，否则匹配不到PV</span>
+ 2. ReadWriteMany
+  resources: <span class="token comment"># 定义资源要求PV满足这个PVC的要求才会被匹配到</span>
+    requests:
+      storage: 1Gi  <span class="token comment"># 定义要求有多大空间</span>
+</code></pre> 
+<p>cat pvc-vol3.yaml</p> 
+<pre><code class="prism language-bash">apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc03   <span class="token comment"># pvc的名字</span>
+  namespace: default
+  labels: <span class="token comment"># 这些labels可以不定义</span>
+    name: pvc03
+    storetype: nfs
+    capacity: 6Gi
+spec:
+  storageClassName: normal
+  accessModes:  <span class="token comment"># PVC也需要定义访问模式，不过它的模式一定是和现有PV相同或者是它的子集，否则匹配不到PV</span>
+ 3. ReadWriteOnce
+  resources: <span class="token comment"># 定义资源要求PV满足这个PVC的要求才会被匹配到</span>
+    requests:
+      storage: 6Gi  <span class="token comment"># 定义要求有多大空间</span>
+</code></pre> 
+<pre><code class="prism language-bash">kubectl apply -f pvc-vol.yaml
+kubectl apply -f pvc-vol2.yaml
+kubectl apply -f pvc-vol3.yaml
+</code></pre> 
+<p><img src="https://images2.imgbox.com/56/07/ZIkRngfH_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/52/71/91e9DpyN_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/95/30/YcllR5GN_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="4podPVC_266"></a>4）在pod中使用PVC</h4> 
+<h5><a id="step1_267"></a>step1：创建命名空间</h5> 
+<p>cat pod-ns.yaml</p> 
+<pre><code class="prism language-bash">apiVersion: v1
+kind: Namespace
+metadata:
+  name: <span class="token function">pv</span>
+</code></pre> 
+<pre><code class="prism language-bash">kubectl apply -f pvc-vol.yaml
+</code></pre> 
+<h5><a id="step2pv_278"></a>step2：创建pv</h5> 
+<p>cat pod-pv.yaml</p> 
+<pre><code class="prism language-bash">apiVersion: v1
+kind: PersistentVolume
+metadata:         <span class="token comment"># PV建立不要加名称空间，因为PV属于集群级别的</span>
+  name: nginx-pv  <span class="token comment"># PV名称</span>
+  labels:         <span class="token comment"># 这些labels可以不定义</span>
+    name: nginx-pv
+    storetype: nfs
+spec:              <span class="token comment"># 这里的spec和volumes里面的一样</span>
+  storageClassName: normal
+  accessModes:     <span class="token comment"># 设置访问模型</span>
+    - ReadWriteOnce
+    - ReadWriteMany
+  capacity:         <span class="token comment"># 设置存储空间大小</span>
+    storage: 5Gi
+  persistentVolumeReclaimPolicy: Recycle  <span class="token comment"># 回收策略</span>
+  nfs:
+    path: /nfsdata
+    server: 10.10.0.111
+</code></pre> 
+<pre><code class="prism language-bash">kubectl apply -f pod-pv.yaml
+</code></pre> 
+<h5><a id="step3pvc_303"></a>step3：创建pvc</h5> 
+<p>cat pod-pvc.yaml</p> 
+<pre><code class="prism language-bash">apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nginx-pvc   <span class="token comment"># pvc的名字</span>
+  namespace: <span class="token function">pv</span>
+  labels: <span class="token comment"># 这些labels可以不定义</span>
+    name: nginx-pvc
+    storetype: nfs
+    capacity: 5Gi
+spec:
+  storageClassName: normal
+  accessModes:  <span class="token comment"># PVC也需要定义访问模式，不过它的模式一定是和现有PV相同或者是它的子集，否则匹配不到PV</span>
+ 4. ReadWriteOnce
+  resources: <span class="token comment"># 定义资源要求PV满足这个PVC的要求才会被匹配到</span>
+    requests:
+      storage: 5Gi  <span class="token comment"># 定义要求有多大空间</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/e5/0d/aRyJ3O8K_o.png" alt="在这里插入图片描述"><br> 由于nginx-pvc消费的是nginx-pv，而nginx-pv是在111节点下的nfs，所以在111的nfs目录下写入文件，进入到nginx的容器同样可以看到</p> 
+<pre><code class="prism language-bash"><span class="token function">cd</span> /nfsdata/ <span class="token operator">&amp;&amp;</span> <span class="token keyword">echo</span> <span class="token string">'13'</span> <span class="token operator">&gt;</span> index.html  <span class="token comment">#111节点写入数据</span>
+kubectl <span class="token function">exec</span> -it my-nginx-pod -n <span class="token function">pv</span> /bin/bash <span class="token comment">#进入容器查看</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/ed/5b/zWynNYRu_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="step4pod_330"></a>step4：创建pod</h5> 
+<p>cat pod-pod.yaml</p> 
+<pre><code class="prism language-bash">apiVersion: v1
+kind: Pod
+metadata:
+  name: my-nginx-pod
+  namespace: <span class="token function">pv</span>
+  labels:
+    name: my-nginx-pod
+spec:
+  containers:
+    - name: my-nginx
+      image: www.my.com/web/nginx:v1
+      volumeMounts:
+      - mountPath: <span class="token string">"/usr/share/nginx/html"</span>
+        name: nginx-pv
+  volumes:
+    - name: nginx-pv
+      persistentVolumeClaim:
+        claimName: nginx-pvc  <span class="token comment">#将/usr/share/nginx/html挂载到nginx-pvc</span>
+</code></pre> 
+<p>发现pod服务正常，且nginx的数据目录使用的nginx-pvc对应的pv，通过<code>kubectl get pv</code> 可以看到nginx-pvc具体消费的那个pv，然后这个pv使用的是哪个nfs的存储，再在对应的nfs的共享目录下看到nginix的数据目录。</p> 
+<h4><a id="5deploypvc4243pvpvc_353"></a>5）在deploy中使用pvc（利用在4.2和4.3中已创建好的pv和pvc）</h4> 
+<h5><a id="step1deployment_354"></a>step1：创建deployment</h5> 
+<p>cat pvc-deploy.yaml</p> 
+<pre><code class="prism language-bash">apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deploy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      appname: myapp-nginx
+  template:
+    metadata:
+      name: myapp
+      labels:
+        appname: myapp-nginx
+    spec:
+      containers:
+      - name: myapp
+        image: www.my.com/web/nginx:v1
+        ports:
+        - name: http
+          containerPort: 80
+          protocol: TCP
+        volumeMounts:
+          - name: nginxdata
+            mountPath <span class="token keyword">:</span> /usr/share/nginx/html
+      volumes:
+        - name: nginxdata
+          persistentVolumeClaim:
+            claimName: pvc02  <span class="token comment">#将/usr/share/nginx/html挂载到pvc02上</span>
+</code></pre> 
+<p>这里通过volumes来声明使用哪个PVC，可以看到和自己定义持久化卷类似，但是这里更加简单了，直接使用PVC的名字即可。在容器中使用/usr/share/nginx/html目录就会把数据写入到NFS服务器上的目录中。</p> 
+<h5><a id="step2svc_388"></a>step2：创建svc</h5> 
+<p>cat pvc-svc.yaml</p> 
+<pre><code class="prism language-bash">apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-deploy
+spec:
+  ports:
+ 5. port: 8000
+    protocol: TCP
+    targetPort: 80
+  selector:
+    appname: myapp-nginx
+  type: ClusterIP
+</code></pre> 
+<pre><code class="prism language-bash">kubectl  apply -f pvc-svc.yaml
+</code></pre> 
+<p>由于使用的是pvc02，而pvc02时在pv1上面消费的，所以在node2上面的nfs服务的目录下下文件，并访问测试<br> <img src="https://images2.imgbox.com/a6/96/uwcvdziL_o.png" alt="在这里插入图片描述"><br> 可以看出来PVC就相当于是容器和PV之间的一个接口，使用人员只需要和PVC打交道即可。另外你可能也会想到如果当前环境中没有合适的PV和我的PVC绑定，那么我创建的POD不就失败了么？的确是这样的，不过如果发现这个问题，那么就赶快创建一个合适的PV，那么这时候持久化存储循环控制器会不断的检查PVC和PV，当发现有合适的可以绑定之后它会自动给你绑定上然后被挂起的POD就会自动启动，而不需要你重建POD。</p> 
+<h4><a id="6_410"></a>6）小结</h4> 
+<p>负责把PVC绑定到PV的是一个持久化存储卷控制循环，这个控制器也是kube-manager-controller的一部分运行在master上。而真正把目录挂载到容器上的操作是在POD所在主机上发生的，所以通过kubelet来完成。而且创建PV以及PVC的绑定是在POD被调度到某一节点之后进行的，完成这些操作，POD就可以运行了。下面梳理一下挂载一个PV的过程：</p> 
+<ol><li>用户提交一个包含PVC的POD</li><li>调度器根据各种调度算法把该POD分配到某个节点，比如node01</li><li>Node01上的kubelet等待Volume Manager准备存储设备</li><li>PV控制器调用存储插件创建PV并与PVC进行绑定</li><li>Attach/Detach Controller或Volume Manager通过存储插件实现设备的attach。（这一步是针对块设备存储）</li><li>Volume Manager等待存储设备变为可用后，挂载该设备到/var/lib/kubelet/pods/&lt;Pod 的ID&gt;/volumes/kubernetes.io~&lt;Volume 类型 &gt;/&lt;Volume 名字 &gt;目录上</li><li>Kubelet被告知卷已经准备好，开始启动POD，通过映射方式挂载到容器中</li></ol>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/7a0cf71f0de53825ac5e7a209399d29d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">MFC中dlg.DoModal()返回-1</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/6730acc376741d68da26f9c631a97b83/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">将vue打包项目集成到springboot项目中 使用thymeleaf模板实现后端启动直接调试接口</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

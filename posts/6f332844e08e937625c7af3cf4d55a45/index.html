@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink必知必会系列之回撤流(RetractStream)源码解读 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Flink必知必会系列之回撤流(RetractStream)源码解读" />
+<meta property="og:description" content="👉 全网最全大数据面试提升手册！2023年持续更新！
+1. 定义 Flink中，Kafka Source是非回撤流，Group By是回撤流。所谓回撤流，就是可以更新历史数据的流，更新历史数据并不是将发往下游的历史数据进行更改，要知道，已经发往下游的消息是追不回来的。更新历史数据的含义是，在得知某个Key（接在Key BY / Group By后的字段）对应数据已经存在的情况下，如果该Key对应的数据再次到来，会生成一条delete消息和一条新的insert消息发往下游。
+2. 示例 public class RetractDemo { public static void main(String[] args) throws Exception { // set up execution environment StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(); env.setParallelism(1); // use blink planner in streaming mode EnvironmentSettings settings = EnvironmentSettings.newInstance() .inStreamingMode() .build(); StreamTableEnvironment tEnv = StreamTableEnvironment.create(env, settings); // 用fromElements模拟非回撤消息 DataStream&lt;Tuple2&lt;String, Integer&gt;&gt; dataStream = env.fromElements(new Tuple2&lt;&gt;(&#34;hello&#34;, 1), new Tuple2&lt;&gt;(&#34;hello&#34;, 1), new Tuple2&lt;&gt;(&#34;hello&#34;, 1)); tEnv.registerDataStream(&#34;tmpTable&#34;, dataStream, &#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/6f332844e08e937625c7af3cf4d55a45/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-01-29T17:36:07+08:00" />
+<meta property="article:modified_time" content="2023-01-29T17:36:07+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink必知必会系列之回撤流(RetractStream)源码解读</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <blockquote> 
+  <p><strong>👉 </strong><a href="" rel="nofollow"><strong>全网最全大数据面试提升手册！2023年持续更新！</strong></a><strong></strong></p> 
+ </blockquote> 
+ <h4></h4> 
+ <h4>1. 定义</h4> 
+ <p>Flink中，Kafka Source是非回撤流，Group By是回撤流。所谓回撤流，就是可以更新历史数据的流，更新历史数据并不是将发往下游的历史数据进行更改，要知道，已经发往下游的消息是追不回来的。更新历史数据的含义是，在得知某个Key（接在Key BY / Group By后的字段）对应数据已经存在的情况下，如果该Key对应的数据再次到来，会生成一条delete消息和一条新的insert消息发往下游。</p> 
+ <h4>2. 示例</h4> 
+ <pre class="has"><code class="language-go">public class RetractDemo {
+    public static void main(String[] args) throws Exception {
+        // set up execution environment
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        // use blink planner in streaming mode
+        EnvironmentSettings settings = EnvironmentSettings.newInstance()
+                .inStreamingMode()
+                .build();
+        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env, settings);
+        // 用fromElements模拟非回撤消息
+        DataStream&lt;Tuple2&lt;String, Integer&gt;&gt; dataStream = env.fromElements(new Tuple2&lt;&gt;("hello", 1), new Tuple2&lt;&gt;("hello", 1), new Tuple2&lt;&gt;("hello", 1));
+        tEnv.registerDataStream("tmpTable", dataStream, "word, num");
+        Table table = tEnv.sqlQuery("select cnt, count(word) as freq from (select word, count(num) as cnt from tmpTable group by word) group by cnt");
+        // 启用回撤流机制
+        tEnv.toRetractStream(table, TypeInformation.of(new TypeHint&lt;Tuple2&lt;Long, Long&gt;&gt;() {
+        })).print();
+        env.execute();
+    }
+}</code></pre> 
+ <p>结果：</p> 
+ <pre class="has"><code class="language-go">(true,(1,1))
+(false,(1,1))
+(true,(2,1))
+(false,(2,1))
+(true,(3,1))</code></pre> 
+ <img src="https://images2.imgbox.com/0d/33/dN3rlToZ_o.png" alt="3d0c5d6904d262615384ec25e9b6f13c.png"> 
+ <h5>2.1 源码分析</h5> 
+ <h6>2.1.1 聚合算子回撤</h6> 
+ <p>有如下sql: 第一层count，接收kafka source的非回撤流:</p> 
+ <pre class="has"><code class="language-go">SELECT region, count(id) AS order_cnt FROM order_tab GROUP BY region</code></pre> 
+ <img src="https://images2.imgbox.com/a4/7f/JcDHMdRW_o.png" alt="e95f5395a6d170df0fb524bf3c400057.png"> 
+ <p>第二层count，接收第一层count的回撤流：</p> 
+ <pre class="has"><code class="language-go">SELECT order_cnt, count(region) as region_cnt FROM order_count_view GROUP BY order_cnt</code></pre> 
+ <img src="https://images2.imgbox.com/82/26/DY14kITW_o.png" alt="a1a19012c3db8e622922e0e4fca97b83.png"> 
+ <p>下面来分析一下其源码：</p> 
+ <ol><li><p>代码生成</p></li></ol> 
+ <p>Flink在为SQL语句生成物理执行计划是，会在AggregateUtil.createGroupAggregateFunction方法中生成聚合方法GeneratedAggregations#retract(),并最终利用Janino动态编译框架编译运行。生成GeneratedAggregations</p> 
+ <pre class="has"><code class="language-go">object AggregateUtil {
+ private[flink] def createDataStreamGroupAggregateFunction[K](...generateRetraction: Boolean...){
+    ...
+    // 动态生成聚合方法
+    new GroupTableAggProcessFunction[K](
+    genAggregations.asInstanceOf[GeneratedTableAggregationsFunction],
+    aggregationStateType,
+    // 生成聚合函数是否支持retraction，该方法通过判断上游流是否支持回撤来进行返回，true表示支持，false表示不支持
+    // 例如kafka source算子不支持回撤流，count聚合算子支持回撤流
+    generateRetraction,
+    groupings.length,
+    queryConfig)
+    ...
+  }
+}</code></pre> 
+ <pre class="has"><code class="language-go">class GroupAggProcessFunction[K](...private val generateRetraction: Boolean...){
+  // 代理模式，真正生成的function被GroupTableAggProcessFunction所代理
+  private var function: GeneratedTableAggregations = _
+  
+ override def open(config: Configuration) {
+   LOG.debug(s"Compiling TableAggregateHelper: ${genTableAggregations.name} \n\n " +
+      s"Code:\n${genTableAggregations.code}")
+    
+    // 利用janino动态编译框架，动态编译并动态加载聚合函数
+    val clazz = compile(
+      // 获取类加载器
+      getRuntimeContext.getUserCodeClassLoader,
+      genAggregations.name,
+      genAggregations.code)
+    LOG.debug("Instantiating TableAggregateHelper.")
+    function = clazz.newInstance()
+    function.open(getRuntimeContext)
+    ...
+  }
+}</code></pre> 
+ <pre class="has"><code class="language-go">// janino的使用
+...
+import org.codehaus.janino.SimpleCompiler
+trait Compiler[T] {
+  @throws(classOf[CompileException])
+  def compile(cl: ClassLoader, name: String, code: String): Class[T] = {
+    require(cl != null, "Classloader must not be null.")
+    val compiler = new SimpleCompiler()
+    compiler.setParentClassLoader(cl)
+    try {
+      compiler.cook(code)
+    } catch {
+      case t: Throwable =&gt;
+        throw new InvalidProgramException("Table program cannot be compiled. " +
+          "This is a bug. Please file an issue.", t)
+    }
+    compiler.getClassLoader.loadClass(name).asInstanceOf[Class[T]
+ }  
+}</code></pre> 
+ <ol><li><p>回撤</p></li></ol> 
+ <p>聚合算子中包含两种状态，state 存储中间结果状态（如count(id)值）、cntState存储key对应的消息数量（聚合消息+1，回撤消息-1）。state用于不断更新中间聚合状态，cntState用于判断向下游发送当前新的聚合消息，还是上一次聚合消息对应的回撤消息.</p> 
+ <pre class="has"><code class="language-go">state class GroupAggProcessFunction[K](...)
+    extends ProcessFunctionWithCleanupState[K, CRow, CRow](queryConfig){
+      // 每一条消息都会经过该方法处理
+      override def processElement(
+      // 消息的格式是CRow，包含一个change字段，标识是否是聚合消息；true标识聚合消息，false标识回撤消息
+      inputC: CRow,
+      ctx: KeyedProcessFunction[K, CRow, CRow]#Context,
+      out: Collector[CRow]): Unit = {
+      ...
+        
+          // 中间状态，即上一次的聚合结果
+       var accumulators = state.value()
+          // key对应的消息数量，对于不支持回撤流的消息，取值可以&gt;1；对于支持回撤流的消息，取值为0或1
+       var inputCnt = cntState.value()
+          // 如果是聚合消息
+          if (inputC.change) {
+         inputCnt += 1
+         // accumulate()是聚合方法，例如count()
+         function.accumulate(accumulators, input)
+         function.setAggregationResults(accumulators, newRow.row)
+       } else {
+            // 对于支持回撤流的消息，inputCnt取值为0或1，因为某条消息如果要发生变更，只有先撤回，再新增新消息，如图片中的（+ SH 1）,（- SH 1），（+ SH 2）
+         inputCnt -= 1
+            // function对象的retract（）方法，只有在判断上游算子支持回撤流时才会生成；在当前场景下为与count()相反的逻辑，即对input中key的count聚合进行减一操作
+         function.retract(accumulators, input)
+         function.setAggregationResults(accumulators, newRow.row)
+       }
+         ...
+        
+          // 如果该key对应的中间状态还存在，即如果该key还存在，发送最新的聚合消息
+          if (inputCnt != 0) {
+            // update the state
+         state.update(accumulators)
+         cntState.update(inputCnt)
+            ...
+            // newRow/prevRow分别代表新消息和对上一次消息的回撤消息，具体请参考源码
+           out.collect(newRow)
+          }else{
+            // 如果该key的聚合消息和回撤消息数量相等，则认为该key即将消失，发送回撤消息
+            out.collect(prevRow)
+         // 清除状态
+         state.clear()
+         cntState.clear()
+          }
+     ...
+      }
+}</code></pre> 
+ <h6>2.1.2 Sink算子回撤</h6> 
+ <p>上一小节是对于聚合算子回撤流的分析，这一节讲讲sink算子的回撤。官方对于sink的插入模式有以下三种描述：</p> 
+ <p>Append 模式 - 该模式用户在定义Sink的DDL时候不定义PK，在Apache Flink内部生成的所有只有INSERT语句;</p> 
+ <p>Upsert 模式 - 该模式用户在定义Sink的DDL时候可以定义PK，在Apache Flink内部会根据事件打标(retract机制)生成INSERT/UPDATE和DELETE 语句,其中如果定义了PK， UPDATE语句按PK进行更新，如果没有定义PK UPDATE会按整行更新;</p> 
+ <p>Retract 模式 - 该模式下会产生INSERT和DELETE两种信息，Sink Connector 根据这两种信息构造对应的数据操作指令;</p> 
+ <p>但其实sink算子是否支持回撤流，要根据sink数据源的特性而定。例如kafka sink只支持append模式，jdbc sink在Flink1.11中只支持upsert（不配置primary key会报错）。这都跟sink数据源的特性密切相关.</p> 
+ <ol><li><p>kafka sink</p></li></ol> 
+ <p>如kafka是利用log中顺序追加消息的方式存储消息，因此只支持append模式，网上有修改kafka sink connector以支持upsert的方法：将聚合算子中的回撤消息（false）过滤掉，只留下聚合消息（true），并写入kafka，带来的现象就是一个聚合结果会多次出现在kafka中，算是一种阉割版的upsert模式，代码如下：</p> 
+ <pre class="has"><code class="language-go">public abstract class KafkaTableSinkBase implements AppendStreamTableSink&lt;Row&gt; {
+  // 将 kafka 改成 upsert
+ @Override
+ public DataStreamSink&lt;?&gt; consumeDataStream(DataStream&lt;Tuple2&lt;Boolean, Row&gt;&gt; dataStream) {
+    final SinkFunction&lt;Row&gt; kafkaProducer = createKafkaProducer(
+            topic,
+            properties,
+            serializationSchema,
+            partitioner);
+    // 过滤掉回撤消息
+    return dataStream.filter(t -&gt; t.f0).map(t -&gt; t.f1)
+            .addSink(kafkaProducer)
+            .setParallelism(dataStream.getParallelism())
+            .name(TableConnectorUtils.generateRuntimeName(this.getClass(), getFieldNames()));
+ }
+}</code></pre> 
+ <ol><li><p>JDBC Sink</p></li></ol> 
+ <p>jdbc sink我们以mysql为例，理论上mysql支持append、upsert、retract中的所有模式，但是Flink1.11中只提供了upsert模式。这很好理解，CDC作为Flink1.11的重大特性，append和retract对于CDC都没有意义，只有upsert符合CDC的初衷。</p> 
+ <blockquote> 
+  <p>注意：Flink 1.11中ddl中不配置primary key会报错，尽管Flink并不会校验primary key的正确性，而只是upsert模式的一种表征.</p> 
+ </blockquote> 
+ <p>其原理是利用了mysql的upsert原子语句（必须有主键）来实现，如下：</p> 
+ <pre class="has"><code class="language-go">INSERT INTO `TABLE_SINK_SYNC`(`eno`, `ename`, `esex`, `ebirthday`, `eteam`, `eincome`)
+VALUES (1, 2, 3, 4, 5, 6)
+ON DUPLICATE KEY UPDATE `eno`=VALUES(`eno`),
+                        `ename`=VALUES(`ename`),
+                        `esex`=VALUES(`esex`),
+                        `ebirthday`=VALUES(`ebirthday`),
+                        `eteam`=VALUES(`eteam`),
+                        `eincome`=VALUES(`eincome`)</code></pre> 
+ <p>如果upsert操作不是原子的，很可能会发生并发问题，带来预料不到的后果。</p> 
+ <h6>2.1.3 聚合算子回撤 VS Sink算子回撤</h6> 
+ <ol><li><p>原理不同</p></li></ol> 
+ <p>聚合算子通过在state和cntState这两个状态分别维护中间聚合状态和某key所对应的消息数量（聚合消息+1，回撤消息-1），如果cntState.value() = 1，则下发最新的聚合消息；如果cntState.value() = 0，则将state中维护的上一次的聚合状态作为回撤消息进行下发。</p> 
+ <p>Sink算子则是解析canal或debezium中的op字段，如果op=create，则取after字段中的有效数据进行下发；如果op=update，则分别取before和after中的有效数据进行下发；如果op=delete，则取before中的有效数据进行下发。</p> 
+ <pre class="has"><code class="language-go">public final class DebeziumJsonDeserializationSchema implements DeserializationSchema&lt;RowData&gt; {
+ @Override
+ public void deserialize(byte[] message, Collector&lt;RowData&gt; out) throws IOException {
+     GenericRowData row = (GenericRowData) jsonDeserializer.deserialize(message);
+   GenericRowData payload;
+   if (schemaInclude) {
+    payload = (GenericRowData) row.getField(0);
+   } else {
+    payload = row;
+   }
+
+   GenericRowData before = (GenericRowData) payload.getField(0);
+   GenericRowData after = (GenericRowData) payload.getField(1);
+   String op = payload.getField(2).toString();
+      // 关键逻辑
+   if (OP_CREATE.equals(op) || OP_READ.equals(op)) {
+    after.setRowKind(RowKind.INSERT);
+    out.collect(after);
+   } else if (OP_UPDATE.equals(op)) {
+    before.setRowKind(RowKind.UPDATE_BEFORE);
+    after.setRowKind(RowKind.UPDATE_AFTER);
+    out.collect(before);
+    out.collect(after);
+   } else if (OP_DELETE.equals(op)) {
+    before.setRowKind(RowKind.DELETE);
+    out.collect(before);
+   } else {
+    if (!ignoreParseErrors) {
+     throw new IOException(format(
+      "Unknown \"op\" value \"%s\". The Debezium JSON message is '%s'", op, new String(message)));
+    }
+   }
+  }
+}</code></pre> 
+ <p>最后，利用JDBC原子语句ON DUPLICATE KEY UPDATE实现upsert语义。</p> 
+ <ol><li><p>数据结构不同</p></li></ol> 
+ <pre class="has"><code class="language-go">class CRow(var row: Row, var change: Boolean) {}</code></pre> 
+ <p>聚合算子中的数据格式为CRow.</p> 
+ <pre class="has"><code class="language-go">public final class GenericRowData implements RowData {
+ private final Object[] fields;
+  // Flink1.11新增的属性
+ private RowKind kind;
+}</code></pre> 
+ <pre class="has"><code class="language-go">public enum RowKind {
+ INSERT("+I", (byte) 0),
+ UPDATE_BEFORE("-U", (byte) 1),
+ UPDATE_AFTER("+U", (byte) 2),
+ DELETE("-D", (byte) 3);
+}</code></pre> 
+ <h5>结论：</h5> 
+ <ul><li><p>聚合算子和Sink算子关于回撤的概念相似，但原理不同且使用场景也不同，聚合算子的回撤用于聚合状态的更新，Sink算子的回撤则更多的是应用于CDC场景。</p></li><li><p>聚合算子的撤回机制，保证了FlinkSQL持续查询/增量查询的正确语义；而Sink算子的回撤机制，保证了CDC场景下的正确语义。</p></li></ul> 
+ <p style="text-align:center;">如果这个文章对你有帮助，不要忘记 <strong>「在看」</strong> <strong>「点赞」</strong> <strong>「收藏」</strong> 三连啊喂！<br></p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/61/fc/sE6O3TTq_o.png" alt="73f461829726fd9a492c0bffbc96285d.png"></p> 
+ <p><img src="https://images2.imgbox.com/9c/96/XcRQsXv1_o.jpg" alt="e93aa68e1fb91c6a8ad37e6b1ccc4b26.jpeg"></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">2022年全网首发|大数据专家级技能模型与学习指南(胜天半子篇)</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">互联网最坏的时代可能真的来了</a><br></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">我在B站读大学，大数据专业</a><br></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">我们在学习Flink的时候，到底在学习什么？</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">193篇文章暴揍Flink，这个合集你需要关注一下</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">Flink生产环境TOP难题与优化，阿里巴巴藏经阁YYDS</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">Flink CDC我吃定了耶稣也留不住他！| Flink CDC线上问题小盘点</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">我们在学习Spark的时候，到底在学习什么？</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">在所有Spark模块中，我愿称SparkSQL为最强！</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">硬刚Hive | 4万字基础调优面试小总结</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">数据治理方法论和实践小百科全书</a><br></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">标签体系下的用户画像建设小指南</a><br></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">4万字长文 | ClickHouse基础&amp;实践&amp;调优全视角解析</a><br></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">【面试&amp;个人成长】2021年过半，社招和校招的经验之谈</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">大数据方向另一个十年开启 |《硬刚系列》第一版完结</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">我写过的关于成长/面试/职场进阶的文章</a></p> 
+ <p style="text-align:left;"><a href="" rel="nofollow">当我们在学习Hive的时候在学习什么？「硬刚Hive续集」</a></p> 
+</div>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/408ac14bc4c37aeab7aae1061205ded8/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">could not transfer artifact com...</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/22268420f9728793eba13be5480121b7/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">RGBLED灯编程，显示全部颜色</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

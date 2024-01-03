@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>3、STM32EXIT外部中断（STM32） - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="3、STM32EXIT外部中断（STM32）" />
+<meta property="og:description" content="STM32中断 （中断，对于引脚来说，相当于引脚发生了电平跳变，对于定时器来说，可以是定时的时间到了。 中断嵌套：把中断程序再次中断，就叫做中断嵌套）
+（被暂停的地方称为断点）
+为了程序能在中断返回时继续原来的工作，在中断执行前，会对程序的现场进行保护，中断执行后，会再还原现场，这样可以保证主程序即使被中断了，回来后也能继续运行，当然我们用c语言编程，保护现场和还原现场的工作并不需要我们去做，编译器自动帮我们做好了，这里了解一下即可。
+一般中断程序都是在一个子函数里的，这个函数不需要我们调用，当中断来临时，由硬件自动调用这个函数。
+STM32中断：有68个可屏蔽中断通道（中断通道即中断源，68格是F1系列最多的中断数量），stm32包含EXTI外部中断、TIM定时器、ADC模数转换器、USART串口、SPI通信、I2C通信、RTC实时时钟等多个外设；
+使用NVIC统一管理中断，每个中断通道都拥有16个可编程的优先等级，可对优先级进行分组，进一步设置抢占优先级和响应优先级。（NVIC是STM32用来管理中断、分配优先级的，NVIC的中断优先级总共有16个等级，还可以设置抢占优先级，这个是非常灵活的）
+下面就是STM32里的中断资源了，了解一下即可，灰色为内核中断（比较高深），其他就是STM32的外设中断了，比如第一个，窗口看门狗，这个是用来监测程序运行状态的中断，那比如你的程序卡死了，没有及时喂狗，窗口看门狗就会申请中断，让你的程序跳到窗口看门狗的中断程序里，那你在中断程序里就可以进行一些错误检查，看看出现什么问题了。
+然后PVD电源电压检测，如果你的供电电压不足，PVD电路就会申请中断，在中断里就知道，现在供电不足，是不是电池没电了，要赶紧保存一下重要数据......
+总之外设电路检测到有什么异常或事件，需要进一步提示CPU的时候，它就可以申请中断，让程序跳到对应的中断函数里运行一次，用来处理这个异常或事件，表里面的这7个是这节要学的。
+（地址的作用：程序中的中断函数的地址是由编译器来分配的，是不固定的，但是我们的中断跳转，由于硬件的限制，只能跳到固定的地址执行程序，所以为了能让硬件跳转到一个不固定的中断函数里，这里就需要在内存中定义一个地址的列表，这个列表的地址是固定的，中断发生后，就跳到这个固定位置，然后在这个固定位置，由编译器再加上一条跳转到中断函数的代码，这样中断跳转就可以跳转到任意位置了，这个中断地址的列表就叫中断向量表，相当于中断跳转的一个跳板，不过我们用c语言编程的话是不需要这个中断向量列表的，因为编译器已经做好了）
+NVIC(嵌套中断向量控制器) 接下来看NVIC的基本结构
+在STM32中，使用NVIC统一管理中断，每个中断通道都拥有16个可编程的优先等级，可对优先级进行分组，进一步设置抢占优先级和响应优先级。（NVIC是STM32用来管理中断、分配优先级的，NVIC的中断优先级总共有16个等级，还可以设置抢占优先级，这个是非常灵活的），它是一个内核外设（CPU小助手）。
+图中中断与NVIC连接的地方有一斜杠加一个n，表示一个外设可能会同时占用多个中断通道，所以这里有n条线，然后NVIC只有一个输出口，NVIC根据每个中断的优先级分配中断的先后顺序，最后通过右边一个输出口告诉CPU要处理哪一个中断。
+NVIC优先级分组 优先级分为响应优先级和抢占优先级：
+（1）响应优先级：相当于插队的优先级（例子：上一个人在看病，外面排队了很多病人，当上一个病人看完后，紧急的病人即使是后来的，也会最先进去看病，这种相当于插队的优先级叫做响应优先级）
+（2）抢占优先级：（例子：上一个人在看病，外面排队了很多病人，当上一个病人看完甚至还在看的时候，如果下一个病人更加紧急，那他甚至可以不等上一个人看完，他可以直接冲进去让上一个病人靠边站，先给他看病，等他看完后，然后上一个病人再继续。这种形式的优先级就是中断嵌套，这种决定是不是可以中断嵌套的优先级就叫抢占优先级，抢占优先级高的可以进行中断嵌套）
+补充：响应优先级高的可以优先排队，抢占优先级和响应优先级均相同的按中断号（表里第二列）排队，数值小的优先响应。
+由于每个中断有16个优先级，为了把这个优先级再区分为抢占优先级和响应优先级，就需要对这16个优先级进行分组了
+（值越小，优先级越高，0是最高级优先级）
+接下来开始第一个病人：
+一、EXIT（Extern Interrupt）外部中断： 1、简介 （简单来说，就是引脚电平变化，申请中断）
+（1）触发方式：
+上升沿：就是电平从低电平变到高电平的瞬间触发中断。
+下降沿：就是电平从高电平变到低电平的瞬间触发中断。
+双边沿：上升沿和下降沿都可以触发中断
+软件触发：就是引脚啥事没有，程序里执行一句代码就能触发中断。
+注意：•支持的GPIO口：所有GPIO口，但相同的Pin不能同时触发中断，意思比如PA0和PB0不能同时用。
+（2）通道数：16个GPIO_Pin，外加PVD输出、RTC闹钟、USB唤醒、以太网唤醒；总共有20个中断线路，前16个为外部中断的主要功能，后四个相当于“蹭网”（一、因为外部中断有一个功能，就是从低功率模式的停止模式下唤醒STM32，那对于PVD电源电压监测，当电源从电压过低恢复时，就需要PVD借助一下外部中断退出模式；二、有时为了省电，RTC定一个闹钟后，STM32会进入停止模式，等到闹钟饷时候再唤醒，这也需要借助外部中断......知道一下就行）
+（3）触发响应方式：
+中断响应：正常的流程，引脚电平变化触发中断。
+事件响应：不会触发中断，而是触发别的外设操作，属于外设之间的联合工作。
+（4）EXIT外部中断的基本结构
+AFIO：实际是数据选择器，将前面3个外设的GPIO外设引脚里选择其中一个连接到后面EXTI的通道里，（所以前面说”所有GPIO口可以触发中断，相同的PIN不能同时触发中断“，因为这些只有其中一个能被接到EXTI的通道0上）
+EXTI连接NVIC通道中，9到5被放在用一个通道会触发同一个中断函数，15到10也会触发同一个中断函数，在编程的时候，我们在这两个中断函数，需要再根据标志位来区分到底是哪个中断进来。下面20那连的其他外设就是事件响应。
+2、AFIO复用IO口 这里的重定义即把这些默认复用功能的引脚换到重定义的这个位置来：
+（右边两列）
+3、EXTI框图 这里说一下，中间第二个“请求挂起寄存器”相当于一个中断标志位，我们可以读取这个寄存器判断是哪个通道触发的中断，如果中断挂起寄存器，它就会继续向左走，和中断屏蔽寄存器共同进入一个与门，然后是NVIC中断控制器。（这里的与门相当于开关的作用，中断屏蔽寄存器给1，那么另一个输入就是直接输入，也就是允许中断；中断屏蔽器给0，那另一个输入无论是什么，都为0，相当于屏蔽了这个中断）下面事件屏蔽寄存器同理，最后通过脉冲发生器连接其他外设，这个脉冲发生器就是给一个电平脉冲，用来触发其他外设的动作。
+EXTI配置
+AFIO口的库函数包含在GPIO函数文件里，打开之前12个函数附近，可以看到后面六个函数，其中后五个是AFIO口的配置，加上之前第二个函数一共六个AFIO配置函数：
+这个函数是用来复位AFIO口的。
+后六个函数名如下：（只用第五个）
+第一个（361）GPIO_PinLockConfig函数是设定GPIO配置的，调用这个函数，参数指定某个引脚，防止意外更改；
+第二个和第三个（362-363）GPIO_EventOutputConfig和GPIO_EventOutputCmd函数是用来配置AFIO的事件输出功能的
+第四个（364）GPIO_PinRemapConfig函数可以用来进行引脚重映射
+第五个是重点， GPIO_EXTILineConfig函数可以配置AFIO的数据选择器，来选择我们想要的中断引脚，打开这个函数可以看到里面是操作的AFIO的寄存器。
+第六个是以太网外设
+开始用EXIT中断：
+只需要把这个外部中断，从GPIO到NIVC这一路出现的外设模块都配置好，把这条信号电路打通即可，外部中断配置步骤如下：
+第一步：配置RCC，把我们这里涉及的外设时钟都打开，让其工作；
+第二步：配置GPIO，选择我们的端口为输入模式；
+第三步：配置AFIO，选择我们用的这一路GPIO，连接到后面的EXTI；
+第四步：配置EXTI，选择边沿触发方式，比如上升沿、下降沿或者双边沿，还有选择触发响应方式，可以选择中断响应和事件响应（一般中断响应）；
+第五步：配置NVIC，给我们这个中断选择一个合适的优先级，最后通过NVIC，外部中断信号就能进入CPU了。CPU收到中断信号，会跳到中断函数里执行中断程序
+**配置EXTI:
+1、void EXTI_DeInit(void);//把EXTI的配置调整，恢复成上电默认状态
+2、void EXTI_Init(EXTI_InitTypeDef* EXTI_InitStruct);//EXTI外设参数配置" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/1e5ef208c5066f336d9b1982bd258727/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-10-28T10:29:00+08:00" />
+<meta property="article:modified_time" content="2023-10-28T10:29:00+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">3、STM32EXIT外部中断（STM32）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h3>STM32中断</h3> 
+<p><img alt="" height="679" src="https://images2.imgbox.com/f9/60/gWF5oeou_o.png" width="1200"></p> 
+<p>（中断，对于引脚来说，相当于引脚发生了电平跳变，对于定时器来说，可以是定时的时间到了。 </p> 
+<p>中断嵌套：把中断程序再次中断，就叫做中断嵌套）</p> 
+<p><img alt="" height="509" src="https://images2.imgbox.com/aa/c6/HrEAperx_o.png" width="979">（被暂停的地方称为断点）</p> 
+<p>为了程序能在中断返回时继续原来的工作，在中断执行前，会对程序的现场进行保护，中断执行后，会再还原现场，这样可以保证主程序即使被中断了，回来后也能继续运行，当然我们用c语言编程，保护现场和还原现场的工作并不需要我们去做，编译器自动帮我们做好了，这里了解一下即可。</p> 
+<p>一般中断程序都是在一个子函数里的，这个函数不需要我们调用，当中断来临时，由硬件自动调用这个函数。</p> 
+<p>       STM32中断：有68个可屏蔽中断通道（中断通道即中断源，68格是F1系列最多的中断数量），stm32包含EXTI外部中断、TIM定时器、ADC模数转换器、USART串口、SPI通信、I2C通信、RTC实时时钟等多个外设；<br>       使用NVIC统一管理中断，每个中断通道都拥有16个可编程的优先等级，可对优先级进行分组，进一步设置抢占优先级和响应优先级。（NVIC是STM32用来管理中断、分配优先级的，NVIC的中断优先级总共有16个等级，还可以设置抢占优先级，这个是非常灵活的）</p> 
+<p>下面就是STM32里的中断资源了，了解一下即可，灰色为内核中断（比较高深），其他就是STM32的外设中断了，比如第一个，窗口看门狗，这个是用来监测程序运行状态的中断，那比如你的程序卡死了，没有及时喂狗，窗口看门狗就会申请中断，让你的程序跳到窗口看门狗的中断程序里，那你在中断程序里就可以进行一些错误检查，看看出现什么问题了。</p> 
+<p>然后PVD电源电压检测，如果你的供电电压不足，PVD电路就会申请中断，在中断里就知道，现在供电不足，是不是电池没电了，要赶紧保存一下重要数据......</p> 
+<p>总之外设电路检测到有什么异常或事件，需要进一步提示CPU的时候，它就可以申请中断，让程序跳到对应的中断函数里运行一次，用来处理这个异常或事件，表里面的这7个是这节要学的。</p> 
+<p><img alt="" height="292" src="https://images2.imgbox.com/8c/77/7YSyoNBV_o.png" width="847"></p> 
+<p>（地址的作用：程序中的中断函数的地址是由编译器来分配的，是不固定的，但是我们的中断跳转，由于硬件的限制，只能跳到固定的地址执行程序，所以为了能让硬件跳转到一个不固定的中断函数里，这里就需要在内存中定义一个地址的列表，这个列表的地址是固定的，中断发生后，就跳到这个固定位置，然后在这个固定位置，由编译器再加上一条跳转到中断函数的代码，这样中断跳转就可以跳转到任意位置了，这个中断地址的列表就叫中断向量表，相当于中断跳转的一个跳板，不过我们用c语言编程的话是不需要这个中断向量列表的，因为编译器已经做好了）</p> 
+<h3>NVIC(嵌套中断向量控制器)</h3> 
+<p>接下来看NVIC的基本结构</p> 
+<p><img alt="" height="683" src="https://images2.imgbox.com/dc/49/UhF43HHV_o.png" width="952"></p> 
+<p>       在STM32中，使用NVIC统一管理中断，每个中断通道都拥有16个可编程的优先等级，可对优先级进行分组，进一步设置抢占优先级和响应优先级。（NVIC是STM32用来管理中断、分配优先级的，NVIC的中断优先级总共有16个等级，还可以设置抢占优先级，这个是非常灵活的），它是一个内核外设（CPU小助手）。</p> 
+<p>        图中中断与NVIC连接的地方有一斜杠加一个n，表示一个外设可能会同时占用多个中断通道，所以这里有n条线，然后NVIC只有一个输出口，NVIC根据每个中断的优先级分配中断的先后顺序，最后通过右边一个输出口告诉CPU要处理哪一个中断。</p> 
+<h4>NVIC优先级分组</h4> 
+<p>         优先级分为响应优先级和抢占优先级：</p> 
+<p>（1）响应优先级：相当于插队的优先级（例子：上一个人在看病，外面排队了很多病人，当上一个病人看完后，紧急的病人即使是后来的，也会最先进去看病，这种相当于插队的优先级叫做响应优先级）</p> 
+<p>（2）抢占优先级：（例子：上一个人在看病，外面排队了很多病人，当上一个病人看完甚至还在看的时候，如果下一个病人更加紧急，那他甚至可以不等上一个人看完，他可以直接冲进去让上一个病人靠边站，先给他看病，等他看完后，然后上一个病人再继续。这种形式的优先级就是中断嵌套，这种决定是不是可以中断嵌套的优先级就叫抢占优先级，抢占优先级高的可以进行中断嵌套）</p> 
+<p><span style="color:#000000;">补充：响应优先级高的可以优先排队，</span><span style="color:#fe2c24;">抢占优先级和响应优先级均相同的按中断号（表里第二列）排队，数值小的优先响应</span><span style="color:#000000;">。</span></p> 
+<p>由于每个中断有16个优先级，为了把这个优先级再区分为抢占优先级和响应优先级，就需要对这16个优先级进行分组了</p> 
+<p><img alt="" height="464" src="https://images2.imgbox.com/4c/1d/w7fx0dHZ_o.png" width="893"></p> 
+<p>（值越小，优先级越高，0是最高级优先级）</p> 
+<p>接下来开始第一个病人：</p> 
+<h3><span style="color:#fe2c24;">一、EXIT（Extern Interrupt）外部中断</span>：</h3> 
+<h4>1、简介</h4> 
+<p><img alt="" height="397" src="https://images2.imgbox.com/37/91/rscboh5n_o.png" width="910"></p> 
+<p>（简单来说，就是引脚电平变化，申请中断）</p> 
+<p>（1）触发方式：</p> 
+<p>        上升沿：就是电平从低电平变到高电平的瞬间触发中断。</p> 
+<p>        下降沿：就是电平从高电平变到低电平的瞬间触发中断。</p> 
+<p>        双边沿：上升沿和下降沿都可以触发中断</p> 
+<p>        软件触发：就是引脚啥事没有，程序里执行一句代码就能触发中断。</p> 
+<p>注意：•<span style="color:#000000;">支持的</span><span style="color:#000000;">GPIO</span><span style="color:#000000;">口：所有</span><span style="color:#000000;">GPIO</span><span style="color:#000000;">口，但相同的</span><span style="color:#000000;">Pin</span><span style="color:#000000;">不能同时触发中断，意思比如PA0和PB0不能同时用。</span></p> 
+<p><span style="color:#000000;">（2）通道数：</span><span style="color:#000000;">16</span><span style="color:#000000;">个</span><span style="color:#000000;">GPIO_Pin</span><span style="color:#000000;">，外加</span><span style="color:#000000;">PVD</span><span style="color:#000000;">输出、</span><span style="color:#000000;">RTC</span><span style="color:#000000;">闹钟、</span><span style="color:#000000;">USB</span><span style="color:#000000;">唤醒、以太网唤醒；总共有20个中断线路，前16个为外部中断的主要功能，后四个相当于“蹭网”（一、因为外部中断有一个功能，就是从低功率模式的停止模式下唤醒STM32，那对于PVD电源电压监测，当电源从电压过低恢复时，就需要PVD借助一下外部中断退出模式；二、有时为了省电，RTC定一个闹钟后，STM32会进入停止模式，等到闹钟饷时候再唤醒，这也需要借助外部中断......知道一下就行）</span></p> 
+<p><span style="color:#000000;">（3）触发响应方式：</span></p> 
+<p><span style="color:#000000;">中断响应：正常的流程，引脚电平变化触发中断。</span></p> 
+<p><span style="color:#000000;">事件响应：不会触发中断，而是触发别的外设操作，属于外设之间的联合工作。</span></p> 
+<p>（4）EXIT外部中断的基本结构</p> 
+<p><img alt="" height="497" src="https://images2.imgbox.com/51/4f/rTCUOBMV_o.png" width="825"></p> 
+<p>AFIO：实际是数据选择器，将前面3个外设的GPIO外设引脚里选择其中一个连接到后面EXTI的通道里，（所以前面说”所有GPIO口可以触发中断，相同的PIN不能同时触发中断“，因为这些只有其中一个能被接到EXTI的通道0上）</p> 
+<p>EXTI连接NVIC通道中，9到5被放在用一个通道会触发同一个中断函数，15到10也会触发同一个中断函数，在编程的时候，我们在这两个中断函数，需要再根据标志位来区分到底是哪个中断进来。下面20那连的其他外设就是事件响应。</p> 
+<h4>2、AFIO复用IO口</h4> 
+<p><img alt="" height="1044" src="https://images2.imgbox.com/4d/5a/B4pwLPs4_o.png" width="1200"></p> 
+<p>这里的重定义即把这些默认复用功能的引脚换到重定义的这个位置来：</p> 
+<p>（右边两列）</p> 
+<p><img alt="" height="1161" src="https://images2.imgbox.com/e6/c3/HkKDcFtR_o.png" width="873"></p> 
+<h4>3、EXTI框图</h4> 
+<p><img alt="" height="1036" src="https://images2.imgbox.com/ed/21/QjqftZ87_o.png" width="1200"></p> 
+<p>这里说一下，中间第二个“请求挂起寄存器”相当于一个中断标志位，我们可以读取这个寄存器判断是哪个通道触发的中断，如果中断挂起寄存器，它就会继续向左走，和中断屏蔽寄存器共同进入一个与门，然后是NVIC中断控制器。（这里的与门相当于开关的作用，中断屏蔽寄存器给1，那么另一个输入就是直接输入，也就是允许中断；中断屏蔽器给0，那另一个输入无论是什么，都为0，相当于屏蔽了这个中断）下面事件屏蔽寄存器同理，最后通过脉冲发生器连接其他外设，这个脉冲发生器就是给一个电平脉冲，用来触发其他外设的动作。</p> 
+<p>EXTI配置</p> 
+<p><img alt="" height="497" src="https://images2.imgbox.com/f4/be/w35txWxV_o.png" width="825"></p> 
+<p>AFIO口的库函数包含在GPIO函数文件里，打开之前12个函数附近，可以看到后面六个函数，其中后五个是AFIO口的配置，加上之前第二个函数一共六个AFIO配置函数：</p> 
+<p><img alt="" height="29" src="https://images2.imgbox.com/25/87/iKCgujxV_o.png" width="445"></p> 
+<p>这个函数是用来复位AFIO口的。</p> 
+<p>后六个函数名如下：（只用第五个）</p> 
+<p><img alt="" height="150" src="https://images2.imgbox.com/ac/43/rj9dHcwj_o.png" width="1100"></p> 
+<p>第一个（361）GPIO_PinLockConfig函数是设定GPIO配置的，调用这个函数，参数指定某个引脚，防止意外更改；</p> 
+<p>第二个和第三个（362-363）GPIO_EventOutputConfig和GPIO_EventOutputCmd函数是用来配置AFIO的事件输出功能的</p> 
+<p>第四个（364）GPIO_PinRemapConfig函数可以用来进行引脚重映射</p> 
+<p>第五个是重点， GPIO_EXTILineConfig函数可以配置AFIO的数据选择器，来选择我们想要的中断引脚，打开这个函数可以看到里面是操作的AFIO的寄存器。</p> 
+<p>第六个是以太网外设</p> 
+<p>开始用EXIT中断：</p> 
+<p>只需要把这个外部中断，从GPIO到NIVC这一路出现的外设模块都配置好，把这条信号电路打通即可，外部中断配置步骤如下：</p> 
+<p>第一步：配置RCC，把我们这里涉及的外设时钟都打开，让其工作；</p> 
+<p>第二步：配置GPIO，选择我们的端口为输入模式；</p> 
+<p>第三步：配置AFIO，选择我们用的这一路GPIO，连接到后面的EXTI；</p> 
+<p>第四步：配置EXTI，选择边沿触发方式，比如上升沿、下降沿或者双边沿，还有选择触发响应方式，可以选择中断响应和事件响应（一般中断响应）；</p> 
+<p>第五步：配置NVIC，给我们这个中断选择一个合适的优先级，最后通过NVIC，外部中断信号就能进入CPU了。CPU收到中断信号，会跳到中断函数里执行中断程序</p> 
+<p>**配置EXTI:</p> 
+<p>1、void EXTI_DeInit(void);//把EXTI的配置调整，恢复成上电默认状态<br> 2、void EXTI_Init(EXTI_InitTypeDef* EXTI_InitStruct);//EXTI外设参数配置<br> 3、void EXTI_StructInit(EXTI_InitTypeDef* EXTI_InitStruct);//把参数传递的结构体变量赋一个默认值<br> 4、void EXTI_GenerateSWInterrupt(uint32_t EXTI_Line);//用来软件触发外部中断（调用这个函数，  参数给一个指定的中断线，就能软件触发一次这个外部中断，如果程序需要这个功能，就可以使用这个函数，如果你只需要外部引触发中断，那就不需要用这个函数了）<br> 5、FlagStatus EXTI_GetFlagStatus(uint32_t EXTI_Line);<br> 6、void EXTI_ClearFlag(uint32_t EXTI_Line);<br> 7、ITStatus EXTI_GetITStatus(uint32_t EXTI_Line);<br> 8、void EXTI_ClearITPendingBit(uint32_t EXTI_Line);</p> 
+<p>剩下这四个函数，也就是库函数的模板函数，很多模块都有这四个函数模块，因为在外设运行的过程中，会产生一些状态标志位。比如外部中断来了，是不是会有一个挂起寄存器置了一个标志位，对于其他外设，比如串口收到数据，会置标志位，定时器时间到，也会置标志位。这些标志位都是放在状态寄存器的，当程序想要看这些标志位时，就可以用这四个函数。</p> 
+<p>详说：</p> 
+<p>           第五个函数可以获取指定的标志位是否被置1了。</p> 
+<p>           第六个函数可以对置1的标志位进行清除。</p> 
+<p>           第七个函数可以获取中断标志位是否被置1了。</p> 
+<p>           第八个函数可以清除中断挂起标志位</p> 
+<p>所以想在主程序里查看和清除标志位时，可以用第五六个函数；如果想在中断程序里查看和清除标志位，就用下面的第七八个函数。这四个函数本质上都为对状态寄存器的读写。</p> 
+<h3>二、TIM定时中断</h3> 
+<p>附：STM32中断资源：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/8f/96/OIfJbPg9_o.png"></p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/2f/f6/8R4HOkv9_o.png"></p> 
+<p><img alt="" src="https://images2.imgbox.com/b9/70/6D9y4ZGQ_o.png"><img alt="" src="https://images2.imgbox.com/db/33/dx3z1qdP_o.png"></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c411c68fdca0229b7328c4b6af2aa1ea/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【路径规划】基于matlab遗传算法光伏实验室小车栅格地图路径规划【含Matlab源码 2572期】</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/92ea80f6aac08c3677e0d84e25458625/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">springboot web项目中 Set-Cookie 失败 办法</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Redis的过期策略 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Redis的过期策略" />
+<meta property="og:description" content="Redis中缓存的数据是有过期时间的，当缓存数据失效时Redis会删除过期数据已节省内存，那Redis是怎么删除过期数据的？删除过期数据的策略是什么？Redis过期策略
+Redis为什么这么快，原因之一是Redis的操作是基于内存的，既然基于内存的，而内存的大小是有限的，当内存不足或占用过高时，怎么办？Redis的内存淘汰机制
+一、Redis过期策略 Redis在设置缓存数据时指定了过期时间，到了过期时间数据就失效了，那Redis是怎么处理这些失效的数据的呢？用到Redis的过期策略----“惰性删除&#43;定期删除”。
+1. 定期删除
+定期删除是指Redis默认每隔100ms就随机抽取一些设置了过期时间的key，检测这些key是否过期，如果过期就将其删除。
+100ms怎么来的？ 在Redis的配置文件redis.conf中有一个属性“hz”，默认设置为10，表示每1s执行10次定期删除，即每隔100ms执行一次，可以修改这个配置值。
+随机抽取一些检测，一些是多少？ 同样是由redis.conf文件中的maxmemory-sample属性决定的，默认为5。
+为什么随机抽取部分检测而不是全部？ 因为如果Redis里面有大量的key都设置了过期时间，全部去检测一遍的话CPU负载会很高，会浪费大量时间在检测上面，甚至导致redis挂掉。所以只会抽取一部分而不会全部检测。 正因为定期删除只会随机抽取部分key来检测，这样的话就会出现大量已经过期的key并没有被删除，这就是为什么有时候大量的key明明已经过来失效时间，但是Redis的内存还是被大量占用的原因，为了解决这个问题，Redis又引入了“惰性删除策略”。
+2. 惰性删除
+惰性删除不是主动的去删除，而是在你要获取某个key的时候，redis会先去检测一下这个key是否已过期，如果没有则返回给你，如果已经过期，就将该key删除，并不返回给你。
+“定期删除&#43;惰性删除”就能保证过期的key最终一定能被删除，但是只能保障最终一定会被删除，要是定期删除遗漏的大量过期key，我们在很长的一段时间内也没有再访问这些key，那么这些过期key不就一直在内存中吗？不就一直占着内存吗？这样依然会导致Redis内存耗尽，由于存在这样的问题，所有Redis又引入了“内存淘汰机制”来解决。
+二、Redis内存淘汰机制 内存淘汰机制能保证Redis内存占用过高的时候，去进行内存淘汰，也就是删除一部分key，保证redis的内存占用率不会过高，那么淘汰那些key？Redis目前提供了8种内存淘汰策略，含Redis 4.0版本之后又新增的两种LFU模式：volatile-lfu和allkeys-lfu
+策略描述no-eviction当内存不足以容纳新写入数据时，新写入操作会报错，无法写入数据，一般不采用allkeys-lru当内存不足以容纳新写入数据时，移除最近最少使用的key，这个是最常用的allkeys-random当内存不足以容纳新写入数据时，随机移除keyallkeys-lfu当内存不足以容纳新写入数据时，移除最不经常（最少）使用的keyvolatile-lru当内存不足以容纳新写入数据时，在设置了过期时间的key中，移除最近最少使用的keyvolatile-random当内存不足以容纳新写入数据时，在设置了过期时间的key中，随机移除keyvolatile-lfu当内存不足以容纳新写入数据时，在设置了过期时间的key中，移除最不常用（最少）使用的keyvolatile-tll当内存不足以容纳新写入数据时，在设置了过期时间的key中，优先移除过期时间最早（剩余存活时间最短）的key 什么时候会执行内存淘汰策略，内存占用率高的标准是什么？ redis.conf配置文件中的maxmemory属性限定了Redis最大内存使用量，当占用内存大于maxmemory的配置值时会执行内存淘汰策略，默认68%。
+内存淘汰策略的配置 内存淘汰策略由redis.conf配置文件中的maxmememory-policy属性设置，没有配置时默认是no-eviction模式。
+内存淘汰的执行过程 客户端执行一条命令，导致Redis需要增加数据（比如 set key value）； Redis会检测内存使用情况，如果内存使用超过maxmemory，就会按照配置的过期策略maxmemory-polic删除一些key； 再执行新的数据的set操作；
+三、其他场景对过期key的处理 快照生成RDB文件时 过期的key不会保存在RDB中。
+服务重启载入RDB文件时 Master载入RDB时，文件中的未过期的键会被正常载入，过期键则会被忽略。Slave载入RDB时，文件中的所有键都会被载入，当主从同步时，再和Master保持一致。
+AOF文件写入时 因为AOF保存的是执行过的Redis命令，如果Redis还没有执行del，AOF文件中也不会保存del操作，当过期key被删除时，del命令也会被同步到AOF文件中去。
+重写AOF文件时 执行BGREWRITEAOF时，过期的key不会被记录到AOF文件中。
+主从同步时 Master删除过期key之后，会向所有Slave服务器发送一个DEL命令，Slave收到通知之后，会删除这些key。 Slave在读取过期键时，不会判断删除操作，而是继续返回该键对应的值，只有当Master发送DEL通知，Slave才会删除过期key，这是统一、中心化的键删除策略，保证主从服务器的数据一致性。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/76bce404e70c9c1e5ca13e34c0ff7396/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-04-09T11:25:07+08:00" />
+<meta property="article:modified_time" content="2023-04-09T11:25:07+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Redis的过期策略</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>Redis中缓存的数据是有过期时间的，当缓存数据失效时Redis会删除过期数据已节省内存，那Redis是怎么删除过期数据的？删除过期数据的策略是什么？<strong>Redis过期策略</strong></p> 
+<p>Redis为什么这么快，原因之一是Redis的操作是基于内存的，既然基于内存的，而内存的大小是有限的，当内存不足或占用过高时，怎么办？<strong>Redis的内存淘汰机制</strong></p> 
+<h4>一、Redis过期策略</h4> 
+<p>Redis在设置缓存数据时指定了过期时间，到了过期时间数据就失效了，那Redis是怎么处理这些失效的数据的呢？用到Redis的过期策略----“<strong>惰性删除+定期删除</strong>”。</p> 
+<p>1. 定期删除</p> 
+<p>定期删除是指Redis默认每隔100ms就随机抽取一些设置了过期时间的key，检测这些key是否过期，如果过期就将其删除。</p> 
+<ul><li> <p>100ms怎么来的？ 在Redis的配置文件redis.conf中有一个属性“<strong>hz</strong>”，默认设置为10，表示每1s执行10次定期删除，即每隔100ms执行一次，可以修改这个配置值。</p> </li><li> <p>随机抽取一些检测，一些是多少？ 同样是由redis.conf文件中的<strong>maxmemory-sample</strong>属性决定的，默认为<strong>5</strong>。</p> </li><li> <p>为什么随机抽取部分检测而不是全部？ 因为如果Redis里面有大量的key都设置了过期时间，全部去检测一遍的话CPU负载会很高，会浪费大量时间在检测上面，甚至导致redis挂掉。所以只会抽取一部分而不会全部检测。 正因为定期删除只会随机抽取部分key来检测，这样的话就会出现大量已经过期的key并没有被删除，这就是为什么有时候大量的key明明已经过来失效时间，但是Redis的内存还是被大量占用的原因，为了解决这个问题，Redis又引入了“惰性删除策略”。</p> </li></ul> 
+<p>2. 惰性删除</p> 
+<p>惰性删除不是主动的去删除，而是在你要获取某个key的时候，redis会先去检测一下这个key是否已过期，如果没有则返回给你，如果已经过期，就将该key删除，并不返回给你。</p> 
+<p>“定期删除+惰性删除”就能保证过期的key最终一定能被删除，但是只能保障最终一定会被删除，要是定期删除遗漏的大量过期key，我们在很长的一段时间内也没有再访问这些key，那么这些过期key不就一直在内存中吗？不就一直占着内存吗？这样依然会导致Redis内存耗尽，由于存在这样的问题，所有Redis又引入了“<strong>内存淘汰机制</strong>”来解决。</p> 
+<h4>二、Redis内存淘汰机制</h4> 
+<p>内存淘汰机制能保证Redis内存占用过高的时候，去进行内存淘汰，也就是删除一部分key，保证redis的内存占用率不会过高，那么淘汰那些key？Redis目前提供了8种内存淘汰策略，含Redis 4.0版本之后又新增的两种LFU模式：volatile-lfu和allkeys-lfu</p> 
+<table><thead><tr><th>策略</th><th>描述</th></tr></thead><tbody><tr><td>no-eviction</td><td>当内存不足以容纳新写入数据时，新写入操作会报错，无法写入数据，一般不采用</td></tr><tr><td>allkeys-lru</td><td>当内存不足以容纳新写入数据时，移除最近最少使用的key，这个是最常用的</td></tr><tr><td>allkeys-random</td><td>当内存不足以容纳新写入数据时，随机移除key</td></tr><tr><td>allkeys-lfu</td><td>当内存不足以容纳新写入数据时，移除最不经常（最少）使用的key</td></tr><tr><td>volatile-lru</td><td>当内存不足以容纳新写入数据时，在设置了过期时间的key中，移除最近最少使用的key</td></tr><tr><td>volatile-random</td><td>当内存不足以容纳新写入数据时，在设置了过期时间的key中，随机移除key</td></tr><tr><td>volatile-lfu</td><td>当内存不足以容纳新写入数据时，在设置了过期时间的key中，移除最不常用（最少）使用的key</td></tr><tr><td>volatile-tll</td><td>当内存不足以容纳新写入数据时，在设置了过期时间的key中，优先移除过期时间最早（剩余存活时间最短）的key</td></tr></tbody></table> 
+<ul><li> <p>什么时候会执行内存淘汰策略，内存占用率高的标准是什么？ redis.conf配置文件中的maxmemory属性限定了Redis最大内存使用量，当占用内存大于maxmemory的配置值时会执行内存淘汰策略，默认68%。</p> </li><li> <p>内存淘汰策略的配置 内存淘汰策略由redis.conf配置文件中的maxmememory-policy属性设置，没有配置时默认是no-eviction模式。</p> </li><li> <p>内存淘汰的执行过程 客户端执行一条命令，导致Redis需要增加数据（比如 set key value）； Redis会检测内存使用情况，如果内存使用超过maxmemory，就会按照配置的过期策略maxmemory-polic删除一些key； 再执行新的数据的set操作；</p> </li></ul> 
+<h4>三、其他场景对过期key的处理</h4> 
+<ol><li> <p>快照生成RDB文件时 过期的key不会保存在RDB中。</p> </li><li> <p>服务重启载入RDB文件时 Master载入RDB时，文件中的未过期的键会被正常载入，过期键则会被忽略。Slave载入RDB时，文件中的所有键都会被载入，当主从同步时，再和Master保持一致。</p> </li><li> <p>AOF文件写入时 因为AOF保存的是执行过的Redis命令，如果Redis还没有执行del，AOF文件中也不会保存del操作，当过期key被删除时，del命令也会被同步到AOF文件中去。</p> </li><li> <p>重写AOF文件时 执行BGREWRITEAOF时，过期的key不会被记录到AOF文件中。</p> </li><li> <p>主从同步时 Master删除过期key之后，会向所有Slave服务器发送一个DEL命令，Slave收到通知之后，会删除这些key。 Slave在读取过期键时，不会判断删除操作，而是继续返回该键对应的值，只有当Master发送DEL通知，Slave才会删除过期key，这是统一、中心化的键删除策略，保证主从服务器的数据一致性。</p> </li></ol>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/5a3d31629ea0b9d6b064bab3ed83d27e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">STM32程序占用的内存容量计算</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/816c81c7290df080bdad5ad57fde0f05/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">CSS设置背景background</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

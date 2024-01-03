@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>netlink2 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="netlink2" />
+<meta property="og:description" content="开发和维护内核是一件很繁杂的工作，因此，只有那些最重要或者与系统性能息息相关的代码才将其安排在内核中。其它程序，比如GUI，管理以及控制部分的代 码，一般都会作为用户态程序。在linux系统中，把系统的某个特性分割成在内核中和在用户空间中分别实现一部分的做法是很常见的(比如linux系统的 防火墙就分成了内核态的Netfilter和用户态的iptables)。然而，内核程序与用户态的程序又是怎样行通讯的呢？
+答案就是通过各种各样的用户态和内核态的IPC(interprocess communication )机制来实现。比如系统调用，ioctl接口，proc文件系统以及netlink socket,本文就是要讨论netlink socekt并向读者展示这种用网络
+通讯接口方式实现的IPC机制的优点。
+介绍：
+netlink socekt是一种用于在内核态和用户态进程之间进行数据传输的特殊的IPC。它通过为内核模块提
+供一组特殊的API，并为用户程序提供了一组标准的socket 接口的方式，实现了一种全双工的通讯连接。类似于TCP/IP中使用AF_INET地址族一样，netlink socket使用地址族AF_NETLINK。每一个netlink
+socket在内核头文件
+include/linux/netlink.h 中定义自己的协议类型。
+下面是netlink socket 目前的特性集合以及它支持的协议类型：
+NETLINK_ROUTE 用户空间的路由守护程序之间的通讯通道，比如BGP,OSPF,RIP以及内核数据转发模块。用户态的路由守护程序通过此类型的协议来更新内核中的路由表。
+NETLINK_FIREWALL:接收IPV4防火墙代码发送的数据包。
+NETLINK_NFLOG:用户态的iptables管理工具和内核中的netfilter模块之间通讯的通道。
+NETLINK_ARPD:用来从用户空间管理内核中的ARP表。 为什么以上的功能在实现用户程序和内核程序通讯时，都使用netlink方法而不是系统调用，ioctls
+或者proc文件系统呢？原因在于：为新的特性添加一个新的系统调用,ioctls或者一个proc文件的做法并不是很容易的一件事情，因为我们要冒着污染内核代码并且可能破坏系统稳定性的风险去完成这件事情。
+然而，netlink socket却是如此的简单，你只需要在文件netlink.h中添加一个常量来标识你的协议类型，然后，内核模块和用户程序就可以立刻使用socket风格的API进行通讯了！
+Netlink提供了一种异步通讯方式，与其他socket API一样，它提供了一个socket队列来缓冲或者平滑
+瞬时的消息高峰。发送netlink消息的系统调用在把消息加入到接收者的消息对列后，会触发接收者的接收处理函数。接收者在接收处理函数上下文中，可以 决定立即处理消息还是把消息放在队列中，在以后其它上下文去处理它(因为我们希望接收处理函数执行的尽可能快)。系统调用与netlink不同，它需要一 个同步的处理，因此，当我们使用一个系统调用来从用户态传递消息到内核时，如果处理这个消息的时间很长的话，内核调度的粒度就会受到影响。
+内核中实现系统调用的代码都是在编译时静态链接到内核的，因此，在动态加载模块中去包含一个系统调用的做法是不合适的，那是大多数设备驱动的做法。 使用netlink socket时,动态加载模块中的netlink程序不会和linux内核中的netlink部分产生任何编译时依赖关系。
+Netlink优于系统调用，ioctls和proc文件系统的另外一个特点就是它支持多点传送。一个进程可以把消息传输给一个netlink组地址，然 后任意多个进程都可以监听那个组地址(并且接收消息)。这种机制为内核到用户态的事件分发提供了一种近乎完美的解决方案。
+系统调用和ioctl都属于单工方式的IPC，也就是说，这种IPC会话的发起者只能是用户态程序。但是，如果内核有一个紧急的消息想要通知给用户态程序 时，该怎么办呢？如果直接使用这些IPC的话，是没办法做到这点的。通常情况下，应用程序会周期性的轮询内核以获取状态的改变，然而，高频度的轮询势必会 增加系统的负载。Netlink 通过允许内核初始化会话的方式完美的解决了此问题，我们称之为netlink socket的双工特性。
+最后，netlink socket提供了一组开发者熟悉的BSD风格的API函数，因此，相对于使用神秘的系统调用API或者ioctl而言，netlink开发培训的费用会更低些。
+与BSD的Routing socket的关系
+在BSD TCP/IP的协议栈实现中，有一种特殊的socket叫做Routing socket.它的地址族为AF_ROUTE, 协议族为PF_ROUTE, socket类型为SOCK_RAW. 这种Routing socket是用户态进程用来向内核中的路由表增加或者删除路由信息用的。在Linux系统中，netlink socket通过协议类型NETLINK_ROUTE实现了与Routing socket相同的功能，可以说，netlink socket提供了BSD Routing socket功能的超集。
+Netlink Socket 的API
+标准的socket API函数-
+socket(), sendmsg(), recvmsg()和close() - 都能够被用户态程序直接调用来访问netlink socket." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/5cb99d4bc257950b0c1e59671b07c526/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-07-05T18:42:56+08:00" />
+<meta property="article:modified_time" content="2019-07-05T18:42:56+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">netlink2</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="cnblogs_post_body" class="blogpost-body"> 
+ <p>开发和维护内核是一件很繁杂的工作，因此，只有那些最重要或者与系统性能息息相关的代码才将其安排在内核中。其它程序，比如GUI，管理以及控制部分的代 码，一般都会作为用户态程序。在linux系统中，把系统的某个特性分割成在内核中和在用户空间中分别实现一部分的做法是很常见的(比如linux系统的 防火墙就分成了内核态的Netfilter和用户态的iptables)。然而，内核程序与用户态的程序又是怎样行通讯的呢？<br>答案就是通过各种各样的用户态和内核态的IPC(interprocess   communication  )机制来实现。比如系统调用，ioctl接口，proc文件系统以及netlink socket,本文就是要讨论netlink socekt并向读者展示这种用网络<br>通讯接口方式实现的IPC机制的优点。<br><br><strong><span style="font-size:large;"><span style="color:#000000;">介绍：</span></span></strong><br>netlink socekt是一种用于在内核态和用户态进程之间进行数据传输的特殊的IPC。它通过为内核模块提<br>供一组特殊的API，并为用户程序提供了一组标准的socket 接口的方式，实现了一种全双工的通讯连接。类似于TCP/IP中使用AF_INET地址族一样，netlink socket使用地址族AF_NETLINK。每一个netlink<br>socket在内核头文件<br><br></p> 
+ <div class="msgbody"> 
+  <div id="code0" class="msgborder" style="font-family:Fixdays;">
+    include/linux/netlink.h 
+  </div> 
+ </div> 
+ <p> <br>中定义自己的协议类型。<br>下面是netlink socket 目前的特性集合以及它支持的协议类型：<br><br></p> 
+ <table class="t_table" cellspacing="0" align="center"><tbody><tr><td><span style="font-family:FixedSys;">NETLINK_ROUTE 用户空间的路由守护程序之间的通讯通道，比如BGP<span style="color:#0000cc;">,</span>OSPF<span style="color:#0000cc;">,</span>RIP以及内核数据转发模块。用户态的路由守护程序通过此类型的协议来更新内核中的路由表。<br>NETLINK_FIREWALL<span style="color:#0000cc;">:</span>接收IPV4防火墙代码发送的数据包。<br>NETLINK_NFLOG<span style="color:#0000cc;">:</span>用户态的iptables管理工具和内核中的netfilter模块之间通讯的通道。<br>NETLINK_ARPD<span style="color:#0000cc;">:</span>用来从用户空间管理内核中的ARP表。</span></td></tr></tbody></table> 
+ <p> <br>   为什么以上的功能在实现用户程序和内核程序通讯时，都使用netlink方法而不是系统调用，ioctls<br>或者proc文件系统呢？原因在于：为新的特性添加一个新的系统调用,ioctls或者一个proc文件的做法并不是很容易的一件事情，因为我们要冒着污染内核代码并且可能破坏系统稳定性的风险去完成这件事情。<br>然而，netlink socket却是如此的简单，你只需要在文件netlink.h中添加一个常量来标识你的协议类型，然后，内核模块和用户程序就可以立刻使用socket风格的API进行通讯了！<br>        Netlink提供了一种异步通讯方式，与其他socket API一样，它提供了一个socket队列来缓冲或者平滑<br>瞬时的消息高峰。发送netlink消息的系统调用在把消息加入到接收者的消息对列后，会触发接收者的接收处理函数。接收者在接收处理函数上下文中，可以 决定立即处理消息还是把消息放在队列中，在以后其它上下文去处理它(因为我们希望接收处理函数执行的尽可能快)。系统调用与netlink不同，它需要一 个同步的处理，因此，当我们使用一个系统调用来从用户态传递消息到内核时，如果处理这个消息的时间很长的话，内核调度的粒度就会受到影响。<br>        内核中实现系统调用的代码都是在编译时静态链接到内核的，因此，在动态加载模块中去包含一个系统调用的做法是不合适的，那是大多数设备驱动的做法。 使用netlink socket时,动态加载模块中的netlink程序不会和linux内核中的netlink部分产生任何编译时依赖关系。<br>Netlink优于系统调用，ioctls和proc文件系统的另外一个特点就是它支持多点传送。一个进程可以把消息传输给一个netlink组地址，然 后任意多个进程都可以监听那个组地址(并且接收消息)。这种机制为内核到用户态的事件分发提供了一种近乎完美的解决方案。<br>系统调用和ioctl都属于单工方式的IPC，也就是说，这种IPC会话的发起者只能是用户态程序。但是，如果内核有一个紧急的消息想要通知给用户态程序 时，该怎么办呢？如果直接使用这些IPC的话，是没办法做到这点的。通常情况下，应用程序会周期性的轮询内核以获取状态的改变，然而，高频度的轮询势必会 增加系统的负载。Netlink 通过允许内核初始化会话的方式完美的解决了此问题，我们称之为netlink socket的双工特性。<br>        最后，netlink socket提供了一组开发者熟悉的BSD风格的API函数，因此，相对于使用神秘的系统调用API或者ioctl而言，netlink开发培训的费用会更低些。<br>        与BSD的Routing socket的关系<br>在BSD TCP/IP的协议栈实现中，有一种特殊的socket叫做Routing socket.它的地址族为AF_ROUTE, 协议族为PF_ROUTE, socket类型为SOCK_RAW. 这种Routing socket是用户态进程用来向内核中的路由表增加或者删除路由信息用的。在Linux系统中，netlink socket通过协议类型NETLINK_ROUTE实现了与Routing socket相同的功能，可以说，netlink socket提供了BSD Routing socket功能的超集。<br><span style="font-size:large;"><strong>Netlink Socket 的API</strong></span><br>     标准的socket API函数-<br><br></p> 
+ <div class="msgbody"> 
+  <div id="code1" class="msgborder" style="font-family:Fixdays;">
+    socket(), sendmsg(), recvmsg()和close() 
+  </div> 
+ </div> 
+ <p> <br>- 都能够被用户态程序直接调用来访问netlink socket.你可以访问man手册来获取这些函数的详细定义。在本文，我们只讨论怎样在netlink socket的上下文中为这些函数选择参数。这些API对于使用TCP/IP socket写过一些简单网络程序的读者来说应该很熟悉了。<br>使用socket()函数创建一个socket，输入：<br><br></p> 
+ <table class="t_table" cellspacing="0" align="center"><tbody><tr><td><span style="font-family:FixedSys;"><span style="color:#0000ff;">int</span> <span style="color:#ff0000;">socket</span><span style="color:#0000cc;">(</span><span style="color:#0000ff;">int</span> domain<span style="color:#0000cc;">,</span> <span style="color:#0000ff;">int</span> type<span style="color:#0000cc;">,</span> <span style="color:#0000ff;">int</span> protocol<span style="color:#0000cc;">)</span><br></span></td></tr></tbody></table> 
+ <p> <br><br>socket域(地址族)是AF_NETLINK,socket的类型是SOCK_RAW或者SOCK_DGRAM,因为netlink是一种面向数据包的服务。<br>协议类型选择netlink要使用的类型即可。下面是一些预定义的netlink协议类型：<br><br></p> 
+ <div class="msgbody"> 
+  <div id="code2" class="msgborder" style="font-family:Fixdays;">
+    NETLINK_ROUTE, NETLINK_FIREWALL, NETLINK_ARPD, NETLINK_ROUTE6 
+   <br>和 NETLINK_IP6_FW. 
+  </div> 
+ </div> 
+ <p> <br>你同样可以很轻松的在netlink.h中添加自定义的协议类型。<br><br>每个netlink协议类型可以定义高达32个多点传输的组。每个组用一个比特位来表示，1&lt;&lt;i，0&lt;=i&lt;=31.<br> 当一组用户态进程和内核态进程协同实现一个相同的特性时，这个方法很有用，因为发送多点传输的netlink消息可以减少系统调用的次数，并且减少了相关应用程序的个数，这些程序本来是要用来处理维护多点传输组之间关系而带来的负载的。<br>bind()函数<br>跟TCP/IP中的socket一样，netlink的bind()函数把一个本地socket地址(源socket地址)与一个打开的socket进行关联，netlink地址结构体如下:</p> 
+ <table class="t_table" cellspacing="0" align="center"><tbody><tr><td><span style="font-family:FixedSys;"><span style="color:#0000ff;">struct</span> sockaddr_nl<br><span style="color:#0000cc;">{<!-- --></span><br>  sa_family_t    nl_family<span style="color:#0000cc;">;</span>  <span style="color:#ff9900;">/* AF_NETLINK   */</span><br>  <span style="color:#0000ff;">unsigned</span> <span style="color:#0000ff;">short</span> nl_pad<span style="color:#0000cc;">;</span>     <span style="color:#ff9900;">/* zero         */</span><br>  __u32          nl_pid<span style="color:#0000cc;">;</span>     <span style="color:#ff9900;">/* process pid */</span><br>  __u32          nl_groups<span style="color:#0000cc;">;</span>  <span style="color:#ff9900;">/* mcast groups mask */</span><br><span style="color:#0000cc;">}</span> nladdr<span style="color:#0000cc;">;</span></span></td></tr></tbody></table> 
+ <p> <br>当上面的结构体被bind()函数调用时，sockaddr_nl的nl_pid属性的值可以设置为访问netlink socket的当前进程的PID，nl_pid作为这个netlink socket的本地地址。应用程序应该选择一个唯一的32位整数来填充nl_pid的值。<br><br></p> 
+ <div class="msgbody"> 
+  <div id="code3" class="msgborder" style="font-family:Fixdays;">
+    NL_PID 公式 1:  nl_pid = getpid(); 
+  </div> 
+ </div> 
+ <p> <br>公式一使用进程的PID作为nl_pid的值，如果这个进程只需要一个该类型协议的netlink socket的话，选用进程pid作为nl_pid是一个很自然的做法。<br>换一种情形，如果一个进程的多个线程想要创建属于各个线程的相同协议类型的netlink socket的话，公式二可以用来为每个线程的netlink socket产生nl_pid值。<br><br></p> 
+ <div class="msgbody"> 
+  <div class="msgheader">
+      
+  </div> 
+  <div id="code4" class="msgborder" style="font-family:Fixdays;">
+    NL_PID 公式 2: pthread_self() &lt;&lt; 16 | getpid(); 
+  </div> 
+ </div> 
+ <p> <br>采 用这种方法，同一进程的不同线程都能获取属于它们的相同协议类型的不同netlink socket。事实上，即便是在一个单独的线程里，也可能需要创建同一协议类型的多个netlink socket。所以开发人员需要更多聪明才智去创建不同的nl_pid值，然而本文中不会就如何创建多个不同的nl_pid的值进行过多的讨论<br>如果应用程序想要接收特定协议类型的发往指定多播组的netlink消息的话，所有接收组的比特位应该进行与运算，形成sockaddr_nl的 nl_groups域的值。否则的话，nl_groups应该设置为0，以便应用程序只能够收到发送给它的netlink消息。在填充完结构体 nladdr后，作如下的绑定工作:<br><br></p> 
+ <table class="t_table" cellspacing="0" align="center"><tbody><tr><td><span style="font-family:FixedSys;"><span style="color:#000000;"><span style="color:#ff0000;">bind</span><span style="color:#0000cc;">(</span>fd<span style="color:#0000cc;">,</span> <span style="color:#0000cc;">(</span><span style="color:#0000ff;">struct</span> <span style="color:#ff0000;">sockaddr</span><span style="color:#0000cc;">*</span><span style="color:#0000cc;">)</span><span style="color:#0000cc;">&amp;</span>nladdr<span style="color:#0000cc;">,</span> <span style="color:#0000ff;">sizeof</span><span style="color:#0000cc;">(</span>nladdr<span style="color:#0000cc;">)</span><span style="color:#0000cc;">)</span><span style="color:#0000cc;">;</span></span></span></td></tr></tbody></table> 
+ <p> <br><br>发送一个netlink 消息<br>为了能够把一个netlink消息发送给内核或者别的用户进程，类似于UDP数据包发送的sendmsg()函数一样，我们需要另外一个结构体 struct sockaddr_nl nladdr作为目的地址。如果这个netlink消息是发往内核的话，nl_pid属性和nl_groups属性都应该设置为0。<br>如果这个消息是发往另外一个进程的单点传输消息，nl_pid应该设置为接收者进程的PID，nl_groups应该设置为0，假设系统中使用了公式1。<br>如果消息是发往一个或者多个多播组的话，应该用所有目的多播组的比特位与运算形成nl_groups的值。然后我们就可以将netlink地址应用到结构体struct msghdr msg中，供函数sendmsg()来调用：</p> 
+ <table class="t_table" cellspacing="0" align="center"><tbody><tr><td><span style="font-family:FixedSys;"><span style="color:#0000ff;">struct</span> <span style="color:#ff0000;">msghdr</span> msg<span style="color:#0000cc;">;</span><br>msg<span style="color:#0000cc;">.</span>msg_name <span style="color:#0000cc;">=</span> <span style="color:#0000cc;">(</span><span style="color:#0000ff;">void</span> <span style="color:#0000cc;">*</span><span style="color:#0000cc;">)</span><span style="color:#0000cc;">&amp;</span><span style="color:#0000cc;">(</span>nladdr<span style="color:#0000cc;">)</span><span style="color:#0000cc;">;</span><br>msg<span style="color:#0000cc;">.</span>msg_namelen <span style="color:#0000cc;">=</span> <span style="color:#0000ff;">sizeof</span><span style="color:#0000cc;">(</span>nladdr<span style="color:#0000cc;">)</span><span style="color:#0000cc;">;</span><br></span></td></tr></tbody></table> 
+ <p> <br>netlink消息同样也需要它自身的消息头，这样做是为了给所有协议类型的netlink消息提供一个通用的背景。<br>由于linux内核的netlink部分总是认为在每个netlink消息体中已经包含了下面的消息头，所以每个应用程序在发送netlink消息之前需要提供这个头信息：</p> 
+ <table class="t_table" cellspacing="0" align="center"><tbody><tr><td><span style="font-family:FixedSys;"><span style="color:#0000ff;">struct</span> nlmsghdr<br><span style="color:#0000cc;">{<!-- --></span><br>  __u32 nlmsg_len<span style="color:#0000cc;">;</span>   <span style="color:#ff9900;">/* Length of message */</span><br>  __u16 nlmsg_type<span style="color:#0000cc;">;</span>  <span style="color:#ff9900;">/* Message type*/</span><br>  __u16 nlmsg_flags<span style="color:#0000cc;">;</span> <span style="color:#ff9900;">/* Additional flags */</span><br>  __u32 nlmsg_seq<span style="color:#0000cc;">;</span>   <span style="color:#ff9900;">/* Sequence number */</span><br>  __u32 nlmsg_pid<span style="color:#0000cc;">;</span>   <span style="color:#ff9900;">/* Sending process PID */</span><br><span style="color:#0000cc;">}</span><span style="color:#0000cc;">;</span><br></span></td></tr></tbody></table> 
+ <p> <br>nlmsg_len 需要用netlink 消息体的总长度来填充，包含头信息在内，这个是netlink核心需要的信息。mlmsg_type可以被应用程序所用，它对于netlink核心来说是 一个透明的值。Nsmsg_flags 用来该对消息体进行另外的控制，会被netlink核心代码读取并更新。Nlmsg_seq和nlmsg_pid同样对于netlink核心部分来说是透 明的，应用程序用它们来跟踪消息。<br>因此，一个netlink消息体由nlmsghdr和消息的payload部分组成。一旦输入一个消息，它就会进入一个被nlh指针指向的缓冲区。我们同样可以把消息发送个结构体struct msghdr msg:<br><br></p> 
+ <table class="t_table" cellspacing="0" align="center"><tbody><tr><td><span style="font-family:FixedSys;"><span style="color:#0000ff;">struct</span> iovec iov<span style="color:#0000cc;">;</span><br>iov<span style="color:#0000cc;">.</span>iov_base <span style="color:#0000cc;">=</span> <span style="color:#0000cc;">(</span><span style="color:#0000ff;">void</span> <span style="color:#0000cc;">*</span><span style="color:#0000cc;">)</span>nlh<span style="color:#0000cc;">;</span><br>iov<span style="color:#0000cc;">.</span>iov_len <span style="color:#0000cc;">=</span> nlh<span style="color:#0000cc;">-</span><span style="color:#0000cc;">&gt;</span>nlmsg_len<span style="color:#0000cc;">;</span><br>msg<span style="color:#0000cc;">.</span>msg_iov <span style="color:#0000cc;">=</span> <span style="color:#0000cc;">&amp;</span>iov<span style="color:#0000cc;">;</span><br>msg<span style="color:#0000cc;">.</span>msg_iovlen <span style="color:#0000cc;">=</span> 1<span style="color:#0000cc;">;</span><br></span></td></tr></tbody></table> 
+ <p> <br><br>在完成了以上步骤后，调用一次sendmsg()函数就能把netlink消息发送出去：</p> 
+ <table class="t_table" cellspacing="0" align="center"><tbody><tr><td><span style="font-family:FixedSys;"><span style="color:#ff0000;">sendmsg</span><span style="color:#0000cc;">(</span>fd<span style="color:#0000cc;">,</span> <span style="color:#0000cc;">&amp;</span>msg<span style="color:#0000cc;">,</span> 0<span style="color:#0000cc;">)</span><span style="color:#0000cc;">;</span><br></span></td></tr></tbody></table> 
+ <p> <br><span style="color:#000000;"><strong><span style="font-size:large;">接收netlink消息：</span></strong></span><br>接收程序需要申请足够大的空间来存储netlink消息头和消息的payload部分。它会用如下的方式填充结构体 struct msghdr msg,然后使用标准函数接口recvmsg()来接收netlink消息，假设nlh指向缓冲区：</p> 
+ <table class="t_table" cellspacing="0" align="center"><tbody><tr><td><span style="font-family:FixedSys;"><span style="color:#0000ff;">struct</span> sockaddr_nl nladdr<span style="color:#0000cc;">;</span><br><span style="color:#0000ff;">struct</span> <span style="color:#ff0000;">msghdr</span> msg<span style="color:#0000cc;">;</span><br><span style="color:#0000ff;">struct</span> iovec iov<span style="color:#0000cc;">;</span><br><br>iov<span style="color:#0000cc;">.</span>iov_base <span style="color:#0000cc;">=</span> <span style="color:#0000cc;">(</span><span style="color:#0000ff;">void</span> <span style="color:#0000cc;">*</span><span style="color:#0000cc;">)</span>nlh<span style="color:#0000cc;">;</span><br>iov<span style="color:#0000cc;">.</span>iov_len <span style="color:#0000cc;">=</span> MAX_NL_MSG_LEN<span style="color:#0000cc;">;</span><br>msg<span style="color:#0000cc;">.</span>msg_name <span style="color:#0000cc;">=</span> <span style="color:#0000cc;">(</span><span style="color:#0000ff;">void</span> <span style="color:#0000cc;">*</span><span style="color:#0000cc;">)</span><span style="color:#0000cc;">&amp;</span><span style="color:#0000cc;">(</span>nladdr<span style="color:#0000cc;">)</span><span style="color:#0000cc;">;</span><br>msg<span style="color:#0000cc;">.</span>msg_namelen <span style="color:#0000cc;">=</span> <span style="color:#0000ff;">sizeof</span><span style="color:#0000cc;">(</span>nladdr<span style="color:#0000cc;">)</span><span style="color:#0000cc;">;</span><br><br>msg<span style="color:#0000cc;">.</span>msg_iov <span style="color:#0000cc;">=</span> <span style="color:#0000cc;">&amp;</span>iov<span style="color:#0000cc;">;</span><br>msg<span style="color:#0000cc;">.</span>msg_iovlen <span style="color:#0000cc;">=</span> 1<span style="color:#0000cc;">;</span><br><span style="color:#ff0000;">recvmsg</span><span style="color:#0000cc;">(</span>fd<span style="color:#0000cc;">,</span> <span style="color:#0000cc;">&amp;</span>msg<span style="color:#0000cc;">,</span> 0<span style="color:#0000cc;">)</span><span style="color:#0000cc;">;</span><br></span></td></tr></tbody></table> 
+ <p> <br><br>当消息正确接收后，nlh应该指向刚刚接收到的netlink消息的头部分。Nladdr应该包含接收到消息体的目的地信息，这个目的地信息由pid和消 息将要发往的多播组的值组成。Netlink.h中的宏定义NLMSG_DATA(nlh)返回指向netlink消息体的payload的指针。调用<br><br></p> 
+ <div class="msgbody"> 
+  <div class="msgheader">
+      
+  </div> 
+  <div id="code5" class="msgborder" style="font-family:Fixdays;">
+    close(fd) 
+  </div> 
+ </div> 
+ <p> <br>就可以关闭掉fd描述符代表的netlink socket.<br><span style="color:#000000;"><strong><span style="font-size:large;">内核空间的netlink API接口</span></strong></span><br>   内核空间的netlink API是由内核中的netlink核心代码支持的，在net/core/af_netlink.c中实现。从内核的角度来说，API接口与用户空间的 API是不一样的。内核模块通过这些API访问netlink socket并且与用户空间的程序进行通讯。如果你不想使用netlink预定义好的协议类型的话，可以在netlink.h中添加一个自定义的协议类 型。例如，我们可以通过在netlink.h中插入下面的代码行，添加一个测试用的协议类型：<br><br></p> 
+ <div class="msgbody"> 
+  <div class="msgheader">
+      
+  </div> 
+  <div id="code6" class="msgborder" style="font-family:Fixdays;">
+    #define NETLINK_TEST  17 
+  </div> 
+ </div> 
+ <p> <br>然后，就可以在linux内核的任何部分访问这个协议类型了。<br>在用户空间，我们通过socket()调用来创建一个netlink socket,但是在内核空间，我们调用如下的API：<br><br></p> 
+ <div class="msgbody"> 
+  <div id="code7" class="msgborder" style="font-family:Fixdays;">
+    struct sock * netlink_kernel_create(int unit, void (*input)(struct sock *sk, int len)); 
+  </div> 
+ </div> 
+ <p> <br>参数uint是netlink协议类型，例如NETLINK_TEST。函数指针，input,是netlink socket在收到消息时调用的处理消息的回调函数指针。<br>在内核创建了一个NETLINK_TEST类型的netlink socket后，无论什么时候，只要用户程序发送一个NETLINK_TEST类型的netlink消息到内核的话，通过 netlink_kernel_create()函数注册的回调函数input()都会被调用。下面是一个实现了消息处理函数input的例子。<br><br><br></p> 
+ <table class="t_table" cellspacing="0" align="center"><tbody><tr><td><span style="font-family:FixedSys;"><span style="color:#0000ff;">void</span> input <span style="color:#0000cc;">(</span><span style="color:#0000ff;">struct</span> sock <span style="color:#0000cc;">*</span>sk<span style="color:#0000cc;">,</span> <span style="color:#0000ff;">int</span> len<span style="color:#0000cc;">)</span><br><span style="color:#0000cc;">{<!-- --></span><br><span style="color:#0000ff;">   struct</span> sk_buff <span style="color:#0000cc;">*</span>skb<span style="color:#0000cc;">;</span><br><span style="color:#0000ff;">   struct</span> nlmsghdr <span style="color:#0000cc;">*</span>nlh <span style="color:#0000cc;">=</span> <span style="color:#ff0000;">NULL</span><span style="color:#0000cc;">;</span><br>  u8 <span style="color:#0000cc;">*</span>payload <span style="color:#0000cc;">=</span> <span style="color:#ff0000;">NULL</span><span style="color:#0000cc;">;</span><br><br><span style="color:#0000ff;">while</span> <span style="color:#0000cc;">(</span><span style="color:#0000cc;">(</span>skb <span style="color:#0000cc;">=</span> skb_dequeue<span style="color:#0000cc;">(</span><span style="color:#0000cc;">&amp;</span>sk<span style="color:#0000cc;">-</span><span style="color:#0000cc;">&gt;</span>receive_queue<span style="color:#0000cc;">)</span><span style="color:#0000cc;">)</span><span style="color:#0000cc;">!</span><span style="color:#0000cc;">=</span> <span style="color:#ff0000;">NULL</span><span style="color:#0000cc;">)</span> </span><br><span style="font-family:FixedSys;">  <span style="color:#0000cc;">{<!-- --></span><br><span style="color:#ff9900;">     /* process netlink message pointed by skb-&gt;data */</span><br>     nlh <span style="color:#0000cc;">=</span> <span style="color:#0000cc;">(</span><span style="color:#0000ff;">struct</span> nlmsghdr <span style="color:#0000cc;">*</span><span style="color:#0000cc;">)</span>skb<span style="color:#0000cc;">-</span><span style="color:#0000cc;">&gt;</span>data<span style="color:#0000cc;">;</span><br>     payload <span style="color:#0000cc;">=</span> NLMSG_DATA<span style="color:#0000cc;">(</span>nlh<span style="color:#0000cc;">)</span><span style="color:#0000cc;">;</span><br><span style="color:#ff9900;">     /* process netlink message with header pointed by<br>     * nlh        and payload pointed by payload<br>     */</span><br><span style="color:#0000cc;">   }</span><br><span style="color:#0000cc;">}</span></span></td></tr></tbody></table> 
+ <p> <br><br>回调函数input()是在发送进程的系统调用sendmsg()的上下文被调用的。如果input函数中处理消息很快的话，一切都没有问题。但是如果处 理netlink消息花费很长时间的话，我们则希望把消息的处理部分放在input()函数的外面，因为长时间的消息处理过程可能会阻止其它系统调用进入 内核。取而代之，我们可以牺牲一个内核线程来完成后续的无限的的处理动作。<br>使用<br><br></p> 
+ <div class="msgbody"> 
+  <div class="msgheader">
+      
+  </div> 
+  <div id="code8" class="msgborder" style="font-family:Fixdays;">
+    skb = skb_recv_datagram(nl_sk) 
+  </div> 
+ </div> 
+ <p> <br>来接收消息。nl_sk是netlink_kernel_create()函数返回的netlink socket,然后，只需要处理skb-&gt;data指针指向的netlink消息就可以了。<br>这个内核线程会在nl_sk中没有消息的时候睡眠。因此，在回调函数input()中我们要做的事情就是唤醒睡眠的内核线程，像这样的方式:<br><br></p> 
+ <table class="t_table" cellspacing="0" align="center"><tbody><tr><td><span style="font-family:FixedSys;"><span style="color:#0000ff;">void</span> input <span style="color:#0000cc;">(</span><span style="color:#0000ff;">struct</span> sock <span style="color:#0000cc;">*</span>sk<span style="color:#0000cc;">,</span> <span style="color:#0000ff;">int</span> len<span style="color:#0000cc;">)</span><br><span style="color:#0000cc;">{<!-- --></span><br>  wake_up_interruptible<span style="color:#0000cc;">(</span>sk<span style="color:#0000cc;">-</span><span style="color:#0000cc;">&gt;</span><span style="color:#ff0000;">sleep</span><span style="color:#0000cc;">)</span><span style="color:#0000cc;">;</span><br><span style="color:#0000cc;">}</span></span></td></tr></tbody></table> 
+ <p> <br><br>这就是一个升级版的内核与用户空间的通讯模型，它提高了上下文切换的粒度。<br>从内核中发送netlink消息<br>就像从用户空间发送消息一样，内核在发送netlink消息时也需要设置源netlink地址和目的netlink地址。假设结构体struct sk_buff * skb指向存储着要发送的netlink消息的缓冲区，源地址可以这样设置:<br><br></p> 
+ <table class="t_table" cellspacing="0" align="center"><tbody><tr><td><span style="font-family:FixedSys;">NETLINK_CB<span style="color:#0000cc;">(</span>skb<span style="color:#0000cc;">)</span><span style="color:#0000cc;">.</span>groups <span style="color:#0000cc;">=</span> local_groups<span style="color:#0000cc;">;</span><br>NETLINK_CB<span style="color:#0000cc;">(</span>skb<span style="color:#0000cc;">)</span><span style="color:#0000cc;">.</span>pid <span style="color:#0000cc;">=</span> 0<span style="color:#0000cc;">;</span>   <span style="color:#ff9900;">/* from kernel */</span><br>目的地址可以这样设置<span style="color:#0000cc;">:</span><br>NETLINK_CB<span style="color:#0000cc;">(</span>skb<span style="color:#0000cc;">)</span><span style="color:#0000cc;">.</span>dst_groups <span style="color:#0000cc;">=</span> dst_groups<span style="color:#0000cc;">;</span><br>NETLINK_CB<span style="color:#0000cc;">(</span>skb<span style="color:#0000cc;">)</span><span style="color:#0000cc;">.</span>dst_pid <span style="color:#0000cc;">=</span> dst_pid<span style="color:#0000cc;">;</span></span></td></tr></tbody></table> 
+ <p> <br><br>这些信息并不存储在 skb-&gt;data中，相反，它们存储在socket缓冲区的netlink控制块skb中.<br>发送一个单播消息，使用:</p> 
+ <table class="t_table" cellspacing="0" align="center"><tbody><tr><td><span style="font-family:FixedSys;"><span style="color:#0000ff;">int</span>  netlink_unicast<span style="color:#0000cc;">(</span><span style="color:#0000ff;">struct</span> sock <span style="color:#0000cc;">*</span>ssk<span style="color:#0000cc;">,</span> <span style="color:#0000ff;">struct</span> sk_buff  <span style="color:#0000cc;">*</span>skb<span style="color:#0000cc;">,</span>  u32 pid<span style="color:#0000cc;">,</span> <span style="color:#0000ff;">int</span> nonblock<span style="color:#0000cc;">)</span><span style="color:#0000cc;">;</span><br></span></td></tr></tbody></table> 
+ <p> <br>ssk是by netlink_kernel_create()函数返回的netlink socket, skb-&gt;data指向需要发送的netlink消息体，如果使用公式一的话，pid是接收程序的pid，noblock表明当接收缓冲区不可用时 是否应该阻塞还是立即返回一个失败信息。<br>你同样可以从内核发送一个多播消息。下面的函数同时把一个netlink消息发送给pid指定的进程和group标识的多个组。</p> 
+ <table class="t_table" cellspacing="0" align="center"><tbody><tr><td><span style="font-family:FixedSys;"><span style="color:#0000ff;">void</span>   netlink_broadcast<span style="color:#0000cc;">(</span><span style="color:#0000ff;">struct</span> sock <span style="color:#0000cc;">*</span>ssk<span style="color:#0000cc;">,</span> <span style="color:#0000ff;">struct</span> sk_buff <span style="color:#0000cc;">*</span>skb<span style="color:#0000cc;">,</span>  u32 pid<span style="color:#0000cc;">,</span> u32 group<span style="color:#0000cc;">,</span> <span style="color:#0000ff;">int</span> allocation<span style="color:#0000cc;">)</span><span style="color:#0000cc;">;</span><br></span></td></tr></tbody></table> 
+ <p> <br>group的值是接收消息的各个组的比特位进行与运算的结果。Allocation是内核内存的申请类型。通常情况下在中断上下文使用 GFP_ATOMIC,否则使用GFP_KERNEL。这是由于发送多播消息时，API可能需要申请一个或者多个socket缓冲区并进行拷贝所引起的。<br>从内核空间关闭netlink socket<br>netlink_kernel_create()函数返回的netlink socket为struct sock *nl_sk，我们可以通过访问下面的API来从内核空间关闭这个netlink socket:<br>sock_release(nl_sk-&gt;socket);<br>到目前为止，我们已经演示了netlink编程概念的最小代码框架。接着我们会使用NETLINK_TEST协议类型，并且假设它已经被添加到内核头文件 中了。这里列举的内核模块代码只是与netlink相关的，所以，你应该把它插入到一个完整的内核模块代码当中去，这样的完整代码在其它代码中可以找到很 多。<br><br>实例:<br><br></p> 
+ <p> </p> 
+ <table border="1" cellspacing="0" cellpadding="0" bgcolor="#f1f1f1"><tbody><tr><td> <p><code>net_link.c<br><br>#include &lt;linux/kernel.h&gt;<br>#include &lt;linux/module.h&gt;<br>#include &lt;linux/types.h&gt;<br>#include &lt;linux/sched.h&gt;<br>#include &lt;net/sock.h&gt;<br>#include &lt;net/netlink.h&gt;<br><br>#define NETLINK_TEST 21<br><br>struct sock *nl_sk = NULL;<br>EXPORT_SYMBOL_GPL(nl_sk);<br><br>void nl_data_ready (struct sk_buff *__skb)<br>{<!-- --><br>  struct sk_buff *skb;<br>  struct nlmsghdr *nlh;<br>  u32 pid;<br>  int rc;<br>  int len = NLMSG_SPACE(1200);<br>  char str[100];<br><br>  printk("net_link: data is ready to read.\n");<br>  skb = skb_get(__skb);<br><br>  if (skb-&gt;len &gt;= NLMSG_SPACE(0)) {<!-- --><br>    nlh = nlmsg_hdr(skb);<br>    printk("net_link: recv %s.\n", (char *)NLMSG_DATA(nlh));<br>    memcpy(str,NLMSG_DATA(nlh), sizeof(str)); <br>    pid = nlh-&gt;nlmsg_pid; /*pid of sending process */<br>    printk("net_link: pid is %d\n", pid);<br>    kfree_skb(skb);<br><br>    skb = alloc_skb(len, GFP_ATOMIC);<br>    if (!skb){<!-- --><br>      printk(KERN_ERR "net_link: allocate failed.\n");<br>      return;<br>    }<br>    nlh = nlmsg_put(skb,0,0,0,1200,0);<br>    NETLINK_CB(skb).pid = 0; /* from kernel */<br><br>    memcpy(NLMSG_DATA(nlh), str, sizeof(str));<br>    printk("net_link: going to send.\n");<br>    rc = netlink_unicast(nl_sk, skb, pid, MSG_DONTWAIT);<br>    if (rc &lt; 0) {<!-- --><br>      printk(KERN_ERR "net_link: can not unicast skb (%d)\n", rc);<br>    }<br>    printk("net_link: send is ok.\n");<br>  }<br>  return;<br>}<br><br>static int test_netlink(void) {<!-- --><br>  nl_sk = netlink_kernel_create(&amp;init_net, NETLINK_TEST, 0, nl_data_ready, NULL, THIS_MODULE);<br><br>  if (!nl_sk) {<!-- --><br>    printk(KERN_ERR "net_link: Cannot create netlink socket.\n");<br>    return -EIO;<br>  }<br>  printk("net_link: create socket ok.\n");<br>  return 0;<br>}<br><br>int init_module()<br>{<!-- --><br>  test_netlink();<br>  return 0;<br>}<br>void cleanup_module( )<br>{<!-- --><br>  if (nl_sk != NULL){<!-- --><br>    sock_release(nl_sk-&gt;sk_socket);<br>  }<br>  printk("net_link: remove ok.\n");<br>}<br>MODULE_LICENSE("GPL");<br>MODULE_AUTHOR("kidoln");<br><br><br>sender.c<br>#include &lt;sys/stat.h&gt;<br>#include &lt;unistd.h&gt;<br>#include &lt;stdio.h&gt;<br>#include &lt;stdlib.h&gt;<br>#include &lt;sys/socket.h&gt;<br>#include &lt;sys/types.h&gt;<br>#include &lt;string.h&gt;<br>#include &lt;asm/types.h&gt;<br>#include &lt;linux/netlink.h&gt;<br>#include &lt;linux/socket.h&gt;<br><br>#define MAX_PAYLOAD 1024 /* maximum payload size*/<br>struct sockaddr_nl src_addr, dest_addr;<br>struct nlmsghdr *nlh = NULL;<br>struct iovec iov;<br>int sock_fd;<br>struct msghdr msg;<br><br>int main(int argc, char* argv[])<br>{<!-- --><br>        sock_fd = socket(PF_NETLINK, SOCK_RAW, 21);<br>        memset(&amp;msg, 0, sizeof(msg));<br>        memset(&amp;src_addr, 0, sizeof(src_addr));<br>        src_addr.nl_family = AF_NETLINK;<br>        src_addr.nl_pid = getpid(); /* self pid */<br>        src_addr.nl_groups = 0; /* not in mcast groups */<br>        bind(sock_fd, (struct sockaddr*)&amp;src_addr, sizeof(src_addr));<br>        memset(&amp;dest_addr, 0, sizeof(dest_addr));<br>        dest_addr.nl_family = AF_NETLINK;<br>        dest_addr.nl_pid = 0; /* For Linux Kernel */<br>        dest_addr.nl_groups = 0; /* unicast */<br><br>        nlh=(struct nlmsghdr *)malloc(NLMSG_SPACE(MAX_PAYLOAD));<br>        /* Fill the netlink message header */<br>        nlh-&gt;nlmsg_len = NLMSG_SPACE(MAX_PAYLOAD);<br>        nlh-&gt;nlmsg_pid = getpid(); /* self pid */<br>        nlh-&gt;nlmsg_flags = 0;<br>        /* Fill in the netlink message payload */<br>        strcpy(NLMSG_DATA(nlh), "Hello you!");<br><br>        iov.iov_base = (void *)nlh;<br>        iov.iov_len = nlh-&gt;nlmsg_len;<br>        msg.msg_name = (void *)&amp;dest_addr;<br>        msg.msg_namelen = sizeof(dest_addr);<br>        msg.msg_iov = &amp;iov;<br>        msg.msg_iovlen = 1;<br><br>        printf(" Sending message. ...\n");<br>        sendmsg(sock_fd, &amp;msg, 0);<br><br>        /* Read message from kernel */<br>        memset(nlh, 0, NLMSG_SPACE(MAX_PAYLOAD));<br>        printf(" Waiting message. ...\n");<br>        recvmsg(sock_fd, &amp;msg, 0);<br>        printf(" Received message payload: %s\n",NLMSG_DATA(nlh));<br><br>         /* Close Netlink Socket */<br>        close(sock_fd);<br>}<br><br>Makefile<br>MODULE_NAME :=net_link<br>obj-m :=$(MODULE_NAME).o<br>KERNELDIR ?= /lib/modules/$(shell uname -r)/build<br>PWD := $(shell pwd)<br>all:<br>    $(MAKE) -C $(KERNELDIR) M=$(PWD)<br>    gcc -o sender sender.c<br>clean:<br>    rm -fr *.ko *.o *.cmd sender $(MODULE_NAME).mod.c</code></p> </td></tr></tbody></table> 
+</div> 
+<p>转载于:https://www.cnblogs.com/xindufresne/p/4806446.html</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c8b52a057d6f369958306b9d90f12a7f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">nfs使用mount -o传递用户名和密码参数需要修改的地方</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/3736887dad7f99e81d6e03533b3a84f1/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C&#43;&#43; 获取时间</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

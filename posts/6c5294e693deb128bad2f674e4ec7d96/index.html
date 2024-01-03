@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>痞子衡嵌入式：恩智浦i.MX RT1xxx系列MCU硬件那些事（2.3）- 串行NOR Flash下载算法(J-Link工具篇) - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="痞子衡嵌入式：恩智浦i.MX RT1xxx系列MCU硬件那些事（2.3）- 串行NOR Flash下载算法(J-Link工具篇)" />
+<meta property="og:description" content="https://www.cnblogs.com/henjay724/p/13770137.html
+大家好，我是痞子衡，是正经搞技术的痞子。今天痞子衡给大家介绍的是J-Link工具下i.MXRT的串行NOR Flash下载算法设计。
+在i.MXRT硬件那些事系列之《在串行NOR Flash XIP调试原理》一文中，痞子衡简单提了一下串行NOR Flash下载算法的概念，并没有介绍具体设计细节，关于NOR Flash下载算法每个IDE/工具都有自己的一套设计，虽然基本设计理念是一样的，但是细节方面还是有区别，今天痞子衡就来细聊J-Link下的NOR Flash下载算法：
+一、J-Link各版本对i.MXRT的支持 从Segger官网上看，目前最新的J-Link驱动版本是V6.86b，其能够支持目前所有已量产的i.MXRT系列，而痞子衡PC上安装的是V6.52e，从 J-Link历史各版本Release Note 上看，痞子衡目前的J-Link版本不支持全部i.MXRT型号，那么如果想要支持新芯片（比如i.MXRT1170），是不是一定要重新安装最新J-Link呢？其实未必！
+版本发布时间支持芯片V6.842020-09-04i.MXRT1024V6.642020-03-13i.MXRT1170V6.602019-12-16i.MXRT1010V6.462019-05-23i.MXRT500、i.MXRT600V6.442019-03-01i.MXRT1015V6.402018-10-26i.MXRT1064V6.342018-08-07i.MXRT1060V6.322018-04-20i.MXRT1050、i.MXRT1020 J-Link对新MCU型号的下载支持并不是与自身版本严格绑定的，其增加新芯片的方式很灵活，只需要按要求添加相应的算法文件即可，这样我们可以不必等待Segger的正式发布。
+二、为当前J-Link增加新i.MXRT型号支持 关于增加i.MXRT新型号的支持，痞子衡之前写过一篇文章 《轻松为i.MXRT设计更新Segger J-Link Flash下载算法文件》，简介了如何为v.6.52e版本新增i.MXRT600的支持（那篇文章其实有点疏忽，v6.52版本已经开始支持i.MXRT600，直接集成进JLinkARM.dll中了，没有显式地放在JLinkDevices.xml文件中）。
+为当前J-Link驱动增加新i.MXRT型号支持，其实就是在 \SEGGER\JLink_V652e\JLinkDevices.xml 文件中按模板添加一些代码，至于那些代码是什么含义，在 \SEGGER\JLink_V652e\Doc\Manuals\UM08001_JLink.pdf 文档的 Chapter 12 Open Flashloader 有详细解释。
+让我们试着分析 JLinkDevices.xml 文件中那些模板代码的含义，且以最常见的 i.MXRT1060 型号为例：
+&lt;Device&gt; &lt;ChipInfo Vendor=&#34;NXP&#34; Name=&#34;MIMXRT1062xxx6A&#34; WorkRAMAddr=&#34;0x20000000&#34; WorkRAMSize=&#34;0x00080000&#34; Core=&#34;JLINK_CORE_CORTEX_M7&#34; JLinkScriptFile=&#34;Devices/NXP/iMXRT106x/NXP_iMXRT106x.pex&#34; Aliases=&#34;MIMXRT1062DVL6A&#34; /&gt; &lt;FlashBankInfo Name=&#34;QSPI Flash&#34; BaseAddr=&#34;0x60000000&#34; MaxSize=&#34;0x04000000&#34; Loader=&#34;Devices/NXP/iMXRT106x/NXP_iMXRT106x_QSPI.elf&#34; LoaderType=&#34;FLASH_ALGO_TYPE_OPEN&#34; /&gt; &lt;/Device&gt; 模板代码中参数主要分两类：ChipInfo和FlashBankInfo，前者描述算法适用的MCU芯片相关信息，后者描述在该MCU上适用的Flash操作相关信息。
+先说ChipInfo下的参数：Vendor和Name主要是创建J-Flash工程或者在IDE里在线下载时弹出J-Link选项框时用于确定选择这个下载算法文件的标识。Core用于指定MCU芯片内核类型。JLinkScriptFile指定开始启用下载算法前需预加载的Jlink脚本（可以根据MCU特性做一些特殊的初始化工作，比如RT600的Debug Mailbox激活，RT1170的双核切换等）。Aliases就是Name的详细展开。
+ChipInfo下最重要的两个参数其实是WorkRAMAddr和WorkRAMSize，它们指明了下载算法(某种elf格式文件)被加载进MCU内部SRAM执行的区域，这两个参数值与MCU型号息息相关，必须是合法有效的，但可以不唯一。后面的文章里痞子衡会介绍下载算法设计原理，其最重要的特性是Read-Only Position Independent和Read-Write Position Independent，即下载算法本身不是固定地址链接，而是位置无关链接，算法代码机器码是可以被放到任意地址去执行的。
+再说FlashBankInfo下的参数：Name标明下载算法适用的Flash类型（FlashBankInfo可以有多个，对应不同Flash的下载算法）。BaseAddr和MaxSize标明该Flash在MCU系统内存映射中的地址范围，主要用于后续XIP调试，跟下载关系不大。Loader和LoaderType则指明下载算法文件位置和类型，这是核心，对于新i.MXRT型号的下载支持，大部分工作其实就是提供合适的Loader。
+三、NOR Flash下载算法设计 前面讲了J-Link对于新i.MXRT型号的下载支持，其实就是提供合适的Loader文件，Loader文件的设计是核心，那么J-Link的Loader到底是怎么设计的呢？这得先从理解LoaderType这个参数说起。
+搜遍整个UM08001_JLink文档，LoaderType仅有一个值，即FLASH_ALGO_TYPE_OPEN，文档里的解释是使用公开的Flashloader算法设计，这个公开的Flashloader指的是ARM官方的基于CMSIS的Flashloader。
+ARM开源的Flashloader算法属于CMSIS-Pack 中的 Device Family Pack (DFP) 里的一个组成部分，它本来是专用于Keil MDK下的，但是Segger为了保持其J-Link工具链的通用性，选择了与ARM Flashloader的API接口保持一致，这意味着Keil MDK与J-Link两者的下载算法文件基本是可以交换使用的（当然设计上有一点小区别，后面文章会介绍）。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/6c5294e693deb128bad2f674e4ec7d96/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-09-05T14:46:20+08:00" />
+<meta property="article:modified_time" content="2023-09-05T14:46:20+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">痞子衡嵌入式：恩智浦i.MX RT1xxx系列MCU硬件那些事（2.3）- 串行NOR Flash下载算法(J-Link工具篇)</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><a href="https://www.cnblogs.com/henjay724/p/13770137.html" rel="nofollow" title="https://www.cnblogs.com/henjay724/p/13770137.html">https://www.cnblogs.com/henjay724/p/13770137.html</a></p> 
+<p></p> 
+<p>大家好，我是痞子衡，是正经搞技术的痞子。今天痞子衡给大家介绍的是<strong>J-Link工具下i.MXRT的串行NOR Flash下载算法设计</strong>。</p> 
+<p>　　在i.MXRT硬件那些事系列之<a href="https://www.cnblogs.com/henjay724/p/11791498.html" rel="nofollow" title="《在串行NOR Flash XIP调试原理》">《在串行NOR Flash XIP调试原理》</a>一文中，痞子衡简单提了一下串行NOR Flash下载算法的概念，并没有介绍具体设计细节，关于NOR Flash下载算法每个IDE/工具都有自己的一套设计，虽然基本设计理念是一样的，但是细节方面还是有区别，今天痞子衡就来细聊J-Link下的NOR Flash下载算法：</p> 
+<h4 id="一j-link各版本对imxrt的支持">一、J-Link各版本对i.MXRT的支持</h4> 
+<p>　　从Segger官网上看，目前最新的J-Link驱动版本是V6.86b，其能够支持目前所有已量产的i.MXRT系列，而痞子衡PC上安装的是V6.52e，从 <a href="https://www.segger.com/downloads/jlink/ReleaseNotes_JLink.html" rel="nofollow" title="J-Link历史各版本Release Note">J-Link历史各版本Release Note</a> 上看，痞子衡目前的J-Link版本不支持全部i.MXRT型号，那么如果想要支持新芯片（比如i.MXRT1170），是不是一定要重新安装最新J-Link呢？其实未必！</p> 
+<table><tbody><tr><th>版本</th><th>发布时间</th><th>支持芯片</th></tr><tr><td>V6.84</td><td>2020-09-04</td><td>i.MXRT1024</td></tr><tr><td>V6.64</td><td>2020-03-13</td><td>i.MXRT1170</td></tr><tr><td>V6.60</td><td>2019-12-16</td><td>i.MXRT1010</td></tr><tr><td>V6.46</td><td>2019-05-23</td><td>i.MXRT500、i.MXRT600</td></tr><tr><td>V6.44</td><td>2019-03-01</td><td>i.MXRT1015</td></tr><tr><td>V6.40</td><td>2018-10-26</td><td>i.MXRT1064</td></tr><tr><td>V6.34</td><td>2018-08-07</td><td>i.MXRT1060</td></tr><tr><td>V6.32</td><td>2018-04-20</td><td>i.MXRT1050、i.MXRT1020</td></tr></tbody></table> 
+<p>　　J-Link对新MCU型号的下载支持并不是与自身版本严格绑定的，其增加新芯片的方式很灵活，只需要按要求添加相应的算法文件即可，这样我们可以不必等待Segger的正式发布。</p> 
+<h4 id="二为当前j-link增加新imxrt型号支持">二、为当前J-Link增加新i.MXRT型号支持</h4> 
+<p>　　关于增加i.MXRT新型号的支持，痞子衡之前写过一篇文章 <a href="https://www.cnblogs.com/henjay724/p/13236872.html" rel="nofollow" title="《轻松为i.MXRT设计更新Segger J-Link Flash下载算法文件》">《轻松为i.MXRT设计更新Segger J-Link Flash下载算法文件》</a>，简介了如何为v.6.52e版本新增i.MXRT600的支持（那篇文章其实有点疏忽，v6.52版本已经开始支持i.MXRT600，直接集成进JLinkARM.dll中了，没有显式地放在JLinkDevices.xml文件中）。</p> 
+<p>　　为当前J-Link驱动增加新i.MXRT型号支持，其实就是在 \SEGGER\JLink_V652e\JLinkDevices.xml 文件中按模板添加一些代码，至于那些代码是什么含义，在 \SEGGER\JLink_V652e\Doc\Manuals\UM08001_JLink.pdf 文档的 <strong>Chapter 12 Open Flashloader</strong> 有详细解释。</p> 
+<p>　　让我们试着分析 JLinkDevices.xml 文件中那些模板代码的含义，且以最常见的 i.MXRT1060 型号为例：</p> 
+<pre><code>&lt;Device&gt;
+  &lt;ChipInfo Vendor="NXP"
+            Name="MIMXRT1062xxx6A"
+            WorkRAMAddr="0x20000000"
+            WorkRAMSize="0x00080000"
+            Core="JLINK_CORE_CORTEX_M7"
+            JLinkScriptFile="Devices/NXP/iMXRT106x/NXP_iMXRT106x.pex"
+            Aliases="MIMXRT1062DVL6A" /&gt;
+  &lt;FlashBankInfo Name="QSPI Flash"
+                 BaseAddr="0x60000000"
+                 MaxSize="0x04000000"
+                 Loader="Devices/NXP/iMXRT106x/NXP_iMXRT106x_QSPI.elf"
+                 LoaderType="FLASH_ALGO_TYPE_OPEN" /&gt;
+&lt;/Device&gt;
+</code></pre> 
+<p>　　模板代码中参数主要分两类：ChipInfo和FlashBankInfo，前者描述算法适用的MCU芯片相关信息，后者描述在该MCU上适用的Flash操作相关信息。</p> 
+<p>　　先说ChipInfo下的参数：Vendor和Name主要是创建J-Flash工程或者在IDE里在线下载时弹出J-Link选项框时用于确定选择这个下载算法文件的标识。Core用于指定MCU芯片内核类型。JLinkScriptFile指定开始启用下载算法前需预加载的Jlink脚本（可以根据MCU特性做一些特殊的初始化工作，比如RT600的Debug Mailbox激活，RT1170的双核切换等）。Aliases就是Name的详细展开。</p> 
+<p>　　ChipInfo下最重要的两个参数其实是WorkRAMAddr和WorkRAMSize，它们指明了下载算法(某种elf格式文件)被加载进MCU内部SRAM执行的区域，这两个参数值与MCU型号息息相关，必须是合法有效的，但可以不唯一。后面的文章里痞子衡会介绍下载算法设计原理，其最重要的特性是Read-Only Position Independent和Read-Write Position Independent，即下载算法本身不是固定地址链接，而是位置无关链接，算法代码机器码是可以被放到任意地址去执行的。</p> 
+<p>　　再说FlashBankInfo下的参数：Name标明下载算法适用的Flash类型（FlashBankInfo可以有多个，对应不同Flash的下载算法）。BaseAddr和MaxSize标明该Flash在MCU系统内存映射中的地址范围，主要用于后续XIP调试，跟下载关系不大。Loader和LoaderType则指明下载算法文件位置和类型，这是核心，对于新i.MXRT型号的下载支持，大部分工作其实就是提供合适的Loader。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="538" src="https://images2.imgbox.com/c3/b2/yG5Q4AhQ_o.png" width="1000"></p> 
+<h4 id="三nor-flash下载算法设计">三、NOR Flash下载算法设计</h4> 
+<p>　　前面讲了J-Link对于新i.MXRT型号的下载支持，其实就是提供合适的Loader文件，Loader文件的设计是核心，那么J-Link的Loader到底是怎么设计的呢？这得先从理解LoaderType这个参数说起。</p> 
+<p>　　搜遍整个UM08001_JLink文档，LoaderType仅有一个值，即FLASH_ALGO_TYPE_OPEN，文档里的解释是使用公开的Flashloader算法设计，这个公开的Flashloader指的是ARM官方的基于CMSIS的Flashloader。</p> 
+<p>　　ARM开源的Flashloader算法属于<a href="https://arm-software.github.io/CMSIS_5/Pack/html/index.html" rel="nofollow" title="CMSIS-Pack">CMSIS-Pack</a> 中的 Device Family Pack (DFP) 里的一个组成部分，它本来是专用于Keil MDK下的，但是Segger为了保持其J-Link工具链的通用性，选择了与ARM Flashloader的API接口保持一致，这意味着Keil MDK与J-Link两者的下载算法文件基本是可以交换使用的（当然设计上有一点小区别，后面文章会介绍）。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="229" src="https://images2.imgbox.com/0a/13/Uk9E6GfQ_o.png" width="700"></p> 
+<p>　　鉴于Segger并没有开源其下载算法源码，因此我们无法得知其J-Link自带的下载算法文件具体是怎么实现（例如Devices/NXP/iMXRT106x/NXP_iMXRT106x_QSPI.elf），虽然我们可以根据每次的J-Link驱动版本更新时的记录得知其动态，但总觉得是个黑盒子。</p> 
+<pre><code>Version V6.80d
+  DLL 3.NXP RT106x: Flash programming &gt;= 8 MB failed. Fixed.
+
+Version V6.80c
+  DLL 1.NXP RT106x: QSPI programming failed under specific circumstances. Fixed.
+
+Version V6.70
+  DLL 19.NXP RT106x: QSPI programming did not work for some already supported flashes. Fixed.
+
+Version V6.62b
+  DLL 9.NXP iMXRT106x: (Q)SPI flash programming did not work when using Adesto ATXP064 as external flash. Fixed.
+
+Version V6.60
+  DLL 1.Added flash programming support for NXP MIMXRT1062DVJ6A (QSPI flash).
+
+Version V6.40b
+  DLL 4.Fixed clock restore settings within programming algorithms for iMXRT105x and iMXRT106x QSPI-FLASH and HyperFLASH series devices.
+
+Version V6.34
+  DLL 8.Added QSPI-Flash programming support for NXP i.MX RT106x series devices.
+</code></pre> 
+<p>　　下一篇文章，痞子衡将带大家深入探究Keil MDK下的下载算法设计，了解了这个MDK下载算法，我们便可以自己为J-Link设计下载算法，从此再也不用担心黑盒子。</p> 
+<p>　　至此，J-Link工具下i.MXRT的串行NOR Flash下载算法设计痞子衡便介绍完毕了，掌声在哪里~~~</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/75e5f1d6e634d50b69f174661790326b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Docker安装Redis(mac)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7d48b792fa797a8e8768ae2105b42bd4/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Anaconda安装GPU版本pytorch(成功)</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

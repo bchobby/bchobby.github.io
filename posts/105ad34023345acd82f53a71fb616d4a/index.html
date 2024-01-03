@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【Kafka】记录一次基于connect-mirror-maker做的Kafka集群迁移完整过程 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="【Kafka】记录一次基于connect-mirror-maker做的Kafka集群迁移完整过程" />
+<meta property="og:description" content="文章目录 背景环境工具选型实操MM1MM2以MM2集群运行以Standalone模式运行 验证附录MM2配置表其他TODO 背景 一个测试环境的kafka集群，Topic有360&#43;，Partition有2000&#43;，部署在虚拟机上，由于多方面原因，要求迁移至k8s容器内（全量迁移），正好可以拿来练一下手。本文主要记录对MM1和MM2的实际操作过程，以及使用过程中遇到的问题及解决方案。
+环境 source集群：kafka-2.6.0、2个broker、虚拟机
+target集群：kafka-2.6.0、3个broker、k8s
+工具：MM1（kafka-mirror-maker.sh）、MM2（connect-mirror-maker.sh）
+需求：Topic名称不能改变、数据完整
+条件：target集群需要开启自动创建Topic：auto.create.topics.enable=true
+工具选型 本质上MM1是Kafka的消费者和生产者结合体，可以有效地将数据从源群集移动到目标群集，但没有提供太多其他功能。
+并且在MM1多年的使用过程中发现了以下局限性：
+静态的黑名单和白名单Topic信息不能同步，所有Topic同步到目标端都只有一个Partition必须通过手动配置来解决active-active场景下的循环同步问题（MM2为解决这个问题，也做了体验很不好的改动）rebalance导致的性能问题缺乏监控手段无法保证Exactly Once无法提供容灾恢复无法同步Topic列表，只能同步有数据的Topic MM2是基于kafka connect框架开发的。与其它的kafka connecet一样MM2有source connector和sink connetor组成，可以支持同步以下数据：
+完整的Topic列表Topic配置ACL信息（如果有）consumer group和offset（kafka2.7.0之后版本才行）其他功能： 支持循环同步检测多集群自定义同步（同一个任务中，可以多集群同步：A-&gt;B、B-&gt;C、B-&gt;D）提供可监控Metrics可通过配置保证Exactly Once… 实操 秉着实操前先演练的原则，我自己搭建了一个和目标集群相同配置的集群，用于验证不同工具的操作结果。有足够把握之后，再对目标集群实际操作。
+MM1 执行 --help 查看参数选项：
+[root@XXGL-T-TJSYZ-REDIS-03 bin]# ./kafka-mirror-maker.sh --help This tool helps to continuously copy data between two Kafka clusters. Option Description ------ ----------- --abort.on.send.failure &lt;String: Stop Configure the mirror maker to exit on the entire mirror maker when a send a failed send." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/105ad34023345acd82f53a71fb616d4a/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-04-17T14:53:48+08:00" />
+<meta property="article:modified_time" content="2023-04-17T14:53:48+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【Kafka】记录一次基于connect-mirror-maker做的Kafka集群迁移完整过程</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">背景</a></li><li><a href="#_5" rel="nofollow">环境</a></li><li><a href="#_17" rel="nofollow">工具选型</a></li><li><a href="#_45" rel="nofollow">实操</a></li><li><ul><li><a href="#MM1_49" rel="nofollow">MM1</a></li><li><a href="#MM2_127" rel="nofollow">MM2</a></li><li><ul><li><a href="#MM2_138" rel="nofollow">以MM2集群运行</a></li><li><a href="#Standalone_242" rel="nofollow">以Standalone模式运行</a></li></ul> 
+  </li></ul> 
+  </li><li><a href="#_327" rel="nofollow">验证</a></li><li><a href="#_372" rel="nofollow">附录</a></li><li><ul><li><a href="#MM2_374" rel="nofollow">MM2配置表</a></li><li><a href="#_404" rel="nofollow">其他</a></li><li><a href="#TODO_416" rel="nofollow">TODO</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>背景</h2> 
+<p>一个测试环境的kafka集群，Topic有360+，Partition有2000+，部署在虚拟机上，由于多方面原因，要求迁移至k8s容器内（全量迁移），正好可以拿来练一下手。本文主要记录对MM1和MM2的实际操作过程，以及使用过程中遇到的问题及解决方案。</p> 
+<h2><a id="_5"></a>环境</h2> 
+<p>source集群：kafka-2.6.0、2个broker、虚拟机</p> 
+<p>target集群：kafka-2.6.0、3个broker、k8s</p> 
+<p>工具：MM1（kafka-mirror-maker.sh）、MM2（connect-mirror-maker.sh）</p> 
+<p>需求：Topic名称不能改变、数据完整</p> 
+<p>条件：target集群需要开启自动创建Topic：auto.create.topics.enable=true</p> 
+<h2><a id="_17"></a>工具选型</h2> 
+<p>本质上MM1是Kafka的消费者和生产者结合体，可以有效地将数据从源群集移动到目标群集，但没有提供太多其他功能。</p> 
+<p>并且在MM1多年的使用过程中发现了以下局限性：</p> 
+<ol><li>静态的黑名单和白名单</li><li>Topic信息不能同步，所有Topic同步到目标端都只有一个Partition</li><li>必须通过手动配置来解决active-active场景下的循环同步问题（MM2为解决这个问题，也做了体验很不好的改动）</li><li>rebalance导致的性能问题</li><li>缺乏监控手段</li><li>无法保证Exactly Once</li><li>无法提供容灾恢复</li><li>无法同步Topic列表，只能同步有数据的Topic</li></ol> 
+<p>MM2是基于kafka connect框架开发的。与其它的kafka connecet一样MM2有source connector和sink connetor组成，可以支持同步以下数据：</p> 
+<ol><li>完整的Topic列表</li><li>Topic配置</li><li>ACL信息（如果有）</li><li>consumer group和offset（kafka2.7.0之后版本才行）</li><li>其他功能： 
+  <ul><li>支持循环同步检测</li><li>多集群自定义同步（同一个任务中，可以多集群同步：A-&gt;B、B-&gt;C、B-&gt;D）</li><li>提供可监控Metrics</li><li>可通过配置保证Exactly Once</li><li>…</li></ul> </li></ol> 
+<h2><a id="_45"></a>实操</h2> 
+<p>秉着实操前先演练的原则，我自己搭建了一个和目标集群相同配置的集群，用于验证不同工具的操作结果。有足够把握之后，再对目标集群实际操作。</p> 
+<h3><a id="MM1_49"></a>MM1</h3> 
+<p>执行 --help 查看参数选项：</p> 
+<pre><code class="prism language-shell"><span class="token punctuation">[</span>root@XXGL-T-TJSYZ-REDIS-03 bin<span class="token punctuation">]</span><span class="token comment"># ./kafka-mirror-maker.sh --help</span>
+This tool helps to continuously copy data between two Kafka clusters.
+Option                                   Description
+------                                   -----------
+--abort.on.send.failure <span class="token operator">&lt;</span>String: Stop    Configure the mirror maker to <span class="token builtin class-name">exit</span> on
+  the entire mirror maker when a send      a failed send. <span class="token punctuation">(</span>default: <span class="token boolean">true</span><span class="token punctuation">)</span>
+  failure occurs<span class="token operator">&gt;</span>
+--consumer.config <span class="token operator">&lt;</span>String: config file<span class="token operator">&gt;</span>  Embedded consumer config <span class="token keyword">for</span> consuming
+                                           from the <span class="token builtin class-name">source</span> cluster.
+--consumer.rebalance.listener <span class="token operator">&lt;</span>String:   The consumer rebalance listener to use
+  A custom rebalance listener of <span class="token builtin class-name">type</span>      <span class="token keyword">for</span> mirror maker consumer.
+  ConsumerRebalanceListener<span class="token operator">&gt;</span>
+--help                                   Print usage information.
+--message.handler <span class="token operator">&lt;</span>String: A custom      Message handler <span class="token function">which</span> will process
+  message handler of <span class="token builtin class-name">type</span>                  every record in-between consumer and
+  MirrorMakerMessageHandler<span class="token operator">&gt;</span>               producer.
+--message.handler.args <span class="token operator">&lt;</span>String:          Arguments used by custom message
+  Arguments passed to message handler      handler <span class="token keyword">for</span> mirror maker.
+  constructor.<span class="token operator">&gt;</span>
+--new.consumer                           DEPRECATED Use new consumer <span class="token keyword">in</span> mirror
+                                           maker <span class="token punctuation">(</span>this is the default so this
+                                           option will be removed <span class="token keyword">in</span> a future
+                                           version<span class="token punctuation">)</span>.
+--num.streams <span class="token operator">&lt;</span>Integer: Number of        Number of consumption streams.
+  threads<span class="token operator">&gt;</span>                                 <span class="token punctuation">(</span>default: <span class="token number">1</span><span class="token punctuation">)</span>
+--offset.commit.interval.ms <span class="token operator">&lt;</span>Integer:    Offset commit interval <span class="token keyword">in</span> ms.
+  offset commit interval <span class="token keyword">in</span>                <span class="token punctuation">(</span>default: <span class="token number">60000</span><span class="token punctuation">)</span>
+  millisecond<span class="token operator">&gt;</span>
+--producer.config <span class="token operator">&lt;</span>String: config file<span class="token operator">&gt;</span>  Embedded producer config.
+--rebalance.listener.args <span class="token operator">&lt;</span>String:       Arguments used by custom rebalance
+  Arguments passed to custom rebalance     listener <span class="token keyword">for</span> mirror maker consumer.
+  listener constructor as a string.<span class="token operator">&gt;</span>
+--version                                Display Kafka version.
+--whitelist <span class="token operator">&lt;</span>String: Java regex          Whitelist of topics to mirror.
+  <span class="token punctuation">(</span>String<span class="token punctuation">)</span><span class="token operator">&gt;</span>
+<span class="token punctuation">[</span>root@XXGL-T-TJSYZ-REDIS-03 bin<span class="token punctuation">]</span><span class="token comment">#         </span>
+</code></pre> 
+<p>核心参数就两个：消费者和生产者的配置文件：</p> 
+<p>consumer.properties：(消费source集群)</p> 
+<pre><code class="prism language-properties">bootstrap.servers=source:9092
+auto.offset.reset=earliest
+partition.assignment.strategy=org.apache.kafka.clients.consumer.RoundRobinAssignor
+security.protocol=SASL_PLAINTEXT
+sasl.mechanism=PLAIN
+group.id=mm1-consumer
+sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="admin-pwd";
+</code></pre> 
+<p>producer.properties：(发送消息至目标集群)</p> 
+<pre><code class="prism language-properties">bootstrap.servers= target:29092
+security.protocol=SASL_PLAINTEXT
+sasl.mechanism=PLAIN
+sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="Admin" password="hMOPbmZE";
+acks=-1
+linger.ms=10
+batch.size=10000
+retries=3
+</code></pre> 
+<p>执行脚本：</p> 
+<pre><code class="prism language-shell">./kafka-mirror-maker.sh --consumer.config ./consumer.properties --producer.config ./producer.properties --offset.commit.interval.ms <span class="token number">5000</span> --num.streams <span class="token number">2</span> --whitelist <span class="token string">"projects.*"</span>
+</code></pre> 
+<p>MM1比较简单，只要两个配置文件没问题，sasl配置正确，基本就OK了，适合简单的数据同步，比如指定topic进行同步。</p> 
+<h3><a id="MM2_127"></a>MM2</h3> 
+<p>有四种运行MM2的方法：</p> 
+<ul><li>As a dedicated MirrorMaker cluster.（作为专用的MirrorMaker群集）</li><li>As a Connector in a distributed Connect cluster.（作为分布式Connect群集中的连接器）</li><li>As a standalone Connect worker.（作为独立的Connect工作者）</li><li>In legacy mode using existing MirrorMaker scripts.（在旧模式下，使用现有的MirrorMaker脚本。）</li></ul> 
+<p>本文介绍第一种和第三种：作为专用的MirrorMaker群集、作为独立的Connect工作者，第二种需要搭建connect集群，操作比较复杂。</p> 
+<h4><a id="MM2_138"></a>以MM2集群运行</h4> 
+<p>这种模式是最简单的，只需要提供一个配置文件即可，配置文件定制化程度比较高，根据业务需求配置即可</p> 
+<p>老样子，执行 --help 看看使用说明：</p> 
+<pre><code class="prism language-shell"><span class="token punctuation">[</span>root@XXGL-T-TJSYZ-REDIS-03 bin<span class="token punctuation">]</span><span class="token comment"># ./connect-mirror-maker.sh --help</span>
+usage: connect-mirror-maker <span class="token punctuation">[</span>-h<span class="token punctuation">]</span> <span class="token punctuation">[</span>--clusters CLUSTER <span class="token punctuation">[</span>CLUSTER <span class="token punctuation">..</span>.<span class="token punctuation">]</span><span class="token punctuation">]</span> mm2.properties
+
+MirrorMaker <span class="token number">2.0</span> driver
+
+positional arguments:
+  mm2.properties         MM2 configuration file.
+
+optional arguments:
+  -h, --help             show this <span class="token builtin class-name">help</span> message and <span class="token builtin class-name">exit</span>
+  --clusters CLUSTER <span class="token punctuation">[</span>CLUSTER <span class="token punctuation">..</span>.<span class="token punctuation">]</span>
+                         Target cluster to use <span class="token keyword">for</span> this node.
+<span class="token punctuation">[</span>root@XXGL-T-TJSYZ-REDIS-03 bin<span class="token punctuation">]</span><span class="token comment">#  </span>
+</code></pre> 
+<p>可以看到，参数简单了许多，核心参数就一个配置文件。</p> 
+<p>mm2.properties：</p> 
+<pre><code class="prism language-properties">name = event-center-connector
+connector.class = org.apache.kafka.connect.mirror.MirrorSourceConnector
+tasks.max = 2
+
+# 定义集群别名
+clusters = event-center, event-center-new
+
+# 设置event-center集群的kafka地址列表
+event-center.bootstrap.servers = source:9193
+event-center.security.protocol=SASL_PLAINTEXT
+event-center.sasl.mechanism=PLAIN
+event-center.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="admin-pwd";
+# 设置event-center-new集群的kafka地址列表
+event-center-new.bootstrap.servers = target:29092
+event-center-new.security.protocol=SASL_PLAINTEXT
+event-center-new.sasl.mechanism=PLAIN
+event-center-new.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="admin-pwd";
+# 开启event-center集群向event-center-new集群同步
+event-center-&gt;event-center-new.enabled = true
+# 允许同步topic的正则
+event-center-&gt;event-center-new.topics = projects.*
+event-center-&gt;event-center-new.groups = .*
+
+# MM2内部同步机制使用的topic，replication数量设置
+checkpoints.topic.replication.factor=1
+heartbeats.topic.replication.factor=1
+offset-syncs.topic.replication.factor=1
+offset.storage.replication.factor=1
+status.storage.replication.factor=1
+config.storage.replication.factor=1
+
+# 自定义参数
+# 是否同步源topic配置
+sync.topic.configs.enabled=true
+# 是否同步源event-centerCL信息
+sync.topic.acls.enabled=true
+sync.group.offsets.enabled=true
+# 连接器是否发送心跳
+emit.heartbeats.enabled=true
+# 心跳间隔
+emit.heartbeats.interval.seconds=5
+# 是否发送检查点
+emit.checkpoints.enabled=true
+# 是否刷新topic列表
+refresh.topics.enabled=true
+# 刷新间隔
+refresh.topics.interval.seconds=60
+# 是否刷新消费者组id
+refresh.groups.enabled=true
+# 刷新间隔
+refresh.groups.interval.seconds=60
+# DefaultReplicationPolicy / CustomReplicationPolicy
+replication.policy.class=org.apache.kafka.connect.mirror.CustomReplicationPolicy
+# 远端创建新topic的replication数量设置
+replication.factor=3
+</code></pre> 
+<p>需要注意的是：replication.policy.class 默认为：DefaultReplicationPolicy，这个策略会把同步至目标集群的topic都加上一个源集群别名的前缀，比如源集群别名为A，topic为：bi-log，该topic同步到目标集群后会变成：A.bi-log，为啥这么做呢，就是为了避免双向同步的场景出现死循环。</p> 
+<p>官方也给出了解释：</p> 
+<p>这是 MirrorMaker 2.0 中的默认行为，以避免在复杂的镜像拓扑中重写数据。 需要在复制流设计和主题管理方面小心自定义此项，以避免数据丢失。 可以通过对“replication.policy.class”使用自定义复制策略类来完成此操作。</p> 
+<p>针对如何自定义策略及使用方法，见我的另一篇文章：</p> 
+<p>为了保证脚本后台运行，写一个脚本包装一下：</p> 
+<p>run-mm2.sh：</p> 
+<pre><code class="prism language-shell"><span class="token shebang important">#!/bin/bash</span>
+
+<span class="token builtin class-name">exec</span> ./connect-mirror-maker.sh MM2.properties <span class="token operator">&gt;</span>log/mm2.log <span class="token operator"><span class="token file-descriptor important">2</span>&gt;</span><span class="token file-descriptor important">&amp;1</span> <span class="token operator">&amp;</span>
+</code></pre> 
+<p>之后执行脚本即可。</p> 
+<h4><a id="Standalone_242"></a>以Standalone模式运行</h4> 
+<p>这种模式会麻烦点，需要提供一个kafka，作为worker节点来同步数据，使用的脚本为：connect-standalone.sh</p> 
+<p>–help看看如何使用：</p> 
+<pre><code class="prism language-shell">./connect-standalone.sh --help
+<span class="token punctuation">[</span><span class="token number">2023</span>-03-09 <span class="token number">20</span>:36:33,479<span class="token punctuation">]</span> INFO Usage: ConnectStandalone worker.properties connector1.properties <span class="token punctuation">[</span>connector2.properties <span class="token punctuation">..</span>.<span class="token punctuation">]</span> <span class="token punctuation">(</span>org.apache.kafka.connect.cli.ConnectStandalone:63<span class="token punctuation">)</span>
+<span class="token punctuation">[</span>root@XXGL-T-TJSYZ-REDIS-03 bin<span class="token punctuation">]</span><span class="token comment"># </span>
+</code></pre> 
+<p>需要两个配置文件，一个是作为worker的kafka集群信息（worker.properties），另一个是同步数据的配置（connector.properties）</p> 
+<p>worker.properties：</p> 
+<pre><code class="prism language-properties">bootstrap.servers=worker:29092
+security.protocol=PLAINTEXT
+sasl.mechanism=PLAIN
+
+key.converter = org.apache.kafka.connect.converters.ByteArrayConverter
+value.converter = org.apache.kafka.connect.converters.ByteArrayConverter
+
+offset.storage.file.filename=/tmp/connect.offsets
+offset.flush.interval.ms=10000
+</code></pre> 
+<p>connector.properties：</p> 
+<pre><code class="prism language-properties">name = MirrorSourceConnector
+topics = projects.*
+groups = *
+connector.class = org.apache.kafka.connect.mirror.MirrorSourceConnector
+tasks.max = 1
+
+# source
+# 这个配置会使同步之后的Topic都加上一个前缀，慎重
+source.cluster.alias = old
+source.cluster.bootstrap.servers = source:9193
+source.cluster.security.protocol=SASL_PLAINTEXT
+source.cluster.sasl.mechanism=PLAIN
+source.cluster.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="admin-pwd";
+# target
+target.cluster.alias = new
+target.cluster.bootstrap.servers = target:29092
+target.cluster.security.protocol=SASL_PLAINTEXT
+target.cluster.sasl.mechanism=PLAIN
+target.cluster.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="Admin" password="hMOPbmZE";
+
+# 是否同步源topic配置信息
+sync.topic.configs.enabled=true
+# 是否同步源ACL信息
+sync.topic.acls.enabled=true
+sync.group.offsets.enabled=true
+# 连接器是否发送心跳
+emit.heartbeats.enabled=true
+# 心跳间隔
+emit.heartbeats.interval.seconds=5
+# 是否发送检查点
+emit.checkpoints.enabled=true
+# 是否刷新topic列表
+refresh.topics.enabled=true
+# 刷新间隔
+refresh.topics.interval.seconds=30
+# 是否刷新消费者组id
+refresh.groups.enabled=true
+# 刷新间隔
+refresh.groups.interval.seconds=30
+# 连接器消费者预读队列大小
+# readahead.queue.capacity=500
+# 使用自定义策略
+replication.policy.class=org.apache.kafka.connect.mirror.CustomReplicationPolicy
+replication.factor = 3
+</code></pre> 
+<p>执行：</p> 
+<pre><code class="prism language-shell">./connect-standalone.sh worker.properties connector.properties
+</code></pre> 
+<p>这种方式做一个简单的介绍，我最后采用的是上一种方式，比较简单直接</p> 
+<h2><a id="_327"></a>验证</h2> 
+<p>验证：</p> 
+<ul><li> <p>消息数量 OK</p> <p>使用kafka-tool工具连接上两个集群进行比对</p> </li><li> <p>Topic数量 OK</p> 
+  <ul><li>source：</li></ul> <pre><code class="prism language-shell">./kafka-topics.sh --bootstrap-server source:9193 --command-config command.properties --list <span class="token operator">&gt;</span> topics-source.txt 
+</code></pre> 
+  <ul><li>sink</li></ul> <pre><code class="prism language-shell">./kafka-topics.sh --bootstrap-server sink:29092 --command-config command.properties --list <span class="token operator">&gt;</span> topics-sink.txt 
+</code></pre> 
+  <ul><li>command.properties示例：</li></ul> <pre><code class="prism language-properties">security.protocol = SASL_PLAINTEXT
+sasl.mechanism = PLAIN
+sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="admin-pwd";
+</code></pre> </li><li> <p>新消息是否同步 OK</p> </li><li> <p>新Topic是否同步 OK</p> </li><li> <p>Consumer是否同步 NO</p> </li></ul> 
+<pre><code class="prism language-properties">./kafka-consumer-groups.sh --bootstrap-server source:9193 --command-config command.properties --list &gt; consumer-source.txt 
+</code></pre> 
+<p>​ 如果需要同步consumer，需要使用官方提供的工具：<a href="https://kafka.apache.org/30/javadoc/org/apache/kafka/connect/mirror/RemoteClusterUtils.html" rel="nofollow">RemoteClusterUtils</a></p> 
+<ul><li> <p>consumer offset是否同步 NO</p> </li><li> <p>ACL是否同步 OK<br> 通过kafka-acls.sh或者客户端工具kafka-tool可以查看</p> </li></ul> 
+<h2><a id="_372"></a>附录</h2> 
+<h3><a id="MM2_374"></a>MM2配置表</h3> 
+<table><thead><tr><th><strong>property</strong></th><th><strong>default value</strong></th><th><strong>description</strong></th></tr></thead><tbody><tr><td>name</td><td>required</td><td>name of the connector, e.g. “us-west-&gt;us-east”</td></tr><tr><td>topics</td><td>empty string</td><td>regex of topics to replicate, e.g. “topic1|topic2|topic3”. Comma-separated lists are also supported.</td></tr><tr><td>topics.blacklist</td><td>“.<em>.internal, .</em>.replica, __consumer_offsets” or similar</td><td>topics to exclude from replication</td></tr><tr><td>groups</td><td>empty string</td><td>regex of groups to replicate, e.g. “.*”</td></tr><tr><td>groups.blacklist</td><td>empty string</td><td>groups to exclude from replication</td></tr><tr><td>source.cluster.alias</td><td>required</td><td>name of the cluster being replicated</td></tr><tr><td>target.cluster.alias</td><td>required</td><td>name of the downstream Kafka cluster</td></tr><tr><td>source.cluster.bootstrap.servers</td><td>required</td><td>upstream cluster to replicate</td></tr><tr><td>target.cluster.bootstrap.servers</td><td>required</td><td>downstream cluster</td></tr><tr><td>sync.topic.configs.enabled</td><td>true</td><td>whether or not to monitor source cluster for configuration changes</td></tr><tr><td>sync.topic.acls.enabled</td><td>true</td><td>whether to monitor source cluster ACLs for changes</td></tr><tr><td>emit.heartbeats.enabled</td><td>true</td><td>connector should periodically emit heartbeats</td></tr><tr><td>emit.heartbeats.interval.seconds</td><td>5 (seconds)</td><td>frequency of heartbeats</td></tr><tr><td>emit.checkpoints.enabled</td><td>true</td><td>connector should periodically emit consumer offset information</td></tr><tr><td>emit.checkpoints.interval.seconds</td><td>5 (seconds)</td><td>frequency of checkpoints</td></tr><tr><td>refresh.topics.enabled</td><td>true</td><td>connector should periodically check for new topics</td></tr><tr><td>refresh.topics.interval.seconds</td><td>5 (seconds)</td><td>frequency to check source cluster for new topics</td></tr><tr><td>refresh.groups.enabled</td><td>true</td><td>connector should periodically check for new consumer groups</td></tr><tr><td>refresh.groups.interval.seconds</td><td>5 (seconds)</td><td>frequency to check source cluster for new consumer groups</td></tr><tr><td>readahead.queue.capacity</td><td>500 (records)</td><td>number of records to let consumer get ahead of producer</td></tr><tr><td>replication.policy.class</td><td>org.apache.kafka.connect.mirror.DefaultReplicationPolicy</td><td>use LegacyReplicationPolicy to mimic legacy MirrorMaker</td></tr><tr><td>heartbeats.topic.retention.ms</td><td>1 day</td><td>used when creating heartbeat topics for the first time</td></tr><tr><td>checkpoints.topic.retention.ms</td><td>1 day</td><td>used when creating checkpoint topics for the first time</td></tr><tr><td>offset.syncs.topic.retention.ms</td><td>max long</td><td>used when creating offset sync topic for the first time</td></tr><tr><td>replication.factor</td><td>2</td><td>used when creating remote topics</td></tr></tbody></table> 
+<h3><a id="_404"></a>其他</h3> 
+<p>参考：</p> 
+<p>https://cwiki.apache.org/confluence/display/KAFKA/KIP-382%253A+MirrorMaker+2.0</p> 
+<p>https://www.reddit.com/r/apachekafka/comments/q5s3al/mirrormaker2_is_not_able_to_replicate_groups_in/?sort=new</p> 
+<p>https://dev.to/keigodasu/transferring-commit-offset-with-mirrormaker-2-3kbf</p> 
+<p>https://learn.microsoft.com/zh-cn/azure/hdinsight/kafka/kafka-mirrormaker-2-0-guide</p> 
+<h3><a id="TODO_416"></a>TODO</h3> 
+<p>后续验证发现一个问题：<br> 从旧集群生产消息，会复制3份到新集群</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ff3a8cc70fb073bc04c78b23bdc682ef/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">WSL使用图形界面（ubuntu）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a05bbfd35986c81cad51cb6844ece280/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">mac如何升级node版本</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

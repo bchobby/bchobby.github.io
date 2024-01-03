@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>lostash Timeout executing grok 问题排查 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="lostash Timeout executing grok 问题排查" />
+<meta property="og:description" content="文章目录 Timeout executing grok 问题排查1. 问题背景1. 基础配置2. pipeline配置 2. 问题表现3. 尝试通过修改 memory-queue&#43; poll-size4. 通过gc日志定位问题 Timeout executing grok 问题排查 使用logstash的时候发现会有这个报错，导致logstash不稳定，input端是kafka，就会导致kafka的反复rebalance,一开始排查思路有问题，而且网上的资料可能都是其中的一个原因，所以导致我的排查思路偏了。
+1. 问题背景 我有一组logstash 从kafka中消费日志数据，解析后丢到ES当中，提供一些日志的检索能力。大概的配置是这样的。
+1. 基础配置 logstash版本 7.5.0
+jvm
+java -version openjdk version &#34;1.8.0_312&#34; OpenJDK Runtime Environment (build 1.8.0_312-b07) OpenJDK 64-Bit Server VM (build 25.312-b07, mixed mode) -Xms6g -Xmx6g config/logstash.yml
+pipeline.workers: 6 pipeline.batch.size: 50 2. pipeline配置 input { kafka{ bootstrap_servers =&gt; &#34;xxx:9092&#34; topics_pattern =&gt; &#34;log_.*&#34; auto_offset_reset =&gt; &#34;latest&#34; group_id =&gt; &#34;" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/676621f4e89dfb6699fe087cff418be2/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-11-29T12:34:54+08:00" />
+<meta property="article:modified_time" content="2021-11-29T12:34:54+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">lostash Timeout executing grok 问题排查</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#Timeout_executing_grok___1" rel="nofollow">Timeout executing grok 问题排查</a></li><li><ul><li><a href="#1__5" rel="nofollow">1. 问题背景</a></li><li><ul><li><a href="#1__9" rel="nofollow">1. 基础配置</a></li><li><a href="#2_pipeline_38" rel="nofollow">2. pipeline配置</a></li></ul> 
+   </li><li><a href="#2__168" rel="nofollow">2. 问题表现</a></li><li><a href="#3__memoryqueue_pollsize_180" rel="nofollow">3. 尝试通过修改 memory-queue+ poll-size</a></li><li><a href="#4_gc_198" rel="nofollow">4. 通过gc日志定位问题</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="Timeout_executing_grok___1"></a>Timeout executing grok 问题排查</h2> 
+<p>使用logstash的时候发现会有这个报错，导致logstash不稳定，input端是kafka，就会导致kafka的反复rebalance,一开始排查思路有问题，而且网上的资料可能都是其中的一个原因，所以导致我的排查思路偏了。</p> 
+<h3><a id="1__5"></a>1. 问题背景</h3> 
+<p>我有一组logstash 从kafka中消费日志数据，解析后丢到ES当中，提供一些日志的检索能力。大概的配置是这样的。</p> 
+<h4><a id="1__9"></a>1. 基础配置</h4> 
+<ol><li> <p>logstash版本 7.5.0</p> </li><li> <p>jvm</p> 
+  <ol><li> <pre><code>java -version
+openjdk version "1.8.0_312"
+OpenJDK Runtime Environment (build 1.8.0_312-b07)
+OpenJDK 64-Bit Server VM (build 25.312-b07, mixed mode)
+
+</code></pre> </li><li> <pre><code>-Xms6g
+-Xmx6g
+</code></pre> </li></ol> </li><li> <p>config/logstash.yml</p> 
+  <ol><li> <pre><code>pipeline.workers: 6
+pipeline.batch.size: 50
+
+</code></pre> </li></ol> </li></ol> 
+<h4><a id="2_pipeline_38"></a>2. pipeline配置</h4> 
+<pre><code>input {
+
+  kafka{
+
+        bootstrap_servers =&gt; "xxx:9092"
+        topics_pattern =&gt; "log_.*"
+        auto_offset_reset =&gt; "latest"
+        group_id =&gt; "log-es-find"
+        consumer_threads =&gt; 1
+        client_id =&gt; "node123"
+        partition_assignment_strategy  =&gt; "org.apache.kafka.clients.consumer.RoundRobinAssignor"
+        max_poll_interval_ms =&gt; "600000"
+        max_poll_records =&gt; "100"
+
+  codec =&gt; json {
+          charset =&gt; "UTF-8"
+      }
+  }
+
+}
+
+
+
+
+
+filter {
+
+    mutate {
+        remove_field =&gt; [ "host","@timestamp" ]
+      }
+
+    if "_LOGV3_" not in  [message] {
+          grok {
+              match =&gt; { 
+                  "message" =&gt; '^%{LOGLEVEL:log_level} %{TIMESTAMP_ISO8601:time} %{HOST:host_name} %{SERVICCE:service_type} %{STRING:process} %{STRING:thread} - %{SESSION_ID:session_id} %{GREEDYDATA:message_log}$' 
+              }
+              remove_field =&gt; ["message"]
+          }
+
+    } else {
+
+          grok {
+                match =&gt; { "message" =&gt; '^%{LOGLEVEL:log_level} %{TIMESTAMP_ISO8601:time} %{HOST:host_name} %{SERVICCE:service_type} %{STRING:process} %{STRING:thread} _LOGV3_ %{SESSION_ID:session_id} %{EVENT_MARK:event} %{GREEDYDATA:message_log}$' 
+                }
+
+          }
+
+          json {
+
+              source =&gt; "message_log"
+              target =&gt; "doc.custom"
+              remove_field =&gt; ["message","message_log"]
+
+          }
+
+          mutate {
+                rename =&gt; { "doc.custom" =&gt; "doc.%{event}" }
+          }
+
+    }
+
+   if "_groktimeout" in [tags] {
+
+      grok {
+
+         match =&gt; {"message" =&gt; "^%{LOGLEVEL:log_level} %{TIMESTAMP_ISO8601:time} %{HOST:host_name} %{SERVICCE:service_type}"}
+         remove_tag =&gt; [ "_groktimeout" ]
+         add_tag =&gt; [ "timeout" ]
+      }
+  }
+
+  if "_grokparsefailure" in [tags] {
+
+      grok {
+          remove_tag =&gt; [ "_grokparsefailure" ]
+          add_tag =&gt; [ "grok_failure" ]
+          match =&gt; { "message" =&gt; '^%{LOGLEVEL:log_level} %{TIMESTAMP_ISO8601:time} %{HOST:host_name} %{SERVICCE:service_type} %{GREEDYDATA:message_log}$' }
+      }
+   }
+
+  date {
+        match =&gt; ["time",  "ISO8601"]
+        target =&gt; "@timestamp"
+        locale =&gt; "cn"
+  }
+
+
+  mutate {
+          remove_field =&gt; ["time", "@metadata","host","input", "agent","ecs","log" ]
+  }
+
+  if "_grokparsefailure" in [tags] {
+
+      mutate {
+          add_field =&gt; {
+            "service_type" =&gt; "grok_failure"
+          }
+      }
+   }
+
+   if "_groktimeout" in [tags] {
+        mutate {
+              add_field =&gt; {
+                  "service_type" =&gt; "grok_time_out"
+              }
+        }
+   }
+
+}
+
+
+
+output {
+
+ elasticsearch {
+
+    hosts =&gt; ["http://es:9200"]
+    index =&gt; "mai_log_%{[service_type]}_detail_%{+YYYY.MM.dd}"
+    user =&gt; "elastic"
+    password =&gt; "xxx"
+
+  }
+}
+</code></pre> 
+<h3><a id="2__168"></a>2. 问题表现</h3> 
+<p>  因为之前搞过这一套，所以就很熟练的搭建起来了，logstash也没有做太多的配置，重点是没有对gc日志进行配置，没有打印gc日志，影响了后面的判断。</p> 
+<p>  logstash启动后表现异常，只是数据中有的数据的json字段是可以无限拓展的，导致ES中的有些索引有问题，后来把对应的一些字段修改为<code>flattened</code>解决了相关问题。但是logstash还有一个问题就是运行个7，8个小时就开始不稳定，频繁的与kafka失去联系，导致频繁发生rebalance。查看日志，发现有下面这样的日志：</p> 
+<pre><code>[2021-11-25T11:22:57,107][WARN ][logstash.filters.grok    ][main] Timeout executing grok '%{LOGLEVEL:log_level} %{TIMESTAMP_ISO8601:time} %{HOST:host_name} %{SERVICCE:service_type} %{STRING:process} %{STRING:thread} - %{SESSION_ID:session_id} %{GREEDYDATA:message_log}$' against field 'message' with value 'Value too large to output (3876 bytes)! First 255 chars are: debug 2021-11-25T11:01:35.303029+08:00 kvm-jobs-job-index-online3 go_recall_job 30343 30349 - 10e11e80e227f6053f1637809295e246 uid=187853021, user={"Uid":187853021,"ExpectPosition":"跨境运营","LikeWords":[{"Term":"运营","Weight":0.62232894},{"Term":"跨境","Weight"'!
+</code></pre> 
+<p>频繁的rebalance导致logstash几乎无法工作</p> 
+<h3><a id="3__memoryqueue_pollsize_180"></a>3. 尝试通过修改 memory-queue+ poll-size</h3> 
+<p>  这个时候想着有可能是某些字段的grok太复杂导致了logstash在处理数据的时候超时了？拿着<code>Timeout executing grok</code>作为关键字搜索了一波，大部分也是说grok使用的pattern太复杂了，于是年少无知的我又开始优化pattern（其实我的pattern并不复杂）。同时学习了一下logstash的消费模型。logstash的input和(filter+output)是分开的，input只是负责数据拉取，放到内存的缓存队列memory-queue中，filter从memory-queue中取数据消费。memory-queue是有大小限制的，当filter+output比较慢的话就会阻塞input的操作，这个时候我想会不会因为每次从kafka pull的数据太多导致呢？poll的数据太多，filter消费不动，导致input等待太久导致了kafka的超时。当时想着<code>Timeout executing grok</code>是因为少量比较特殊的数据导致的，这种情况也符合偶先的情况。</p> 
+<p>于是上面的一些配置做了改动</p> 
+<pre><code>pipeline.workers: 6
+pipeline.batch.size: 50
+
+max_poll_interval_ms =&gt; "600000"
+max_poll_records =&gt; "100"
+</code></pre> 
+<p>这个实际上是改动后的配置，之前用的是默认的，比这个大。</p> 
+<p>再次重启了logstash，心想这次应该没有啥问题了吧，结果运行了一天左右，还是出现了上面的问题，黔驴技穷了，想了想，只能试试分析一下gc日志了，于是又开启了gc日志。</p> 
+<h3><a id="4_gc_198"></a>4. 通过gc日志定位问题</h3> 
+<p>开启gc</p> 
+<pre><code>jvm.options
+
+
+## GC logging
+-XX:+PrintGCDetails
+-XX:+PrintGCTimeStamps
+-XX:+PrintGCDateStamps
+-XX:+PrintClassHistogram
+-XX:+PrintTenuringDistribution
+-XX:+PrintGCApplicationStoppedTime
+
+# log GC status to a file with time stamps
+# ensure the directory exists
+-Xloggc:./gc_logs/gc.log
+
+</code></pre> 
+<p>再次重启，等问题再次复现的时候观察gc日志 , 发现有频繁的full-gc操作，以至于logstash无法进行工作了，因为几乎所有的时间都在进行full-gc, 但是full-gc之后内存没有下降，很明显，发生了内存泄露，应该是logstash的啥bug让我触发了</p> 
+<pre><code>2021-11-27T17:36:21.048+0800: 78068.514: [CMS-concurrent-mark-start]
+2021-11-27T17:36:23.878+0800: 78071.344: [Full GC (Allocation Failure) 2021-11-27T17:36:23.878+0800: 78071.344: [CMS2021-11-27T17:36:25.512+0800: 78072.978: [CMS-concurrent-mark: 4.462/4.464 secs] [Times: user=39.30 sys=0.82, real=4.47 secs]
+ (concurrent mode failure): 4194303K-&gt;4194303K(4194304K), 35.7906436 secs] 6081790K-&gt;4204353K(6081792K), [Metaspace: 103267K-&gt;103267K(1155072K)], 35.7908146 secs] [Times: user=44.59 sys=0.67, real=35.79 secs]
+2021-11-27T17:36:59.669+0800: 78107.135: Total time for which application threads were stopped: 35.7917723 seconds, Stopping threads took: 0.0000556 seconds
+2021-11-27T17:36:59.673+0800: 78107.139: Total time for which application threads were stopped: 0.0027825 seconds, Stopping threads took: 0.0001835 seconds
+2021-11-27T17:37:00.674+0800: 78108.140: Total time for which application threads were stopped: 0.0007674 seconds, Stopping threads took: 0.0000516 seconds
+2021-11-27T17:37:01.669+0800: 78109.135: [GC (CMS Initial Mark) [1 CMS-initial-mark: 4194303K(4194304K)] 4310321K(6081792K), 0.0121234 secs] [Times: user=0.10 sys=0.00, real=0.02 secs]
+2021-11-27T17:37:01.681+0800: 78109.147: Total time for which application threads were stopped: 0.0129999 seconds, Stopping threads took: 0.0000897 seconds
+2021-11-27T17:37:01.681+0800: 78109.147: [CMS-concurrent-mark-start]
+2021-11-27T17:37:06.359+0800: 78113.825: [CMS-concurrent-mark: 4.678/4.678 secs] [Times: user=43.90 sys=1.14, real=4.67 secs]
+2021-11-27T17:37:06.359+0800: 78113.825: [CMS-concurrent-preclean-start]
+2021-11-27T17:37:06.569+0800: 78114.035: [Full GC (Allocation Failure) 2021-11-27T17:37:06.569+0800: 78114.035: [CMS2021-11-27T17:37:12.639+0800: 78120.106: [CMS-concurrent-preclean: 6.278/6.280 secs] [Times: user=7.09 sys=0.17, real=6.28 secs]
+ (concurrent mode failure): 4194303K-&gt;4194303K(4194304K), 40.9531845 secs] 6081787K-&gt;4205126K(6081792K), [Metaspace: 103268K-&gt;103268K(1155072K)], 40.9533777 secs] [Times: user=39.95 sys=0.84, real=40.96 secs]
+2021-11-27T17:37:47.523+0800: 78154.989: Total time for which application threads were stopped: 40.9546434 seconds, Stopping threads took: 0.0000614 seconds
+</code></pre> 
+<p>使用jamp看了一下内存分布</p> 
+<p>jmap -histo:live $pid</p> 
+<pre><code>num     #instances         #bytes  class name
+----------------------------------------------
+   1:      17289297      691571880  org.jruby.util.ByteList
+   2:      17245027      689801080  org.jruby.RubyString
+   3:      17417048      659620560  [C
+   4:      17334568      554706176  java.util.concurrent.ConcurrentHashMap$Node
+   5:      17214558      550865856  org.logstash.FieldReference
+   6:      17296590      514218192  [B
+   7:      17416092      417986208  java.lang.String
+   8:          8271      135421720  [Ljava.util.concurrent.ConcurrentHashMap$Node;
+   9:        139671        4469472  java.util.HashMap$Node
+  10:         74368        4338232  [Ljava.lang.Object;
+</code></pre> 
+<p>看起来不对劲儿，然后再社区发了一个<a href="https://discuss.elastic.co/t/logstash-7-5-gc-too-frequently-to-work/290331" rel="nofollow">discuss</a>,果然是logstash的一个bug，遗憾的是这个bug已经有人提交commit了，但是还没有修复。。。<br> 触发这个bug的原因是我的json 里面有一些字段搞的不规范，导致所有的日志中json的key的总合是上亿的，所以发生了内存泄露。是json filter的一个bug。</p> 
+<p>回顾这个问题，最开始的时候，一直以为是自己使用有问题，所以也就没有去打印gc，加上依赖自己之前的经验，感觉ELK应该bug比较少，真的没有想到，绕了一大圈，栽跟头了。。。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e1fc8784fe9aaa7b591a2a9d56e0bfce/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">解决跨域：“Access to XMLHttpRequest at ‘http://127.0.0.1:8081‘ from origin ‘http://localhost:8080‘“</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/445494797a6568e8114122c6fd996981/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Python&#43;Selenium UI自动化-基础定位语法(id,name,class_name,tag_name,link_text)</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

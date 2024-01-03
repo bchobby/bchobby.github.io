@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>高并发之消息队列：MQ消息队列核心点总结 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="高并发之消息队列：MQ消息队列核心点总结" />
+<meta property="og:description" content="消息队列已经逐渐成为分布式应用场景、内部通信、以及秒杀等高并发业务场景的核心手段，它具有低耦合、可靠投递、广播、流量控制、最终一致性 等一系列功能。
+无论是 RabbitMQ、RocketMQ、ActiveMQ、Kafka还是其它等，都有的一些基本原理、术语、机制等，总结分享出来，希望大家在使用消息队列技术的时候能够快速理解。
+1. 消息生产者、消息者、队列 消息生产者Producer：发送消息到消息队列。消息消费者Consumer：从消息队列接收消息。Broker：概念来自与Apache ActiveMQ，指MQ的服务端，帮你把消息从发送端传送到接收端。消息队列Queue：一个先进先出的消息存储区域。消息按照顺序发送接收，一旦消息被消费处理，该消息将从队列中删除。 2. 设计Broker主要考虑 1）消息的转储：在更合适的时间点投递，或者通过一系列手段辅助消息最终能送达消费机。2）规范一种范式和通用的模式，以满足解耦、最终一致性、错峰等需求。3）其实简单理解就是一个消息转发器，把一次RPC做成两次RPC。发送者把消息投递到broker，broker再将消息转发一手到接收端。
+总结起来就是两次RPC加一次转储，如果要做消费确认，则是三次RPC。 3. 点对点消息队列模型 点对点模型 用于 消息生产者 和 消息消费者 之间 点到点 的通信。
+点对点模式包含三个角色：
+消息队列（Queue）发送者(Sender)接收者(Receiver) 每个消息都被发送到一个特定的队列，接收者从队列中获取消息。队列保留着消息，可以放在 内存 中也可以 持久化，直到他们被消费或超时。
+特点
+每个消息只有一个消费者（Consumer）(即一旦被消费，消息就不再在消息队列中) 发送者和接收者之间在时间上没有依赖性 接收者在成功接收消息之后需向队列应答成功 4. 发布订阅消息模型Topic 高并发架构系列：MQ消息队列的12点核心原理总结
+发布订阅模型包含三个角色：
+主题（Topic）发布者（Publisher）订阅者（Subscriber） 多个发布者将消息发送到Topic,系统将这些消息传递给多个订阅者。
+特点
+每个消息可以有多个消费者：和点对点方式不同，发布消息可以被所有订阅者消费 发布者和订阅者之间有时间上的依赖性。 针对某个主题（Topic）的订阅者，它必须创建一个订阅者之后，才能消费发布者的消息。 为了消费消息，订阅者必须保持运行的状态。 5.点对点和发布订阅的区别 生产者发送一条消息到队列queue，只有一个消费者能收到。
+发布者发送到topic的消息，只有订阅了topic的订阅者才会收到消息。
+6. 消息的顺序性保证 基于Queue消息模型，利用FIFO先进先出的特性，可以保证消息的顺序性。
+7. 消息的ACK机制 即消息的Ackownledge确认机制，为了保证消息不丢失，消息队列提供了消息Acknowledge机制，即ACK机制，当Consumer确认消息已经被消费处理，发送一个ACK给消息队列，此时消息队列便可以删除这个消
+息了。如果Consumer宕机/关闭，没有发送ACK，消息队列将认为这个消息没有被处理，会将这个消息重新发送给其他的Consumer重新消费处理。
+8.最终一致性的设计思路 主要是用“记录”和“补偿”的方式。
+本地事务维护业务变化和通知消息，一起落地，然后RPC到达broker，在broker成功落地后，RPC返回成功，本地消息可以删除。否则本地消息一直靠定时任务轮询不断重发，这样就保证了消息可靠落地broker。
+broker往consumer发送消息的过程类似，一直发送消息，直到consumer发送消费成功确认。
+我们先不理会重复消息的问题，通过两次消息落地加补偿，下游是一定可以收到消息的。然后依赖状态机版本号等方式做判重，更新自己的业务，就实现了最终一致性。
+如果出现消费方处理过慢消费不过来，要允许消费方主动ack error，并可以与broker约定下次投递的时间。
+对于broker投递到consumer的消息，由于不确定丢失是在业务处理过程中还是消息发送丢失的情况下，有必要记录下投递的IP地址。决定重发之前询问这个IP，消息处理成功了吗？如果询问无果，再重发。
+事务：本地事务，本地落地，补偿发送。本地事务做的，是业务落地和消息落地的事务，而不是业务落地和RPC成功的事务。消息只要成功落地，很大程度上就没有丢失的风险。
+9. 消息的事务支持 消息的收发处理支持事务，例如：在任务中心场景中，一次处理可能涉及多个消息的接收、处理，这应该处于同一个事务范围内，如果一个消息处理失败，事务回滚，消息重新回到队列中。
+10. 消息的持久化 消息的持久化，对于一些关键的核心业务来说是非常重要的，启用消息持久化后，消息队列宕机重启后，消息可以从持久化存储恢复，消息不丢失，可以继续消费处理。
+11. 消息队列的高可用性 在实际生产环境中，使用单个实例的消息队列服务，如果遇到宕机、重启等系统问题，消息队列就无法提供服务了，因此很多场景下，我们希望消息队列有高可用性支持，例如" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/19851e4e7ac826113a629adbcbaa8411/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-03-01T15:58:47+08:00" />
+<meta property="article:modified_time" content="2019-03-01T15:58:47+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">高并发之消息队列：MQ消息队列核心点总结</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>消息队列已经逐渐成为分布式应用场景、内部通信、以及秒杀等高并发业务场景的核心手段，它具有低耦合、可靠投递、广播、流量控制、最终一致性 等一系列功能。</p> 
+<p>无论是 RabbitMQ、RocketMQ、ActiveMQ、Kafka还是其它等，都有的一些基本原理、术语、机制等，总结分享出来，希望大家在使用消息队列技术的时候能够快速理解。</p> 
+<h6><a id="1__4"></a>1. 消息生产者、消息者、队列</h6> 
+<ul><li>消息生产者Producer：发送消息到消息队列。</li><li>消息消费者Consumer：从消息队列接收消息。</li><li>Broker：概念来自与Apache ActiveMQ，指MQ的服务端，帮你把消息从发送端传送到接收端。</li><li>消息队列Queue：一个先进先出的消息存储区域。消息按照顺序发送接收，一旦消息被消费处理，该消息将从队列中删除。</li></ul> 
+<h6><a id="2_Broker_10"></a>2. 设计Broker主要考虑</h6> 
+<ul><li>1）消息的转储：在更合适的时间点投递，或者通过一系列手段辅助消息最终能送达消费机。</li><li>2）规范一种范式和通用的模式，以满足解耦、最终一致性、错峰等需求。</li><li>3）其实简单理解就是一个消息转发器，把一次RPC做成两次RPC。发送者把消息投递到broker，broker再将消息转发一手到接收端。<br> 总结起来就是两次RPC加一次转储，如果要做消费确认，则是三次RPC。</li></ul> 
+<h6><a id="3__16"></a>3. 点对点消息队列模型</h6> 
+<p>点对点模型 用于 消息生产者 和 消息消费者 之间 点到点 的通信。<br> 点对点模式包含三个角色：</p> 
+<ol><li>消息队列（Queue）</li><li>发送者(Sender)</li><li>接收者(Receiver)</li></ol> 
+<p>每个消息都被发送到一个特定的队列，接收者从队列中获取消息。队列保留着消息，可以放在 内存 中也可以 持久化，直到他们被消费或超时。</p> 
+<p>特点</p> 
+<pre><code> 每个消息只有一个消费者（Consumer）(即一旦被消费，消息就不再在消息队列中)
+ 发送者和接收者之间在时间上没有依赖性
+ 接收者在成功接收消息之后需向队列应答成功
+</code></pre> 
+<h6><a id="4_Topic_32"></a>4. 发布订阅消息模型Topic</h6> 
+<p>高并发架构系列：MQ消息队列的12点核心原理总结<br> 发布订阅模型包含三个角色：</p> 
+<ol><li>主题（Topic）</li><li>发布者（Publisher）</li><li>订阅者（Subscriber）</li></ol> 
+<p>多个发布者将消息发送到Topic,系统将这些消息传递给多个订阅者。</p> 
+<p>特点</p> 
+<pre><code> 每个消息可以有多个消费者：和点对点方式不同，发布消息可以被所有订阅者消费
+ 发布者和订阅者之间有时间上的依赖性。
+ 针对某个主题（Topic）的订阅者，它必须创建一个订阅者之后，才能消费发布者的消息。
+ 为了消费消息，订阅者必须保持运行的状态。
+</code></pre> 
+<h6><a id="5_49"></a>5.点对点和发布订阅的区别</h6> 
+<p>生产者发送一条消息到队列queue，只有一个消费者能收到。<br> 发布者发送到topic的消息，只有订阅了topic的订阅者才会收到消息。</p> 
+<h6><a id="6__53"></a>6. 消息的顺序性保证</h6> 
+<p>基于Queue消息模型，利用FIFO先进先出的特性，可以保证消息的顺序性。</p> 
+<h6><a id="7_ACK_56"></a>7. 消息的ACK机制</h6> 
+<p>即消息的Ackownledge确认机制，为了保证消息不丢失，消息队列提供了消息Acknowledge机制，即ACK机制，当Consumer确认消息已经被消费处理，发送一个ACK给消息队列，此时消息队列便可以删除这个消</p> 
+<p>息了。如果Consumer宕机/关闭，没有发送ACK，消息队列将认为这个消息没有被处理，会将这个消息重新发送给其他的Consumer重新消费处理。</p> 
+<h6><a id="8_61"></a>8.最终一致性的设计思路</h6> 
+<p>主要是用“记录”和“补偿”的方式。<br> 本地事务维护业务变化和通知消息，一起落地，然后RPC到达broker，在broker成功落地后，RPC返回成功，本地消息可以删除。否则本地消息一直靠定时任务轮询不断重发，这样就保证了消息可靠落地broker。</p> 
+<p>broker往consumer发送消息的过程类似，一直发送消息，直到consumer发送消费成功确认。</p> 
+<p>我们先不理会重复消息的问题，通过两次消息落地加补偿，下游是一定可以收到消息的。然后依赖状态机版本号等方式做判重，更新自己的业务，就实现了最终一致性。</p> 
+<p>如果出现消费方处理过慢消费不过来，要允许消费方主动ack error，并可以与broker约定下次投递的时间。</p> 
+<p>对于broker投递到consumer的消息，由于不确定丢失是在业务处理过程中还是消息发送丢失的情况下，有必要记录下投递的IP地址。决定重发之前询问这个IP，消息处理成功了吗？如果询问无果，再重发。</p> 
+<p>事务：本地事务，本地落地，补偿发送。本地事务做的，是业务落地和消息落地的事务，而不是业务落地和RPC成功的事务。消息只要成功落地，很大程度上就没有丢失的风险。</p> 
+<h6><a id="9__75"></a>9. 消息的事务支持</h6> 
+<p>消息的收发处理支持事务，例如：在任务中心场景中，一次处理可能涉及多个消息的接收、处理，这应该处于同一个事务范围内，如果一个消息处理失败，事务回滚，消息重新回到队列中。</p> 
+<h6><a id="10__78"></a>10. 消息的持久化</h6> 
+<p>消息的持久化，对于一些关键的核心业务来说是非常重要的，启用消息持久化后，消息队列宕机重启后，消息可以从持久化存储恢复，消息不丢失，可以继续消费处理。</p> 
+<h6><a id="11__81"></a>11. 消息队列的高可用性</h6> 
+<p>在实际生产环境中，使用单个实例的消息队列服务，如果遇到宕机、重启等系统问题，消息队列就无法提供服务了，因此很多场景下，我们希望消息队列有高可用性支持，例如</p> 
+<p>RabbitMQ的镜像集群模式的高可用性方案，ActiveMQ也有基于LevelDB+ZooKeeper的高可用性方案，以及Kafka的Replication机制等。</p> 
+<h6><a id="12_86"></a>12.消息队列的选型和应用场景</h6> 
+<ul><li>1.异步处理</li></ul> 
+<p>消息队列的主要特点是异步处理，主要目的是减少请求响应时间，实现非核心流程异步化，提高系统响应性能。<br> 所以典型的使用场景就是将比较耗时而且不需要即时（同步）返回结果的操作，作为消息放入消息队列。</p> 
+<ul><li>2.应用解耦</li></ul> 
+<p>高并发架构系列：详解分布式之消息队列的特点、选型、及应用场景<br> 使用了消息队列后，只要保证消息格式不变，消息的发送方和接收方并不需要彼此联系，也不需要受对方的影响，即解耦。</p> 
+<p>每个成员不必受其他成员影响，可以更独立自主，只通过消息队列MQ来联系。</p> 
+<p>举一个栗子：用户下订单流程，下订单后会发生扣库存这个动作，上游系统订单和下游系统扣库存，就可以通过上图的消息队列MQ来联系，扣库存异步化，从而实现订单系统与库存系统的应用解耦。</p> 
+<ul><li>3.流量削锋</li></ul> 
+<p>流量削锋也是消息队列中的常用场景，一般在秒杀或团抢活动中使用广泛。<br> 应用场景：秒杀活动，一般会因为流量过大，导致流量暴增，应用挂掉。为解决这个问题，一般需要在应用前端加入消息队列。</p> 
+<p>具体可以<code>参考</code>：阿里P8架构师谈：双11秒杀系统如何设计？</p> 
+<ul><li>4.日志处理</li></ul> 
+<p>日志处理是指将消息队列用在日志处理中，比如Kafka的应用，解决大量日志传输的问题。</p> 
+<ul><li>5.消息通讯</li></ul> 
+<p>消息队列一般都内置了高效的通信机制，因此也可以用于单纯的消息通讯，比如实现点对点消息队列或者聊天室等。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e9633a7784333b1a155629a8c7a3aaf7/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Hibernate Validator 后台数据规则校验拓展</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/64a8f55286d697edd0d2ff47997cd9d4/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">request以及bs4库爬取豆瓣电影前100</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

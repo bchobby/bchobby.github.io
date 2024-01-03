@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>stm32快速查阅手册-长期总结 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="stm32快速查阅手册-长期总结" />
+<meta property="og:description" content="stm32编程技巧-长期总结 文章目录 stm32编程技巧-长期总结0. STLINK连接1. 芯片系统结构2. STM32芯片引脚定义3. GPIO库函数4. EXTI库函数5. NVIC库函数6. TIM库函数7. ADC库函数8. DMA库函数9. USART库函数10. I2C外设库函数11. SPI外设库函数 本篇是本人在学习stm32过程中，逐步将常用的一些知识点单独摘出来，以方便后续查阅。不定期更新。 注：笔记主要参考B站 江科大自化协 教学视频“ STM32入门教程-2023持续更新中”。 0. STLINK连接 若STLINK就是连接不上，可以依次尝试以下办法：
+更新STLINK驱动。设备管理器删除未识别的设备，然后拔了重插。关闭电源选项中的“USB选择性暂停”，然后重新插。https://www.bilibili.com/read/cv18126898换一个STLINK。 注：宗旨就是遇到什么报错就百度什么报错，实在弄不成就换STLINK。
+1. 芯片系统结构 图0-1 STM32芯片系统结构 首先来看看STM32的芯片系统结构（只需要大致了解一下即可）：
+Cortex-M3：内核。注意ICode、DCode、System是直接从内核引出的三根总线。Flash：存储编写的程序。ICode总线和DCode总线主要用于连接Flash闪存。SRAM：用于存储程序运行时的变量数据。ICode：指令总线。加载程序指令。DCode：数据总线。加载数据，如常量和调试参数。System：系统总线。连接到Flash以外其他外设上，如SRAM、FSMC（本课程不会用到）。AHB系统总线：先进高性能总线。用于挂载最基本的（如复位和时钟控制RCC、SDIO）、或者性能比较高的外设。APB2、APB1：先进外设总线。用于连接一般的外设。通常AHB（72MHz）性能总体高于APB，而APB2（72MHz）性能高于APB1（36MHz）。所以APB2连接外设中稍微重要的部分，如GPIO、各外设的1号接口；剩下的次要外设给APB1。桥接2、桥接1：由于AHB和APB的总线协议、 总线速度、数据传输格式上的差异，需要加上2个桥接，来完成数据的转换和缓存。DMA2、DMA1：拥有和CPU相同的总线控制权，用于帮助CPU完成数据搬运这样简单但重复的活，相当于CPU的小秘书。若外设需要进行数据搬运，那么会直接找DMA（DMA请求），DMA就会获得总线控制权来搬运数据，整个过程无需CPU的参与。 2. STM32芯片引脚定义 图1-6 STM32F103C8T6引脚定义 上图给出了UP主自己做的STM32F103C8T6引脚定义。一些说明如下：
+标红色的是电源相关的引脚，标蓝色的是最小系统相关的引脚，标绿色的是IO口、功能口引脚。所以 最小系统板主要关心红色和蓝色部分。类型：S代表电源、I代表输入、O代表输出、I/O代表输入输出。I/O口电平：表示I/O所能容忍的电压，默认3.3V，FT表示最高容忍5V。注意没有FT标志的引脚都需要加装电平转换电路。主功能：上电默认功能。默认复用功能：I/O口上同时连接的外设功能引脚，配置IO口时可以设置是主功能/复用功能。重定义功能：如果需要某一个端口上实现两个功能，那么可以将其中一个功能重映射到另一个空闲端口上，这个空闲端口的重定义功能需要包含相应的功能。推荐优先使用加粗的IO口，没有加粗的可能需要配置或兼具其他功能，使用时需要注意。 下面来一一介绍这些引脚的功能（包括PA0~PA15、PB0~PB15、PC13~PC15、9个供电、2个时钟、1复位、1个BOOT0）：
+引脚1：备用电池供电。可接3V电池，系统断电时为芯片内部的RTC和备用寄存器提供电源。引脚2：IO口/入侵检测/RTC。IO口输出或读取高低电平；入侵检测提供安全保障，可以将外部一些防拆的触点接在此端口，若触点电平变化，STM32芯片会自动清空寄存器数据；RTC可输出RTC校准时钟、RTC闹钟脉冲、秒脉冲。引脚3、4：IO口/32.765kHzRTC晶振。引脚5、6：系统主晶振，一般8MHz，芯片内的锁相环电路将时钟倍频成72MHz作为系统主时钟。引脚7：系统复位引脚。N表示低电平复位。引脚8、9：芯片内部模拟部分的电源，如ADC、RC振荡器等。VSS接地、VDD接3.3V。引脚10~19、21~22、25~33、41~43、45~46：共26个默认普通IO口。 其中的PA0兼具WKUP功能，用于唤醒处于待机状态的STM32。引脚20：IO口/BOOT1引脚。BOOT1引脚用于控制启动模式。引脚23/24、35/36、47/48：系统的主电源口。STM32采用分区供电的方式，所以供电口多。引脚34、37~40：IO口/调试端口。STM32支持SWD和JTAG两种调试方式。SWD只需SWDIO、SWCLK两根线；JTAG需要全部的5根。教程使用STLINK(SWD)下载程序，此时剩余3个引脚可配置成IO口。引脚44：BOOT0，和BOOT1配合，用于启动配置。启动配置就是指定程序开始运行的位置，一般程序在Flash程序存储器中运行，但在某些情况下可以指定程序在别的地方开始执行以完成特殊功能。
+“主闪存存储器”启动模式最常用。“系统存储器”模式用于串口下载程序，系统存储器中存储的是一段STM32的BootLoader程序，其作用就是接收串口数据然后刷新到主闪存中。当5个调试端口全被配置成IO口时，单片机将无法再下载程序！！ 此时只能使用串口下载程序的方式进行补救。另外，当手头上没有STLINK和JLINK，也可以使用串口来下载程序，通俗来说就是“刷机”。😂“内置SRAM”模式主要用于程序调试，使用较少，本教程不会出现。注意BOOT值是在上电一瞬间（第4个时钟上升沿）有效，后面随意，即BOOT1引脚后续会变成普通IO口。
+一般性描述： 进行某个外设初始化时，一定要注意先开启相应的RCC外设时钟，但是EXTI、内核外设（如NVIC）无需手动开启。配置外设时钟时，可以参考上面的“STM32芯片系统结构”，以找到外设对应的位置。stm32中每个中断通道都对应一个固定的中断函数的名称，这些名称从启动文件startup_stm32f10x_md.s里查看，最开始后缀是xxxxHandler的定义都是中断函数名。保险起见，每次进入中断函数时，都应该先看一下当前中断的中断标志位是否为SET状态。中断函数结束前，也一定要记得清除该中断的中断标志位。 3. GPIO库函数 图0-2 GPIO的库函数 GPIO外设配置：
+关于GPIO的模式配置GPIO_Mode，可以查阅参考手册的“8.1.11 外设的GPIO配置”一节，里面已经规定好各种外设（如TIM、USART、SPI、IIC、CAN等）应该配置的GPIO模式。 GPIO_PinLockConfig【使用不多】：用于锁定GPIO配置，防止配置被更改。GPIO_PinRemapConfig【重要】：用于进行引脚重映射，不要随便动SWD调试端口。注意参数GPIO_Remap_SWJ_Disable慎用！！会将PA13、PA14、PA15、PB3、PB4这5个调试端口全变成普通的GPIO口，失去调试功能，就不能使用STLINK下载程序了。恢复的方法就是使用串口重新下载初始化程序。 AFIO外设配置：
+库函数在GPIO中。 GPIO_AFIODeInit：复位AFIO外设，调用该函数会清除AFIO外设的全部配置。GPIO_EventOutputConfig【使用不多】：用于配置AFIO的事件输出功能。GPIO_EventOutputCmd【使用不多】：用于配置AFIO的事件输出功能。GPIO_EXTILineConfig【重要】：配置AFIO的数据选择寄存器，来选择想要的中断引脚。 4. EXTI库函数 图0-3 EXTI的库函数 EXTI_DeInit：将EXTI的配置清除，恢复成上电默认的状态。EXTI_Init【常用】：根据结构体的参数配置EXTI外设，常用于初始化EXTI。EXTI_StructInit：把参数传递的结构体变量赋默认值。
+注：上面这个三个函数，基本上所有的外设都有。EXTI_GenerateSWInterrupt：用于软件触发外部中断，使得相应的中断线产生一次外部中断。只需要外部引脚触发外部中断，则不需要这个函数。EXTI_GetFlagStatus：获取指定的标志位状态。用于主程序。EXTI_ClearFlag：清除指定的标志位。用于主程序。EXTI_GetITStatus：获取中断标志位。用于中断函数。EXTI_ClearITPendingBit：清除中断挂起标志位。用于中断函数。
+上面这四个函数都是对状态寄存器的读写，只不过后两个函数只能读写与中断有关的标志位，并对中断是否允许做出了判断；前两个函数只是一般的读写标志位，没有额外的处理，能不能触发中断的标志位都能读取。 5. NVIC库函数 图0-4 NVIC的库函数 NVIC内核外设配置：（在misc文件中）" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/32c498e9d54aff67f473cf662db1e4c3/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-05-29T16:17:27+08:00" />
+<meta property="article:modified_time" content="2023-05-29T16:17:27+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">stm32快速查阅手册-长期总结</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="stm32_0"></a>stm32编程技巧-长期总结</h2> 
+<p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#stm32_0" rel="nofollow">stm32编程技巧-长期总结</a></li><li><ul><li><a href="#0_STLINK_6" rel="nofollow">0. STLINK连接</a></li><li><a href="#1__15" rel="nofollow">1. 芯片系统结构</a></li><li><a href="#2_STM32_34" rel="nofollow">2. STM32芯片引脚定义</a></li><li><a href="#3_GPIO_73" rel="nofollow">3. GPIO库函数</a></li><li><a href="#4_EXTI_93" rel="nofollow">4. EXTI库函数</a></li><li><a href="#5_NVIC_115" rel="nofollow">5. NVIC库函数</a></li><li><a href="#6_TIM_130" rel="nofollow">6. TIM库函数</a></li><li><a href="#7_ADC_220" rel="nofollow">7. ADC库函数</a></li><li><a href="#8_DMA_277" rel="nofollow">8. DMA库函数</a></li><li><a href="#9_USART_294" rel="nofollow">9. USART库函数</a></li><li><a href="#10_I2C_346" rel="nofollow">10. I2C外设库函数</a></li><li><a href="#11_SPI_401" rel="nofollow">11. SPI外设库函数</a></li></ul> 
+ </li></ul> 
+</div> 
+<br> 本篇是本人在学习stm32过程中，逐步将常用的一些知识点单独摘出来，以方便后续查阅。不定期更新。 
+<br> 注：笔记主要参考B站 
+<a href="https://space.bilibili.com/383400717" rel="nofollow">江科大自化协</a> 教学视频“ 
+<a href="https://www.bilibili.com/video/BV1th411z7sn/" rel="nofollow">STM32入门教程-2023持续更新中</a>”。 
+<p></p> 
+<hr> 
+<h3><a id="0_STLINK_6"></a>0. STLINK连接</h3> 
+<p>若STLINK就是连接不上，可以依次尝试以下办法：</p> 
+<blockquote> 
+ <ol><li>更新STLINK驱动。</li><li>设备管理器删除未识别的设备，然后拔了重插。</li><li>关闭电源选项中的“USB选择性暂停”，然后重新插。https://www.bilibili.com/read/cv18126898</li><li>换一个STLINK。</li></ol> 
+ <p>注：宗旨就是遇到什么报错就百度什么报错，实在弄不成就换STLINK。</p> 
+</blockquote> 
+<h3><a id="1__15"></a>1. 芯片系统结构</h3> 
+<div align="center"> 
+ <img src="https://images2.imgbox.com/e1/a8/sZRnPE5Q_o.png" width="60%"> 
+</div> 
+<div align="center">
+  图0-1 STM32芯片系统结构 
+</div> 
+<p>首先来看看STM32的芯片系统结构（只需要大致了解一下即可）：</p> 
+<blockquote> 
+ <ul><li>Cortex-M3：内核。注意ICode、DCode、System是直接从内核引出的三根总线。</li><li>Flash：存储编写的程序。ICode总线和DCode总线主要用于连接Flash闪存。</li><li>SRAM：用于存储程序运行时的变量数据。</li><li>ICode：指令总线。加载程序指令。</li><li>DCode：数据总线。加载数据，如常量和调试参数。</li><li>System：系统总线。连接到Flash以外其他外设上，如SRAM、FSMC（本课程不会用到）。</li><li>AHB系统总线：先进高性能总线。用于挂载最基本的（如复位和时钟控制RCC、SDIO）、或者性能比较高的外设。</li><li>APB2、APB1：先进外设总线。用于连接一般的外设。通常AHB（72MHz）性能总体高于APB，而APB2（72MHz）性能高于APB1（36MHz）。所以APB2连接外设中稍微重要的部分，如GPIO、各外设的1号接口；剩下的次要外设给APB1。</li><li>桥接2、桥接1：由于AHB和APB的总线协议、 总线速度、数据传输格式上的差异，需要加上2个桥接，来完成数据的转换和缓存。</li><li>DMA2、DMA1：拥有和CPU相同的总线控制权，用于帮助CPU完成数据搬运这样简单但重复的活，相当于CPU的小秘书。若外设需要进行数据搬运，那么会直接找DMA（DMA请求），DMA就会获得总线控制权来搬运数据，整个过程无需CPU的参与。</li></ul> 
+</blockquote> 
+<h3><a id="2_STM32_34"></a>2. STM32芯片引脚定义</h3> 
+<div align="center"> 
+ <img src="https://images2.imgbox.com/cb/78/Sfkk37Oj_o.png" width="80%"> 
+</div> 
+<div align="center">
+  图1-6 STM32F103C8T6引脚定义 
+</div> 
+<p>上图给出了UP主自己做的STM32F103C8T6引脚定义。一些说明如下：</p> 
+<blockquote> 
+ <ol><li>标红色的是电源相关的引脚，标蓝色的是最小系统相关的引脚，标绿色的是IO口、功能口引脚。所以 <strong>最小系统板主要关心红色和蓝色部分。</strong></li><li>类型：S代表电源、I代表输入、O代表输出、I/O代表输入输出。</li><li>I/O口电平：表示I/O所能容忍的电压，默认3.3V，FT表示最高容忍5V。注意没有FT标志的引脚都需要加装电平转换电路。</li><li>主功能：上电默认功能。</li><li>默认复用功能：I/O口上同时连接的外设功能引脚，配置IO口时可以设置是主功能/复用功能。</li><li>重定义功能：如果需要某一个端口上实现两个功能，那么可以将其中一个功能重映射到另一个空闲端口上，这个空闲端口的重定义功能需要包含相应的功能。</li><li>推荐优先使用加粗的IO口，没有加粗的可能需要配置或兼具其他功能，使用时需要注意。</li></ol> 
+</blockquote> 
+<p>下面来一一介绍这些引脚的功能（包括PA0~PA15、PB0~PB15、PC13~PC15、9个供电、2个时钟、1复位、1个BOOT0）：</p> 
+<blockquote> 
+ <ul><li>引脚1：备用电池供电。可接3V电池，系统断电时为芯片内部的RTC和备用寄存器提供电源。</li><li>引脚2：IO口/入侵检测/RTC。IO口输出或读取高低电平；入侵检测提供安全保障，可以将外部一些防拆的触点接在此端口，若触点电平变化，STM32芯片会自动清空寄存器数据；RTC可输出RTC校准时钟、RTC闹钟脉冲、秒脉冲。</li><li>引脚3、4：IO口/32.765kHzRTC晶振。</li><li>引脚5、6：系统主晶振，一般8MHz，芯片内的锁相环电路将时钟倍频成72MHz作为系统主时钟。</li><li>引脚7：系统复位引脚。N表示低电平复位。</li><li>引脚8、9：芯片内部模拟部分的电源，如ADC、RC振荡器等。VSS接地、VDD接3.3V。</li><li>引脚10~19、21~22、25~33、41~43、45~46：<strong>共26个默认普通IO口。</strong> 其中的PA0兼具WKUP功能，用于唤醒处于待机状态的STM32。</li><li>引脚20：IO口/BOOT1引脚。BOOT1引脚用于控制启动模式。</li><li>引脚23/24、35/36、47/48：系统的主电源口。STM32采用<strong>分区供电</strong>的方式，所以供电口多。</li><li>引脚34、37~40：IO口/<strong>调试端口</strong>。STM32支持SWD和JTAG两种调试方式。SWD只需SWDIO、SWCLK两根线；JTAG需要全部的5根。<strong>教程使用STLINK(SWD)下载程序</strong>，此时剩余3个引脚可配置成IO口。</li><li>引脚44：BOOT0，和BOOT1配合，用于启动配置。启动配置就是指定程序开始运行的位置，一般程序在Flash程序存储器中运行，但在某些情况下可以指定程序在别的地方开始执行以完成特殊功能。<br> <img src="https://images2.imgbox.com/d6/28/xxBIPYzE_o.png" width="80%"></li></ul> 
+ <blockquote> 
+  <ul><li>“主闪存存储器”启动模式最常用。</li><li>“系统存储器”模式用于串口下载程序，系统存储器中存储的是一段STM32的BootLoader程序，其作用就是接收串口数据然后刷新到主闪存中。<strong>当5个调试端口全被配置成IO口时，单片机将无法再下载程序！！</strong> 此时只能使用串口下载程序的方式进行补救。另外，当手头上没有STLINK和JLINK，也可以使用串口来下载程序，通俗来说就是“刷机”。😂</li><li>“内置SRAM”模式主要用于程序调试，使用较少，本教程不会出现。</li><li>注意BOOT值是在上电一瞬间（第4个时钟上升沿）有效，后面随意，即BOOT1引脚后续会变成普通IO口。<br> <strong>一般性描述：</strong></li></ul> 
+ </blockquote> 
+ <ol><li>进行某个外设初始化时，一定要注意先开启相应的RCC外设时钟，但是EXTI、内核外设（如NVIC）无需手动开启。</li><li>配置外设时钟时，可以参考上面的“STM32芯片系统结构”，以找到外设对应的位置。</li><li>stm32中每个中断通道都对应一个固定的中断函数的名称，这些名称从启动文件<code>startup_stm32f10x_md.s</code>里查看，最开始后缀是<code>xxxxHandler</code>的定义都是中断函数名。</li><li>保险起见，每次进入中断函数时，都应该先看一下当前中断的中断标志位是否为SET状态。中断函数结束前，也一定要记得清除该中断的中断标志位。</li></ol> 
+</blockquote> 
+<h3><a id="3_GPIO_73"></a>3. GPIO库函数</h3> 
+<div align="center"> 
+ <img src="https://images2.imgbox.com/56/03/v7aa8qXg_o.png" width="80%"> 
+</div> 
+<div align="center">
+  图0-2 GPIO的库函数 
+</div> 
+<p><strong>GPIO外设配置：</strong></p> 
+<blockquote> 
+ <ol><li>关于GPIO的模式配置GPIO_Mode，可以查阅参考手册的“8.1.11 外设的GPIO配置”一节，里面已经规定好各种外设（如TIM、USART、SPI、IIC、CAN等）应该配置的GPIO模式。</li></ol> 
+ <ul><li><code>GPIO_PinLockConfig</code>【使用不多】：用于锁定GPIO配置，防止配置被更改。</li><li><code>GPIO_PinRemapConfig</code>【重要】：用于进行引脚重映射，不要随便动SWD调试端口。注意参数<code>GPIO_Remap_SWJ_Disable</code>慎用！！会将PA13、PA14、PA15、PB3、PB4这5个调试端口全变成普通的GPIO口，失去调试功能，就不能使用STLINK下载程序了。恢复的方法就是使用串口重新下载初始化程序。</li></ul> 
+</blockquote> 
+<p><strong>AFIO外设配置：</strong></p> 
+<blockquote> 
+ <ol><li>库函数在GPIO中。</li></ol> 
+ <ul><li><code>GPIO_AFIODeInit</code>：复位AFIO外设，调用该函数会清除AFIO外设的全部配置。</li><li><code>GPIO_EventOutputConfig</code>【使用不多】：用于配置AFIO的事件输出功能。</li><li><code>GPIO_EventOutputCmd</code>【使用不多】：用于配置AFIO的事件输出功能。</li><li><code>GPIO_EXTILineConfig</code>【重要】：配置AFIO的数据选择寄存器，来选择想要的中断引脚。</li></ul> 
+</blockquote> 
+<h3><a id="4_EXTI_93"></a>4. EXTI库函数</h3> 
+<div align="center"> 
+ <img src="https://images2.imgbox.com/49/f2/nGdUWc3h_o.png" width="60%"> 
+</div> 
+<div align="center">
+  图0-3 EXTI的库函数 
+</div> 
+<blockquote> 
+ <img src="https://images2.imgbox.com/23/ad/xwA9z8xC_o.png" width="65%"> 
+ <ul><li><code>EXTI_DeInit</code>：将EXTI的配置清除，恢复成上电默认的状态。</li><li><code>EXTI_Init</code>【常用】：根据结构体的参数配置EXTI外设，常用于初始化EXTI。</li><li><code>EXTI_StructInit</code>：把参数传递的结构体变量赋默认值。<br> 注：上面这个三个函数，基本上所有的外设都有。</li><li><code>EXTI_GenerateSWInterrupt</code>：用于软件触发外部中断，使得相应的中断线产生一次外部中断。只需要外部引脚触发外部中断，则不需要这个函数。</li><li><code>EXTI_GetFlagStatus</code>：获取指定的标志位状态。用于主程序。</li><li><code>EXTI_ClearFlag</code>：清除指定的标志位。用于主程序。</li><li><code>EXTI_GetITStatus</code>：获取中断标志位。用于中断函数。</li><li><code>EXTI_ClearITPendingBit</code>：清除中断挂起标志位。用于中断函数。<br> 上面这四个函数都是对状态寄存器的读写，只不过后两个函数只能读写与中断有关的标志位，并对中断是否允许做出了判断；前两个函数只是一般的读写标志位，没有额外的处理，能不能触发中断的标志位都能读取。</li></ul> 
+</blockquote> 
+<h3><a id="5_NVIC_115"></a>5. NVIC库函数</h3> 
+<div align="center"> 
+ <img src="https://images2.imgbox.com/20/aa/1tGNEdPm_o.png" width="60%"> 
+</div> 
+<div align="center">
+  图0-4 NVIC的库函数 
+</div> 
+<p><strong>NVIC内核外设配置：</strong>（在misc文件中）</p> 
+<blockquote> 
+ <ul><li><code>NVIC_PriorityGroupConfig</code>【重要】：用于中断分组，每个工程只允许出现一次。</li><li><code>NVIC_Init</code>【重要】：根据结构体里面指定的参数初始化NVIC。其中<code>NVIC_InitTypeDef</code>包括：</li></ul> 
+ <blockquote> 
+  <ul><li><code>NVIC_IRQChannel</code>：中断通道，选择时看清芯片型号为stm32共有的中断通道以及<code>STM32F10X_MD</code>系列中断通道。</li><li>其他参数略。</li></ul> 
+ </blockquote> 
+ <ul><li><code>NVIC_SetVectorTable</code>【使用不多】：设置中断向量表。</li><li><code>NVIC_SystemLPConfig</code>【使用不多】：系统低功耗配置。</li></ul> 
+</blockquote> 
+<h3><a id="6_TIM_130"></a>6. TIM库函数</h3> 
+<blockquote> 
+ <p>配置TIM的<strong>定时中断</strong>功能：<br> <img src="https://images2.imgbox.com/fc/33/DSmc7l9I_o.png" width="80%"></p> 
+ <ul><li><code>TIM_DeInit</code>：恢复默认配置。</li><li><code>TIM_TimeBaseInit</code>【重要】：时基单元初始化。用于配置时基单元。</li><li><code>TIM_TimeBaseStructInit</code>：为时基单元结构体赋一个默认值。</li><li><code>TIM_Cmd</code>【常用】：对应定时中断基本结构的“运行控制”模块，用于使能时基单元的计数器。</li><li><code>TIM_ITConfig</code>【常用】：“中断输出控制”模块，用于使能中断输出信号。</li></ul> 
+ <p>下面6个函数对应时基单元的时钟源选择部分。</p> 
+ <ul><li><code>TIM_InternalClockConfig</code>【常用】：选择 <strong>内部时钟</strong>。</li><li><code>TIM_ITRxExternalClockConfig</code>：选择 <strong>ITRx其他定时器</strong> 的时钟。</li><li><code>TIM_TIxExternalClockConfig</code>：选择 <strong>TIx捕获通道</strong> 的时钟。</li><li><code>TIM_ETRClockMode1Config</code>：选择 <strong>ETR通过外部时钟模式1</strong> 输入的时钟。</li><li><code>TIM_ETRClockMode2Config</code>：选择 <strong>ETR通过外部时钟模式2</strong> 输入的时钟。</li><li><code>TIM_ETRConfig</code>：不是用于选择时钟的，而是单独用来配置ETR引脚的预分频器、极性、滤波器等参数。</li></ul> 
+ <p>下面是一些可以单独更改某些参数的函数，可以防止每次更改参数都要进行一次初始化。</p> 
+ <ul><li><code>TIM_PrescalerConfig</code>：单独更改时基单元 预分频 的值。还可以选择 预分频器 是否启用缓冲寄存器。</li><li><code>TIM_CounterModeConfig</code>：单独改变时基单元计数器的计数模式。</li><li><code>TIM_ARRPreloadConfig</code>：自动重装器的预装功能配置，也就是选择时基单元的 计数器 是否启用缓冲寄存器。</li><li><code>TIM_SetClockDivision</code>：单独配置时基单元的 时钟分频系数。这个系数的作用位置比预分频器靠前，但功能与预分频器相同，只不过只能选择固定的分频系数（不分频、2分频、4分频），对分频要求不高则一般配置为不分频。</li><li><code>TIM_SetCounter</code>：给计数器写入一个值。</li><li><code>TIM_SetAutoreload</code>：给自动重装载寄存器写入一个值。</li><li><code>TIM_GetCounter</code>：获取当前计数器的值。</li><li><code>TIM_GetPrescaler</code>：获取当前的预分频器的值。</li></ul> 
+ <p>最后4个是获取定时中断标志位和清除定时中断标志位的函数。</p> 
+ <ul><li><code>TIM_GetFlagStatus</code>：用于主函数，获取定时中断标志位的状态。</li><li><code>TIM_ClearFlag</code>：用于主函数，清除定时中断标志位的状态。</li><li><code>TIM_GetITStatus</code>：用于中断函数，获取定时中断标志位的状态。</li><li><code>TIM_ClearITPendingBit</code>：用于中断函数，清除定时中断标志位的状态。</li></ul> 
+ <p>配置<strong>输出比较模块</strong>：<br> <img src="https://images2.imgbox.com/e2/29/Mpl1nbXQ_o.png" width="70%"></p> 
+ <ul><li><code>TIM_OC1Init</code>【常用】：配置第一路输出比较模块。<code>TIM_OC2Init</code>、<code>TIM_OC3Init</code>、<code>TIM_OC4Init</code>则分别是配置第二、三、四路。</li><li><code>TIM_OCStructInit</code>【常用】：给输出比较结构体赋一个默认值。</li><li><code>TIM_CtrlPWMOutputs</code>【重要】：仅高级定时器使用，使用高级定时器输出PWM波时，必须调用此函数，否则PWM将不能正常输出。</li><li><code>TIM_ForcedOC1Config</code>【不常用】：配置强制输出模式，但由于占空比100%输出高电平、0%输出低电平，与强制输出高、低电平等价，所以使用不多。第二、三、四路同理。</li><li><code>TIM_OC1PreloadConfig</code>【不常用】：用于配置CCR寄存器的预装功能，即CCR的影子寄存器。不会立即生效，而是在更新时间后才会生效。第二、三、四路同理。</li><li><code>TIM_CCPreloadControl</code>：一次性设置所有的4路输出比较通道寄存器CCR的预装载方式，也就是是否启用影子寄存器。</li><li><code>TIM_OC1FastConfig</code>【不常用】：用于配置快速使能，在参考手册“14.3.10单脉冲模式”有介绍。第二、三、四路同理。</li><li><code>TIM_ClearOC1Ref</code>【不常用】：在参考手册“14.3.11在外部事件时清除OCxREF信号”有介绍。第二、三、四路同理。</li><li><code>TIM_OC1PolarityConfig</code>、<code>TIM_OC1NPolarityConfig</code>：用于单独设置输出比较的极性，第二、三、四路同理。带N的函数就是高级定时器里互补通道的配置。这个极性设置与 输出比较模块结构体 中的设置极性相同。<strong>一般来说结构体中的参数都有一个专门的函数用于修改。</strong></li><li><code>TIM_CCxCmd</code>、<code>TIM_CCxNCmd</code>：用于单独修改输出使能参数。</li><li><code>TIM_SelectOCxM</code>：用于单独更改输出比较模式的函数。</li><li><code>TIM_SetCompare1</code>【重要】：用于单独更改CCR寄存器的值，可以更改PWM波的占空比。第二、三、四路同理。</li></ul> 
+ <p>配置<strong>输入捕获模块</strong>：<br> <img src="https://images2.imgbox.com/bd/ac/dY18ON4g_o.png" width="70%"><br> <img src="https://images2.imgbox.com/16/07/QDZW9nTN_o.png" width="70%"></p> 
+ <ul><li><code>TIM_ICInit</code>【常用】：初始化输入捕获单元，只能配置单一通道。注意与输出比较模块的四个通道各自有一个初始化函数不同，输入捕获模块的四个通道共用一个初始化函数。这是因为有交叉通道的配置，整合在一个函数中会比较方便。</li><li><code>TIM_PWMIConfig</code>【常用】：初始化输入捕获单元。可以快速的配置通道1和通道2的PWMI模式。</li><li><code>TIM_ICStructInit</code>：给输入捕获结构体赋一个初值。</li><li><code>TIM_GetCapture1</code>【重要】：读取输入捕获通道1的 输入/捕获寄存器CCR1 的值。第二、三、四路同理。</li></ul> 
+ <p>下面四个函数是配置主从触发模式：</p> 
+ <ul><li><code>TIM_SelectOutputTrigger</code>【常用】：选择主模式的输出触发源TRGO。</li><li><code>TIM_SelectInputTrigger</code>【常用】：选择从模式的输入触发源TRGI。</li><li><code>TIM_SelectSlaveMode</code>【常用】：选择从模式要执行的操作。</li><li><code>TIM_SelectMasterSlaveMode</code>：选择是否使能主从触发模式。</li></ul> 
+ <p>下面是单独修改输入捕获通道某些参数：</p> 
+ <ul><li><code>TIM_SetIC1Prescaler</code>：单独配置输入捕获通道1的预分频值。第二、三、四路同理。</li></ul> 
+ <p>配置<strong>编码器接口模式</strong>：<br> <img src="https://images2.imgbox.com/e8/ad/DBcn0IhF_o.png" width="70%"></p> 
+ <ul><li><code>TIM_EncoderInterfaceConfig</code>【常用】：配置编码器接口。</li></ul> 
+ <p>下面是<strong>目前还没有涉及到</strong>的TIM库函数：</p> 
+ <ul><li><code>TIM_BDTRConfig</code>：用于配置定时器的 BDTR（Break and Dead-Time Register）寄存器。</li><li><code>TIM_BDTRStructInit</code>：给 BDTR 寄存器的配置参数结构体 TIM_BDTRInitTypeDef 赋一个初值。</li><li><code>TIM_GenerateEvent</code>：强制定时器产生中断。</li><li><code>TIM_DMAConfig</code>：配置TIM模块的 DMA传输功能。stm32中定时器模块可以与 DMA 控制器进行集成，通过 DMA 传输机制实现定时器的计数器值、比较寄存器值等数据的快速传输，减少 CPU 的负担，提高系统的效率。</li><li><code>TIM_DMACmd</code>：使能或禁用定时器的 DMA 传输功能。</li><li><code>TIM_SelectCOM</code>：选择定时器模块的复合输出模式（Complementary Output Mode）包括主输出模式、复合模式、复合滤波模式等。COM模式可以实现多种输出波形的生成，例如矩形波、三角波、脉冲波等，同时还可以实现硬件互锁、反相输出、输出极性选择等功能。</li><li><code>TIM_SelectCCDMA</code>：使能或禁用通道比较DMA传输状态。</li><li><code>TIM_UpdateDisableConfig</code>：使能或禁用定时器的更新事件。</li><li><code>TIM_UpdateRequestConfig</code>：配置更新请求（URS）寄存器的功能，从而实现定时器的周期性更新。。</li><li><code>TIM_SelectHallSensor</code>：选择不同的霍尔传感器模式，从而实现电机的精确控制。</li><li><code>TIM_SelectOnePulseMode</code>：选择单脉冲模式，从而实现精确的时间控制。</li></ul> 
+</blockquote> 
+<h3><a id="7_ADC_220"></a>7. ADC库函数</h3> 
+<blockquote> 
+ <img src="https://images2.imgbox.com/8c/60/rgCocL39_o.png" width="70%"> 
+ <p>ADC初始化/一般性配置：</p> 
+ <ul><li><code>RCC_ADCCLKConfig</code>【必需】：配置 <strong>ADCCLK</strong> 的分频器（rcc库函数）。可以对APB2的72MHz时钟选择2、4、6、8分频，输入到ADCCLK。但由于ADCCLK规定不能超过14MHz，所以一般选择分频系数为6。</li><li><code>ADC_DeInit</code>：将ADCx的配置恢复成默认值。</li><li><code>ADC_Init</code>【必需】：ADC的初始化函数。</li><li><code>ADC_StructInit</code>：给ADC结构体赋一个默认值。</li><li><code>ADC_Cmd</code>【必需】：ADC外设的开关控制，用于给ADC上电。</li><li>间断模式：</li><li><code>ADC_DiscModeCmd</code>：是否启用间断模式。</li><li><code>ADC_DiscModeChannelCountConfig</code>：配置间断模式，每隔几个通道间断一次。</li><li>触发转换：</li><li><code>ADC_SoftwareStartConvCmd</code>：软件触发。用于软件触发ADC进行转换。</li><li><code>ADC_ExternalTrigConvCmd</code>：ADC外部触发转换控制。是否允许外部触发转换。默认关闭。</li><li><code>ADC_GetSoftwareStartConvStatus</code>【不常用】：获取软件开始转换状态，看看规则通道是否已经开始转换，但并不能用于指示转换的结束。</li><li>配置通道：</li><li><code>ADC_TempSensorVrefintCmd</code>：开启内部的温度传感器、参考电压通道作为输入源。</li><li><code>ADC_RegularChannelConfig</code>【必需】：ADC规则组通道配置。给序列的每个位置填写指定的通道。</li><li>获取结果：</li><li><code>ADC_GetFlagStatus</code>：获取ADC内任意指定标志位状态（比如转换结束标志位EOC）。</li><li><code>ADC_ClearFlag</code>：清除所选定的标志位。</li><li><code>ADC_GetConversionValue</code>：获取ADC转换值，就是用于读取转换之后的结果。</li><li><code>ADC_GetDualModeConversionValue</code>：获取ADC双模式转换值。</li></ul> 
+ <p>ADC校准【必需】：ADC初始化完成后，依次调用即可。</p> 
+ <ul><li><code>ADC_ResetCalibration</code>：复位校准。</li><li><code>ADC_GetResetCalibrationStatus</code>：获取校准状态。</li><li><code>ADC_StartCalibration</code>：开始校准。</li><li><code>ADC_GetCalibrationStatus</code>：获取开始校准状态。</li></ul> 
+ <p>注入组的配置：</p> 
+ <ul><li><code>ADC_AutoInjectedConvCmd</code></li><li><code>ADC_InjectedDiscModeCmd</code></li><li><code>ADC_ExternalTrigInjectedConvConfig</code></li><li><code>ADC_ExternalTrigInjectedConvCmd</code></li><li><code>ADC_SoftwareStartInjectedConvCmd</code></li><li><code>ADC_GetSoftwareStartInjectedConvCmdStatus</code></li><li><code>ADC_InjectedChannelConfig</code></li><li><code>ADC_InjectedSequencerLengthConfig</code></li><li><code>ADC_SetInjectedOffset</code></li><li><code>ADC_GetInjectedConversionValue</code></li></ul> 
+ <p>DMA相关：</p> 
+ <ul><li><code>ADC_DMACmd</code>：开启DMA，使其可以转运数据。</li></ul> 
+ <p>中断相关：</p> 
+ <ul><li><code>ADC_AnalogWatchdogCmd</code>：软件看门狗使能。</li><li><code>ADC_AnalogWatchdogThresholdsConfig</code>：软件看门狗的上下阈值配置。</li><li><code>ADC_AnalogWatchdogSingleChannelConfig</code>：软件看门狗的通道配置。</li><li><code>ADC_ITConfig</code>：ADC的中断输出控制。用于控制某个中断能否通向NVIC。</li><li><code>ADC_GetITStatus</code>：获取中断标志位。</li><li><code>ADC_ClearITPendingBit</code>：清除中断标志位。</li></ul> 
+</blockquote> 
+<h3><a id="8_DMA_277"></a>8. DMA库函数</h3> 
+<blockquote> 
+ <img src="https://images2.imgbox.com/2c/1c/AyO7O3AY_o.png" width="70%"> 
+ <ul><li><code>DMA_DeInit</code>：将DMA恢复到默认配置。</li><li><code>DMA_Init</code>【必需】：DMA初始化。</li><li><code>DMA_StructInit</code>：给DMA的初始化结构体赋一个初值。</li><li><code>DMA_Cmd</code>【必需】：DMA的开关控制。</li><li><code>DMA_ITConfig</code>：DMA的中断输出使能，用于开启DMA中断。</li><li><code>DMA_SetCurrDataCounter</code>：设置DMA计数器。</li><li><code>DMA_GetCurrDataCounter</code>：获取当前DMA的计数器值。</li><li><code>DMA_GetFlagStatus</code>：主函数，获取DMA的各种标志位。</li><li><code>DMA_ClearFlag</code>：主函数，清除DMA各种标志位。</li><li><code>DMA_GetITStatus</code>：中断函数，获取DMA的各种标志位。</li><li><code>DMA_ClearITPendingBit</code>：中断函数，清除DMA的各种标志位。</li></ul> 
+</blockquote> 
+<h3><a id="9_USART_294"></a>9. USART库函数</h3> 
+<blockquote> 
+ <img src="https://images2.imgbox.com/d5/47/uYGcMRDi_o.png" width="75%"> 
+ <p>一般性配置和正常收发数据功能：</p> 
+ <ul><li><code>USART_DeInit</code>：将USART结构体恢复成默认值。</li><li><code>USART_Init</code>【必需】：初始化USART结构体。</li><li><code>USART_StructInit</code>：给USART结构体赋一个初值。</li><li><code>USART_Cmd</code>【常用】：USART的开关控制。</li><li><code>USART_ITConfig</code>【常用】：USART的中断配置。</li><li><code>USART_SendData</code>【常用】：发送数据，写DR寄存器。</li><li><code>USART_ReceiveData</code>【常用】：接收数据，读DR寄存器。</li><li><code>USART_GetFlagStatus</code>：主函数调用，获取USART的各种标志位。</li><li><code>USART_ClearFlag</code>：主函数调用，清除USART指定的标志位。</li><li><code>USART_GetITStatus</code>：中断函数调用，获取中断状态。</li><li><code>USART_ClearITPendingBit</code>：中断函数调用，清除中断状态。</li></ul> 
+ <p>其他单独的配置：</p> 
+ <ul><li><code>USART_SetGuardTime</code>：在两个连续字符之间添加一个额外的时间间隔，默认为1位。</li><li><code>USART_SetPrescaler</code>：设置波特率发生器的预分频值DIV，以产生相应的比特率。</li><li><code>USART_HalfDuplexCmd</code>：启用或禁用半双工模式。</li><li><code>USART_OverSampling8Cmd</code>：启用或禁用USART的8倍过采样模式。在8倍过采样模式下，USART对串行数据线的采样次数将达到8次，从而提高数据传输的精度和可靠性。</li><li><code>USART_OneBitMethodCmd</code>：启用或禁用单线半双工通信模式。</li></ul> 
+ <p>DMA触发源：</p> 
+ <ul><li><code>USART_DMACmd</code>：开启USART的DMA硬件触发源。</li></ul> 
+ <p>时钟同步功能：</p> 
+ <ul><li><code>USART_ClockInit</code>：时钟输出功能，时钟输出初始化。</li><li><code>USART_ClockStructInit</code>：时钟输出功能，时钟输出结构体初始化。</li></ul> 
+ <p>流控功能（总线通信）：</p> 
+ <ul><li><code>USART_SetAddress</code>：总线通信功能，设置USART的地址。</li><li><code>USART_WakeUpConfig</code>：总线通信功能，启用USART唤醒功能，检测到特定事件就会被唤醒。</li><li><code>USART_ReceiverWakeUpCmd</code>：总线通信功能，启用USART的接收唤醒功能，接收到特定的数据包就会被唤醒。</li></ul> 
+ <p>LIN总线通信：</p> 
+ <ul><li><code>USART_LINBreakDetectLengthConfig</code>：LIN模式，检测到BREAK信号的长度。</li><li><code>USART_LINCmd</code>：开启LIN模式。</li><li><code>USART_SendBreak</code>：发送一个BREAK信号。</li></ul> 
+ <p>智能卡模式：</p> 
+ <ul><li><code>USART_SmartCardCmd</code>：启用或禁用智能卡模式。</li><li><code>USART_SmartCardNACKCmd</code>：在USART智能卡模式中，启用或禁用非应答模式。</li></ul> 
+ <p>红外接收IrDA模式：</p> 
+ <ul><li><code>USART_IrDAConfig</code>：配置USART通信中的红外数据通信模式。</li><li><code>USART_IrDACmd</code>：启用或禁用红外数据通信模式（IrDA）。</li></ul> 
+</blockquote> 
+<h3><a id="10_I2C_346"></a>10. I2C外设库函数</h3> 
+<blockquote> 
+ <img src="https://images2.imgbox.com/b1/a4/SKOlSrMZ_o.png" width="70%"> 
+ <ul><li><code>I2C_DeInit</code>：将I2C外设的寄存器恢复成默认值。</li><li><code>I2C_Init</code>【必需】：初始化I2C。</li><li><code>I2C_StructInit</code>：将指定的I2C初始化结构体中的成员变量设置为默认值。</li><li><code>I2C_Cmd</code>【必需】：开启I2C外设。</li></ul> 
+ <p>收发时序常用：</p> 
+ <ul><li><code>I2C_GenerateSTART</code>：生成起始条件。</li><li><code>I2C_GenerateSTOP</code>：生成终止条件。</li><li><code>I2C_AcknowledgeConfig</code>：配置应答使能。也就是stm32作为主机，收到1个字节后，是否给从机应答。</li><li><code>I2C_SendData</code>：发送数据。将数据写入到DR寄存器。</li><li><code>I2C_ReceiveData</code>：接收数据。从DR寄存器中读取数据。</li><li><code>I2C_Send7bitAddress</code>：发送7位地址的专用函数。当然也可以用<code>I2C_SendData</code>函数完成该功能。</li><li><code>I2C_FastModeDutyCycleConfig</code>：用于配置I2C的快速模式（Fast-mode）占空比。这个一般再初始化的时候就配置好不变了。</li></ul> 
+ <p>状态监控函数：（更多细节内容可以查看源码注释）<br> 上文提到EVx事件可能会包含多个标志位，如果一个一个判断可能非常麻烦，所以i2c的库函数还额外给出了“状态监控函数”，来辅助用户同时判断多个标志位，以确定某个EVx状态是否发生。下面有三种方法：</p> 
+ <ol><li>基本状态监控——<code>I2C_CheckEvent</code>【推荐】。可以同时判断一个或多个标志位，来确定EVx状态是否发生，UP主推荐。</li><li>高级状态监控——<code>I2C_GetLastEvent</code>。实际并不高级，只是将两个状态寄存器SR1、SR2拼接成16位数据发送给用户。不推荐。</li><li>基于标志位的状态监控——<code>I2C_GetFlagStatus</code>。就是一次判断一个标志位。</li></ol> 
+ <ul><li><code>I2C_ClearFlag</code>：清除标志位。主函数调用。</li><li><code>I2C_GetITStatus</code>：读取中断标志位。中断函数调用。</li><li><code>I2C_ClearITPendingBit</code>：清除中断标志位。中断函数调用。</li><li><code>I2C_ITConfig</code>：使能或禁用I2C的中断功能。</li></ul> 
+ <p>DMA配置：</p> 
+ <ul><li><code>I2C_DMACmd</code>：使能或禁用I2C外设的DMA传输，也就是DMA的硬件触发源。默认禁用。</li><li><code>I2C_DMALastTransferCmd</code>：控制I2C外设在DMA传输结束后是否自动停止传输。</li></ul> 
+ <p>广播通信模式/双地址模式：</p> 
+ <ul><li><code>I2C_OwnAddress2Config</code>：用于配置I2C外设的第二个从设备地址，该地址用于从设备模式中的广播通信。</li><li><code>I2C_DualAddressCmd</code>：用于使能或禁用I2C外设的双地址模式。</li><li><code>I2C_GeneralCallCmd</code>：使能或禁用I2C总线的广播通信模式。</li></ul> 
+ <p>SMBus协议：</p> 
+ <ul><li><code>I2C_SMBusAlertConfig</code>：用于配置SMBus Alert功能。</li></ul> 
+ <p>PEC校验：</p> 
+ <ul><li><code>I2C_TransmitPEC</code>：启用或禁用I2C协议中的PEC（Packet Error Checking）校验。</li><li><code>I2C_PECPositionConfig</code>：配置PEC校验码在I2C通信帧中的位置。</li><li><code>I2C_CalculatePEC</code>：用于计算给定数据块的PEC校验码。</li><li><code>I2C_GetPEC</code>：用于获取接收到的I2C数据帧的PEC校验码。</li></ul> 
+ <p>其他配置：</p> 
+ <ul><li><code>I2C_ReadRegister</code>：通用的读取寄存器函数，用于读取I2C外设的寄存器值。</li><li><code>I2C_SoftwareResetCmd</code>：用于向I2C总线发送软件复位命令，将I2C外设复位到初始状态，以便重新开始通信。当I2C外设出现异常或通信故障时，可以通过软件复位命令将其恢复到正常状态。</li><li><code>I2C_NACKPositionConfig</code>：用于配置I2C外设在接收数据时的非应答位位置，在数据字节的哪个位置发送NACK位。</li><li><code>I2C_ARPCmd</code>：用于使能或禁用I2C的自动重试机制（Automatic Retry Mechanism）。自动重试机制的原理是当发送方无法收到接收方的应答信号时，会自动重新发送数据帧，直到接收方成功应答为止。自动重试机制的次数可以通过软件编程进行配置。</li><li><code>I2C_StretchClockCmd</code>：用于使能或禁用I2C时钟延长功能（Clock Stretching）。I2C从设备可以通过拉低时钟线的方式来向主设备表示其未准备好接收数据，主设备需要等待从设备准备好之后再继续传输数据。</li></ul> 
+</blockquote> 
+<h3><a id="11_SPI_401"></a>11. SPI外设库函数</h3> 
+<blockquote> 
+ <img src="https://images2.imgbox.com/44/e8/aBAPZ0r2_o.png" width="70%"> 
+ <p>SPI/I2S常用设置：</p> 
+ <ul><li><code>SPI_I2S_DeInit</code>：将SPI或I2S外设恢复到默认的初始状态。</li><li><code>SPI_Init</code>【必需】：初始化SPI（串行外设接口）外设，并配置其相关参数，包括数据传输模式、时钟极性和相位、数据位长度等。</li><li><code>I2S_Init</code>：初始化I2S（串行音频接口）外设，并配置其相关参数，包括数据格式、数据位长度、时钟极性和相位等。</li><li><code>SPI_StructInit</code>：将SPI外设的配置结构体初始化为默认值。</li><li><code>I2S_StructInit</code>：将I2S外设的配置结构体初始化为默认值。</li><li><code>SPI_Cmd</code>【必需】：使能或禁用SPI外设。</li><li><code>I2S_Cmd</code>：使能或禁用I2S（串行音频接口）外设。</li><li><code>SPI_I2S_SendData</code>【常用】：用于向SPI或I2S外设发送数据。但只是将数据送到发送缓冲区。</li><li><code>SPI_I2S_ReceiveData</code>【常用】：从SPI或I2S外设接收数据。但只是将数据从接收缓冲区读出。</li></ul> 
+ <p>关于中断及标志位【必需】：</p> 
+ <ul><li><code>SPI_I2S_GetFlagStatus</code>：常用于非中断函数。获取SPI或I2S外设的特定标志位的状态。常见的标志位包括传输完成标志（TXE或BTF）、接收缓冲区非空标志（RXNE）、传输错误标志（OVR、CRCERR等）以及其他特定功能的标志。</li><li><code>SPI_I2S_ClearFlag</code>：常用于非中断函数。用于软件清除SPI或I2S外设的特定标志位。</li><li><code>SPI_I2S_ITConfig</code>：配置SPI或I2S外设的中断使能状态。注意在使用中断功能之前，还需要配置中断优先级、编写中断服务程序以及使能全局中断。</li><li><code>SPI_I2S_GetITStatus</code>：常用于中断函数。用于获取SPI或I2S外设的特定中断标志位的状态。</li><li><code>SPI_I2S_ClearITPendingBit</code>：常用于中断函数。用于清除SPI或I2S外设的特定中断标志位。</li></ul> 
+ <p>单独参数的配置：</p> 
+ <ul><li><code>SPI_DataSizeConfig</code>：配置SPI外设的数据位长度。</li><li><code>SPI_NSSInternalSoftwareConfig</code>：配置SPI外设的NSS（多主机模式）的内部软件控制模式。</li><li><code>SPI_SSOutputCmd</code>：使能或禁用SPI外设的SS（片选信号）输出功能。</li><li><code>SPI_BiDirectionalLineConfig</code>：用于配置SPI外设的双向数据线模式。</li></ul> 
+ <p>DMA配置（连续数据传输）：</p> 
+ <ul><li><code>SPI_I2S_DMACmd</code>：使能或禁用SPI或I2S外设的DMA传输。</li></ul> 
+ <p>CRC配置：</p> 
+ <ul><li><code>SPI_TransmitCRC</code>：向SPI外设发送CRC（循环冗余校验）值。</li><li><code>SPI_CalculateCRC</code>：用于计算SPI外设接收到的数据的CRC（循环冗余校验）值。</li><li><code>SPI_GetCRC</code>：用于从SPI外设获取计算得到的CRC（循环冗余校验）值。</li><li><code>SPI_GetCRCPolynomial</code>：用于从SPI外设获取当前配置的CRC（循环冗余校验）多项式值。</li></ul> 
+</blockquote>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/caa33b3d88ca8b2379463c724e39d297/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Linux服务器上如何安装OpenCV的库？</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ab3b6f8fe879cc98149644a9561fa7b6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">跑python代码过程中遇到的种种bug</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

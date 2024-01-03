@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink的异步I/O及Future和CompletableFuture - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Flink的异步I/O及Future和CompletableFuture" />
+<meta property="og:description" content="1 概述 Flink在做流数据计算时，经常要外部系统进行交互，如Redis、Hive、HBase等等存储系统。系统间通信延迟是否会拖慢整个Flink作业，影响整体吞吐量和实时性。
+如需要查询外部数据库以关联上用户的额外信息，通常的实现方式是向数据库发送用户a的查询请求（如在MapFunction中），然后等待结果返回，返回之后才能进行下一次查询请求，这是一种同步访问的模式，如下图左边所示，网络等待时间极大的阻碍了吞吐和延迟。
+Flink从1.2版本开始就引入了Async I/O（https://ci.apache.org/projects/flink/flink-docs-release-1.12/dev/stream/operators/asyncio.html）。异步模式可以并发的处理多个请求和回复，也就是说，你可以连续的向数据库发送用户a、b、c、d等的请求，与此同时，哪个请求的回复先返回了就处理哪个回复，从而连续的请求之间不需要阻塞等待，如上图右边所示，这也是Async I/O的实现原理。
+2 Future和CompletableFuture 先了解一下Future和CompletableFuture
+2.1 Future 从JDK1.5开始，提供了Future来表示异步计算的结果，一般需要结合ExecutorService（执行者）和Callable（任务）来使用。Future的get方法是阻塞的
+package com.quinto.flink; import java.util.concurrent.*; public class FutureTest { public static void main(String[] args) throws ExecutionException, InterruptedException { // 核心线程池大小5 最大线程池大小10 线程最大空闲时间60 时间单位s 线程等待队列 ThreadPoolExecutor executor = new ThreadPoolExecutor(5, 10, 60L, TimeUnit.SECONDS, new ArrayBlockingQueue&lt;&gt;(10)); Future&lt;Long&gt; future = executor.submit(() -&gt; { // 故意耗时 Thread.sleep(3000); return System.currentTimeMillis(); }); System.out.println(future.get()); System.out.println(&#34;因为get是阻塞的，所以这个消息在数据之后输出&#34;); executor.shutdown(); } } 结果为
+1612337847685 因为get是阻塞的，所以这个消息在数据之后输出 Future只是个接口，实际上返回的类是FutureTask：
+public &lt;T&gt; Future&lt;T&gt; submit(Callable&lt;T&gt; task) { if (task == null) throw new NullPointerException(); RunnableFuture&lt;T&gt; ftask = newTaskFor(task); execute(ftask); return ftask; } protected &lt;T&gt; RunnableFuture&lt;T&gt; newTaskFor(Callable&lt;T&gt; callable) { return new FutureTask&lt;T&gt;(callable); } FutureTask的get方法如下" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/822d6039dfadb194418accdfed530485/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-02-03T16:27:52+08:00" />
+<meta property="article:modified_time" content="2021-02-03T16:27:52+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink的异步I/O及Future和CompletableFuture</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="1__0"></a>1 概述</h3> 
+<p>  Flink在做流数据计算时，经常要外部系统进行交互，如Redis、Hive、HBase等等存储系统。系统间通信延迟是否会拖慢整个Flink作业，影响整体吞吐量和实时性。</p> 
+<p>  如需要查询外部数据库以关联上用户的额外信息，通常的实现方式是向数据库发送用户a的查询请求（如在MapFunction中），然后等待结果返回，返回之后才能进行下一次查询请求，这是一种同步访问的模式，如下图左边所示，网络等待时间极大的阻碍了吞吐和延迟。</p> 
+<p><img src="https://images2.imgbox.com/67/19/9CZhP66a_o.png" alt="在这里插入图片描述"></p> 
+<p>  Flink从1.2版本开始就引入了Async I/O（https://ci.apache.org/projects/flink/flink-docs-release-1.12/dev/stream/operators/asyncio.html）。异步模式可以并发的处理多个请求和回复，也就是说，你可以连续的向数据库发送用户a、b、c、d等的请求，与此同时，哪个请求的回复先返回了就处理哪个回复，从而连续的请求之间不需要阻塞等待，如上图右边所示，这也是Async I/O的实现原理。</p> 
+<h3><a id="2_FutureCompletableFuture_11"></a>2 Future和CompletableFuture</h3> 
+<p>  先了解一下Future和CompletableFuture</p> 
+<h4><a id="21_Future_14"></a>2.1 Future</h4> 
+<p>  从JDK1.5开始，提供了Future来表示异步计算的结果，一般需要结合ExecutorService（执行者）和Callable（任务）来使用。Future的get方法是阻塞的</p> 
+<pre><code>package com.quinto.flink;
+
+import java.util.concurrent.*;
+
+public class FutureTest {
+    public static void main(String[] args) throws ExecutionException, InterruptedException {
+        // 核心线程池大小5 最大线程池大小10 线程最大空闲时间60 时间单位s 线程等待队列
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(5, 10, 60L, TimeUnit.SECONDS, new ArrayBlockingQueue&lt;&gt;(10));
+        Future&lt;Long&gt; future = executor.submit(() -&gt; {
+            // 故意耗时
+            Thread.sleep(3000);
+            return System.currentTimeMillis();
+        });
+        System.out.println(future.get());
+        System.out.println("因为get是阻塞的，所以这个消息在数据之后输出");
+        executor.shutdown();
+    }
+}
+
+</code></pre> 
+<p>  结果为</p> 
+<pre><code>1612337847685
+因为get是阻塞的，所以这个消息在数据之后输出
+</code></pre> 
+<p>  Future只是个接口，实际上返回的类是FutureTask：</p> 
+<pre><code>    public &lt;T&gt; Future&lt;T&gt; submit(Callable&lt;T&gt; task) {
+        if (task == null) throw new NullPointerException();
+        RunnableFuture&lt;T&gt; ftask = newTaskFor(task);
+        execute(ftask);
+        return ftask;
+    }
+    
+    
+    protected &lt;T&gt; RunnableFuture&lt;T&gt; newTaskFor(Callable&lt;T&gt; callable) {
+        return new FutureTask&lt;T&gt;(callable);
+    }
+
+</code></pre> 
+<p>  FutureTask的get方法如下</p> 
+<pre><code>    private volatile int state;
+    private static final int NEW          = 0;
+    private static final int COMPLETING   = 1;
+    private static final int NORMAL       = 2;
+    private static final int EXCEPTIONAL  = 3;
+    private static final int CANCELLED    = 4;
+    private static final int INTERRUPTING = 5;
+    private static final int INTERRUPTED  = 6;
+
+
+    public V get() throws InterruptedException, ExecutionException {
+        int s = state;
+        // 首先判断FutureTask的状态是否为完成状态，如果是完成状态，说明已经执行过set或setException方法，返回report(s)。任务的运行状态。最初是NEW == 0。运行状态仅在set、setException和cancel方法中转换为终端状态。
+        if (s &lt;= COMPLETING)
+        	//如果get时,FutureTask的状态为未完成状态，则调用awaitDone方法进行阻塞
+            s = awaitDone(false, 0L);
+        return report(s);
+    }
+    
+    /**
+    * awaitDone方法可以看成是不断轮询查看FutureTask的状态。在get阻塞期间：①如果执行get的线程被中断，则移除FutureTask的所有阻塞队列中的线程（waiters）,并抛出中断异常；②如果FutureTask的状态转换为完成状态（正常完成或取消），则返回完成状态；③如果FutureTask的状态变为COMPLETING, 则说明正在set结果，此时让线程等一等；④如果FutureTask的状态为初始态NEW，则将当前线程加入到FutureTask的阻塞线程中去；⑤如果get方法没有设置超时时间，则阻塞当前调用get线程；如果设置了超时时间，则判断是否达到超时时间，如果到达，则移除FutureTask的所有阻塞列队中的线程，并返回此时FutureTask的状态，如果未到达时间，则在剩下的时间内继续阻塞当前线程。
+    */
+    private int awaitDone(boolean timed, long nanos)
+        throws InterruptedException {
+        final long deadline = timed ? System.nanoTime() + nanos : 0L;
+        WaitNode q = null;
+        boolean queued = false;
+        for (;;) {
+            if (Thread.interrupted()) {
+                removeWaiter(q);
+                throw new InterruptedException();
+            }
+
+            int s = state;
+            if (s &gt; COMPLETING) {
+                if (q != null)
+                    q.thread = null;
+                return s;
+            }
+            else if (s == COMPLETING) // cannot time out yet
+                Thread.yield();
+            else if (q == null)
+                q = new WaitNode();
+            else if (!queued)
+                queued = UNSAFE.compareAndSwapObject(this, waitersOffset,
+                                                     q.next = waiters, q);
+            else if (timed) {
+                nanos = deadline - System.nanoTime();
+                if (nanos &lt;= 0L) {
+                    removeWaiter(q);
+                    return state;
+                }
+                LockSupport.parkNanos(this, nanos);
+            }
+            else
+                LockSupport.park(this);
+        }
+    }
+</code></pre> 
+<p>  Future的局限性：</p> 
+<p>  ①可以发现虽然 Future接口可以构建异步应用，但是对于结果的获取却是很不方便，只能通过阻塞或者轮询的方式得到任务的结果。阻塞的方式显然和我们的异步编程的初衷相违背，轮询的方式又会耗费无谓的 CPU 资源，而且也不能及时地得到计算结果。</p> 
+<p>  ②它很难直接表述多个Future 结果之间的依赖性。实际开发中，经常需要将多个异步计算的结果合并成一个，或者等待Future集合中的所有任务都完成，或者任务完成以后触发执行动作</p> 
+<h4><a id="22_CompletableFuture_133"></a>2.2 CompletableFuture</h4> 
+<p>  JDk1.8引入了CompletableFuture，它实际上也是Future的实现类。这里可以得出：</p> 
+<p>  CompletableFuture有一些新特性，能完成Future不能完成的工作。</p> 
+<pre><code>public class CompletableFuture&lt;T&gt; implements Future&lt;T&gt;, CompletionStage&lt;T&gt; {
+</code></pre> 
+<p>  首先看类定义，实现了CompletionStage接口，这个接口是所有的新特性了。</p> 
+<p>  对于CompletableFuture有四个执行异步任务的方法：</p> 
+<pre><code>public static &lt;U&gt; CompletableFuture&lt;U&gt; supplyAsync(Supplier&lt;U&gt; supplier)
+public static &lt;U&gt; CompletableFuture&lt;U&gt; supplyAsync(Supplier&lt;U&gt; supplier, Executor executor)
+public static CompletableFuture&lt;Void&gt; runAsync(Runnable runnable)
+public static CompletableFuture&lt;Void&gt; runAsync(Runnable runnable, Executor executor)
+</code></pre> 
+<p>  supply开头的带有返回值，run开头的无返回值。如果我们指定线程池，则会使用我么指定的线程池；如果没有指定线程池，默认使用ForkJoinPool.commonPool()作为线程池。</p> 
+<pre><code>    public static void main(String[] args) throws ExecutionException, InterruptedException {
+        // 核心线程池大小5 最大线程池大小10 线程最大空闲时间60 时间单位s 线程等待队列
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(5, 10, 60L, TimeUnit.SECONDS, new ArrayBlockingQueue&lt;&gt;(10));
+        CompletableFuture&lt;String&gt; future = CompletableFuture.supplyAsync(() -&gt; {
+            return "hello";
+        }, executor);
+        System.out.println(future.get());
+        executor.shutdown();
+
+    }
+</code></pre> 
+<p>  上面只是对执行异步任务，如果要利用计算结果进一步处理使用，进行结果转换有如下方法：①thenApply （同步）②thenApplyAsync（异步）</p> 
+<pre><code>// 同步转换
+public &lt;U&gt; CompletableFuture&lt;U&gt; thenApply(Function&lt;? super T,? extends U&gt; fn)
+// 异步转换，使用默认线程池
+public &lt;U&gt; CompletableFuture&lt;U&gt; thenApplyAsync(Function&lt;? super T,? extends U&gt; fn)
+// 异步转换，使用指定线程池
+public &lt;U&gt; CompletableFuture&lt;U&gt; thenApplyAsync(Function&lt;? super T,? extends U&gt; fn, Executor executor)
+</code></pre> 
+<pre><code>package com.quinto.flink;
+
+import java.util.concurrent.*;
+
+public class FutureTest {
+    public static void main(String[] args) throws ExecutionException, InterruptedException {
+        // 核心线程池大小5 最大线程池大小10 线程最大空闲时间60 时间单位s 线程等待队列
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(5, 10, 60L, TimeUnit.SECONDS, new ArrayBlockingQueue&lt;&gt;(10));
+        CompletableFuture&lt;Long&gt; future = CompletableFuture
+            // 执行异步任务
+            .supplyAsync(() -&gt; {
+            return System.currentTimeMillis();
+        }, executor)
+        // 对前面的结果进行处理
+            .thenApply(n -&gt; {
+            try {
+                Thread.sleep(2000);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            Long time = System.currentTimeMillis();
+            System.out.println("如果是同步的，这条消息应该先输出");
+            return time-n;
+        });
+        System.out.println("等待2秒");
+        System.out.println(future.get());
+        executor.shutdown();
+
+    }
+}
+</code></pre> 
+<p>  结果为</p> 
+<pre><code>如果是同步的，这条消息应该先输出
+等待2秒
+2017
+</code></pre> 
+<p>  如果把thenApply换成thenApplyAsync，结果如下</p> 
+<pre><code>等待2秒
+如果是同步的，这条消息应该先输出
+2008
+</code></pre> 
+<p>  处理完任务以及结果，该去消费了有如下方法：①thenAccept（能够拿到并利用执行结果） ② thenRun（不能够拿到并利用执行结果，只是单纯的执行其它任务）③thenAcceptBoth（能传入另一个stage，然后把另一个stage的结果和当前stage的结果作为参数去消费。）</p> 
+<pre><code>public CompletableFuture&lt;Void&gt; thenAccept(Consumer&lt;? super T&gt; action)
+public CompletableFuture&lt;Void&gt; thenAcceptAsync(Consumer&lt;? super T&gt; action)
+public CompletableFuture&lt;Void&gt; thenAcceptAsync(Consumer&lt;? super T&gt; action, Executor executor)
+
+public CompletableFuture&lt;Void&gt; thenRun(Runnable action)
+public CompletableFuture&lt;Void&gt; thenRunAsync(Runnable action)
+public CompletableFuture&lt;Void&gt; thenRunAsync(Runnable action, Executor executor)
+
+public &lt;U&gt; CompletableFuture&lt;Void&gt; thenAcceptBoth(CompletionStage&lt;? extends U&gt; other, BiConsumer&lt;? super T, ? super U&gt; action)
+public &lt;U&gt; CompletableFuture&lt;Void&gt; thenAcceptBothAsync(CompletionStage&lt;? extends U&gt; other, BiConsumer&lt;? super T, ? super U&gt; action)
+public &lt;U&gt; CompletableFuture&lt;Void&gt; thenAcceptBothAsync(CompletionStage&lt;? extends U&gt; other, BiConsumer&lt;? super T, ? super U&gt; action, Executor executor)
+</code></pre> 
+<p>  如果要组合两个任务有如下方法：①thenCombine(至少两个方法参数，一个为其它stage，一个为用户自定义的处理函数，函数返回值为结果类型) ；② thenCompose(至少一个方法参数即处理函数，函数返回值为stage类型)</p> 
+<pre><code>public &lt;U,V&gt; CompletionStage&lt;V&gt; thenCombine(CompletionStage&lt;? extends U&gt; other, BiFunction&lt;? super T,? super U,? extends V&gt; fn)
+public &lt;U,V&gt; CompletionStage&lt;V&gt; thenCombineAsync(CompletionStage&lt;? extends U&gt; other, BiFunction&lt;? super T,? super U,? extends V&gt; fn)
+public &lt;U,V&gt; CompletionStage&lt;V&gt; thenCombineAsync(CompletionStage&lt;? extends U&gt; other, BiFunction&lt;? super T,? super U,? extends V&gt; fn, Executor executor)
+
+public &lt;U&gt; CompletionStage&lt;U&gt; thenCompose(Function&lt;? super T, ? extends CompletionStage&lt;U&gt;&gt; fn)
+public &lt;U&gt; CompletionStage&lt;U&gt; thenComposeAsync(Function&lt;? super T, ? extends CompletionStage&lt;U&gt;&gt; fn)
+public &lt;U&gt; CompletionStage&lt;U&gt; thenComposeAsync(Function&lt;? super T, ? extends CompletionStage&lt;U&gt;&gt; fn, Executor executor)
+</code></pre> 
+<p>  如果有多条渠道去完成同一种任务，选择最快的那个有如下方法：①applyToEither (有返回值)②acceptEither(没有返回值)</p> 
+<pre><code>public &lt;U&gt; CompletionStage&lt;U&gt; applyToEither(CompletionStage&lt;? extends T&gt; other, Function&lt;? super T, U&gt; fn)
+public &lt;U&gt; CompletionStage&lt;U&gt; applyToEitherAsync(CompletionStage&lt;? extends T&gt; other, Function&lt;? super T, U&gt; fn)
+public &lt;U&gt; CompletionStage&lt;U&gt; applyToEitherAsync(CompletionStage&lt;? extends T&gt; other, Function&lt;? super T, U&gt; fn, Executor executor)
+
+public CompletionStage&lt;Void&gt; acceptEither(CompletionStage&lt;? extends T&gt; other, Consumer&lt;? super T&gt; action)
+public CompletionStage&lt;Void&gt; acceptEitherAsync(CompletionStage&lt;? extends T&gt; other, Consumer&lt;? super T&gt; action)
+public CompletionStage&lt;Void&gt; acceptEitherAsync(CompletionStage&lt;? extends T&gt; other, Consumer&lt;? super T&gt; action, Executor executor)
+</code></pre> 
+<p>  Future和CompletableFuture对比：</p> 
+<p>  Future：只能通过get方法或者死循环判断isDone来获取。异常情况不好处理。</p> 
+<p>  CompletableFuture：只要设置好回调函数即可实现：①只要任务完成，就执行设置的函数，不用考虑什么时候任务完成②如果发生异常，会执行处理异常的函数③能应付复杂任务的处理，如果有复杂任务，比如依赖问题，组合问题等，同样可以写好处理函数来处理</p> 
+<h3><a id="3_Aysnc_IO_277"></a>3 使用Aysnc I/O的条件</h3> 
+<p>  （1）具有对外部系统进行异步IO访问的客户端API，如使用vertx，但是目前只支持scala 2.12的版本，可以使用java类库来做</p> 
+<p>  （2）没有这样的客户端，可以通过创建多个客户端并使用线程池处理同步调用来尝试将同步客户端转变为有限的并发客户端，如可以写ExecutorService来实现。但是这种方法通常比适当的异步客户端效率低。</p> 
+<h3><a id="4_Aysnc_IO_283"></a>4 Aysnc I/O的案例</h3> 
+<h4><a id="41_IOAPI_285"></a>4.1 有外部系统进行异步IO访问的客户端API的方式</h4> 
+<pre><code>// 这个例子实现了异步请求和回调的Futures，具有Java8的Futures接口(与Flink的Futures相同)
+
+class AsyncDatabaseRequest extends RichAsyncFunction&lt;String, Tuple2&lt;String, String&gt;&gt; {
+
+    // 定义连接客户端，并且不参与序列化
+    private transient DatabaseClient client;
+
+    @Override
+    public void open(Configuration parameters) throws Exception {
+        // 创建连接
+        client = new DatabaseClient(host, post, credentials);
+    }
+
+    @Override
+    public void close() throws Exception {
+        client.close();
+    }
+
+    @Override
+    public void asyncInvoke(String key, final ResultFuture&lt;Tuple2&lt;String, String&gt;&gt; resultFuture) throws Exception {
+
+        // 用连接进行查询，查询之后返回的是future，有可能有，有可能没有
+        final Future&lt;String&gt; result = client.query(key);
+
+        // 如果有结果返回的话会通知你(有个回调方法)，这里可以设置超时时间，如果超过了一定的时间还没有返回相当于从这里取一取就会抛异常，结果就会返回null
+        CompletableFuture.supplyAsync(new Supplier&lt;String&gt;() {
+
+            @Override
+            public String get() {
+                try {
+                    return result.get();
+                } catch (InterruptedException | ExecutionException e) {
+                    // Normally handled explicitly.
+                    return null;
+                }
+            }
+            //如果它已经执行完了，就会把结果放到Collections里面
+        }).thenAccept( (String dbResult) -&gt; {
+            resultFuture.complete(Collections.singleton(new Tuple2&lt;&gt;(key, dbResult)));
+        });
+    }
+}
+
+// create the original stream
+DataStream&lt;String&gt; stream = ...;
+
+// unorderedWait这个是不在乎请求返回的顺序的,里面用到的是阻塞队列，队列满了会阻塞，队列里面一次最多可以有100个异步请求，超时时间是1000毫秒
+DataStream&lt;Tuple2&lt;String, String&gt;&gt; resultStream =
+    AsyncDataStream.unorderedWait(stream, new AsyncDatabaseRequest(), 1000, TimeUnit.MILLISECONDS, 100);
+</code></pre> 
+<h4><a id="42_IOAPI_341"></a>4.2 没有外部系统进行异步IO访问的客户端API的方式</h4> 
+<pre><code>package com.quinto.flink;
+
+import com.alibaba.druid.pool.DruidDataSource;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.streaming.api.functions.async.ResultFuture;
+import org.apache.flink.streaming.api.functions.async.RichAsyncFunction;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.util.Collections;
+import java.util.concurrent.*;
+import java.util.function.Supplier;
+
+class AsyncDatabaseRequest extends RichAsyncFunction&lt;String,String&gt; {
+    // 这里用到了连接池，以前查询是阻塞的，查询完这个下一个还是同个连接，
+    // 现在要发送多个请求不能用同个连接，每个请求都会返回一个结果。这里不但要用到连接池，还要用到线程池。
+    private transient DruidDataSource druidDataSource;
+    private transient ExecutorService executorService;
+
+    @Override
+    public void open(Configuration parameters) throws Exception {
+        executorService = Executors.newFixedThreadPool(20);
+        druidDataSource = new DruidDataSource();
+        druidDataSource.setDriverClassName("com.mysql.jdbc.Driver");
+        druidDataSource.setUsername("root");
+        druidDataSource.setPassword("root");
+        druidDataSource.setUrl("jdbc:mysql:..localhost:3306/bigdata?characterEncoding=UTF-8");
+        druidDataSource.setInitialSize(5);
+        druidDataSource.setMinIdle(10);
+        druidDataSource.setMaxActive(20);
+    }
+
+    @Override
+    public void close() throws Exception {
+        druidDataSource.close();
+        executorService.shutdown();
+    }
+
+    @Override
+    public void asyncInvoke(String input,final ResultFuture&lt;String&gt; resultFuture) {
+        // 向线程池丢入一个线程
+        Future&lt;String&gt; future = executorService.submit(() -&gt; {
+            String sql = "SELECT id,name FROM table WHERE id = ?";
+            String result = null;
+            Connection connection = null;
+            PreparedStatement stmt = null;
+            ResultSet rs = null;
+            try {
+                connection = druidDataSource.getConnection();
+                stmt = connection.prepareStatement(sql);
+                rs = stmt.executeQuery();
+                while (rs.next()){
+                    result = rs.getString("name");
+                }
+            }finally {
+                if (rs!=null){
+                    rs.close();
+                }
+                if (stmt!=null){
+                    stmt.close();
+                }
+                if (connection!=null){
+                    connection.close();
+                }
+            }
+
+            return result;
+        });
+        // 接收任务的处理结果，并消费处理，无返回结果。
+        CompletableFuture.supplyAsync(new Supplier&lt;String&gt;() {
+            @Override
+            public String get() {
+                try {
+                    // 从future里面把结果取出来，如果有就返回，没有的话出异常就返回null
+                    return future.get();
+                } catch (Exception e) {
+                    return null;
+                }
+            }
+            // 拿到上一步的执行结果，进行处理
+        }).thenAccept((String result)-&gt;{
+            // 从future里面取出数据会有一个回调，然后会把他放到resultFuture,complete中要求放的是一个集合，所以需要进行转换
+            resultFuture.complete(Collections.singleton(result));
+        });
+    }
+}
+</code></pre> 
+<p>  这样mysql的API还是用他原来的，只不过把mysql的查询使用把要查询的功能丢线程池。以前查询要好久才返回，现在来一个查询就丢到线程池里面，不需要等待结果，返回的结果放在future里面。原来查询是阻塞的，现在开启一个线程查，把查询结果丢到future里面。相当于新开一个线程让他帮我查，原来是单线程的，现在开多个线程同时查，然后把结果放future，以后有结果了从这里面取。</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/51287a27548707d664596912968fb93d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">[数据仓库]分层概念,ODS,DM,DWD,DWS,DIM的概念</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e9dea2c3ebffb92708d777a5cf45eb31/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">hadoop入门 启动 journalnode报错</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

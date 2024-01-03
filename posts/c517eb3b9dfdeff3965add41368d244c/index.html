@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Windows 多网卡并行通信程序设计（C&#43;&#43;） - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Windows 多网卡并行通信程序设计（C&#43;&#43;）" />
+<meta property="og:description" content="1.任务要求 在PC上同时插入多个无线USB网卡，利用5个USB网卡并行通信。
+2.实验准备 开发环境：VS2015测试工具：wireshark抓包软件(服务器端)硬件条件：多个USB网卡（系统需具备相应驱动），最好是3个以上 3.项目分析 平常我们的PC都是利用一个网卡来通信（无线或者有线），应用程序也只会绑定一个网卡。但现在是实现多个网卡实现并行的收发数据！当多个无线USB网卡接入电脑，都连接同一个AP，怎么才能让自己的程序绑定接入的USB网卡、并行收发数据呢？
+获取接入PC的USB网卡信息(名称、MAC地址、IP地址等)；创建多线程，一个线程绑定一个网卡，依据网卡上的信息来异步执行任务；最后，Windows Socket编程，与服务器建立TCP、UDP连接，收发数据。 4.实验过程 4.1 PIP_ADAPTER_INFO结构体获取网卡信息 结构体ADAPTER_INFO用于于获取PC上网络适配器的IPv4信息，该结构体通过调用GetAdaptersInfo函数获取值。
+//PIP_ADAPTER_INFO结构体指针存储本机网卡信息 PIP_ADAPTER_INFO pIpAdapterInfo = new IP_ADAPTER_INFO(); //得到结构体大小,用于GetAdaptersInfo参数 unsigned long stSize = sizeof(IP_ADAPTER_INFO); //调用GetAdaptersInfo函数,填充pIpAdapterInfo指针变量;其中stSize参数既是一个输入量也是一个输出量 int nRel = GetAdaptersInfo(pIpAdapterInfo, &amp;stSize); //记录网卡数量 int netCardNum = 0; //记录每张网卡上的IP地址数量 int IPnumPerNetCard = 0; if (ERROR_BUFFER_OVERFLOW == nRel){ //如果函数返回的是ERROR_BUFFER_OVERFLOW //释放原来的内存空间 delete pIpAdapterInfo; //重新申请内存空间用来存储所有网卡信息 pIpAdapterInfo = (PIP_ADAPTER_INFO)new BYTE[stSize]; //再次调用GetAdaptersInfo函数,填充pIpAdapterInfo指针变量 nRel = GetAdaptersInfo(pIpAdapterInfo, &amp;stSize); } if (ERROR_SUCCESS == nRel){ //输出网卡信息 getUSBWirelessAdapter(pIpAdapterInfo, IPnumPerNetCard, netCardNum); } //释放内存空间 if (pIpAdapterInfo){ delete pIpAdapterInfo; } 其中getUSBWirelessAdapter(PIP_ADAPTER_INFO pIpAdapterInfo,int IPnumPerNetCard, int netCardNum)函数用与筛选出所需要的网卡和分配到的IP地址等信息，结果如下图。其中依据USB关键字在程序里筛选出USB无线网卡。" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/c517eb3b9dfdeff3965add41368d244c/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2019-10-18T22:16:27+08:00" />
+<meta property="article:modified_time" content="2019-10-18T22:16:27+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Windows 多网卡并行通信程序设计（C&#43;&#43;）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>1.任务要求</h2> 
+<p style="text-indent:33px;">在PC上同时插入多个无线USB网卡，利用5个USB网卡并行通信。</p> 
+<h2>2.实验准备</h2> 
+<ol><li><strong>开发环境</strong>：VS2015</li><li><strong>测试工具</strong>：wireshark抓包软件(服务器端)</li><li><strong>硬件条件</strong>：多个USB网卡（系统需具备相应驱动），最好是3个以上</li></ol> 
+<h2>3.项目分析</h2> 
+<p style="text-indent:33px;">平常我们的PC都是利用一个网卡来通信（无线或者有线），应用程序也只会绑定一个网卡。但现在是实现多个网卡实现并行的收发数据！当多个无线USB网卡接入电脑，都连接同一个AP，怎么才能让自己的程序绑定接入的USB网卡、并行收发数据呢？</p> 
+<ol><li>获取接入PC的USB网卡信息(名称、MAC地址、IP地址等)；</li><li>创建多线程，一个线程绑定一个网卡，依据网卡上的信息来异步执行任务；</li><li>最后，Windows Socket编程，与服务器建立TCP、UDP连接，收发数据。</li></ol> 
+<h2>4.实验过程</h2> 
+<h3>4.1 PIP_ADAPTER_INFO结构体获取网卡信息</h3> 
+<p style="text-indent:33px;">结构体<strong>ADAPTER_INFO用于</strong>于获取PC上网络适配器的IPv4信息，该结构体通过调用<strong><a href="https://baike.baidu.com/item/GetAdaptersInfo" rel="nofollow">GetAdaptersInfo</a></strong>函数获取值。</p> 
+<pre class="has"><code class="language-cpp">          //PIP_ADAPTER_INFO结构体指针存储本机网卡信息
+	PIP_ADAPTER_INFO pIpAdapterInfo = new IP_ADAPTER_INFO();
+	//得到结构体大小,用于GetAdaptersInfo参数
+	unsigned long stSize = sizeof(IP_ADAPTER_INFO);
+	//调用GetAdaptersInfo函数,填充pIpAdapterInfo指针变量;其中stSize参数既是一个输入量也是一个输出量
+	int nRel = GetAdaptersInfo(pIpAdapterInfo, &amp;stSize);
+	//记录网卡数量
+	int netCardNum = 0;
+	//记录每张网卡上的IP地址数量
+	int IPnumPerNetCard = 0;
+	if (ERROR_BUFFER_OVERFLOW == nRel){
+		//如果函数返回的是ERROR_BUFFER_OVERFLOW
+		//释放原来的内存空间
+		delete pIpAdapterInfo;
+		//重新申请内存空间用来存储所有网卡信息
+		pIpAdapterInfo = (PIP_ADAPTER_INFO)new BYTE[stSize];
+		//再次调用GetAdaptersInfo函数,填充pIpAdapterInfo指针变量
+		nRel = GetAdaptersInfo(pIpAdapterInfo, &amp;stSize);
+	}
+	if (ERROR_SUCCESS == nRel){
+		//输出网卡信息
+		getUSBWirelessAdapter(pIpAdapterInfo, IPnumPerNetCard, netCardNum);
+	}
+	//释放内存空间
+	if (pIpAdapterInfo){
+		delete pIpAdapterInfo;
+	}</code></pre> 
+<p style="text-indent:33px;">其中<span style="color:#f33b45;">getUSBWirelessAdapter</span>(PIP_ADAPTER_INFO pIpAdapterInfo,int IPnumPerNetCard, int netCardNum)函数用与筛选出所需要的网卡和分配到的IP地址等信息，结果如下图。其中依据<strong><em>USB</em></strong>关键字在程序里筛选出USB无线网卡。</p> 
+<p style="text-align:center;"><img alt="" class="has" height="310" src="https://images2.imgbox.com/a7/f3/F3nhkcj8_o.png" width="400"></p> 
+<h3>4.2 多线程创建</h3> 
+<p style="text-indent:33px;">CreateThread函数创建多个线程，利用（LPVOID）LocalIP[i]<span style="color:#f33b45;"><em>ip地址</em></span>作为参数传入每个线程。每个线程要执行的就是各自与服务器端建立TCP，传输数据。多线程创建结果如下图。</p> 
+<pre class="has"><code class="language-cpp">HANDLE hthread[5];//创建线程句柄
+DWORD threadid[5];//保存线程的编号;
+for (i = 0; i &lt; 5; i++)
+{
+	hthread[i] = CreateThread(
+		NULL,//表示线程内核对象的安全属性;
+		NULL,//表示线程堆栈空间的大小;
+		mymsg,//表示新线程所执行的线程函数地址;
+		(LPVOID)LocalIP[i],//函数的参数;
+		0,//立刻执行;
+		&amp;threadid[i]//将返回线程的ID号;
+	);
+}</code></pre> 
+<p style="text-align:center;"><img alt="" class="has" height="204" src="https://images2.imgbox.com/67/a8/CoIKbFf6_o.png" width="300"></p> 
+<h3>4.3 socket编程</h3> 
+<p style="text-indent:33px;">每个线程绑定到不同的ip地址，各自与服务器进行TCP通信。</p> 
+<pre class="has"><code class="language-cpp">DWORD WINAPI mymsg(LPVOID lp)
+{
+	char *ip = (char *)lp;
+	printf("我是子线程， pid = %d\n", GetCurrentThreadId());   //输出子线程pid
+	/*********************
+	 *@SOCKET配置
+	 *********************/
+	WORD sockVersion = MAKEWORD(2, 2);
+	WSADATA data;
+	if (WSAStartup(sockVersion, &amp;data) != 0){
+		return 0;
+	}
+	
+	SOCKET sclient = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	struct sockaddr_in localaddr;
+        //要发送的数据
+	char  sendData[] = "this is USB wireless Adapter!";
+	printf("%s\n", strcat(sendData, ip));
+
+	localaddr.sin_family = AF_INET;
+	localaddr.sin_addr.s_addr = inet_addr(ip);//绑定本地ip地址
+	localaddr.sin_port = 0;  // Any local port will do
+	bind(sclient, (struct sockaddr *)&amp;localaddr, sizeof(localaddr));
+
+	if (sclient == INVALID_SOCKET){
+		printf("invalid socket !");
+		return 0;
+	}
+	sockaddr_in serAddr;
+	serAddr.sin_family = AF_INET;
+	serAddr.sin_port = htons(8080);//服务器端的ip地址和端口号
+	serAddr.sin_addr.S_un.S_addr = inet_addr("192.168.50.155");
+	if (connect(sclient, (sockaddr *)&amp;serAddr, sizeof(serAddr)) == SOCKET_ERROR){
+		printf("connect error !");
+		closesocket(sclient);
+		return 0;
+	}
+	//循环发送数据，便于观察
+	for (int i = 0; i &lt; 200; ++i) {
+		send(sclient, sendData, strlen(sendData), 0);
+	}
+        //断开连接
+	closesocket(sclient);
+	WSACleanup();
+	return 0;
+}</code></pre> 
+<p style="text-indent:33px;">下图是在服务器端利用wireshark抓包的结果，可见五个网卡同时与服务器建立了连接，异步传输数据 。<em>但后续的传输数据部分没有截图保留结果。</em></p> 
+<p style="text-align:center;"><img alt="" class="has" height="455" src="https://images2.imgbox.com/11/51/upTdd2kr_o.png" width="696"></p> 
+<h2> 5 实验总结 </h2> 
+<p style="text-indent:33px;">该实验是项目之前的小测试，需求感觉很奇怪。。。完成只用了一个晚上，算是比较轻松。</p> 
+<p style="text-indent:33px;">程序需要完善的地方有很多！！！</p> 
+<ol><li>多个网卡连接热点需要手动输入密码去连接，对多个网卡来说，太繁琐了。最好在程序里预先定义好，只要插入一个USB网卡就连接到AP，进而创建线程开始数据传输，这样效率更高。</li><li>socket编程只进行了一个TCP数据的发送，没有进行数据的接收。<em>服务器端的程序也没来得及去编写，以后有时间再说吧~~</em></li><li>线程只是绑定了网卡上的IP,不知道能不能像Linux系统那样直接绑定到网卡。</li><li>不对，多个线程对应的是同一个ip地址和端口，在服务器端，数据包的处理还是要排队的，并不是真正的并行。</li></ol> 
+<h2>6 代码</h2> 
+<pre class="has"><code class="language-cpp">#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+
+#define WIN32_LEAN_AND_MEAN
+#include &lt;windows.h&gt;
+#include &lt;process.h&gt; 
+#include &lt;iostream&gt;
+#include &lt;string&gt;
+#include &lt;WinSock2.h&gt;
+#include &lt;Iphlpapi.h&gt;
+using namespace std;
+
+#pragma comment(lib,"ws2_32.lib")
+#pragma comment(lib,"Iphlpapi.lib") //需要添加Iphlpapi.lib库
+
+char LocalIP[5][16];
+int ipadd = 0;
+DWORD WINAPI mymsg(LPVOID lp)
+{
+	char *ip = (char *)lp;
+	printf("我是子线程， pid = %d\n", GetCurrentThreadId());   //输出子线程pid
+	/*********************
+	 *@SOCKET配置
+	 *********************/
+	WORD sockVersion = MAKEWORD(2, 2);
+	WSADATA data;
+	if (WSAStartup(sockVersion, &amp;data) != 0)
+	{
+		return 0;
+	}
+	
+	SOCKET sclient = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	struct sockaddr_in localaddr;
+
+	char  sendData[] = "this is USB wireless Adapter!";
+	printf("%s\n", strcat(sendData, ip));
+
+	localaddr.sin_family = AF_INET;
+	localaddr.sin_addr.s_addr = inet_addr(ip);
+	localaddr.sin_port = 0;  // Any local port will do
+	bind(sclient, (struct sockaddr *)&amp;localaddr, sizeof(localaddr));
+
+	if (sclient == INVALID_SOCKET)
+	{
+		printf("invalid socket !");
+		return 0;
+	}
+	sockaddr_in serAddr;
+	serAddr.sin_family = AF_INET;
+	serAddr.sin_port = htons(8080);
+	serAddr.sin_addr.S_un.S_addr = inet_addr("192.168.50.155");
+	if (connect(sclient, (sockaddr *)&amp;serAddr, sizeof(serAddr)) == SOCKET_ERROR){
+		printf("connect error !");
+		closesocket(sclient);
+		return 0;
+	}
+	//发送数据
+	for (int i = 0; i &lt; 200; ++i) {
+		send(sclient, sendData, strlen(sendData), 0);
+	}
+	//接收服务器返回字符串
+/*	char recData[255];
+	int ret = recv(sclient, recData, 255, 0);
+	if (ret &gt; 0)
+	{
+		recData[ret] = 0x00;
+		printf(recData);
+	}*/
+	closesocket(sclient);
+	WSACleanup();
+	return 0;
+}
+void getUSBWirelessAdapter(PIP_ADAPTER_INFO pIpAdapterInfo,int IPnumPerNetCard, int netCardNum) {
+
+	//可能有多网卡,因此通过循环去判断
+	while (pIpAdapterInfo)
+	{
+		//识别当前接入的USB网卡
+		if (strstr(pIpAdapterInfo-&gt;Description, "USB")) {
+			cout &lt;&lt; "网卡描述：" &lt;&lt; pIpAdapterInfo-&gt;Description &lt;&lt; endl;
+
+			//输出网卡物理地址
+			cout &lt;&lt; "网卡MAC地址：";
+			for (int i = 0; i &lt; pIpAdapterInfo-&gt;AddressLength; i++)
+				if (i &lt; pIpAdapterInfo-&gt;AddressLength - 1)
+				{
+					printf("%02X-", pIpAdapterInfo-&gt;Address[i]);
+				}
+				else {
+					printf("%02X\n", pIpAdapterInfo-&gt;Address[i]);
+				}
+				cout &lt;&lt; "网卡IP地址如下：" &lt;&lt; endl;
+				//可能网卡有多IP,因此通过循环去判断
+				IP_ADDR_STRING *pIpAddrString = &amp;(pIpAdapterInfo-&gt;IpAddressList);
+				do
+				{
+
+					cout &lt;&lt; "IP 地址：" &lt;&lt; pIpAddrString-&gt;IpAddress.String &lt;&lt; endl;
+
+					strcpy(LocalIP[IPnumPerNetCard], pIpAddrString-&gt;IpAddress.String);
+
+					cout &lt;&lt; "该网卡上的IP数量：" &lt;&lt; ++IPnumPerNetCard &lt;&lt; endl;
+					cout &lt;&lt; "子网掩码：" &lt;&lt; pIpAddrString-&gt;IpMask.String &lt;&lt; endl;
+					cout &lt;&lt; "网关地址：" &lt;&lt; pIpAdapterInfo-&gt;GatewayList.IpAddress.String &lt;&lt; endl;
+					pIpAddrString = pIpAddrString-&gt;Next;
+
+				} while (pIpAddrString);
+				cout &lt;&lt; "--------------------------------------------------------------------" &lt;&lt; endl;
+		}
+		netCardNum++;
+		pIpAdapterInfo = pIpAdapterInfo-&gt;Next;
+	}
+	cout &lt;&lt; "网络设备:" &lt;&lt; netCardNum &lt;&lt; " 台" &lt;&lt; endl;
+
+}
+int main(int argc, char* argv[])
+{
+	/*********************
+	*@多线程配置
+	*********************/
+	int i;
+	HANDLE hthread[5];
+	DWORD threadid[5];//保存线程的编号;
+	/*
+	STARTUPINFO si = { sizeof(STARTUPINFO) };//在产生子进程时，子进程的窗口相关信息
+	PROCESS_INFORMATION pi;                  //子进程的ID/线程相关信息
+	DWORD returnCode;//用于保存子程进的返回值;
+	*/
+	/*********************
+	*@网卡信息获取
+	*********************/
+	//PIP_ADAPTER_INFO结构体指针存储本机网卡信息
+	PIP_ADAPTER_INFO pIpAdapterInfo = new IP_ADAPTER_INFO();
+	//得到结构体大小,用于GetAdaptersInfo参数
+	unsigned long stSize = sizeof(IP_ADAPTER_INFO);
+	//调用GetAdaptersInfo函数,填充pIpAdapterInfo指针变量;其中stSize参数既是一个输入量也是一个输出量
+	int nRel = GetAdaptersInfo(pIpAdapterInfo, &amp;stSize);
+	//记录网卡数量
+	int netCardNum = 0;
+	//记录每张网卡上的IP地址数量
+	int IPnumPerNetCard = 0;
+	if (ERROR_BUFFER_OVERFLOW == nRel)
+	{
+		//如果函数返回的是ERROR_BUFFER_OVERFLOW
+		//则说明GetAdaptersInfo参数传递的内存空间不够,同时其传出stSize,表示需要的空间大小
+		//这也是说明为什么stSize既是一个输入量也是一个输出量
+		//释放原来的内存空间
+		delete pIpAdapterInfo;
+		//重新申请内存空间用来存储所有网卡信息
+		pIpAdapterInfo = (PIP_ADAPTER_INFO)new BYTE[stSize];
+		//再次调用GetAdaptersInfo函数,填充pIpAdapterInfo指针变量
+		nRel = GetAdaptersInfo(pIpAdapterInfo, &amp;stSize);
+	}
+	if (ERROR_SUCCESS == nRel)
+	{
+		//输出网卡信息
+		getUSBWirelessAdapter(pIpAdapterInfo, IPnumPerNetCard, netCardNum);
+	}
+	//释放内存空间
+	if (pIpAdapterInfo)
+	{
+		delete pIpAdapterInfo;
+	}
+	for (int i = 0; i &lt; 5; i++) {
+		//当前获取到的IP地址
+		puts(LocalIP[i]);
+	}
+	for (i = 0; i &lt; 5; i++)
+	{
+		hthread[i] = CreateThread(
+			NULL,//表示线程内核对象的安全属性;
+			NULL,//表示线程堆栈空间的大小;
+			mymsg,//表示新线程所执行的线程函数地址;
+			(LPVOID)LocalIP[i],//函数的参数;
+			0,//立刻执行;
+			&amp;threadid[i]//将返回线程的ID号;
+		);
+	}
+	//mymsg(NULL);
+	for (i = 0; i &lt; 5; i++) {
+		CloseHandle(hthread[i]);
+	}
+	system("pause");
+	return 0;
+}
+</code></pre> 
+<p style="text-indent:33px;"> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a6380a0d9889f535543c5d05cc3a87de/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Python 已经将module添加到系统路径,但是调用时编译器还是提示no module named XXX</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/598d091212895ffc2bcb98c3d4f1eb70/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">全面总结 JS 中浮点数运算不准确的原因及解决办法</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

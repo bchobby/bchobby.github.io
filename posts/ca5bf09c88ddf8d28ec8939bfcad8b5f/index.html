@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>kafka的原理及集群部署详解 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="kafka的原理及集群部署详解" />
+<meta property="og:description" content="消息队列分类 点对点 组成：消息队列（Queue）、发送者（Sender）、接收者（Receiver）
+特点：一个生产者生产的消息只能被一个接受者接收，消息一旦被消费，消息就不在消息队列中了
+发布/订阅 组成：消息队列（Queue）、发布者（Publisher）、订阅者（Subscriber）、主题（Topic）
+特点：每个消息可以有多个消费者，彼此互不影响，即发布到消息队列的消息能被多个接受者（订阅者）接收
+常见的消息系统 ActiveMQ： 历史悠久，支持性较好，性能相对不高
+RabbitMQ： 可靠性高、安全
+Kafka： 分布式、高性能、高吞吐量、跨语言
+RocketMQ： 阿里开源的消息中间件，纯Java实现
+kafka架构 kafka介绍 Kafka是一个分布式的发布/订阅消息系统，最初由LinkedIn(领英)公司发布，使用Scala语言编写，后成为Apache的顶级项目。
+kafka主要用于处理活跃的数据，如登录、浏览、点击、分享等用户行为产生的数据。
+kafka架构组成 Broker broker表示kafka的节点，kafka集群包含多个kafka服务节点，每个kafka服务节点就称为一个broker
+Topic 主题，用来存储不同类别的消息（kafka的消息数据是分主题存储在硬盘上的）
+存储消息时，需要指定存储在哪个主题下面，如发帖，发哪种类型的
+Partition 分区，每个topic包含一个或多个partition，在创建topic时指定包含的partition数据（目的是为了进行分布式存储）
+分区可以提高负载（每个分区是不同的磁盘，所以会提高负载）
+Replication 副本，每个partition分区可以有多个副本，分布在不同的Broker上
+kafka会选出一个副本作为Leader，所有的读写请求都会通过Leader完成，Follower只负责备份数据
+所有Follower会自动从Leader中复制数据，当Leader宕机后，会从Follower中选出一个新的Leader继续提供服务，实现故障自动转移
+Message 消息，是通信数据的基本单位，每个消息都属于一个Partition，消息都是放在Partition里面的
+Producer 消息的生产者，向kafka的一个topic发布消息，发布消息时，需要指定发布到哪个topic主题
+Consumer 消息的消费者，订阅Topic并读取其发布的消息，消费或订阅哪个topic主题里的消息，可以订阅多个主题的消息（类似订阅多个微信公众号）
+Consumer Group 消费者组，每个Consumer属于一个特定的Consumer Group，多个Consumer可以属于同一个Consumer Group
+各个consumer可以组成一个组，每个消息只能被组中的一个consumer消费，如果一个消息可以被多个consumer消费的话，那么这些consumer必须在不同的组。
+ZooKeeper 协调Kafka的正常运行，kafka将元数据信息保存在ZooKeeper中，但发送给Topic本身的消息数据并不存储在ZK中，而是存储在磁盘文件中
+元数据信息包括：kafka有多少个节点、有哪些主题，主题叫什么，有哪些分区的等（消息自身的数据不在ZK中，而是在磁盘上对应的分区中）
+kafka的工作流程 生产者向kafka发送数据的流程（六步） 一共六步：
+生产者查询Leader：producer先从zookeeper的“/brokers/.../state”节点找到该partition的leader
+找到Leader之后往Leader写数据：producer将消息发送给该leader
+Leader落盘：leader将消息写入本地log
+Leader通知Follower
+Follower从Leader中拉取数据：replication写入到Follower的本地log后，follower向leader发送ack
+Kafka向生产者回应ACK：leader收到所有的replication的ack之后，向producer发送ack
+Kafka选择分区的模式（三种） 直接指定往哪个分区写
+指定key，然后kafka根据key做hash后决定写哪个分区
+各个分区轮询
+生产者往kafka发送数据的模式（三种） 把数据发送给Leader就认为成功，效率最高，安全性低
+把数据发送给Leader，等待Leader回复Ack后则认为发送成功
+把数据发送给Leader，确保Follower从Leader拉取数据回复Ack给Leader，Leader再向生产者回复Ack才认为发送成功，安全性最高
+数据消费 多个消费者可以组成一个消费者组，并用一个标签来标识这个消费者组（一个消费者实例可以运行在不同的进程甚至不同的服务器上）
+如果所有的消费者实例都在同一个消费者组中，那么消息记录会被很好的均衡发送到每个消费者实例
+如果所有的消费者实例都在不同的消费者组，那么每一条消息记录会被广播到每一个消费者实例" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/ca5bf09c88ddf8d28ec8939bfcad8b5f/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2023-06-21T05:53:49+08:00" />
+<meta property="article:modified_time" content="2023-06-21T05:53:49+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">kafka的原理及集群部署详解</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h4 id="消息队列分类">消息队列分类</h4> 
+<h5 id="点对点">点对点</h5> 
+<ul><li> <p>组成：消息队列（Queue）、发送者（Sender）、接收者（Receiver）</p> </li><li> <p>特点：一个生产者生产的消息只能被一个接受者接收，消息一旦被消费，消息就不在消息队列中了</p> </li></ul> 
+<h5 id="发布/订阅">发布/订阅</h5> 
+<ul><li> <p>组成：消息队列（Queue）、发布者（Publisher）、订阅者（Subscriber）、主题（Topic）</p> </li><li> <p>特点：每个消息可以有多个消费者，彼此互不影响，即发布到消息队列的消息能被多个接受者（订阅者）接收</p> </li></ul> 
+<h4 id="常见的消息系统">常见的消息系统</h4> 
+<ul><li> <p>ActiveMQ： 历史悠久，支持性较好，性能相对不高</p> </li><li> <p>RabbitMQ： 可靠性高、安全</p> </li><li> <p>Kafka： 分布式、高性能、高吞吐量、跨语言</p> </li><li> <p>RocketMQ： 阿里开源的消息中间件，纯Java实现</p> </li></ul> 
+<h3 id="kafka架构">kafka架构</h3> 
+<h4 id="kafka介绍">kafka介绍</h4> 
+<p>Kafka是一个分布式的发布/订阅消息系统，最初由LinkedIn(领英)公司发布，使用Scala语言编写，后成为Apache的顶级项目。</p> 
+<p>kafka主要用于处理活跃的数据，如登录、浏览、点击、分享等用户行为产生的数据。</p> 
+<h4 id="kafka架构组成">kafka架构组成</h4> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/68/21/S4dxkuJG_o.png"></p> 
+<p></p> 
+<p> </p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/75/99/j463B48m_o.png"></p> 
+<p></p> 
+<p></p> 
+<h5 id="Broker">Broker</h5> 
+<ul><li> <p>broker表示kafka的节点，kafka集群包含多个kafka服务节点，每个kafka服务节点就称为一个broker</p> </li></ul> 
+<h5 id="Topic">Topic</h5> 
+<ul><li> <p>主题，用来存储不同类别的消息（kafka的消息数据是分主题存储在硬盘上的）</p> </li><li> <p>存储消息时，需要指定存储在哪个主题下面，如发帖，发哪种类型的</p> </li></ul> 
+<h5 id="Partition">Partition</h5> 
+<ul><li> <p>分区，每个topic包含一个或多个partition，在创建topic时指定包含的partition数据（目的是为了进行分布式存储）</p> </li><li> <p>分区可以提高负载（每个分区是不同的磁盘，所以会提高负载）</p> </li></ul> 
+<h5 id="Replication">Replication</h5> 
+<ul><li> <p>副本，每个partition分区可以有多个副本，分布在不同的Broker上</p> </li><li> <p>kafka会选出一个副本作为Leader，所有的读写请求都会通过Leader完成，Follower只负责备份数据</p> </li><li> <p>所有Follower会自动从Leader中复制数据，当Leader宕机后，会从Follower中选出一个新的Leader继续提供服务，实现故障自动转移</p> </li></ul> 
+<h5 id="Message">Message</h5> 
+<ul><li> <p>消息，是通信数据的基本单位，每个消息都属于一个Partition，消息都是放在Partition里面的</p> </li></ul> 
+<h5 id="Producer">Producer</h5> 
+<ul><li> <p>消息的生产者，向kafka的一个topic发布消息，发布消息时，需要指定发布到哪个topic主题</p> </li></ul> 
+<h5 id="Consumer">Consumer</h5> 
+<ul><li> <p>消息的消费者，订阅Topic并读取其发布的消息，消费或订阅哪个topic主题里的消息，可以订阅多个主题的消息（类似订阅多个微信公众号）</p> </li></ul> 
+<h5>Consumer Group</h5> 
+<ul><li> <p>消费者组，每个Consumer属于一个特定的Consumer Group，多个Consumer可以属于同一个Consumer Group</p> </li><li> <p>各个consumer可以组成一个组，每个消息只能被组中的一个consumer消费，如果一个消息可以被多个consumer消费的话，那么这些consumer必须在不同的组。</p> </li></ul> 
+<h5 id="ZooKeeper">ZooKeeper</h5> 
+<ul><li> <p>协调Kafka的正常运行，kafka将元数据信息保存在ZooKeeper中，但发送给Topic本身的消息数据并不存储在ZK中，而是存储在磁盘文件中</p> </li><li> <p>元数据信息包括：kafka有多少个节点、有哪些主题，主题叫什么，有哪些分区的等（消息自身的数据不在ZK中，而是在磁盘上对应的分区中）</p> </li></ul> 
+<h3 id="kafka的工作流程">kafka的工作流程</h3> 
+<h4 id="生产者向kafka发送数据的流程（六步）">生产者向kafka发送数据的流程（六步）</h4> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/13/c0/1CzrihsZ_o.png"></p> 
+<p>一共六步：</p> 
+<ol><li> <p>生产者查询Leader：producer先从zookeeper的“/brokers/.../state”节点找到该partition的leader</p> </li><li> <p>找到Leader之后往Leader写数据：producer将消息发送给该leader</p> </li><li> <p>Leader落盘：leader将消息写入本地log</p> </li><li> <p>Leader通知Follower</p> </li><li> <p>Follower从Leader中拉取数据：replication写入到Follower的本地log后，follower向leader发送ack</p> </li><li> <p>Kafka向生产者回应ACK：leader收到所有的replication的ack之后，向producer发送ack</p> </li></ol> 
+<h4 id="Kafka选择分区的模式（三种）">Kafka选择分区的模式（三种）</h4> 
+<ol><li> <p>直接指定往哪个分区写</p> </li><li> <p>指定key，然后kafka根据key做hash后决定写哪个分区</p> </li><li> <p>各个分区轮询</p> </li></ol> 
+<h4 id="生产者往kafka发送数据的模式（三种）">生产者往kafka发送数据的模式（三种）</h4> 
+<ol><li> <p>把数据发送给Leader就认为成功，效率最高，安全性低</p> </li><li> <p>把数据发送给Leader，等待Leader回复Ack后则认为发送成功</p> </li><li> <p>把数据发送给Leader，确保Follower从Leader拉取数据回复Ack给Leader，Leader再向生产者回复Ack才认为发送成功，安全性最高</p> </li></ol> 
+<h4 id="数据消费">数据消费</h4> 
+<p>多个消费者可以组成一个消费者组，并用一个标签来标识这个消费者组（一个消费者实例可以运行在不同的进程甚至不同的服务器上）</p> 
+<ul><li> <p>如果所有的消费者实例都在同一个消费者组中，那么消息记录会被很好的均衡发送到每个消费者实例</p> </li><li> <p>如果所有的消费者实例都在不同的消费者组，那么每一条消息记录会被广播到每一个消费者实例</p> </li></ul> 
+<p>各个consumer可以组成一个组，每个消息只能被组中的一个consumer消费，如果一个消息可以被多个consumer消费的话，那么这些consumer必须在不同的组</p> 
+<p>注意：每个消费者实例可以消费多个分区，但是每一个分区最多只能被消费者组中的一个实例消费</p> 
+<p></p> 
+<h3 id="kafka的文件存储机制">kafka的文件存储机制</h3> 
+<h4 id="topic、partition和segment">topic、partition和segment</h4> 
+<p>1）在kafka文件存储中，同一个topic下有多个不同的partition：</p> 
+<ul><li> <p>每个partition就是一个目录，partition的命名规则为：topic名称+有序序号</p> </li><li> <p>第一个partition序号从0开始，序号最大值为partition数量减一</p> </li></ul> 
+<p>2）每个partition的目录下面会有多组segment文件：</p> 
+<ul><li> <p>每个partition（目录）相当于一个巨型大文件被平均分配到多个大小都相等的segment数据文件中（但每个segment file消息数量不一定相等，这种特性方便old segment file快速被删除）</p> </li><li> <p>每组segment文件包含：.index文件、.log文件、.timeindex文件（.log文件就是实际存储message的地方，.index和.timeindex文件为索引文件，用于检索消息）</p> </li><li> <p>每个partition只需要支持顺序读写就行了，segment文件生命周期由服务端配置参数决定</p> </li><li> <p>这样做能快速删除无用文件，有效提高磁盘利用率</p> </li></ul> 
+<p>3）segment文件</p> 
+<ul><li> <p>segment文件由2大部分组成，分别为index file和data file，此2个文件一一对应，成对出现，后缀".index"和“.log”分别表示为segment索引文件、数据文件</p> </li><li> <p>segment文件命名规则：partion全局的第一个segment从0开始，后续每个segment文件名为上一个segment文件最后一条消息的offset值。数值最大为64位long大小，19位数字字符长度，没有数字用0填充</p> </li></ul> 
+<h4 id="存储和查找message的过程">存储和查找message的过程</h4> 
+<p>1）数据写入过程</p> 
+<p>每个Partition都是一个有序并且不可改变的消息记录集合（每个partition都是一个有序队列），当新的数据写入时，就被追加到partition的末尾。</p> 
+<p>在每个partition中，每条消息都会被分配一个顺序的唯一标识，这个标识被称为Offset（偏移量），用于partition唯一标识一条消息。</p> 
+<p>2）数据查找过程</p> 
+<p>在partition中通过offset查找message：</p> 
+<ol><li> <p>查找segment file：每一个segment文件名都包含了上一个segment最后一条消息的offset值，所以只要根据offset二分查找文件列表，就能定位到具体segment文件</p> </li><li> <p>通过segment file查找message：当定位到segment文件后，可以通过对应的.index元数据文件，在对应的.log文件中顺序查找对应的offset，然后即可拿到数据</p> </li></ol> 
+<p>3）说明：</p> 
+<ul><li> <p>kafka只能保证在同一个partition内部消息是有序的，在不同的partition之间，并不能保证消息有序</p> </li><li> <p>为什么kafka快：因为它把对磁盘的随机读变成了顺序读</p> </li></ul> 
+<h2 id="kafka安装部署及操作">kafka安装部署及操作</h2> 
+<h3 id="kafka单机部署">kafka单机部署</h3> 
+<h4 id="安装ZooKeeper">安装ZooKeeper</h4> 
+<p>kafka需要依赖ZooKeeper，所以需要先安装并启动ZooKeeper，kafka使用zk有两种方式：</p> 
+<ol><li> <p>使用kafka自带的ZooKeeper（一般不推荐使用内置的ZooKeeper）</p> </li><li> <p>单独搭建ZooKeeper</p> </li></ol> 
+<p>使用kafka自带的ZooKeeper：</p> 
+<pre> # kafka的bin目录中，有自带的zk的启动命令
+ /usr/local/kafka/bin/zookeeper-server-start.sh
+ ​
+ # kafka的config目录中，有自带的zk的配置文件
+ /usr/local/kafka/bin/zookeeper.properties</pre> 
+<p>如果要使用kafka内置的ZooKeeper，修改好配置文件 <code>./config/zookeeper.properties</code>（主要修改zk的data位置和端口），直接启动即可</p> 
+<pre> # 后台启动，并指定配置文件
+ zookeeper-server-start.sh -daemon ../config/zookeeper.properties</pre> 
+<h4 id="安装kafka">安装kafka</h4> 
+<p>kafka需要java环境，需要安装jdk</p> 
+<pre> # 1.安装jdk
+ yum install -y java-1.8.0-openjdk
+ ​
+ # 2.准备kafka安装包
+ tar zxvf kafka_2.11-2.2.0.tgz -C /usr/local/
+ ln -s /usr/local/kafka_2.11-2.2.0 /usr/local/kafka
+ mkdir -pv /data/kafka/data/   # 创建kafka数据存储目录
+ # 配置环境变量
+ sed -i '$aPATH="/usr/local/kafka/bin:$PATH"' /etc/profile
+ source /etc/profile
+ ​
+ # 3.修改kafka配置文件
+ vim /usr/local/kafka/config/server.properties
+ listeners=PLAINTEXT://10.0.0.80:9092    # kafka默认监听端口号为9092,
+ log.dirs=/data/kafka/data               # 指定kafka数据存放目录
+ zookeeper.connect=localhost:2181        # 指定ZooKeeper地址，kafka要将元数据存放到zk中，这里会在本机启动一个zk
+ ​
+ # 4.启动kafka
+ kafka-server-start.sh -daemon /usr/local/kafka/config/server.properties
+ ​
+ # 5.查看进程及端口
+ ps -ef | grep kafka
+ ss -tnl | grep 9092                     # kafka监听在9092端口</pre> 
+<h3 id="kafka脚本程序及配置文件">kafka脚本程序及配置文件</h3> 
+<h4 id="几个kafka的操作脚本">几个kafka的操作脚本</h4> 
+<ul><li> <p>kafka-server-start.sh kafka启动程序</p> </li><li> <p>kafka-server-stop.sh kafka停止程序</p> </li></ul> 
+<ul><li> <p>kafka-topics.sh 创建topic程序</p> </li><li> <p>kafka-console-producer.sh 命令行模拟生产者生产消息数据程序</p> </li><li> <p>kafka-console-consumer.sh 命令行模拟消费者消费消息数据程序</p> </li></ul> 
+<h4 id="kafka的配置文件">kafka的配置文件</h4> 
+<p><code>vim /usr/local/kafka/config/server.properties</code></p> 
+<pre> ############################# Server Basics #############################
+  # broker的id，值为整数，且必须唯一，在一个集群中不能重复，默认为0
+ broker.id=0 
+ ​
+ ############################# Socket Server Settings #############################
+ # kafka默认监听的端口为9092
+ #listeners=PLAINTEXT://:9092
+ ​
+ # 处理网络请求的线程数量，默认为3个
+ num.network.threads=3
+ ​
+ # 执行磁盘IO操作的线程数量，默认为8个
+ num.io.threads=8
+ ​
+ # socket服务发送数据的缓冲区大小，默认100KB
+ socket.send.buffer.bytes=102400
+ # socket服务接受数据的缓冲区大小，默认100KB
+ socket.receive.buffer.bytes=102400
+ ​
+ # socket服务所能接受的一个请求的最大大小，默认为100M
+ socket.request.max.bytes=104857600
+ ​
+ ​
+ ############################# Log Basics #############################
+ # kafka存储消息数据的目录
+ log.dirs=../data
+ ​
+ # 每个topic默认的partition数量
+ num.partitions=1
+ ​
+ # 在启动时恢复数据和关闭时刷新数据时每个数据目录的线程数量
+ num.recovery.threads.per.data.dir=1
+ ​
+ ​
+ ############################# Log Flush Policy #############################
+ # 消息刷新到磁盘中的消息条数阈值
+ #log.flush.interval.messages=10000
+ # 消息刷新到磁盘中的最大时间间隔
+ #log.flush.interval.ms=1000
+ ​
+ ############################# Log Retention Policy #############################
+ # 日志保留小时数，超时会自动删除，默认为7天
+ log.retention.hours=168
+ ​
+ # 日志保留大小，超出大小会自动删除，默认为1G，log.retention.bytes这是指定 Broker 为消息保存的总磁盘容量大小
+ #log.retention.bytes=1073741824
+ ​
+ # 日志分片策略，单个日志文件的大小最大为1G，超出后则创建一个新的日志文件
+ log.segment.bytes=1073741824
+ ​
+ # 每隔多长时间检测数据是否达到删除条件
+ log.retention.check.interval.ms=300000
+ ​
+ ​
+ ############################# Zookeeper #############################
+ # Zookeeper连接信息，如果是zookeeper集群，则以逗号隔开
+ zookeeper.connect=localhost:2181
+ # 连接zookeeper的超时时间
+ zookeeper.connection.timeout.ms=6000
+ # 是否可以删除topic，默认为false
+ delete.topic.enable=true</pre> 
+<h3 id="kafka集群部署">kafka集群部署</h3> 
+<h4 id="环境信息">环境信息</h4> 
+<table><thead><tr><th>节点</th><th>IP</th><th>ZK Port</th><th>Kafka Port</th><th>OS</th></tr></thead><tbody><tr><td>node01</td><td>10.0.0.80</td><td>2181</td><td>9092</td><td>CentOS7.9</td></tr><tr><td>node02</td><td>10.0.0.81</td><td>2181</td><td>9092</td><td>CentOS7.9</td></tr><tr><td>node03</td><td>10.0.0.82</td><td>2181</td><td>9092</td><td>CentOS7.9</td></tr></tbody></table> 
+<h4 id="部署ZooKeeper集群">部署ZooKeeper集群</h4> 
+<p>kakfa依赖ZooKeeper，可以用以下两种方式使用ZooKeeper：</p> 
+<ol><li> <p>使用kafka自带的ZooKeeper（一般不推荐使用内置的ZooKeeper）</p> </li><li> <p>单独搭建ZooKeeper</p> </li></ol> 
+<p>搭建ZooKeeper集群见ZooKeeper文档。</p> 
+<h4 id="部署kafka集群">部署kafka集群</h4> 
+<p>所有节点（node01、node02、node03）上操作：</p> 
+<pre> # 1.安装jdk
+ yum install -y java-1.8.0-openjdk
+ ​
+ # 2.准备kafka安装包
+ tar zxvf kafka_2.11-2.2.0.tgz -C /usr/local/
+ ln -s /usr/local/kafka_2.11-2.2.0 /usr/local/kafka
+ mkdir -pv /data/kafka/data/   # 创建kafka数据存储目录
+ # 配置环境变量
+ sed -i '$aPATH="/usr/local/kafka/bin:$PATH"' /etc/profile
+ source /etc/profile
+ ​
+ # 3.修改kafka配置文件
+ broker.id=1                              # 各自节点的id号，每个节点都有自己的id，值为整数，且必须唯一，在一个集群中不能重复，默认为0
+ listeners=PLAINTEXT://10.0.0.80:9092                            # kafka默认监听的端口号为9092，指定各自节点的地址和端口
+ log.dirs=/data/kafka/data                                       # 指定kafka数据的存放目录
+ zookeeper.connect=10.0.0.80:2181,10.0.0.81:2181,10.0.0.82:2181  # zookeeper的连接信息，kafka要将元数据信息存放到zk中
+ zookeeper.connection.timeout.ms=600000                          #连接zk超时时间调大，否则可能起不来,默认: 6000
+ ​
+ # 4.启动kafka
+ kafka-server-start.sh -daemon /usr/local/kafka/config/server.properties
+ ​
+ # 5.查看进程及端口
+ ps -ef | grep kafka
+ ss -tnl | grep 9092                     # kafka监听在9092端口</pre> 
+<p></p> 
+<h3 id="生产和消费消息测试">生产和消费消息测试</h3> 
+<ul><li> <p>kafka-server-start.sh kafka启动程序</p> </li><li> <p>kafka-server-stop.sh kafka停止程序</p> </li></ul> 
+<ul><li> <p>kafka-topics.sh 创建topic程序</p> </li><li> <p>kafka-console-producer.sh 命令行模拟生产者生产消息数据程序</p> </li><li> <p>kafka-console-consumer.sh 命令行模拟消费者消费消息数据程序</p> </li></ul> 
+<h4 id="topic相关操作">topic相关操作</h4> 
+<p>操作topic使用<code>kafka-topic.sh</code>脚本</p> 
+<pre> # 查看主题topic列表，需指定zk的地址
+ kafka-topics.sh --list --zookeeper 10.0.0.80:2181   
+ ​
+ # 创建topic  hello
+ kafka-topics.sh --create --zookeeper 10.0.0.80:2181 --replication-factor 1 --partitions 3 --topic hello     
+ # --create                      是创建主题topic
+ # --zookeeper localhost:2181    主题topic信息是存储在zk中，需要指定zk服务的地址
+ # --replication-factor 1        主题topic信息的副本数,因为现在只要一个节点,所以只能是1,有多个节点时候，可以指定副本数多个
+ # --partitions 3                主题topic有多少个分区
+ # --topic test-topic            指定主题topic的名字
+                                                                             
+ # 查看某个具体的主题topic消息
+ kafka-topics.sh --describe --zookeeper 10.0.0.80:2181 --topic hello                                                    
+ ​
+ # 修改主题topic信息，增加到5个分区
+ kafka-topics.sh --alter --zookeeper 10.0.0.80:2181 --topic hello --partitions 5    
+ ​
+ # 删除主题topic hello
+ kafka-topics.sh --delete --zookeeper 10.0.0.80:2181 --topic hello                                                       </pre> 
+<h4 id="生产和消费命令">生产和消费命令</h4> 
+<ul><li> <p>生产消息：<code>kafka-console-producer.sh</code></p> </li><li> <p>消费消息：<code>kafka-console-consumer.sh</code></p> </li></ul> 
+<p><strong>1）生产消息</strong></p> 
+<p>使用kafka自带的生产者命令生产消息 (可开一个窗口，模拟生产者)</p> 
+<pre> # 生产者生产消息，是往topic里发送消息的，需要指明kafka地址和topic的名字
+ kafka-console-producer.sh --broker-list 10.0.0.80:9092 --topic test-topic
+ &gt;hello
+ &gt;test1
+ &gt;test2
+ &gt;</pre> 
+<p><strong>2）消费消息</strong></p> 
+<p>使用kafka自带的消费者命令消费消息 (可开多个窗口，模拟消费者)</p> 
+<pre> # 消费者消费消息，也是从指定topic里取出的，需要指明kafka地址和topic的名字，加--from-beginning是从头开始收,不加就从当前状态开始收
+ kafka-console-consumer.sh --bootstrap-server 10.0.0.80:9092 --topic test-topic --from-beginning</pre> 
+<h3 id="查看消息本体及相关数据">查看消息本体及相关数据</h3> 
+<h4 id="查看kafka存放的消息">查看kafka存放的消息</h4> 
+<pre> # 来到kafka的数据目录，查看kafka存放的消息
+ cd /data/kafka/data/  
+ ls -d ./test-topic*         # kafka存放的消息会被分布存储在各个分区，这里目录名test-topic就表示对应的topic名称，后缀-0就表示对应的分区
+ ./test-topic-0              # 有几个分区就会有几个这样的目录，消息被分布存储在各个目录（目录名称格式：  topic名称-分区编号）
+ ​
+ # 查看对应分区下的文件(每个分区中存放的消息内容都不一样)
+ ls ./test-topic-0/
+ 00000000000000000000.index  00000000000000000000.log  00000000000000000000.timeindex  leader-epoch-checkpoint
+ ​
+ # 查看消息本体
+ cat ./test-topic-0/00000000000000000000.log 
+ =CͰ򃘱򃘱ÿÿÿÿÿÿÿÿÿÿÿÿÿÿ 
+ hello=Mľ5򁝙򁝙ÿÿÿÿÿÿÿÿÿÿÿÿÿÿ 
+ test1&lt;{y輁򁧚򁧚ÿÿÿÿÿÿÿÿÿÿÿÿÿexit&lt;.پ򁬛򁬛ÿÿÿÿÿÿÿÿÿÿÿÿÿquit=徐±򂲬򂲬ÿÿÿÿÿÿÿÿÿÿÿÿÿÿ 
+ hello=Hڥ򂹪򂹪ÿÿÿÿÿÿÿÿÿÿÿÿÿÿ 
+ test1=z
+ 󲃂ȁ򃃊ÿÿÿÿÿÿÿÿÿÿÿÿÿÿ 
+ test2BΘ񇲆艁򇨋ÿÿÿÿÿÿÿÿÿÿÿÿÿÿ hahahahaha</pre> 
+<h4 id="查看kafka存放在ZooKeeper中的元数据">查看kafka存放在ZooKeeper中的元数据</h4> 
+<pre> # 客户端连接zk
+ zkCli.sh                               # 如果什么都不指定，则默认连接本机的2181端口
+ # zkCli.sh -server 10.0.0.80:2181      # 指定IP和端口，可以连接集群中任何一个节点 
+ ​
+ # 查看/根节点下有哪些数据
+ [zk: localhost:2181(CONNECTED) 0] ls /
+ [mytest, cluster, controller, brokers, zookeeper, admin, isr_change_notification, log_dir_event_notification, controller_epoch, testNode, consumers, latest_producer_id_block, config]
+ ​
+ # 查看/brokers下的数据
+ [zk: localhost:2181(CONNECTED) 1] ls /brokers
+ [ids, topics, seqid]
+ ​
+ # 查看当前brokers的节点编号
+ [zk: localhost:2181(CONNECTED) 2] ls /brokers/ids
+ [0]
+ ​
+ # 查看主题topic
+ [zk: localhost:2181(CONNECTED) 3] ls /brokers/topics
+ [test_conf, test-topic, xxxxxx, web_log, xxx_conf, __consumer_offsets, hg_test, aaa_conf]
+ ​
+ # 查看test-topic这个主题的分区
+ [zk: localhost:2181(CONNECTED) 4] ls /brokers/topics/test-topic
+ [partitions]
+ ​
+ # 查看test-topic这个主题的分区情况
+ [zk: localhost:2181(CONNECTED) 5] ls /brokers/topics/test-topic/partitions
+ [0]
+ ​
+ # 使用get命令查看test-topic这个主题的相关信息
+ [zk: localhost:2181(CONNECTED) 6] get /brokers/topics/test-topic
+ {"version":1,"partitions":{"0":[0]}}
+ cZxid = 0x200000147
+ ctime = Sat Mar 18 10:18:27 CST 2023
+ mZxid = 0x200000147
+ mtime = Sat Mar 18 10:18:27 CST 2023
+ pZxid = 0x200000148
+ cversion = 1
+ dataVersion = 0
+ aclVersion = 0
+ ephemeralOwner = 0x0
+ dataLength = 36
+ numChildren = 1</pre>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/7c054f710f7f718b01fc21018013b461/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">基于STM32的环境监测系统设计与实现</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8b9f6abb8cce5f5e944381107a6453fa/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">广电用户画像分析之根据客户消费内容添加标签</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

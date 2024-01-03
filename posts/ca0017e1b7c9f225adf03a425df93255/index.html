@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>ES与MySQL数据同步（全量与增量） - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="ES与MySQL数据同步（全量与增量）" />
+<meta property="og:description" content="思考： 考虑ES如何与数据库实现同步？ES如何查询多个字段？如何构建商品服务（包含搜索功能）？ES肯定是集群的，如何集群？一个项目当它做大做当后都可能会需要将数据从传统的数据库同步到另一种数据集合中，一般用于提高查询效率或将数据进行备份的目的。其中比较常见的一种同步方式是从关系型数据库同步到esMQ与logstash实现ES与数据库同步区别基于Docker方式实现Elasticsearch集群整合Elasticsearch IK分词器 一、理论基础 1.1、es与数据库是如何保持一致的呢？ 原理：
+1.2、MySQL与ES实时同步常用插件 参考：https://www.cnblogs.com/jpfss/p/10832918.html
+1.3、logstash-input-jdbc同步插件原理： 作用：使用 logstash-input-jdbc 插件读取 mysql 的数据
+如何安装logstash-input-jdbc插件：https://blog.csdn.net/yeyuma/article/details/50240595#quote
+原理：
+定时执行一个 sql，然后将 sql 执行的结果写入到流中，增量获取的方式没有通过 binlog 方式同步，而是用一个递增字段作为条件去查询，每次都记录当前查询的位置，由于递增的特性，只需要查询比当前大的记录即可获取这段时间内的全部增量，一般的递增字段有两种，AUTO_INCREMENT 的主键 id 和 ON UPDATE CURRENT_TIMESTAMP 的 update_time 字段，id 字段只适用于那种只有插入没有更新的表，update_time 更加通用一些，建议在 mysql 表设计的时候都增加一个 update_time 字段
+1.4、什么是全量同步和增量同步 （1）全量同步
+什么是全量同步：将一个mysql的整个表的所有数据都同步到es中
+常用插件是logstash-input-jdbc，logstash通过sql语句分区间对数据进行查询，然后输出到es进行实现。
+（2）增量同步（canal）
+什么是增量同步：业务场景需要实时性较高并对要求对数据库的压力比较小。
+logstash不再适合增量同步，logstash是基于sql来完成的，并且是通过cron表达式来调用。
+阿里在做大做强的过程中也遇到过类似的问题，为了达到性能的最优，他们自己通过JAVA代码实现了mysql的数据同步功能，通过解析mysql 的日志进行实现的，并且把这个项目开源——canal
+canal地址：https://github.com/alibaba/canal
+原理：
+简单看了下代码，它里面是通过一个server和一个client来进行实现的，及server负责mysql的日志监听与收集，然后再传给client端，server与client端使用的netty进行数据的tcp通信，现在也有了kafka和rocketMQ作为通信渠道的版本。同时canal也有专门的可视化监控界面，方便进行查看，同时也有HA（hadoop集群）的实现方式，通过zookeeper来进行实现的。
+使用：
+想将数据从mysql同步到es通过canal的一个adapter就可以直接实现了
+参考：https://github.com/alibaba/canal/tree/master/client-adapter
+canal优点：
+（1）canal实现数据的增量同步性能高，有可视化界面可监控
+（2）看canal esAdapter的源码可知，canal esAdater中的etl方法对全量同步的功能也已经做了实现，可增量可全量同步了
+1.5、MQ与logstash实现ES与数据库同步区别 Logstash实现ES与数据库同步：使用定时器方式 、实现简单
+MQ实现ES与数据库同步：实时性、复杂性更高、一致性强
+1.6、拼音分词器elasticsearch-analysis-pinyin 略
+二、实战 2.1、商品服务搜索如何实现 商品服务搜索采用ElasticSearch实现
+需要考虑什么问题？
+（1）如何实现ES与mysql数据库同步
+A、使用logstash 把mysql 同步到 elasticsearch" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/ca0017e1b7c9f225adf03a425df93255/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2020-02-11T23:41:36+08:00" />
+<meta property="article:modified_time" content="2020-02-11T23:41:36+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">ES与MySQL数据同步（全量与增量）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>思考： </p> 
+<ol><li>考虑ES如何与数据库实现同步？</li><li>ES如何查询多个字段？</li><li>如何构建商品服务（包含搜索功能）？</li><li>ES肯定是集群的，如何集群？</li><li>一个项目当它做大做当后都可能会需要将数据从传统的数据库同步到另一种数据集合中，一般用于提高查询效率或将数据进行备份的目的。其中比较常见的一种同步方式是从关系型数据库同步到es</li><li>MQ与logstash实现ES与数据库同步区别</li><li>基于Docker方式实现Elasticsearch集群</li><li>整合Elasticsearch  IK分词器</li></ol> 
+<h2>一、理论基础</h2> 
+<h4>1.1、<span style="color:#333333;">es</span><span style="color:#333333;">与数据库是如何保持一致的呢？</span></h4> 
+<p><span style="color:#333333;">原理：</span></p> 
+<h4><span style="color:#333333;">1.2、MySQL与ES实时同步常用插件</span></h4> 
+<p>参考：<a href="https://www.cnblogs.com/jpfss/p/10832918.html" rel="nofollow">https://www.cnblogs.com/jpfss/p/10832918.html</a></p> 
+<h4>1.3、logstash-input-jdbc同步插件原理：</h4> 
+<p>作用：使用 logstash-input-jdbc 插件读取 mysql 的数据</p> 
+<p>如何安装logstash-input-jdbc插件：<a href="https://blog.csdn.net/yeyuma/article/details/50240595#quote">https://blog.csdn.net/yeyuma/article/details/50240595#quote</a></p> 
+<p>原理：</p> 
+<p style="margin-left:0cm;">定时执行一个 sql，然后将 sql 执行的结果写入到流中，增量获取的方式没有通过 binlog 方式同步，而是用一个递增字段作为条件去查询，每次都记录当前查询的位置，由于递增的特性，只需要查询比当前大的记录即可获取这段时间内的全部增量，一般的递增字段有两种，AUTO_INCREMENT 的主键 id 和 ON UPDATE CURRENT_TIMESTAMP 的 update_time 字段，id 字段只适用于那种只有插入没有更新的表，update_time 更加通用一些，建议在 mysql 表设计的时候都增加一个 update_time 字段</p> 
+<h4 style="margin-left:0cm;">1.4、什么是全量同步和增量同步</h4> 
+<p style="margin-left:0cm;"><strong>（1）全量同步</strong></p> 
+<p style="margin-left:0cm;">什么是全量同步：将一个mysql的整个表的所有数据都同步到es中</p> 
+<p style="margin-left:0cm;">常用插件是logstash-input-jdbc，logstash通过sql语句分区间对数据进行查询，然后输出到es进行实现。</p> 
+<p style="margin-left:0cm;"><strong>（2）增量同步（canal）</strong></p> 
+<p style="margin-left:0cm;">什么是增量同步：业务场景需要实时性较高并对要求对数据库的压力比较小。</p> 
+<p style="margin-left:0cm;">logstash不再适合增量同步，logstash是基于sql来完成的，并且是通过cron表达式来调用。</p> 
+<p style="margin-left:0cm;">阿里在做大做强的过程中也遇到过类似的问题，为了达到性能的最优，他们自己通过JAVA代码实现了mysql的数据同步功能，通过解析mysql 的日志进行实现的，并且把这个项目开源——<strong>canal</strong></p> 
+<p style="margin-left:0cm;"><strong>canal地址：</strong><a href="https://github.com/alibaba/canal">https://github.com/alibaba/canal</a></p> 
+<p style="margin-left:0cm;"><strong>原理：</strong></p> 
+<p style="margin-left:0cm;">简单看了下代码，它里面是通过一个server和一个client来进行实现的，及server负责mysql的日志监听与收集，然后再传给client端，server与client端使用的<strong>netty</strong>进行数据的tcp通信，现在也有了kafka和rocketMQ作为通信渠道的版本。同时canal也有专门的可视化监控界面，方便进行查看，同时也有HA（hadoop集群）的实现方式，通过zookeeper来进行实现的。</p> 
+<p style="margin-left:0cm;">使用：</p> 
+<p style="margin-left:0cm;">想将数据从mysql同步到es通过<u>canal的一个adapter</u>就可以直接实现了</p> 
+<p style="margin-left:0cm;">参考：<a href="https://github.com/alibaba/canal/tree/master/client-adapter">https://github.com/alibaba/canal/tree/master/client-adapter</a></p> 
+<p style="margin-left:0cm;"><strong>canal优点：</strong></p> 
+<p style="margin-left:0cm;">（1）canal实现数据的增量同步性能高，有可视化界面可监控</p> 
+<p style="margin-left:0cm;">（2）看canal esAdapter的源码可知，canal esAdater中的<strong>etl方法对全量同步的功能也已经做了实现，可增量可全量同步了</strong></p> 
+<p style="margin-left:0cm;"> </p> 
+<h4 style="margin-left:0cm;"><strong>1.5、</strong>MQ与logstash实现ES与数据库同步区别</h4> 
+<p style="margin-left:0cm;">Logstash实现ES与数据库同步：使用定时器方式 、实现简单</p> 
+<p style="margin-left:0cm;">MQ实现ES与数据库同步：实时性、复杂性更高、一致性强</p> 
+<h4 style="margin-left:0cm;">1.6、拼音分词器elasticsearch-analysis-pinyin</h4> 
+<p style="margin-left:0cm;">略</p> 
+<h2>二、实战</h2> 
+<h4>2.1、商品服务搜索如何实现</h4> 
+<p style="margin-left:0cm;"><span style="color:#0d0d0d;">商品服务搜索采用ElasticSearch实现</span></p> 
+<p style="margin-left:0cm;"><span style="color:#0d0d0d;">需要考虑什么问题？</span></p> 
+<p style="margin-left:0cm;"><strong><span style="color:#0d0d0d;">（1）如何实现ES与mysql数据库同步</span></strong></p> 
+<p style="margin-left:0cm;"><strong>A、使用logstash 把mysql 同步到 elasticsearch</strong></p> 
+<p style="margin-left:0cm;">什么是logstash?</p> 
+<p style="margin-left:0cm;">Logstash是一个开源数据收集引擎，具有实时管道功能。Logstash可以动态地将来自不同数据源的数据统一起来，并将数据标准化到你所选择的目的地</p> 
+<pre><code>1.上传logstash-6.4.3.tar.gz到服务中
+2.tar –zxvf  logstash-6.4.3.tar.gz
+3.cd logstash-6.4.3 
+4. bin/logstash-plugin install logstash-input-jdbc
+5. bin/logstash-plugin install logstash-output-elasticsearch
+</code></pre> 
+<p style="margin-left:0cm;">相关配置文件说明:</p> 
+<pre><code>jdbc_driver_library: jdbc mysql 驱动的路径，在上一步中已经下载
+jdbc_driver_class: 驱动类的名字，mysql 填 com.mysql.jdbc.Driver 就好了
+jdbc_connection_string: mysql 地址
+jdbc_user: mysql 用户
+jdbc_password: mysql 密码
+schedule: 执行 sql 时机，类似 crontab 的调度
+statement: 要执行的 sql，以 “:” 开头是定义的变量，可以通过 parameters 来设置变量，这里的 sql_last_value 是内置的变量，表示上一次 sql 执行中 update_time 的值，这里 update_time 条件是 &gt;= 因为时间有可能相等，没有等号可能会漏掉一些增量
+use_column_value: 使用递增列的值
+tracking_column_type: 递增字段的类型，numeric 表示数值类型, timestamp 表示时间戳类型
+tracking_column: 递增字段的名称，这里使用 update_time 这一列，这列的类型是 timestamp
+last_run_metadata_path: 同步点文件，这个文件记录了上次的同步点，重启时会读取这个文件，这个文件可以手动
+</code></pre> 
+<p style="margin-left:0cm;"><strong>B、多文件方式同步ES数据</strong></p> 
+<p>一个 logstash 实例可以借助<strong> pipelines 机制</strong>同步多个表，只需要写多个配置文件就可以了</p> 
+<p>案例：</p> 
+<p>假设我们有两个表 table1 和 table2，对应两个配置文件 sync_table1.cfg 和 sync_table2.cfg</p> 
+<p style="margin-left:0cm;">在 config/pipelines.yml 中配置：</p> 
+<pre><code>- pipeline.id: table1
+  path.config: "config/sync_table1.cfg"
+- pipeline.id: table2
+  path.config: "config/sync_table2.cfg"
+</code></pre> 
+<p style="margin-left:0cm;">./bin/logstash</p> 
+<p style="margin-left:0cm;"><strong>（2）构建商品服务信息接口</strong></p> 
+<p style="margin-left:0cm;">商品搜索服务接口：</p> 
+<pre><code>@GetMapping("/search")
+	public BaseResponse&lt;List&lt;ProductDto&gt;&gt; search(String productName);
+
+@Autowired
+	private ProductReposiory productReposiory;
+
+	@Override
+	public BaseResponse&lt;List&lt;ProductDto&gt;&gt; search(String productName) {
+		BoolQueryBuilder builder = QueryBuilders.boolQuery();
+		// 设置模糊搜索
+		builder.must(QueryBuilders.fuzzyQuery("name", productName));
+		List&lt;ProductEntity&gt; search = (List&lt;ProductEntity&gt;) productReposiory.search(builder);
+		List&lt;ProductDto&gt; listReuslt = new ArrayList&lt;&gt;();
+		BeanUtils.copyProperties(search, listReuslt);
+		return setResultSuccess(listReuslt);
+	}
+
+public interface ProductReposiory extends ElasticsearchRepository&lt;ProductEntity, Long&gt; {
+
+}
+
+@SpringBootApplication
+@EnableElasticsearchRepositories(basePackages = { "com.mayikt.product.es" })
+public class AppProduct {
+
+	public static void main(String[] args) {
+		SpringApplication.run(AppProduct.class, args);
+	}
+}
+</code></pre> 
+<p>配置文件：</p> 
+<pre><code>###服务启动端口号
+server:
+  port: 8500
+###服务名称(服务注册到eureka名称)  
+eureka:
+  client:
+    service-url:
+           defaultZone: http://localhost:8100/eureka
+
+
+  
+spring:
+  application:
+    name:  app-mayikt-goods
+  redis:
+    host: 188.131.155.46
+    port: 6379
+    password: 123456
+    pool:
+      max-idle: 100
+      min-idle: 1
+      max-active: 1000
+      max-wait: -1
+###数据库相关连接      
+  datasource:
+    username: root
+    password: root
+    driver-class-name: com.mysql.jdbc.Driver
+    url: jdbc:mysql://127.0.0.1:3306/goods?useUnicode=true&amp;characterEncoding=UTF-
+  data:
+    elasticsearch:
+    ####集群名称
+     cluster-name: myes
+    ####地址 
+     cluster-nodes: 192.168.212.247:9300
+</code></pre> 
+<p> </p> 
+<h4>2.2、基于Docker方式实现Elasticsearch集群</h4> 
+<p style="margin-left:0cm;">注意：spring-boot-starter-data-elasticsearch必须为集群方式连接，否则情况下会报一下错误</p> 
+<p style="margin-left:0cm;">None of the configured nodes are available</p> 
+<p style="margin-left:0cm;">（1）</p> 
+<pre><code>1.mkdir -p es/config
+2.cd es
+3.mkdir data1
+4.mkdir data2
+5.mkdir data3
+firewall-cmd --add-port=9300/tcp
+firewall-cmd --add-port=9301/tcp
+6.	mkdir  plugins1
+7.	mkdir  plugins2
+</code></pre> 
+<p style="margin-left:0cm;">（2）在es/config分别放入es1.yml、es2.yml：</p> 
+<pre><code>Es1:
+cluster.name: elasticsearch-cluster
+node.name: es-node1
+network.bind_host: 0.0.0.0
+network.publish_host: 192.168.212.252
+http.port: 9200
+transport.tcp.port: 9300
+http.cors.enabled: true
+http.cors.allow-origin: "*"
+node.master: true 
+node.data: true  
+discovery.zen.ping.unicast.hosts: ["192.168.212.252:9300","192.168.212.252:9301"]
+discovery.zen.minimum_master_nodes: 1
+
+Es2:
+cluster.name: elasticsearch-cluster
+node.name: es-node2
+network.bind_host: 0.0.0.0
+network.publish_host: 192.168.212.252
+http.port: 9201
+transport.tcp.port: 9301
+http.cors.enabled: true
+http.cors.allow-origin: "*"
+node.master: true 
+node.data: true  
+discovery.zen.ping.unicast.hosts: ["192.168.212.252:9300","192.168.212.252:9301"]
+discovery.zen.minimum_master_nodes: 1
+</code></pre> 
+<p style="margin-left:0cm;">（3）启动俩容器</p> 
+<p style="margin-left:0cm;">启动容器1：</p> 
+<pre><code>docker run -e ES_JAVA_OPTS="-Xms256m -Xmx256m" -d  -p 9200:9200 -p 9300:9300 -p 5601:5601 -v /usr/local/es/config/es1.yml:/usr/share/elasticsearch/config/elasticsearch.yml  -v /usr/local/es/plugins1:/usr/share/elasticsearch/plugins    -v /usr/local/es/data1:/usr/share/elasticsearch/data --name ES01 elasticsearch</code></pre> 
+<p style="margin-left:0cm;">启动容器2：</p> 
+<pre><code>docker run -e ES_JAVA_OPTS="-Xms256m -Xmx256m" -d -p 9201:9201 -p 9301:9301 -v /usr/local/es/config/es2.yml:/usr/share/elasticsearch/config/elasticsearch.yml  -v /usr/local/es/plugins2:/usr/share/elasticsearch/plugins    -v /usr/local/es/data2:/usr/share/elasticsearch/data --name ES02 elasticsearch</code></pre> 
+<p>（4）测试集群效果</p> 
+<p style="margin-left:0cm;"><a href="http://192.168.212.185:9200/_cat/nodes?pretty" rel="nofollow">http://你的IP地址:9200/_cat/nodes?pretty</a></p> 
+<h4 style="margin-left:0cm;"> </h4> 
+<h4 style="margin-left:0cm;">2.3、SpringBoot整合Elasticsearch</h4> 
+<p>（1）创建服务项目shop-service-goods服务接口</p> 
+<p>（2）创建商品搜索服务接口</p> 
+<pre><code>public interface ProductSearchService {
+@GetMapping("/search")
+	public BaseResponse&lt;List&lt;ProductDto&gt;&gt; search(String name);
+}
+</code></pre> 
+<p>（3）dto实体类</p> 
+<pre><code>@Data
+public class ProductDto {
+
+	/** 主键ID */
+	private Integer id;
+	/** 类型ID */
+	private Integer categoryId;
+	/** 名称 */
+	private String name;
+	/** 小标题 */
+	private String subtitle;
+	/** 主图像 */
+	private String mainImage;
+	/** 小标题图像 */
+	private String subImages;
+	/** 描述 */
+	private String detail;
+	/** 商品规格 */
+	private String attributeList;
+	/** 价格 */
+	private Double price;
+	/** 库存 */
+	private Integer stock;
+	/** 状态 */
+	private Integer status;
+	/** 乐观锁 */
+	private Integer revision;
+	/** 创建人 */
+	private String createdBy;
+	/** 创建时间 */
+	private Date createdTime;
+	/** 更新人 */
+	private String updatedBy;
+	/** 更新时间 */
+	private Timestamp updatedTime;
+}
+</code></pre> 
+<p>（4）maven依赖</p> 
+<pre><code>&lt;!-- springboot 整合ES --&gt;
+		&lt;dependency&gt;
+			&lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+			&lt;artifactId&gt;spring-boot-starter-data-elasticsearch&lt;/artifactId&gt;
+		&lt;/dependency&gt;
+		&lt;dependency&gt;
+			&lt;groupId&gt;com.querydsl&lt;/groupId&gt;
+			&lt;artifactId&gt;querydsl-apt&lt;/artifactId&gt;
+		&lt;/dependency&gt;
+		&lt;dependency&gt;
+			&lt;groupId&gt;com.querydsl&lt;/groupId&gt;
+			&lt;artifactId&gt;querydsl-jpa&lt;/artifactId&gt;
+		&lt;/dependency&gt;
+
+		&lt;dependency&gt;
+			&lt;groupId&gt;ma.glasnost.orika&lt;/groupId&gt;
+			&lt;artifactId&gt;orika-core&lt;/artifactId&gt;
+			&lt;version&gt;1.5.2&lt;/version&gt;
+		&lt;/dependency&gt;
+</code></pre> 
+<p>（5）业务实现</p> 
+<pre><code>@RestController
+public class ProductSearchServiceImpl extends BaseApiService&lt;List&lt;ProductDto&gt;&gt; implements ProductSearchService {
+	@Autowired
+	private ProductReposiory productReposiory;
+
+	@Override
+	public BaseResponse&lt;List&lt;ProductDto&gt;&gt; search(String name) {
+//1.拼接查询条件
+		BoolQueryBuilder builder = QueryBuilders.boolQuery();
+//2.模拟查询name字段
+		builder.must(QueryBuilders.fuzzyQuery("name", name));
+		Pageable pageable = new QPageRequest(0, 5);
+//3.调用ES接口查询
+		Page&lt;ProductEntity&gt; page = productReposiory.search(builder, pageable);
+//4.获取集合数据
+		List&lt;ProductEntity&gt; content = page.getContent();
+		MapperFactory mapperFactory = new DefaultMapperFactory.Builder().build();
+//5.将entity转换为dto
+		List&lt;ProductDto&gt; mapAsList = mapperFactory.getMapperFacade().mapAsList(content, ProductDto.class);
+		return setResultSuccess(mapAsList);
+	}
+
+}
+</code></pre> 
+<pre><code>public interface ProductReposiory extends ElasticsearchRepository&lt;ProductEntity, Long&gt; {
+
+}
+</code></pre> 
+<p>（6）实体</p> 
+<pre><code>@Document(indexName = "goods", type = "goods")
+@Data
+public class ProductEntity {
+	/** 主键ID */
+	private Integer id;
+	/** 类型ID */
+	private Integer categoryId;
+	/** 名称 */
+	private String name;
+	/** 小标题 */
+	private String subtitle;
+	/** 主图像 */
+	private String mainImage;
+	/** 小标题图像 */
+	private String subImages;
+	/** 描述 */
+	private String detail;
+	/** 商品规格 */
+	private String attributeList;
+	/** 价格 */
+	private Double price;
+	/** 库存 */
+	private Integer stock;
+	/** 状态 */
+	private Integer status;
+
+	/** 创建人 */
+	private String createdBy;
+	/** 创建时间 */
+	private Date createdTime;
+
+	/** 更新时间 */
+	private Timestamp updatedTime;
+}
+</code></pre> 
+<p>（7）配置文件</p> 
+<pre><code>###服务启动端口号
+server:
+  port: 8500
+###服务名称(服务注册到eureka名称)  
+eureka:
+  client:
+    service-url:
+           defaultZone: http://localhost:8100/eureka
+
+
+  
+spring:
+  application:
+    name:  app-goods
+  redis:
+    host: redisIP地址
+    port: 6379
+    password: 123456
+    pool:
+      max-idle: 100
+      min-idle: 1
+      max-active: 1000
+      max-wait: -1
+###数据库相关连接      
+  datasource:
+    username: root
+    password: root
+    driver-class-name: com.mysql.jdbc.Driver
+    url: jdbc:mysql://127.0.0.1:3306/goods?useUnicode=true&amp;characterEncoding=UTF-
+  data:
+    elasticsearch:
+    ####集群名称
+     cluster-name: elasticsearch-cluster
+    ####地址 
+     cluster-nodes: IP地址:9300
+</code></pre> 
+<h4>2.4、Elasticsearch集成IK分词器</h4> 
+<p style="margin-left:0cm;">如果没有整合IK分词，es无法支持模糊查询</p> 
+<p>（1）ES文档类型映射</p> 
+<pre><code>GET /goods/_mapping
+DELETE  /goods
+PUT /goods
+POST /goods/_mapping/goods
+{
+      "goods": {
+        "properties": {
+          "@timestamp": {
+            "type": "date"
+          },
+          "@version": {
+            "type": "text",
+            "fields": {
+              "keyword": {
+                "type": "keyword",
+                "ignore_above": 256
+              }
+            }
+          },
+          "attribute_list": {
+            "type": "text",
+            "fields": {
+              "keyword": {
+                "type": "keyword",
+                "ignore_above": 256
+              }
+            }
+          },
+          "category_id": {
+            "type": "long"
+          },
+          "created_time": {
+            "type": "date"
+          },
+          "detail": {
+            "type": "text",
+             "analyzer":"ik_smart",
+            "search_analyzer":"ik_smart"
+
+          },
+          "id": {
+            "type": "long"
+          },
+          "main_image": {
+            "type": "text",
+            "fields": {
+              "keyword": {
+                "type": "keyword",
+                "ignore_above": 256
+              }
+            }
+          },
+          "name": {
+            "type": "text",
+            "analyzer":"ik_smart",
+            "search_analyzer":"ik_smart"
+
+          },
+          "revision": {
+            "type": "long"
+          },
+          "status": {
+            "type": "long"
+          },
+          "sub_images": {
+            "type": "text",
+            "fields": {
+              "keyword": {
+                "type": "keyword",
+                "ignore_above": 256
+              }
+            }
+          },
+          "subtitle": {
+            "type": "text",
+          "analyzer":"ik_smart",
+         "search_analyzer":"ik_smart"
+
+          },
+          "updated_time": {
+            "type": "date"
+          }
+        }
+      }
+}
+</code></pre> 
+<p>（2）<a href="http://192.168.212.252:9200/_analyze" rel="nofollow">http://IP:9200/_analyze</a></p> 
+<pre><code>{
+  "analyzer": "ik_smart",
+  "text": "苹果"
+}
+
+{
+  "analyzer": "standard",
+  "text": "奥迪a4l"
+}
+</code></pre> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ff9f8e106b2dc63bee1212119bfe6135/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Xen虚拟化简介以及其他虚拟化方案</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f5d5798d798520dcc510dbaa891a6dc1/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">cs-book</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

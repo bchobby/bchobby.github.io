@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>沉浸式面试：MySQL原理 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="沉浸式面试：MySQL原理" />
+<meta property="og:description" content="今天我们来聊聊MySQL原理
+基础篇主要是侧重基础知识，原理篇是有一定基础后的递进，通过学习本篇，不仅可以进一步了解MySQL的各项特性，还能为接下来的容灾调优打下坚实的基础。
+现在，就让我们继续跟随阿柴进行这场沉浸式面试吧。
+ACID与隔离级别
+那你先来说说MySQL的四种隔离级别吧。
+SQL标准定义了4类隔离级别，包括一些具体规则，用来限定事务之间的隔离性。
+这四种级别分别是读未提交、读已提交、可重复读、串型化。
+读未提交，顾名思义，就是可以读到还没有提交的数据；读已提交会读到其它事务已经提交的数据；可重复读确保了同一事务中，读取同一条数据时，会看到同样的数据行；串型化通过强制事务排序，使其不可能相互冲突。
+重点介绍下Repeatable Read吧。
+Repeatable Read就是可重复读。它确保了在同一事务中，读取同一条数据时，会看到同样的数据行。
+它也是MyQL的默认事务隔离级别，这种级别事务之间影响很小，通常已经能够满足日常需要了。
+说出四种隔离级别只是最低要求，能每一项具体去阐述特性就算过关。如果还能指出存在的问题、依赖的技术，那么就是妥妥的加分了！
+下面我们来聊聊InnoDB中ACID的实现吧，先说一下原子性是怎么实现的。
+事务要么失败，要么成功，不能做一半。聪明的InnoDB，在干活儿之前，先将要做的事情记录到一个叫undo log的日志文件中，如果失败了或者主动rollback，就可以通过undo log的内容，将事务回滚。
+那undo log里面具体记录了什么信息呢？
+undo log属于逻辑日志，它记录的是sql执行相关的信息。当发生回滚时，InnoDB会根据undo log的内容做与之前相反的工作，使数据回到之前的状态。。。
+那持久性又是怎么实现的？
+持久性是用来保证一旦给客户返回成功，数据就不会消失，持久存在。最简单的做法，是每次写完磁盘落地之后，再给客户返回成功。但如果每次读写数据都需要磁盘IO，效率就会很低。
+为此，追求极致的InnoDB提供了缓冲。当向数据库写入数据时，会首先写入缓冲池，缓冲池中修改的数据会定期刷新到磁盘中，这一过程称为刷脏。
+如果MySQL宕机，那此时Buffer Pool中修改的数据不是丢失了吗？
+Innodb引入了redo log来解决这个问题。当数据修改时，会先在redo log记录这次操作，然后再修改缓冲池中的数据，当事务提交时，会调用fsync接口对redo log进行刷盘。
+如果MySQL宕机，重启时可以读取redo log中的数据，对数据库进行恢复。由于redo log是WAL日志，也就是预写式日志，所有修改先写入日志，所以保证了数据不会因MySQL宕机而丢失，从而满足了持久性要求。
+按你所说，redo log 也需要写磁盘，为什么不直接将数据写磁盘呢？
+嗯。。。主要是有以下两方面的原因：
+1.对Buffer Pool进行刷脏是随机IO，因为每次修改的数据位置随机，但写redo log是追加操作，属于顺序IO；
+2.刷脏是以数据页为单位，MySQL默认页大小是16KB，一个Page上一个小修改都要整页写入，所以积累一些数据一并写入会大大提升性能；而redo log中只包含真正需要写入的部分，无效IO比较少。
+redo log是持久性的核心，WAL的思路也是持久化的常见解决方式，只有先落地了，才能应对后续的各种异常。
+那隔离性怎么实现呢？
+MySQL能支持Repeatable Read这种高隔离级别，主要是锁和MVCC一起努力的结果。
+我先说锁吧。事务在读取某数据的瞬间，必须先对其加行级共享锁，直到事务结束才释放；事务在更新某数据的瞬间，必须先对其加行级排他锁，直到事务结束才释放；
+为了防止幻读，还会有间隙锁进行区间排它锁定。
+然后是MVCC，多版本并发控制，主要是为了实现可重复读，虽然锁也可以，但是为了更高性能考虑，使用了这种多版本快照的方式。
+因为是快照，所以一个事务针对同一条Sql查询语句的结果，不会受其它事务影响。
+索引原理
+索引的底层实现是什么？
+用的B&#43;树，它是一个N叉排序树，每个节点通常有多个子节点。节点种类有普通节点和叶子节点。根节点可能是一个叶子节点， 也可能是个普通节点。
+B&#43;树
+那MySQL为什么用树做索引？
+一般而言，能做索引的，要么Hash，要么树，要么就是比较特殊的跳表。Hash不支持范围查询，跳表不适合这种磁盘场景，而树支持范围查询，且多种多样，很多树适合磁盘存储。所以MySQL选择了树来做索引。
+那你能说说为什么是B&#43;树，而不是平衡二叉树、红黑树或者B-树吗？
+平衡二叉树追求绝对平衡，条件比较苛刻，实现起来比较麻烦，每次插入新节点之后需要旋转的次数不能预知。
+同时，B&#43;树优势在于每个节点能存储多个信息，这样深度比平衡二叉树会浅很多，减少数据查找的次数。
+平衡二叉树
+红黑树放弃了追求完全平衡，只追求大致平衡，在与平衡二叉树的时间复杂度相差不大的情况下，保证每次插入最多只需要三次旋转就能达到平衡，实现起来也更为简单。
+但是红黑树多用于内部排序，即全放在内存中，而B&#43;树多用于外存上时，B&#43;也被称为一个磁盘友好的数据结构。
+同时，红黑树和平衡二叉树有相同缺点，即每个节点存储一个关键词，数据量大时，导致它们的深度很深，MySQL每次读取时都会消耗大量IO。
+红黑树
+那B&#43;树相比B-树有什么优点呢？" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/cacd6ee4592f4e207dd12f3753f10286/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2022-06-20T14:34:42+08:00" />
+<meta property="article:modified_time" content="2022-06-20T14:34:42+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">沉浸式面试：MySQL原理</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>今天我们来聊聊MySQL原理</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/c1/d5/MRnHjYP8_o.png"></p> 
+<p></p> 
+<p>基础篇主要是侧重基础知识，原理篇是有一定基础后的递进，通过学习本篇，不仅可以进一步了解MySQL的各项特性，还能为接下来的容灾调优打下坚实的基础。</p> 
+<p>现在，就让我们继续跟随阿柴进行这场沉浸式面试吧。</p> 
+<p><strong>ACID与隔离级别</strong></p> 
+<p><strong>那你先来说说MySQL的四种隔离级别吧。</strong></p> 
+<p>SQL标准定义了4类隔离级别，包括一些具体规则，用来限定事务之间的隔离性。</p> 
+<p>这四种级别分别是读未提交、读已提交、可重复读、串型化。</p> 
+<p><strong>读未提交</strong>，顾名思义，就是可以读到还没有提交的数据；<strong>读已提交</strong>会读到其它事务已经提交的数据；<strong>可重复读</strong>确保了同一事务中，读取同一条数据时，会看到同样的数据行；<strong>串型化</strong>通过强制事务排序，使其不可能相互冲突。</p> 
+<p><strong>重点介绍下Repeatable Read吧。</strong></p> 
+<p>Repeatable Read就是可重复读。它确保了在同一事务中，读取同一条数据时，会看到同样的数据行。</p> 
+<p>它也是MyQL的默认事务隔离级别，这种级别事务之间影响很小，通常已经能够满足日常需要了。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/cc/64/iZo1ledN_o.png"></p> 
+<p></p> 
+<p>说出四种隔离级别只是最低要求，能每一项具体去阐述特性就算过关。如果还能指出存在的问题、依赖的技术，那么就是妥妥的加分了！</p> 
+<p><strong>下面我们来聊聊InnoDB中ACID的实现吧，先说一下原子性是怎么实现的。</strong></p> 
+<p><strong>事务要么失败，要么成功，不能做一半</strong>。聪明的InnoDB，在干活儿之前，先将要做的事情记录到一个叫undo log的日志文件中，如果失败了或者主动rollback，就可以通过undo log的内容，将事务回滚。</p> 
+<p><strong>那undo log里面具体记录了什么信息呢？</strong></p> 
+<p>undo log属于逻辑日志，它记录的是sql执行相关的信息。当发生回滚时，InnoDB会根据undo log的内容做与之前相反的工作，使数据回到之前的状态。。。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/9f/7d/7ebu91Qy_o.png"></p> 
+<p></p> 
+<p><strong>那持久性又是怎么实现的？</strong></p> 
+<p>持久性是用来保证一旦给客户返回成功，数据就不会消失，持久存在。最简单的做法，是每次写完磁盘落地之后，再给客户返回成功。但如果每次读写数据都需要磁盘IO，效率就会很低。</p> 
+<p>为此，追求极致的InnoDB提供了<strong>缓冲</strong>。当向数据库写入数据时，会首先写入缓冲池，缓冲池中修改的数据会定期刷新到磁盘中，这一过程称为<strong>刷脏</strong>。</p> 
+<p><strong>如果MySQL宕机，那此时Buffer Pool中修改的数据不是丢失了吗？</strong></p> 
+<p>Innodb引入了redo log来解决这个问题。当数据修改时，会先在redo log记录这次操作，然后再修改缓冲池中的数据，当事务提交时，会调用fsync接口对redo log进行刷盘。</p> 
+<p>如果MySQL宕机，重启时可以读取redo log中的数据，对数据库进行恢复。由于redo log是WAL日志，也就是预写式日志，所有修改先写入日志，所以保证了数据不会因MySQL宕机而丢失，从而满足了持久性要求。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/b5/2d/m2Zd9zTo_o.png"></p> 
+<p></p> 
+<p><strong>按你所说，redo log 也需要写磁盘，为什么不直接将数据写磁盘呢？</strong></p> 
+<p>嗯。。。主要是有以下两方面的原因：</p> 
+<p>1.对Buffer Pool进行刷脏是<strong>随机IO</strong>，因为每次修改的数据位置随机，但写redo log是追加操作，属于<strong>顺序IO</strong>；</p> 
+<p>2.刷脏是以数据页为单位，MySQL默认页大小是16KB，一个Page上一个小修改都要整页写入，所以积累一些数据一并写入会大大提升性能；而redo log中只包含真正需要写入的部分，无效IO比较少。</p> 
+<p><strong>redo log是持久性的核心</strong>，WAL的思路也是持久化的常见解决方式，只有先落地了，才能应对后续的各种异常。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/43/d1/Hbl65kuf_o.png"></p> 
+<p></p> 
+<p><strong>那隔离性怎么实现呢？</strong></p> 
+<p>MySQL能支持Repeatable Read这种高隔离级别，主要是<strong>锁</strong>和<strong>MVCC</strong>一起努力的结果。</p> 
+<p>我先说<strong>锁</strong>吧。事务在读取某数据的瞬间，必须先对其加行级共享锁，直到事务结束才释放；事务在更新某数据的瞬间，必须先对其加行级排他锁，直到事务结束才释放；</p> 
+<p>为了防止幻读，还会有间隙锁进行区间排它锁定。</p> 
+<p>然后是<strong>MVCC</strong>，多版本并发控制，主要是为了实现可重复读，虽然锁也可以，但是为了更高性能考虑，使用了这种多版本快照的方式。</p> 
+<p>因为是快照，所以一个事务针对同一条Sql查询语句的结果，不会受其它事务影响。</p> 
+<p><strong>索引原理</strong></p> 
+<p><strong>索引的底层实现是什么？</strong></p> 
+<p>用的B+树，它是一个N叉排序树，每个节点通常有多个子节点。节点种类有<strong>普通节点</strong>和<strong>叶子节点</strong>。根节点可能是一个叶子节点， 也可能是个普通节点。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/fd/db/BqARF9EW_o.png"></p> 
+<p>B+树</p> 
+<p><strong>那MySQL为什么用树做索引？</strong></p> 
+<p><strong>一般而言，能做索引的，要么Hash，要么树，要么就是比较特殊的跳表</strong>。<strong>Hash不支持范围查询，跳表不适合这种磁盘场景</strong>，而树支持范围查询，且多种多样，很多树适合磁盘存储。所以MySQL选择了树来做索引。</p> 
+<p><strong>那你能说说为什么是B+树，而不是平衡二叉树、红黑树或者B-树吗？</strong></p> 
+<p><strong>平衡二叉树</strong>追求绝对平衡，条件比较苛刻，实现起来比较麻烦，每次插入新节点之后需要旋转的次数不能预知。</p> 
+<p>同时，B+树优势在于每个节点能存储多个信息，这样深度比平衡二叉树会浅很多，减少数据查找的次数。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/8a/b1/Yi6GYtgv_o.png"></p> 
+<p>平衡二叉树</p> 
+<p><strong>红黑树</strong>放弃了追求完全平衡，只追求大致平衡，在与平衡二叉树的时间复杂度相差不大的情况下，保证每次插入最多只需要三次旋转就能达到平衡，实现起来也更为简单。</p> 
+<p>但是红黑树多用于内部排序，即全放在内存中，而B+树多用于外存上时，B+也被称为一个磁盘友好的数据结构。</p> 
+<p>同时，红黑树和平衡二叉树有相同缺点，即每个节点存储一个关键词，数据量大时，导致它们的深度很深，MySQL每次读取时都会消耗大量IO。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/18/7a/Xo9b0XzD_o.png"></p> 
+<p>红黑树</p> 
+<p><strong>那B+树相比B-树有什么优点呢？</strong></p> 
+<p>哈哈，我觉得这就属于同门师兄较劲儿了。B+树非叶子节点只存储key值，而B-树存储key值和data值，这样B+树的层级更少，查询效率更高；</p> 
+<p>MySQL进行区间访问时，由于B+树叶子节点之间用指针相连，只需要遍历所有的叶子节点即可，而B-树则需要中序遍历一遍。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/5d/fa/CvpRHoJ0_o.png"></p> 
+<p>B-树</p> 
+<p>这类选型问题其实很深，要深刻理解为什么要用B+树、B+树有哪些竞争对手。换句话说，也就是要了解，<strong>哪些数据结构能做索引。</strong>如果能答出<strong>哈希表、树、跳表</strong>这三大类，就说明确实有自己的深入思考，这部分知识点学透了，也是加分项。</p> 
+<p><strong>接下来讲讲聚簇索引和二级索引吧。</strong></p> 
+<p>聚簇索引是主键上的索引，二级索引是非主键字段的索引。这两者相同点是都是基于B+树实现。</p> 
+<p>区别在于，二级索引的叶子结点只存储索引本身内容，以及主键ID，聚簇索引的叶子结点，会存储完整的行数据。在一定程度上，可以说二级索引就是主键索引的索引。</p> 
+<p>一般来说，面试官让介绍两个名词或者概念，潜台词就是要我们说清楚两者的相同点、不同点，说清楚了就过关。如果有些自己的总结性思考，比如在上面的对话中，阿柴回答出<strong>二级索引是主键索引的索引</strong>，这样就会让面试官眼前一亮。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/d8/14/wWonaADU_o.png"></p> 
+<p>锁</p> 
+<p><strong>下面讲讲MySQL锁的分类吧。</strong></p> 
+<p>MySQL<strong>从锁粒度粒度上讲</strong>，有表级锁、行级锁。<strong>从强度上讲</strong>，又分为意向共享锁、共享锁、意向排它锁和排它锁。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/84/32/0mtCWZm1_o.png"></p> 
+<p>锁模式的兼容情况</p> 
+<p><strong>那select操作会加锁吗？</strong></p> 
+<p>对于普通select语句，InnoDB 不会加任何锁。但是select语句，也可以显示指定加锁。有两种模式，一种是<strong>LOCK IN SHARE MODE</strong>是加共享锁，还有<strong>Select ... for updates</strong>是加排它锁。</p> 
+<p><strong>什么情况下会发生死锁？</strong></p> 
+<p>嗯。。。比如事务A锁住了资源1，然后去申请资源2，但事务B已经占据了资源2，需要资源1，谁都不退让，就死锁了。对于MySQL，最常见的情况，就是资源1、资源2分别对应一个排它锁。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/47/b7/twu9Wbkr_o.png"></p> 
+<p></p> 
+<p><strong>那间隙锁你有了解么？</strong></p> 
+<p><strong>间隙锁</strong>就是对索引行进行加锁操作，<strong>不仅锁住其本身，还会锁住周围邻近的范围区间</strong>。间隙锁的目的是为了解决幻影读，但也因此带来了更大的死锁隐患。</p> 
+<p>比如，一个任务表里面有个状态字段，是一个非唯一索引，有一个任务id，是唯一索引。</p> 
+<p>一个sql将状态处于执行中的任务设置为等待中，另一个sql正好通过任务id更新在范围内的一条任务信息。那么因为是在不同索引加锁的，所以都能成功。但是最后去更新主键数据的时候，就会死锁。</p> 
+<p class="img-center"><img alt="" src="https://images2.imgbox.com/e7/7b/gt9rQs7L_o.png"></p> 
+<p></p> 
+<h2>介于篇幅，其中的一些知识点，比如MVCC，并未扩展出来深度阐述，建议大家下来自己深入研究一下，牛牛后面也会针对一些重点知识，进行单篇讲解。</h2> 
+<blockquote> 
+ <p>原文链接：<br> https://mp.weixin.qq.com/s/BRn4wXS8afzKjwjkkZ6ATg<br> 作者：牛牛玛特</p> 
+</blockquote>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ee14090af5d8700ddb0b9955b0b14884/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">常见面试题目解答之cookie和session</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d50c9d6423228c64ae67255b0ef3a317/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">MyBatis</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

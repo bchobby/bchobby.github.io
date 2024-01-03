@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>详谈内存管理技术（一） - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="详谈内存管理技术（一）" />
+<meta property="og:description" content="先自问一个问题：C&#43;&#43;有几种new？
+我一直以为是两种：operator new 和 placement new。刚刚查了下，原来是3种：还有一个是new operator。而且，我还弄错了一个...但是，无论如何，我们能够改变的只有两个：
+1、operator new，分配内存。
+2、placement new，构造对象。
+而剩下的那个new operator很直白：负责调用上面两个new。也就是其仅仅是语法层次上的东西，用来产生operator new和placement new的语义。
+这是一个不错的开始，因为我要讲的“内存管理”，其实是上面所提到的所有：内存分配和对象构造。当然，还有一个对称的内存释放和对象析构，这些自然也会有，只是相对来说前者更加直白和重要。或者，我可以换一个题目：内存与对象管理技术。
+这将是一个，或者说数个相当大的话题；你不信，我可以给你一个列表（别眨眼）：
+1、内存池，特别是一个可用的内存池，构建一个是相当困难的！其需要达到数个极其苛刻的要求：强悍的性能（否则我们还需要它？）、并发且线程安全（这点和上一点几乎是矛盾的存在）、高可用性（意味着其有着合理的回收机制，否则可能会浪费大量内存；而且能够处理相当畸形的环境，比如单一线程分配，单一线程回收）、可调试（简直不可能!!!）。
+2、线程模型，任何涉及并发的技术，都需要一个强大的线程模型，以提供各种额外的支持；为什么会提到它？内存分配不需要并发？不要开玩笑。没有TLS（线程本地存储），一切的并发都只能吃翔；而这却需要一个新的线程模型的支撑（系统的TLS，我个人而言，并不信任）。
+3、对象构造管理，这其实是一个很庞大的工程；其处于整个C&#43;&#43;的最底层，也就意味着，我需要足够的努力才能够去完成我想要达到的目标——对于不同的类型，我能够做出正确且最好的选择，来构造它。
+4、类型系统，这是作为第三条的支撑性系统；如何达到上一条的目标？我需要一个类型系统，来提供足够的信息，以完成选择（需要注意的是：对象构造本身和类型系统，是独立的；只是恰巧，类型系统可以帮助对象获得最优的构造方式）。
+5、垃圾收集器，这是一个C&#43;&#43;“永远的痛”，特别是当我用C&#43;&#43;创造了一门有垃圾收集的脚本语言时，深感如此；所以，我陆续构建了两套垃圾收集系统，以C&#43;&#43;可用的方式，当然会有各种限制。这里，提到的原因很简单：我们都梦想着能够用上或者创造一个属于C&#43;&#43;的垃圾收集器！！！ 特别是，在我做完上面的所有事情后。
+看到没有，上面任何一个部分，都是一个庞大的话题；所幸的是，这些我都完整地做了一遍（或多遍），我会慢慢地，详细到来。
+PS：写这部分，我是很高兴和激动的，因为，这正是我所最擅长的领域；而身边却没有一个可交流的人。
+一、内存池
+所有的STL容器，都有着一个不可忽视，但一直被无视的部分：内存适配器；其实，也就是一个预留的接口，某天我们能够使用更快的内存分配，来替换默认的malloc/free。毫无疑问，这就是内存池。许多书籍都提到并给出了详细的代码，来教会我们如何构建一个性能秒杀系统分配的单线程内存池；而在并发上，也就是支持多线程的内存池上，支支吾吾，止步于加锁...最后发现和系统分配并没有什么太大区别，毕竟系统分配也是加锁了的。
+当然，要构建一个可用的高性能多线程内存池，并不困难；国内的还有人，特意写了一本书，来讲解他自己命名的多线程内存池（当我发现他所实现的高端货，和我自己折腾出来的一模一样时，便没看了：因为，造出来所需要的努力，其实远比写一本书少的多；当然，后者钱要多得多）。其思路很简单：
+1、每一个线程一个内存池；通过TLS实现。
+2、一个所有线程共用的全局内存池；用来给线程内部的池，提供分配和回收服务；当然，这一级访问需要锁~
+3、线程内部池的分配回收策略（向共用池），共用池整体的分配回收策略（向系统）。
+之所以“简单”，是前两个部分，是很直白和自然的解决方案！只要你记住一点：我要并发，我要性能——请问TLS。而需要思考和抉择的是第三点；之所以需要“思考”，因为没有超大规模数据的支撑的前提下，任何的策略都只是我们的臆想而已，任何可能的畸形分配情形，都会使我们所“猜测”出的策略无效；而“抉择”，是在我们了解到了足够信息后，必然需要面对的（否则，系统分配，还会有存在的理由？）。
+所以，在面对一个“可用”的内存池时，我们需要足够的谨慎；而，我所要讲的就是这些“谨慎”。
+二、线程模型
+或许，我过于依赖TLS，因为我足够愚蠢：除此之外，我别无他法。
+在我所提到的内存池中所使用的关键技术之一便是TLS；同样的在垃圾收集器部分，也将大量运用到TLS技术。所以，是的我们无法避开线程模型：因为，TLS需要一些额外的支持，恰巧C&#43;&#43;没有给我们（所以，我只能自己去造）。
+为什么，我不用Windows的TLS？主要原因是，我不信任它（属于个人直觉）；另外的一部分，则是我的库中是尽量避免任何第三方依赖！包括STL，我也不会用到（所以，我自己写了一套；还有更深层次的原因：我不喜欢STL的现有部分接口方式）。
+什么是线程模型？我不知道。看到那么多人和大牛都在说，所以我也用了这个关键字。在我的库里就是：
+1、重新定义的一整套接口，用来提供完整的线程服务；我使用了类似Java的方式，只要继承了IThread，然后实现run，便可开启另外一个线程：
+class MyThread: public IThread{void run(){...}};
+MyThread thread;
+thread.execute();//启动线程 2、一个线程服务类，用于提供各种线程相关服务；其中最关键的服务就是TLS；还有一个稍微有一点霸气的功能：stop the world。也就是，它管理着当前所有运行着的线程，包括主线程。
+3、线程工具类，TaskRunner、Thread、Timer、ThreadPool提供了各种不同的线程支持。
+4、并发工具类，进行了抽象化后的锁和事件；当然重要的是锁：内核锁、临界区、读写锁。
+所有的这些都是简单而无聊的；但作为一个整体来提供，则需要付出许多额外的努力。
+三、对象构造
+用“构造”这个词来限定这个领域；很不正确，毕竟完整的是：无参数构造（默认构造）、有参数构造、复制构造、对象析构、对象移动。一共5个部分需要我们关心，如果你还不明白，看看下面的代码：
+Something* addr = (Something*)std::malloc(sizeof(Something));//1、无参数构造new (addr)Something();//调用Something();//2、有参数构造new (addr)Something(12);//调用Something(int);//3、复制构造Something value;new (addr)Something(value);//调用Something(const Something&amp;);//4、对象析构addr-&gt;~Something();//调用~Something();//5、对象移动Something* other= (Something*)std::malloc(sizeof(Something));new (other)Something(*addr);//将addr处的对象移到otheraddr-&gt;~Something();//析构掉addr的对象；只保留other处的，保证“移动”语义 上面都是最保守的方式；对于基本类型，以及自定义POD类型，我们并不需要这样“复杂”的调用：" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/7c9675cac4b411cc11a4bd5e9be9caf9/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2017-02-03T10:43:28+08:00" />
+<meta property="article:modified_time" content="2017-02-03T10:43:28+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">详谈内存管理技术（一）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>先自问一个问题：C++有几种new？</p> 
+<p>　　我一直以为是两种：operator new 和 placement new。刚刚查了下，原来是3种：还有一个是new operator。而且，我还弄错了一个...但是，无论如何，我们能够改变的只有两个：</p> 
+<p>　　1、operator new，分配内存。</p> 
+<p>　　2、placement new，构造对象。</p> 
+<p>　　而剩下的那个new operator很直白：负责调用上面两个new。也就是其仅仅是语法层次上的东西，用来产生operator new和placement new的语义。</p> 
+<p> </p> 
+<p>　　这是一个不错的开始，因为我要讲的“内存管理”，其实是上面所提到的所有：内存分配和对象构造。当然，还有一个对称的内存释放和对象析构，这些自然也会有，只是相对来说前者更加直白和重要。或者，我可以换一个题目：内存与对象管理技术。</p> 
+<p>　　这将是一个，或者说数个相当大的话题；你不信，我可以给你一个列表（别眨眼）：</p> 
+<p>　　1、内存池，特别是一个可用的内存池，构建一个是相当困难的！其需要达到数个极其苛刻的要求：强悍的性能（否则我们还需要它？）、并发且线程安全（这点和上一点几乎是矛盾的存在）、高可用性（意味着其有着合理的回收机制，否则可能会浪费大量内存；而且能够处理相当畸形的环境，比如单一线程分配，单一线程回收）、可调试（简直不可能!!!）。</p> 
+<p>　　2、线程模型，任何涉及并发的技术，都需要一个强大的线程模型，以提供各种额外的支持；为什么会提到它？内存分配不需要并发？不要开玩笑。没有TLS（线程本地存储），一切的并发都只能吃翔；而这却需要一个新的线程模型的支撑（系统的TLS，我个人而言，并不信任）。</p> 
+<p>　　3、对象构造管理，这其实是一个很庞大的工程；其处于整个C++的最底层，也就意味着，我需要足够的努力才能够去完成我想要达到的目标——对于不同的类型，我能够做出正确且最好的选择，来构造它。</p> 
+<p>　　4、类型系统，这是作为第三条的支撑性系统；如何达到上一条的目标？我需要一个类型系统，来提供足够的信息，以完成选择（需要注意的是：对象构造本身和类型系统，是独立的；只是恰巧，类型系统可以帮助对象获得最优的构造方式）。</p> 
+<p>　　5、垃圾收集器，这是一个C++“永远的痛”，特别是当我用C++创造了一门有垃圾收集的脚本语言时，深感如此；所以，我陆续构建了两套垃圾收集系统，以C++可用的方式，当然会有各种限制。这里，提到的原因很简单：我们都梦想着能够用上或者创造一个属于C++的垃圾收集器！！！   特别是，在我做完上面的所有事情后。</p> 
+<p>　　看到没有，上面任何一个部分，都是一个庞大的话题；所幸的是，这些我都完整地做了一遍（或多遍），我会慢慢地，详细到来。</p> 
+<p>　　PS：写这部分，我是很高兴和激动的，因为，这正是我所最擅长的领域；而身边却没有一个可交流的人。</p> 
+<p> </p> 
+<p>　　一、内存池</p> 
+<p>　　所有的STL容器，都有着一个不可忽视，但一直被无视的部分：内存适配器；其实，也就是一个预留的接口，某天我们能够使用更快的内存分配，来替换默认的malloc/free。毫无疑问，这就是内存池。许多书籍都提到并给出了详细的代码，来教会我们如何构建一个性能秒杀系统分配的单线程内存池；而在并发上，也就是支持多线程的内存池上，支支吾吾，止步于加锁...最后发现和系统分配并没有什么太大区别，毕竟系统分配也是加锁了的。</p> 
+<p>　　当然，要构建一个可用的高性能多线程内存池，并不困难；国内的还有人，特意写了一本书，来讲解他自己命名的多线程内存池（当我发现他所实现的高端货，和我自己折腾出来的一模一样时，便没看了：因为，造出来所需要的努力，其实远比写一本书少的多；当然，后者钱要多得多）。其思路很简单：</p> 
+<p>　　1、每一个线程一个内存池；通过TLS实现。</p> 
+<p>　　2、一个所有线程共用的全局内存池；用来给线程内部的池，提供分配和回收服务；当然，这一级访问需要锁~</p> 
+<p>　　3、线程内部池的分配回收策略（向共用池），共用池整体的分配回收策略（向系统）。</p> 
+<p>　　之所以“简单”，是前两个部分，是很直白和自然的解决方案！只要你记住一点：我要并发，我要性能——请问TLS。而需要思考和抉择的是第三点；之所以需要“思考”，因为没有超大规模数据的支撑的前提下，任何的策略都只是我们的臆想而已，任何可能的畸形分配情形，都会使我们所“猜测”出的策略无效；而“抉择”，是在我们了解到了足够信息后，必然需要面对的（否则，系统分配，还会有存在的理由？）。</p> 
+<p>　　所以，在面对一个“可用”的内存池时，我们需要足够的谨慎；而，我所要讲的就是这些“谨慎”。</p> 
+<p> </p> 
+<p>　　二、线程模型</p> 
+<p>　　或许，我过于依赖TLS，因为我足够愚蠢：除此之外，我别无他法。</p> 
+<p>　　在我所提到的内存池中所使用的关键技术之一便是TLS；同样的在垃圾收集器部分，也将大量运用到TLS技术。所以，是的我们无法避开线程模型：因为，TLS需要一些额外的支持，恰巧C++没有给我们（所以，我只能自己去造）。</p> 
+<p>　　为什么，我不用Windows的TLS？主要原因是，我不信任它（属于个人直觉）；另外的一部分，则是我的库中是尽量避免任何第三方依赖！包括STL，我也不会用到（所以，我自己写了一套；还有更深层次的原因：我不喜欢STL的现有部分接口方式）。</p> 
+<p>　　什么是线程模型？我不知道。看到那么多人和大牛都在说，所以我也用了这个关键字。在我的库里就是：</p> 
+<p>　　1、重新定义的一整套接口，用来提供完整的线程服务；我使用了类似Java的方式，只要继承了IThread，然后实现run，便可开启另外一个线程：</p> 
+<div class="cnblogs_code"> 
+ <pre><span style="color:#0000ff">class</span> MyThread: <span style="color:#0000ff">public</span><span style="color:#000000"> IThread{
+    </span><span style="color:#0000ff">void</span><span style="color:#000000"> run(){
+        ...
+    }
+};<br>MyThread thread;<br>thread.execute();//启动线程</span></pre> 
+</div> 
+<p>　　2、一个线程服务类，用于提供各种线程相关服务；其中最关键的服务就是TLS；还有一个稍微有一点霸气的功能：stop the world。也就是，它管理着当前所有运行着的线程，包括主线程。</p> 
+<p>　　3、线程工具类，TaskRunner、Thread、Timer、ThreadPool提供了各种不同的线程支持。</p> 
+<p>　　4、并发工具类，进行了抽象化后的锁和事件；当然重要的是锁：内核锁、临界区、读写锁。</p> 
+<p>　　所有的这些都是简单而无聊的；但作为一个整体来提供，则需要付出许多额外的努力。</p> 
+<p> </p> 
+<p>　　三、对象构造</p> 
+<p>　　用“构造”这个词来限定这个领域；很不正确，毕竟完整的是：无参数构造（默认构造）、有参数构造、复制构造、对象析构、对象移动。一共5个部分需要我们关心，如果你还不明白，看看下面的代码：</p> 
+<div class="cnblogs_code"> 
+ <pre>Something* addr = (Something*)std::<span style="color:#0000ff">malloc</span>(<span style="color:#0000ff">sizeof</span><span style="color:#000000">(Something));
+
+</span><span style="color:#008000">//</span><span style="color:#008000">1、无参数构造</span>
+<span style="color:#0000ff">new</span><span style="color:#000000"> (addr)Something();//调用Something();
+
+</span><span style="color:#008000">//</span><span style="color:#008000">2、有参数构造</span>
+<span style="color:#0000ff">new</span> (addr)Something(<span style="color:#800000">12</span><span style="color:#000000">);//调用Something(int);
+
+</span><span style="color:#008000">//</span><span style="color:#008000">3、复制构造</span>
+<span style="color:#000000">Something value;
+</span><span style="color:#0000ff">new</span><span style="color:#000000"> (addr)Something(value);//调用Something(const Something&amp;);
+
+</span><span style="color:#008000">//</span><span style="color:#008000">4、对象析构</span>
+addr-&gt;~<span style="color:#000000">Something();//调用~Something();
+
+</span><span style="color:#008000">//</span><span style="color:#008000">5、对象移动</span>
+Something* other= (Something*)std::<span style="color:#0000ff">malloc</span>(<span style="color:#0000ff">sizeof</span><span style="color:#000000">(Something));
+</span><span style="color:#0000ff">new</span> (other)Something(*addr);<span style="color:#008000">//</span><span style="color:#008000">将addr处的对象移到other</span>
+addr-&gt;~Something();<span style="color:#008000">//</span><span style="color:#008000">析构掉addr的对象；只保留other处的，保证“移动”语义</span></pre> 
+</div> 
+<p>　　上面都是最保守的方式；对于基本类型，以及自定义POD类型，我们并不需要这样“复杂”的调用：</p> 
+<div class="cnblogs_code"> 
+ <pre><span style="color:#0000ff">int</span>* addr = (<span style="color:#0000ff">int</span>*)std::<span style="color:#0000ff">malloc</span>(<span style="color:#0000ff">sizeof</span>(<span style="color:#0000ff">int</span><span style="color:#000000">));
+
+</span><span style="color:#008000">//</span><span style="color:#008000">1、无参数构造
+</span><span style="color:#008000">//</span><span style="color:#008000">do nothing
+
+</span><span style="color:#008000">//</span><span style="color:#008000">2、有参数构造</span>
+*addr = <span style="color:#800080">12</span><span style="color:#000000">;
+
+</span><span style="color:#008000">//</span><span style="color:#008000">3、复制构造</span>
+<span style="color:#0000ff">int</span> value = <span style="color:#800080">12</span><span style="color:#000000">;
+</span>*addr =<span style="color:#000000"> value
+</span><span style="color:#008000">//</span><span style="color:#008000">或</span>
+memcpy(addr, &amp;value, <span style="color:#0000ff">sizeof</span>(<span style="color:#0000ff">int</span><span style="color:#000000">));
+
+</span><span style="color:#008000">//</span><span style="color:#008000">4、对象析构
+</span><span style="color:#008000">//</span><span style="color:#008000">do nothing
+
+</span><span style="color:#008000">//</span><span style="color:#008000">5、对象移动</span>
+<span style="color:#0000ff">int</span>* other= (<span style="color:#0000ff">int</span>*)std::<span style="color:#0000ff">malloc</span>(<span style="color:#0000ff">sizeof</span>(<span style="color:#0000ff">int</span><span style="color:#000000">));
+memcpy(other, addr, </span><span style="color:#0000ff">sizeof</span>(<span style="color:#0000ff">int</span>));</pre> 
+</div> 
+<p>　　这里似乎并没有太大的区别；在优化级别较高的情况下，自定义的POD也会生成第二种代码；但，但是，在构造一个数组时，这种区别将是巨大的：</p> 
+<div class="cnblogs_code"> 
+ <pre><span style="color:#008000">//</span><span style="color:#008000">第一种：默认的方式</span>
+<span style="color:#0000ff">for</span>(size_t i = <span style="color:#800080">0</span>; i != size; ++<span style="color:#000000">i){
+    </span><span style="color:#0000ff">new</span> (data +<span style="color:#000000"> i)Something();
+}
+
+</span><span style="color:#008000">//</span><span style="color:#008000">第二种：最佳的方式
+</span><span style="color:#008000">//</span><span style="color:#008000">do nothing</span></pre> 
+</div> 
+<p>　　第一种方式，在优化时依然会产生代码，当然是足够“优化”的代码；但在最佳的方式下，我们可以不产生任何代码。因为，编译器并不是足够聪明，许多自定义的POD，它并不能够以最佳的方式来生成代码；而，身为人类的我们，可以！</p> 
+<p>　　当然，是通过类型系统。</p> 
+<p> </p> 
+<p>　　四、类型系统</p> 
+<p>　　其实第三部分的“对象构造”本身是相当“精简”的，只是为了到达目的；我们需要额外的努力，而这“努力”，我通过类型系统，来具现化。</p> 
+<p>　　很简单的方式：我来告诉编译器，生成怎样的代码！</p> 
+<p>　　1、对于每个类型（特别是可以优化的类型），我们定义它的类型信息：是否是平凡构造/复制/析构，是否是内存可移动的等。</p> 
+<p>　　2、通过模板元编程，萃取以上信息；得到更多丰富的类型信息。</p> 
+<p>　　3、使用上述原始信息和萃取的信息；来完成我们所有想做的事情；当然，也是通过模板元编程。</p> 
+<p>　　本质上，我们是在构建一个庞大的类型数据库；也就是，需要手动定义许多，编译器并不知道的信息。</p> 
+<p>　　这部分，复杂度上是很简单的；但，又有但是，你会模板元编程么？！学习这一技术，本身就是一个痛苦且漫长的过程；更为关键的是，其编程方式，不同于在C++中的其他所有，你将必须接受其函数式的思维方式；而这，很痛苦。</p> 
+<p> </p> 
+<p>　　五、垃圾收集器</p> 
+<p>　　这是一个令人兴奋的话题，在C++的世界里；但我们，要知道相当一部分有GC的语言，其本身就是用C++写的（JAVA、C#等）；这真是一个悲伤的话题。</p> 
+<p>　　所以，我通过不怎么努力的努力；在我的库里，完成里两套C++本身可用的垃圾收集器。当然，都有着一些限制；第一个版本，只能够在独立的线程里运行，线程间的交互需要额外的机制（并非不可以）；第二个版本，则是一个更加可用的收集器，其没有线程限制。</p> 
+<p>　　当然，这两个收集器，都是给我的脚本语言使用的；因为，在动态语言里，环形引用是常见的景象；基于引用计数的技术，在这一点上，毫无作为。</p> 
+<p>　　在这个部分，我并不是教大家如何构造出一个C++可用或不可用的垃圾收集器；而是，带大家看看我所知道的，那些垃圾收集方案，其能够有着怎样的作为；关于这些，我有着一个长长的列表，这里我就不详细展开。但，大致有以下内容：</p> 
+<p>　　1、C++可用的，简单的各种回收方式：shared_ptr/scoped_ptr、基于链表和栈对象（RAII）的收集器、侵入式智能指针。</p> 
+<p>　　2、完整的大型收集器：标记清扫、标记缩并、节点复制、分代式收集等等；不，我只会讲我所熟悉的，如：标记清扫、节点复制、分代式。</p> 
+<p>　　3、C++的世界中，我们需要垃圾收集器？如何？</p> 
+<p>　　嗯，大致上就这些；但这部分将会是在相当久远的时候，才会与大家见面，那时，或许会有不同。</p> 
+<p> </p> 
+<p>　　总结下，内存管理，的确是一个相当大的话题。</p> 
+<p>　　对了，有一句话，我一直想说：绝对，绝对，不要自作聪明地，重载全局new，绝对！！！   欲知为啥，见下期~（呃，下期有可能是隔壁《从RPC开始》的第三期......）</p> 
+<p> </p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ce63a45f6b1e48566ea3a2042b2444ea/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">网页多种版心适应多屏幕技巧</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4d24658e707e8b04afb7705e6f008eef/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Mybatis动态插入数据（使用trim标签）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

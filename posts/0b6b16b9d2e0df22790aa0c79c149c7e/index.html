@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Logback与Log4j2日志框架性能对比与调优 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Logback与Log4j2日志框架性能对比与调优" />
+<meta property="og:description" content="前言 看到目前线上大多日志框架测评大多从宏观角度，直接对比异步同步的吞吐量，但是没有考量到更深层的淘汰机制、等待策略、队列长度等对性能表现的影响，因此本文将从更多的角度对比及分析两款日志框架的性能表现，通过JProfiler&#43;Jmeter压测及数据采集，从线程占用、锁占用、宏观耗时等多维度可视化数据。
+性能测试 logback 同步日志 耗时 未经过任何调优，采用Logback默认配置得出上图，一百万条日志打印耗时(ms)，如图：单线程下性能最佳，耗时随线程数增加而下降。
+线程占用 单线程 无阻塞状态
+多线程 多线程打印日志时，会产生大量线程阻塞，线程越多阻塞状态越多
+四线程 八线程 十六线程 锁占用 线程发生多次占用锁的情况。查看Logback源码可得知，检查容量、放入队列、取出队列都需要在取得锁后进行
+异步日志（队列扩容） 样本数100万，队列长度110万
+耗时 线程占用 单线程 多线程 四线程 八线程 十六线程 锁占用 每次写入队列都需要占用锁，同时Appender从队列取出也需要占用锁
+异步日志（半队列扩容） 样本数100万，队列长度50万，不启用抛弃策略
+耗时 线程占用 单线程 多线程 写入耗时明显增长，写入过程仍然发生阻塞状态
+四线程 八线程 十六线程 锁占用 log4j2 同步日志 样本数100万，Logger到Appender串行执行，输出到文件
+耗时 线程占用 线程产生长时间的等待，主要是缓冲环溢出后无法写入，生产者根据等待策略进入等待状态
+单线程 单线程生产不需要争抢锁，因此全程无阻塞
+多线程 整体来看，阻塞的时间随着线程增多而增多，因此多线程对同步日志影响极大，性能损失严重
+四线程 八线程 十六线程 后续监控因阻塞时间太长跳过
+锁占用 阻塞在Appender上的输出流上，输出流是在单线程中执行的
+异步日志（队列扩容） 样本数100万，队列长度110万，使用Yield等待策略
+耗时 单线程占用最高，耗时随线程数增加而缩短，直到线程数超过CPU核数。单线程耗时与logback相当，多线程耗时比logback缩短了2倍
+线程占用 单线程与多线程使用都无阻塞状态，保证足够的队列容量，能使日志操作保持高吞吐和低延迟，避免阻塞等待
+单线程 多线程 四线程 八线程 使用与宿主机CPU核数相等的线程数，日志写入过程无阻塞、无线程切换
+十六线程 异步日志（日志淘汰策略） 样本数100万，队列长度50万，启用抛弃策略" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/0b6b16b9d2e0df22790aa0c79c149c7e/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-03-26T19:32:03+08:00" />
+<meta property="article:modified_time" content="2021-03-26T19:32:03+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Logback与Log4j2日志框架性能对比与调优</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_1"></a>前言</h2> 
+<p>看到目前线上大多日志框架测评大多从宏观角度，直接对比异步同步的吞吐量，<strong>但是没有考量到更深层的淘汰机制、等待策略、队列长度等对性能表现的影响</strong>，因此本文将从更多的角度对比及分析两款日志框架的性能表现，通过JProfiler+Jmeter压测及数据采集，从线程占用、锁占用、宏观耗时等多维度可视化数据。</p> 
+<hr> 
+<h2><a id="_5"></a>性能测试</h2> 
+<h3><a id="logback_6"></a>logback</h3> 
+<h4><a id="_7"></a>同步日志</h4> 
+<h5><a id="_8"></a>耗时</h5> 
+<p><img src="https://images2.imgbox.com/e1/75/jlH386gv_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/c2/2f/0Fg3PN5t_o.png" alt="在这里插入图片描述"></p> 
+<p>未经过任何调优，采用Logback默认配置得出上图，一百万条日志打印耗时(ms)，如图：单线程下性能最佳，耗时随线程数增加而下降。</p> 
+<h5><a id="_13"></a>线程占用</h5> 
+<h6><a id="_14"></a>单线程</h6> 
+<p><img src="https://images2.imgbox.com/3c/23/ahQMru31_o.png" alt="在这里插入图片描述"></p> 
+<p>无阻塞状态</p> 
+<h6><a id="_18"></a>多线程</h6> 
+<p>多线程打印日志时，会产生大量线程阻塞，线程越多阻塞状态越多</p> 
+<h6><a id="_20"></a>四线程</h6> 
+<p><img src="https://images2.imgbox.com/99/46/gHju7SFJ_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_23"></a>八线程</h6> 
+<p><img src="https://images2.imgbox.com/5d/19/pWcekoM4_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_26"></a>十六线程</h6> 
+<p><img src="https://images2.imgbox.com/75/79/eKzSKGjl_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="_28"></a>锁占用</h5> 
+<p><img src="https://images2.imgbox.com/1b/19/nLim9sW6_o.png" alt="在这里插入图片描述"><br> 线程发生多次占用锁的情况。查看Logback源码可得知，检查容量、放入队列、取出队列都需要在取得锁后进行</p> 
+<h4><a id="_32"></a>异步日志（队列扩容）</h4> 
+<p>样本数100万，队列长度110万</p> 
+<h5><a id="_34"></a>耗时</h5> 
+<p><img src="https://images2.imgbox.com/82/c7/HRgnB0dr_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/9c/fb/kZGgUrvu_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="_38"></a>线程占用</h5> 
+<h6><a id="_39"></a>单线程</h6> 
+<p><img src="https://images2.imgbox.com/5b/d5/YqOUMbgg_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_42"></a>多线程</h6> 
+<h6><a id="_43"></a>四线程</h6> 
+<p><img src="https://images2.imgbox.com/c5/db/ChS4Ff9N_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_46"></a>八线程</h6> 
+<p><img src="https://images2.imgbox.com/a1/e4/TaDM2aYN_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_49"></a>十六线程</h6> 
+<p><img src="https://images2.imgbox.com/0f/7b/qdLr1Rwe_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="_52"></a>锁占用</h5> 
+<p><img src="https://images2.imgbox.com/0b/f2/1q9BVPeg_o.png" alt="在这里插入图片描述"></p> 
+<p>每次写入队列都需要占用锁，同时Appender从队列取出也需要占用锁</p> 
+<h4><a id="_57"></a>异步日志（半队列扩容）</h4> 
+<p>样本数100万，队列长度50万，不启用抛弃策略</p> 
+<h5><a id="_61"></a>耗时</h5> 
+<p><img src="https://images2.imgbox.com/66/6a/7rUDxNkf_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/fd/a9/m7fmZK23_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="_65"></a>线程占用</h5> 
+<h6><a id="_66"></a>单线程</h6> 
+<p><img src="https://images2.imgbox.com/bb/a2/uIO3UFW7_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_69"></a>多线程</h6> 
+<p>写入耗时明显增长，写入过程仍然发生阻塞状态</p> 
+<h6><a id="_73"></a>四线程</h6> 
+<p><img src="https://images2.imgbox.com/2c/0d/rIDFImqN_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_76"></a>八线程</h6> 
+<p><img src="https://images2.imgbox.com/35/0c/J49HZ1Hp_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_79"></a>十六线程</h6> 
+<p><img src="https://images2.imgbox.com/6c/da/3OkYBBcE_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="_82"></a>锁占用</h5> 
+<p><img src="https://images2.imgbox.com/48/4f/GXqvorL1_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="log4j2_85"></a>log4j2</h3> 
+<h4><a id="_86"></a>同步日志</h4> 
+<p>样本数100万，Logger到Appender串行执行，输出到文件</p> 
+<h5><a id="_90"></a>耗时</h5> 
+<p><img src="https://images2.imgbox.com/1b/a1/mjuWmuwd_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/98/ce/2Ee2hXVE_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="_94"></a>线程占用</h5> 
+<p>线程产生长时间的等待，主要是缓冲环溢出后无法写入，生产者根据等待策略进入等待状态</p> 
+<h6><a id="_98"></a>单线程</h6> 
+<p><img src="https://images2.imgbox.com/0a/97/mkWIiWOm_o.png" alt="在这里插入图片描述"></p> 
+<p>单线程生产不需要争抢锁，因此全程无阻塞</p> 
+<h6><a id="_103"></a>多线程</h6> 
+<p>整体来看，阻塞的时间随着线程增多而增多，因此多线程对同步日志影响极大，性能损失严重</p> 
+<h6><a id="_107"></a>四线程</h6> 
+<p><img src="https://images2.imgbox.com/f8/6a/aDiEqVA4_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_110"></a>八线程</h6> 
+<p><img src="https://images2.imgbox.com/3a/02/218jxHen_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_113"></a>十六线程</h6> 
+<p><img src="https://images2.imgbox.com/90/3d/WeGSWbgA_o.png" alt="在这里插入图片描述"></p> 
+<p>后续监控因阻塞时间太长跳过</p> 
+<h5><a id="_118"></a>锁占用</h5> 
+<p><img src="https://images2.imgbox.com/8f/29/lqLA4Fj8_o.png" alt="在这里插入图片描述"></p> 
+<p>阻塞在Appender上的输出流上，输出流是在单线程中执行的</p> 
+<h4><a id="_123"></a>异步日志（队列扩容）</h4> 
+<p>样本数100万，队列长度110万，使用Yield等待策略</p> 
+<h5><a id="_127"></a>耗时</h5> 
+<p><img src="https://images2.imgbox.com/43/fa/KNI1l7jm_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/0a/3c/6bWvDk2L_o.png" alt="在这里插入图片描述"></p> 
+<p>单线程占用最高，耗时随线程数增加而缩短，直到线程数超过CPU核数。单线程耗时与logback相当，多线程耗时比logback缩短了2倍</p> 
+<h5><a id="_133"></a>线程占用</h5> 
+<p>单线程与多线程使用都无阻塞状态，保证足够的队列容量，能使日志操作保持高吞吐和低延迟，避免阻塞等待</p> 
+<h6><a id="_137"></a>单线程</h6> 
+<p><img src="https://images2.imgbox.com/e5/c4/ah1Gfo89_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_140"></a>多线程</h6> 
+<h6><a id="_141"></a>四线程</h6> 
+<p><img src="https://images2.imgbox.com/9e/fd/Tj1fDi7u_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_144"></a>八线程</h6> 
+<p><img src="https://images2.imgbox.com/0a/02/aLtPLRoV_o.png" alt="在这里插入图片描述"></p> 
+<p>使用与宿主机CPU核数相等的线程数，日志写入过程无阻塞、无线程切换</p> 
+<h6><a id="_149"></a>十六线程</h6> 
+<p><img src="https://images2.imgbox.com/4c/05/YfjFelmy_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_152"></a>异步日志（日志淘汰策略）</h4> 
+<p>样本数100万，队列长度50万，启用抛弃策略</p> 
+<h5><a id="_156"></a>耗时</h5> 
+<p><img src="https://images2.imgbox.com/e1/c4/xNzSmmbO_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/82/9d/ytsxtsFg_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="_160"></a>线程占用</h5> 
+<p>队列长度50万，正常来说应与半队列扩容一样，产生阻塞现象，但启用了日志淘汰策略，无法写入队列的将直接抛弃不阻塞等待</p> 
+<h6><a id="_164"></a>单线程</h6> 
+<p><img src="https://images2.imgbox.com/45/46/NougD9pO_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_167"></a>多线程</h6> 
+<h6><a id="_168"></a>四线程</h6> 
+<p><img src="https://images2.imgbox.com/06/1e/oUT4MvOH_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_171"></a>八线程</h6> 
+<p><img src="https://images2.imgbox.com/8c/fa/7ZnujcG2_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_174"></a>十六线程</h6> 
+<p><img src="https://images2.imgbox.com/e1/48/T3c4SoWB_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_177"></a>异步日志（半队列扩容）</h4> 
+<p>样本数100万，队列长度50万，使用Yield等待策略</p> 
+<h5><a id="_181"></a>耗时</h5> 
+<p><img src="https://images2.imgbox.com/1b/d9/iWjcBVLc_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/9e/a0/o3AkzjPS_o.png" alt="在这里插入图片描述"></p> 
+<p>当队列满后，大幅影响了响应时间，吞吐量依赖Appender的消费性能</p> 
+<h5><a id="_187"></a>线程占用</h5> 
+<p>单线程记录日志时，前半段队列未满时生产线程一直处于工作状态，后半段因消费能力跟不上生产能力，导致队列满载，生产线程开始出现等待状态</p> 
+<h6><a id="_191"></a>单线程</h6> 
+<p><img src="https://images2.imgbox.com/4c/c7/7FVY95AA_o.png" alt="在这里插入图片描述"></p> 
+<p>等待的时间比多线程少，是因为单线程下日志生产速度慢，同时日志也在倍消费</p> 
+<h6><a id="_196"></a>多线程</h6> 
+<p>前一段时间可以维持高性能工作，但后面队列满后开始发送等待，导致耗时延长</p> 
+<h6><a id="_200"></a>四线程</h6> 
+<p><img src="https://images2.imgbox.com/33/70/02DeVIVO_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_203"></a>八线程</h6> 
+<p><img src="https://images2.imgbox.com/01/41/qpHol9YI_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_206"></a>十六线程</h6> 
+<p><img src="https://images2.imgbox.com/85/05/jMO1e7c9_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="_209"></a>锁占用</h5> 
+<p><img src="https://images2.imgbox.com/66/57/Pi549rgB_o.png" alt="在这里插入图片描述"></p> 
+<p>并未发现日志记录过程中发生锁占用</p> 
+<h4><a id="_214"></a>异步日志（等待策略）</h4> 
+<p>样本数100万，队列长度50万，使用Timeout等待策略</p> 
+<h5><a id="_218"></a>耗时</h5> 
+<p><img src="https://images2.imgbox.com/44/7a/JsoAHo3K_o.png" alt="在这里插入图片描述"><img src="https://images2.imgbox.com/53/4b/DTJ0QTmT_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="_222"></a>线程占用</h5> 
+<p><img src="https://images2.imgbox.com/67/73/wVTezpgm_o.png" alt="在这里插入图片描述"></p> 
+<p>未产生阻塞状态</p> 
+<h6><a id="_227"></a>单线程</h6> 
+<h6><a id="_229"></a>多线程</h6> 
+<p>因Timeout等待策略使用了锁，因此产生一定的阻塞</p> 
+<h6><a id="_233"></a>四线程</h6> 
+<p><img src="https://images2.imgbox.com/22/93/9Dm9ur7c_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_236"></a>八线程</h6> 
+<p><img src="https://images2.imgbox.com/da/f3/ggqzePv1_o.png" alt="在这里插入图片描述"></p> 
+<h6><a id="_239"></a>十六线程</h6> 
+<p><img src="https://images2.imgbox.com/e2/b8/r1r0FwsV_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="_242"></a>锁占用</h5> 
+<p><img src="https://images2.imgbox.com/d8/38/peRlv100_o.png" alt="在这里插入图片描述"></p> 
+<p>使用Timeout等待策略时，放入队列前会取锁，进行消费者线程唤醒动作</p> 
+<hr> 
+<h2><a id="_249"></a>性能调优</h2> 
+<h3><a id="_250"></a>异步日志</h3> 
+<p>无论是logback还是log4j2，使用异步日志可以大幅提高日志操作耗时，间接提高业务方整体耗时</p> 
+<h4><a id="_254"></a>日志可靠性</h4> 
+<p>异步日志无法保证日志可靠性，系统意外关闭会丢失队列中的日志，因此要求高可靠的日志，应该选择数据库或者MQ来保证</p> 
+<h5><a id="Logback_258"></a>Logback</h5> 
+<p>通过<code>&lt;appender name="async-log-all" class="ch.qos.logback.classic.AsyncAppender"&gt;</code>设置</p> 
+<h4><a id="Log4j2_262"></a>Log4j2</h4> 
+<p>通过<code>System.setProperty("Log4jContextSelector", "org.apache.logging.log4j.core.async.AsyncLoggerContextSelector")</code>设置</p> 
+<h3><a id="_266"></a>日志抛弃策略</h3> 
+<p>将溢出队列的日志抛弃，保持稳定的响应速度。对业务方来说能保持良好、稳定的日志服务，但需要容忍一定的日志丢</p> 
+<h4><a id="Log4j2_270"></a>Log4j2</h4> 
+<p>通过<code>System.setProperty("log4j2.AsyncQueueFullPolicy","Discard")</code>设置</p> 
+<h4><a id="Logback_274"></a>Logback</h4> 
+<p>通过&amp;lt;discardingThreshold&amp;gt;指定抛弃日志的阈值</p> 
+<h5><a id="_278"></a>抛弃边界</h5> 
+<p>当队列剩余容量小于阈值后，将抛弃ERROR以下的日志</p> 
+<h5><a id="_282"></a>禁用抛弃策略</h5> 
+<p>设置为0则表示不抛弃，业务线程等待队列空间可用后写入</p> 
+<h5><a id="_286"></a>默认阈值</h5> 
+<p>默认阈值为队列长度的20%，队列长度100阈值为20</p> 
+<h3><a id="_290"></a>日志等待策略</h3> 
+<p>Log4j2独有的特性，指定队列满时，生产者进行等待的行为，需要在不开启抛弃策略下进行</p> 
+<h4><a id="TimeoutWaitStrategy_294"></a>TimeoutWaitStrategy</h4> 
+<p>Log4j2默认的等待策略，通过Object.wait等待队列腾空。在放入队列时会加锁，不推荐使用。</p> 
+<h4><a id="YieldWaitStrategy_298"></a>YieldWaitStrategy</h4> 
+<p>通过<code>System.setProperty("log4j2.asyncLoggerWaitStrategy","Yield")</code>设置。通过System.yield()等待队列腾空，比Timeout等待策略更高效，比Busy等待策略更节能</p> 
+<h3><a id="_302"></a>队列容量</h3> 
+<p>由性能测试可知，不适用日志抛弃策略下，队列满载后生产线程将阻塞等待队列腾空，直接影响业务方的效率</p> 
+<h4><a id="Logback_306"></a>Logback</h4> 
+<p>通过<code>&lt;queueSize&gt;</code>指定队列长度，Logback固定使用ArrayBlockingQueue作为队列</p> 
+<h4><a id="Log4j2_310"></a>Log4j2</h4> 
+<p>通过<code>System.setProperty("log4j2.asyncLoggerRingBufferSize","x")</code>指定</p> 
+<h5><a id="_314"></a>二次方长度</h5> 
+<p>RingBuffer内部计算位置时通过二进制方式计算，使用二的指数长度可以提高计算速度</p> 
+<h4><a id="_318"></a>长度计算公式</h4> 
+<p>暂未找到统一标准的计算公式，本人觉得可以通过(日志峰值TPS#消费TPS)*15*60来计算</p> 
+<h5><a id="_322"></a>承载容量</h5> 
+<p>这个公式的含义是：应用15分钟以峰值去生产的日志可以全部被队列容纳</p> 
+<h5><a id="_326"></a>成本</h5> 
+<p>从成本的角度看，队列不应该无限量地预估，在保证系统不受到容量影响下，尽可能地使用小的长度，节省内存开支</p> 
+<h5><a id="_330"></a>响应时间</h5> 
+<p>一般应用不应该长时间在峰值运行，如果出现长时间在峰值运行，则应该进行水平拓展分散请求压力。因此容纳15分钟之内的峰值，可以有足够时间让运维响应，进行水平拓展分散压力。</p> 
+<h3><a id="_334"></a>消费瓶颈</h3> 
+<p>日志消费TPS由Appender消费效率决定，当日志TPS超过消费TPS时，日志将开始在队列中堆积</p> 
+<h4><a id="TPS_338"></a>消费TPS</h4> 
+<p>某个Appender在一秒内消费的日志数量，举FileAppender为例，每条日志消费花费100微妙(性能好的主机可以到60)，一秒可以消费1万条日志，即消费TPS为1万</p> 
+<h4><a id="TPS_342"></a>请求TPS</h4> 
+<p>一般Web应用不会承载超过消费TPS的流量。假设每个请求打印五条日志，则需要5000以上的TPS才能产生日志堆积</p> 
+<h4><a id="_346"></a>消费者优化</h4> 
+<p>日志TPS长时间(15min+)超过消费TPS的场景下，应该对消费能力进行优化，使用轻量级的Appedner、简单的Layout、日志抛弃策略、过滤器、业务方规范等方面进行优化</p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/27bb0ff775a658b47580982c2e5bfd79/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">ClickHouse分区操作</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/87961701ee6de187477a395fafc18baa/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">信号与系统——傅里叶变换</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

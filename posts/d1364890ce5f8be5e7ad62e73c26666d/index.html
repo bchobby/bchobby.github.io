@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink Window机制与Timer（含Window介绍、State状态的使用、定时器） - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Flink Window机制与Timer（含Window介绍、State状态的使用、定时器）" />
+<meta property="og:description" content="最近有一个实际的场景需求，需要实时统计总数，于是想到了flink，从入门到实战，整个过程中一直不断的思考实际业务中的问题，在flink中如何解决，与kafka-stream的对比和spark的对比等等。
+整个思考和写出demo的过程中，对window机制有了深入的了解，并通过阅读flink java client的源码，了解了其trigger的实现。
+本文从实际需求出发，通过提出问题解决问题，结合源码了解flink。
+问题分析 从实际场景出发
+场景：实时统计人流量总数，可以根据卡口按时段统计，可以是实时刷新，也可以是定期查询前一段时间。
+流处理面临的问题
+通常流处理框架，就是实时计算，数据源源不断输入，实时输出结果，所以面临以下几个问题：
+窗口的划分数据乱序、延迟到达何时触发窗口计算计算状态的存储和过期 时间 通常流处理框架都有以下几个时间概念
+Event Time：事件时间，从事件的消息体中提取时间Ingestion Time：到达时间，消息到达流处理器的时间(kafka-stream存在)Process Time：消息被处理的时间 前两者都可能存在乱序的情况(out of order)，process time可以保证时间顺序是递增的。
+如何设置EventTime
+flink 通过env.setStreamTimeCharacteristic(TimeCharacteristic.ProcessingTime)来设定流处理中window使用的时间类型（主要是用于划分window和管理window的生命周期，包括创建、销毁）
+在flink流处理的Source中或者处理window之前，都可以通过调用assignTimestampsAndWatermarks来指定如何从消息中获得当前事件时间（watermark在后文讲）
+窗口 窗口类型
+Tumbling windows
+翻转窗口：固定大小，窗口不重叠、窗口之间没有间隔Sliding windows
+滑动时间窗口：由窗口大小和滑动间隔确定，例如窗口大小为5000，间隔（滑动）3000的窗口，可以得到[0;5000),[3000;8000),..Hopping windows
+跳跃时间窗口：kafka自己的概念，和sliding相似，kafka说这是学术上的概念Session window
+基于事件的，动态大小，例如间隔超出N（称为gap）没有新数据，之后的数据就是一个新session 从另一个维度来说，窗口可以是时间驱动的，即Time window，对应可以得到翻转时间窗口和滑动时间窗口；也可以是基于数据的，例如Count Window,当窗口数量达到一定值时关闭，可以得到翻转计数窗口和滑动计数窗口
+Flink Window 原生支持
+Tumbling Time WindowSliding Time WindowTumbling Count WindowSliding Count WindowSession Window 上文提到了如何获取时间，那么何时触发窗口的计算呢？
+window的生命周期
+创建：当第一个元素落入到window中的时候被创建触发：根据配置的trigger确定销毁：
+根据配置的时间是event time还是process time，当获得到的当前event/process time, 大于窗口的endtime&#43;watermark&#43;lateness时候，窗口被销毁。
+如果持续一段时间没有数据，也就不能获得最新的时间，则最后几个窗口会一直保持开启。 a window is created as soon as the first element that should belong to this window arrives, and the window is completely removed when the time (event or processing time) passes its end timestamp plus the user-specified allowed lateness(see Allowed Lateness)" />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/d1364890ce5f8be5e7ad62e73c26666d/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-02-08T16:47:24+08:00" />
+<meta property="article:modified_time" content="2021-02-08T16:47:24+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink Window机制与Timer（含Window介绍、State状态的使用、定时器）</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>最近有一个实际的场景需求，需要实时统计总数，于是想到了flink，从入门到实战，整个过程中一直不断的思考实际业务中的问题，在flink中如何解决，与kafka-stream的对比和spark的对比等等。<br> 整个思考和写出demo的过程中，对window机制有了深入的了解，并通过阅读flink java client的源码，了解了其trigger的实现。<br> 本文从实际需求出发，通过提出问题解决问题，结合源码了解flink。</p> 
+<p><a id="more"></a></p> 
+<h4 id="问题分析">问题分析</h4> 
+<p>从实际场景出发</p> 
+<p>场景：实时统计人流量总数，可以根据卡口按时段统计，可以是实时刷新，也可以是定期查询前一段时间。</p> 
+<p>流处理面临的问题</p> 
+<p>通常流处理框架，就是实时计算，数据源源不断输入，实时输出结果，所以面临以下几个问题：</p> 
+<ol><li>窗口的划分</li><li>数据乱序、延迟到达</li><li>何时触发窗口计算</li><li>计算状态的存储和过期</li></ol> 
+<h4 id="时间">时间</h4> 
+<p>通常流处理框架都有以下几个时间概念</p> 
+<ul><li>Event Time：事件时间，从事件的消息体中提取时间</li><li>Ingestion Time：到达时间，消息到达流处理器的时间(kafka-stream存在)</li><li>Process Time：消息被处理的时间</li></ul> 
+<p>前两者都可能存在乱序的情况(out of order)，process time可以保证时间顺序是递增的。</p> 
+<p>如何设置EventTime</p> 
+<p>flink 通过<span style="color:#f33b45;"><code>env.setStreamTimeCharacteristic(TimeCharacteristic.ProcessingTime)</code></span>来设定流处理中window使用的时间类型（主要是用于划分window和管理window的生命周期，包括创建、销毁）</p> 
+<p>在flink流处理的Source中或者处理window之前，都可以通过调用<code>assignTimestampsAndWatermarks</code>来指定如何从消息中获得当前事件时间（watermark在后文讲）</p> 
+<h4 id="窗口">窗口</h4> 
+<p>窗口类型</p> 
+<ul><li><strong>Tumbling windows</strong><br> 翻转窗口：固定大小，窗口不重叠、窗口之间没有间隔</li><li><strong>Sliding windows</strong><br> 滑动时间窗口：由窗口大小和滑动间隔确定，例如窗口大小为5000，间隔（滑动）3000的窗口，可以得到<code>[0;5000),[3000;8000),..</code></li><li><strong>Hopping windows</strong><br> 跳跃时间窗口：kafka自己的概念，和sliding相似，kafka说这是学术上的概念</li><li><strong>Session window</strong><br> 基于事件的，动态大小，例如间隔超出N（称为gap）没有新数据，之后的数据就是一个新session</li></ul> 
+<p>从另一个维度来说，窗口可以是时间驱动的，即<strong>Time window</strong>，对应可以得到翻转时间窗口和滑动时间窗口；也可以是基于数据的，例如<strong>Count Window</strong>,当窗口数量达到一定值时关闭，可以得到翻转计数窗口和滑动计数窗口</p> 
+<p><img alt="stream-window" src="https://images2.imgbox.com/64/81/4KkJpQ3P_o.png"></p> 
+<p> </p> 
+<h4 id="Flink-Window">Flink Window</h4> 
+<p>原生支持</p> 
+<ul><li>Tumbling Time Window</li><li>Sliding Time Window</li><li>Tumbling Count Window</li><li>Sliding Count Window</li><li>Session Window</li></ul> 
+<p>上文提到了如何获取时间，那么何时触发窗口的计算呢？</p> 
+<p><span style="color:#f33b45;">window的生命周期</span></p> 
+<ol><li><span style="color:#f33b45;">创建：当第一个元素落入到window中的时候被创建</span></li><li><span style="color:#f33b45;">触发：根据配置的trigger确定</span></li><li><span style="color:#f33b45;">销毁：<br> 根据配置的时间是event time还是process time，当获得到的当前event/process time, 大于窗口的endtime+watermark+lateness时候，窗口被销毁。<br> 如果持续一段时间没有数据，也就不能获得最新的时间，则最后几个窗口会一直保持开启。</span></li></ol> 
+<blockquote> 
+ <p>a window is created as soon as the first element that should belong to this window arrives, and the window is completely removed when the time (event or processing time) passes its end timestamp plus the user-specified allowed lateness(see Allowed Lateness)</p> 
+</blockquote> 
+<p>乱序数据与water mark</p> 
+<p>对于乱序数据怎么办呢？</p> 
+<p>方案就是 watermark。</p> 
+<p>watermark，直译为水位线，就是元素可以迟到多久才去关闭窗口。例如一个窗口是[0-5),，watermark允许最多延迟3s，那么一个6s的事件，它的watermark就应该是3，一个7s的watermark是4，这两个都落在窗口中</p> 
+<p>在flink流处理的Source中或者处理window之前，都可以通过调用<code>assignTimestampsAndWatermarks</code>来指定如何从消息中获得当前事件时间和获得当前事件的watermark。可以直接扩展几个预定义的类实现。<strong>默认watermark是0，也即watermark时间等于事件时间</strong>。watermark不是对每一条数据都会生成的，默认配置每200ms生成一次，可以通过<code>env.getConfig().setAutoWatermarkInterval()</code>配置产生间隔。</p> 
+<p>此外，flink还允许在流处理window后设定<code>allow lateness</code>来指定一个最晚的时间，没有超过这个最晚时间，window还是未销毁，可以触发计算。（默认的lateness也是0）</p> 
+<p>那么watermark和lateness区别在哪里呢？<br> 这个主要是配合trigger的行为，默认的EventTimeTrigger，之前的元素是不触发window计算的，在watermark<strong>达到window end的时候</strong>，会触发一次window计算；之后的每一个迟到的元素进入窗口，都会触发一次window计算。所以watermark是保证大部分元素的时间落在windowend+watermark的区间内，减少window计算的触发次数。如果是其他trigger方式，watermark的意义不大。窗口触发计算时，会将窗口数据传给后续的处理过程处理。</p> 
+<blockquote> 
+ <p>很多地方把概念会搞混：</p> 
+ <ol><li>事件时间&lt;窗口end+watermark大小，元素落在窗口内</li><li>flink返回的watermark时间=事件时间-watermark大小</li><li>watermark时间&lt;窗口end，元素落在窗口内</li></ol> 
+</blockquote> 
+<p>如上所述，EventTimeTrigger等一些默认的trigger，在watermark时间达到window end之前是不会触发的，如果事件有一段时间暂停了没有新元素，或者窗口期很长，则导致一直没有触发计算获得结果，延迟比较大，这时候可以使用ContinuousProcessingTimeTrigger。</p> 
+<blockquote> 
+ <p>对于延迟的数据，也可以定时可以把它揪出来处理。通过对<code>WindowedStream</code>设置<code>sideOutputLateData</code>，之后从<code>WindowedStream</code>处理的结果<code>SingleOutputStreamOperator</code>的<code>getSideOutput(OutputTag)</code>方法得到被丢弃的数据（这个是需要定时任务去处理）</p> 
+</blockquote> 
+<blockquote> 
+ <p>只有所有的线程的最小watermark都满足watermark 时间 &gt;= window_end_time时，触发历史窗才会执行。</p> 
+</blockquote> 
+<p>trigger</p> 
+<p>窗口何时计算，仅取决于trigger的定义。<br> 可以自己扩展trigger，实现何时触发窗口计算，如果不设置，flink会根据窗口类型自动设定。</p> 
+<p>The trigger interface has five methods that allow a <code>Trigger</code> to react to different events:</p> 
+<ul><li>The <code>onElement()</code> method is called for each element that is added to a window.</li><li>The <code>onEventTime()</code> method is called when a registered event-time timer fires.</li><li>The <code>onProcessingTime()</code> method is called when a registered processing-time timer fires.</li><li>The <code>onMerge()</code> method is relevant for stateful triggers and merges the states of two triggers when their corresponding windows merge, <em>e.g.</em> when using session windows.</li><li>Finally the <code>clear()</code> method performs any action needed upon removal of the corresponding window.</li></ul> 
+<p>Two things to notice about the above methods are:</p> 
+<p>1) The first three decide how to act on their invocation event by returning a <code>TriggerResult</code>. The action can be one of the following:</p> 
+<ul><li><code>CONTINUE</code>: do nothing,</li><li><code>FIRE</code>: trigger the computation,</li><li><code>PURGE</code>: clear the elements in the window, and</li><li><code>FIRE_AND_PURGE</code>: trigger the computation and clear the elements in the window afterwards.</li></ul> 
+<p>2) Any of these methods can be used to register processing- or event-time timers for future actions.</p> 
+<p>此外，Trigger的Context是可以配置state的，这里的ContinuousEventTimeTrigger就使用state存储了触发时间信息。更新信息参考<a href="https://ci.apache.org/projects/flink/flink-docs-release-1.9/dev/stream/state/state.html" rel="nofollow">flink文档：work with state</a>.同样，针对keyedStream的process方法也支持状态存储。</p> 
+<p><strong>通过设置state，可以清除掉之前已经计算过的窗口数据</strong>，减少大窗口的window缓存占用，这个状态也是会传递到后续的处理中。示例代码如下</p> 
+<pre><code class="language-java">//每次触发后清除状态
+.trigger(PurgingTrigger.of(ContinuousProcessingTimeTrigger.of(Time.seconds(30))))
+.process(new ProcessWindowFunction&lt;ObjectNode, Tuple3&lt;TimeWindow,String,Long&gt;, String, TimeWindow&gt;() {
+    private ValueStateDescriptor&lt;Long&gt; countState =new ValueStateDescriptor&lt;Long&gt;("cont-num",Long.class);
+    @Override
+    public void process(String s, Context context, Iterable&lt;ObjectNode&gt; elements, Collector&lt;Tuple3&lt;TimeWindow,String,Long&gt;&gt; out) throws Exception {
+        //called every time windowed calculate was triggered
+        long count=0;
+        for (ObjectNode x :elements) {
+            count++;
+        }
+        //为每个窗口创建了一个状态
+        //之前每次都会pure
+        //这种操作下，当pure后，如果没有新数据，也不会再触发该process
+        //如下下面的redis sink有缓存，缓存就不会更新到redis啦。所以sink要加定时器
+        Long origin=context.windowState().getState(countState).value();
+        if(origin==null){
+            origin=0L;           
+        }
+        count+=origin;        
+        context.windowState().getState(countState).update(count);
+        out.collect(new Tuple3&lt;&gt;(context.window(),s,count));
+    }
+})
+.addSink(new RedisCountSink());</code></pre> 
+<p>EventTimeTrigger</p> 
+<pre><code class="language-java">@Override
+public TriggerResult onElement(Object element, long timestamp, TimeWindow window, TriggerContext ctx) throws Exception {
+    if (window.maxTimestamp() &lt;= ctx.getCurrentWatermark()) {
+        // if the watermark is already past the window fire immediately
+        //当前watermark已经超过window end时间了，立即触发（对应lateness内的迟到元素）
+        return TriggerResult.FIRE;
+    } else {
+        //注册一个定时器
+        ctx.registerEventTimeTimer(window.maxTimestamp());
+        return TriggerResult.CONTINUE;
+    }
+}
+
+@Override
+public TriggerResult onEventTime(long time, TimeWindow window, TriggerContext ctx) {
+    return time == window.maxTimestamp() ?
+    TriggerResult.FIRE :
+    TriggerResult.CONTINUE;
+}</code></pre> 
+<p>ContinuousEventTimeTrigger</p> 
+<pre><code class="language-java">private ContinuousEventTimeTrigger(long interval) {
+    this.interval = interval;
+}
+
+@Override
+public TriggerResult onElement(Object element, long timestamp, W window, TriggerContext ctx) throws Exception {
+
+    if (window.maxTimestamp() &lt;= ctx.getCurrentWatermark()) {
+        // if the watermark is already past the window fire immediately
+        return TriggerResult.FIRE;
+    } else {
+        ctx.registerEventTimeTimer(window.maxTimestamp());
+    }
+
+    ReducingState&lt;Long&gt; fireTimestamp = ctx.getPartitionedState(stateDesc);
+    if (fireTimestamp.get() == null) {
+        //没有注册过定时器
+        long start = timestamp - (timestamp % interval);
+        long nextFireTimestamp = start + interval;
+        //注册下一个触发时间
+        ctx.registerEventTimeTimer(nextFireTimestamp);
+        fireTimestamp.add(nextFireTimestamp);
+    }
+
+    return TriggerResult.CONTINUE;
+}
+
+@Override
+public TriggerResult onEventTime(long time, W window, TriggerContext ctx) throws Exception {
+    //这里传入的time，注释是说就是触发时间
+    if (time == window.maxTimestamp()){
+        //达到watarmark，触发
+        return TriggerResult.FIRE;
+    }
+
+    ReducingState&lt;Long&gt; fireTimestampState = ctx.getPartitionedState(stateDesc);
+
+    Long fireTimestamp = fireTimestampState.get();
+
+    if (fireTimestamp != null &amp;&amp; fireTimestamp == time) {
+        //达到之前注册的定时器，触发
+        fireTimestampState.clear();
+        fireTimestampState.add(time + interval);
+        ctx.registerEventTimeTimer(time + interval);
+        return TriggerResult.FIRE;
+    }
+
+    return TriggerResult.CONTINUE;
+}
+</code></pre> 
+<p>使用trigger(ContinuousEventTimeTrigger.of(Time.seconds(30)))，可以提前计算，也即不需要等待达到watermark触发条件，只要当前时间达到开始时间加一个值，就触发计算了，这个时间也是从eventtime得到的。不能解决没有新元素到达且没有到watermark的情况，使用ContinuousProcessingTimeTrigger.of(Time.seconds(30))可以根据实际时间触发计算。ContinuousEventTimeTrigger的触发也是针对<code>事件时间定期触发</code>，如果是元素流会停止一段时间或者需要及时获取结果，应该采用ContinuousProcessingTimeTrigger。</p> 
+<p>对于OnEventTime或者OnProcessTime，出入的time参数分别是eventtime或者processtime。如果一直没有后续数据到来，窗口就不会关闭（窗口关闭还是根据eventTime决定的）。</p> 
+<p>trigger注册的时间，是被内部的一个<code>InternalTimerService</code>处理，可参考后文说明，process timer是直接jdk库注册到指定时间执行，event timer好像是每个事件到达都会判断watermark与队列的时间比较确定是否触发。</p> 
+<p>已经注册的时间小于当前watermark/processtime的window都会被回调。</p> 
+<p>更多参见后文【Timer】</p> 
+<p>Evictors</p> 
+<p>保留指定长度或者指定时间段内的窗口数据，剩余的数据会清除</p> 
+<p>可以指定在触发后，窗口处理前或处理后，进行清理数据。</p> 
+<blockquote> 
+ <p>The evictor has the ability to remove elements from a window after the trigger fires and before and/or after the window function is applied</p> 
+</blockquote> 
+<p>代码示例</p> 
+<pre><code class="language-java">env = StreamExecutionEnvironment.getExecutionEnvironment();
+env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
+//env.getConfig().setAutoWatermarkInterval();
+env.enableCheckpointing(600000);
+env.getCheckpointConfig().setCheckpointingMode(CheckpointingMode.EXACTLY_ONCE);
+env.setStateBackend(new RocksDBStateBackend("file:///flink/state/"));
+
+Properties properties = new Properties();
+properties.setProperty("bootstrap.servers", kafkaServers);
+properties.setProperty("group.id", "vehicle-count");
+FlinkKafkaConsumer&lt;ObjectNode&gt; consumer=new FlinkKafkaConsumer&lt;ObjectNode&gt;(dataTopic, new JSONKeyValueDeserializationSchema(true), properties);
+//设定如何提前事件时间，watermark设定为5分钟
+consumer.assignTimestampsAndWatermarks(new KafkaTimestampExtractor(Time.minutes(5)));
+consumer.setStartFromEarliest();
+DataStream&lt;ObjectNode&gt; stream = env.addSource(consumer);
+stream
+        .filter(k-&gt;k.get("value").has("tollgateID"))
+        .keyBy(map -&gt; map.get("value").get("tollgateID").asText())
+        .timeWindow(Time.seconds(10))
+        .allowedLateness(Time.minutes(2))
+        .trigger(ContinuousProcessingTimeTrigger.of(Time.seconds(30)))
+        .process(new ProcessWindowFunction&lt;ObjectNode, Tuple3&lt;TimeWindow,String,Long&gt;, String, TimeWindow&gt;() {
+            @Override
+            public void process(String s, Context context, Iterable&lt;ObjectNode&gt; elements, Collector&lt;Tuple3&lt;TimeWindow,String,Long&gt;&gt; out) throws Exception {
+                //called every time windowed calculate was triggered
+                //这里可以使用缓存状态，参见其他实例代码
+                long count=0;
+                for (ObjectNode x :elements) {
+                    count++;
+                }
+                out.collect(new Tuple3&lt;&gt;(context.window(),s,count));
+            }
+        })
+        .addSink(new RedisCountSink());
+Executor executor= Executors.newFixedThreadPool(1);
+//env.execute()是阻塞方法
+CompletableFuture&lt;JobExecutionResult&gt; future=CompletableFuture.supplyAsync(new Supplier&lt;JobExecutionResult&gt;() {
+    @Override
+    public JobExecutionResult get() {
+        try {
+            return env.execute();
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+}, executor);</code></pre> 
+<p>上面的process，可以换成map+sum的方式，map对每个元素变成Tupple，每个Tupple后面补个1，sum位置选择最后一位就可以了。之所以有这种考虑，因为<strong>ProcessFunction每次触发都要全部处理一遍，会更损耗性能和资源</strong>，这个可以参考<a href="https://ci.apache.org/projects/flink/flink-docs-release-1.9/dev/stream/operators/windows.html#window-functions" rel="nofollow">文档对不同函数的说明</a></p> 
+<blockquote> 
+ <p>Flink uses a ReduceFunction to incrementally aggregate the elements of a window as they arrive<br> 不会像pocess那样，每触发一次就要重新算一遍总数，使用其他函数，会增量提前计算好，等到Trigger.Fire时候再传递给reduce的下一步。<br> sum函数无法获得window信息了,可以自定义aggregate实现sum</p> 
+</blockquote> 
+<p>总结</p> 
+<ol><li>窗口分配器：就是决定着流入flink的数据，该属于哪个窗口。<code>.TimeWindow</code>创建,源码都<code>extends WindowAssigner</code></li><li>时间戳抽取器/watermark生成器：抽取时间戳并驱动着程序正常执行。assignTimestampsAndWatermarks()</li><li>trigger：决定着数据啥时候落地。</li></ol> 
+<p>缓存与定时</p> 
+<p>flink每个窗口触发计算时，都会把结果直接传给后续的processer，如果后面是存储到数据库、redis等，性能比较低，所以需要做批量处理。这里要考虑：</p> 
+<ol><li>设定批量的限制，一批数据不要太大</li><li>需要有个定时功能，长期达不到批量最小值，也要执行入库</li></ol> 
+<p>这里参考<code>StreamingFileSink</code>的实现，其在open方法中得到了TimerService，然后扩展<code>ProcessingTimeCallback</code>，也可以监听save checkpoint。</p> 
+<p>代码如下</p> 
+<pre><code class="language-java">private static class RedisCountSink extends RichSinkFunction&lt;Tuple3&lt;TimeWindow,String,Long&gt;&gt; implements ProcessingTimeCallback {
+
+    private ConcurrentLinkedQueue&lt;Tuple3&lt;TimeWindow,String,Long&gt;&gt; cache;
+    private transient StringRedisTemplate template;
+
+    private final String sortedSetKey = "vehicle:stream:vehicle-count";
+
+    private long duration=30000;
+
+    private ProcessingTimeService processingTimeService;
+
+    @Override
+    public void open(Configuration parameters) throws Exception {
+        super.open(parameters);
+        template = SpringUtils.getBean(StringRedisTemplate.class);
+        cache=new ConcurrentLinkedQueue&lt;&gt;();
+        this.processingTimeService = ((StreamingRuntimeContext) getRuntimeContext()).getProcessingTimeService();
+        long currentProcessingTime = processingTimeService.getCurrentProcessingTime();
+        processingTimeService.registerTimer(currentProcessingTime + duration, this);
+    }
+
+    @Override
+    public void invoke(Tuple3&lt;TimeWindow,String,Long&gt; value, Context context) throws Exception {
+        cache.add(value);
+        if(cache.size()&gt;10000){
+            flush();
+        }
+    }
+    private void flush() {
+        template.executePipelined((RedisCallback&lt;Object&gt;) redisConnection -&gt; {
+            StringRedisConnection stringCoon = (StringRedisConnection) redisConnection;
+            while (!cache.isEmpty()) {
+                Tuple3&lt;TimeWindow,String,Long&gt; data = cache.poll();//
+                TimeWindow k = data.f0;
+                long time = k.getStart();
+                System.out.println("consume "+data.f1);
+                String key = sortedSetKey + ":" + time;
+                stringCoon.zAdd(sortedSetKey, time, key);
+                stringCoon.hSet(key, data.f1, data.f2.toString());
+            }
+            return null;
+        });
+    }
+
+    @Override
+    public void onProcessingTime(long timestamp) throws Exception {
+        final long currentTime = processingTimeService.getCurrentProcessingTime();
+        flush();
+        processingTimeService.registerTimer(currentTime + duration, this);
+    }
+}</code></pre> 
+<p>还有就是，针对KeydStream，自定义ProcessFunction也支持注册定时器</p> 
+<pre><code class="language-java">private class CountProcess extends ProcessFunction&lt;String,String&gt;{
+
+    @Override
+    public void processElement(String value, Context ctx, Collector&lt;String&gt; out) throws Exception {
+        ctx.timerService().registerProcessingTimeTimer(1000);
+        //这里ctx也支持存储临时的状态，可以利用之前存储的状态进行计算
+    }
+
+    @Override
+    public void onTimer(long timestamp, OnTimerContext ctx, Collector&lt;String&gt; out) throws Exception {
+        
+    }
+}
+</code></pre> 
+<p>windowed stream 操作</p> 
+<p><a href="https://ci.apache.org/projects/flink/flink-docs-release-1.9/dev/stream/operators/windows.html#window-functions" rel="nofollow">官网文档</a></p> 
+<ol><li>reduce<br> 操作是针对每个元素进行操作的，但是输出就丢失了window信息，但是也是按照window进行聚合的，输出到下一步的每个元素都是一个window的结果。</li><li>aggregate<br> 低级的聚合api，很多操作是基于这个操作实现的，可以同时进行增量聚合操作并将聚合的结果传递给processwindowfunction，可以保存window信息，并且聚合操作是针对每个窗口进行的。就是对每个窗口聚合完成直接传入参数中的processwindowfunction.<br> sum,min,max函数等很多自带方法都是基于这个api实现的</li></ol> 
+<p>虽然聚合操作是增量进行的，每个元素到达都会操作，但是传递给后续操作依然是由trigger控制的。</p> 
+<pre><code class="language-java">//在aggregate内求和，这个结果传给ProcessWindowFunction，然后带上window、key等信息直接传给后续的处理；aggregate内是增量的
+//注意，使用aggregate的方法时，不能与Evictors一起工作
+//aggregate也会被pure trigger清空缓存
+.aggregate(new AggregateFunction&lt;ObjectNode, Long, Long&gt;() {
+    @Override
+    public Long createAccumulator() {
+        return 0L;
+    }
+
+    @Override
+    public Long add(ObjectNode value, Long accumulator) {
+        return accumulator+value.get("num").asLong();
+    }
+
+    @Override
+    public Long getResult(Long accumulator) {
+        return accumulator;
+    }
+
+    @Override
+    public Long merge(Long a, Long b) {
+        return a+b;
+    }
+}, new ProcessWindowFunction&lt;Long, Tuple3&lt;TimeWindow,String,Long&gt;, String, TimeWindow&gt;() {
+    @Override
+    public void process(String s, Context context, Iterable&lt;Long&gt; elements, Collector&lt;Tuple3&lt;TimeWindow, String, Long&gt;&gt; out) throws Exception {
+        for (Long count:elements) {
+            out.collect(new Tuple3&lt;&gt;(context.window(),s,count));
+        }
+    }
+})</code></pre> 
+<p>key-window and non-key window</p> 
+<p>针对keyed-stream创建的window，会充分利用多线程，不同的key分配到不同线程处理，默认线程是当前cpu核数的2倍，可以通过env设置。</p> 
+<p>但是non-key window只会有一个线程处理。</p> 
+<blockquote> 
+ <p>如果sink加了缓存，会每个线程都是独立的缓存，所以可能不需要考虑多线程操作，都是同步操作。<br> 如果某个key更新数据，只会触发所在线程的window操作，其他线程不会刷新<br> 所以很多<u><strong>实例都是一个线程一个的</strong></u></p> 
+</blockquote> 
+<p>window操作的几个问题</p> 
+<p>1. 实时性</p> 
+<p>基于EventTime情况下，窗口不关闭，导致不能实时获得结果，可以使用ContinuousEventTimeTrigger，但是必须保证数据持续流入，如果流入的数据event time没有达到注册的event time，还是不会触发</p> 
+<p>这时可以换成ContinuousProcessTimeTrigger，这个是注册的系统时间定时，会定时触发，无论是否有数据流入</p> 
+<p>2. sink触发频繁</p> 
+<p>每个window的触发计算结果都会传入后续处理，如果后续是要存储数据库，当窗口过多时（例如很多key，每个key都有一个窗口），则会频繁的触发sink方法。</p> 
+<p>在sink处加一个缓存，在<code>open</code>方法中初始化，同时获得定时器，注册timer，具体参见上文的【定时与缓存】一节。</p> 
+<p>如果针对的是keyedStream后接的处理器，则可以直接注册定时器。</p> 
+<blockquote> 
+ <p>多个窗口都没有新数据时，哪个窗口有新数据传入，只会触发该窗口，对其他窗口没有影响的</p> 
+</blockquote> 
+<p>3. 大窗口</p> 
+<p>如果需要统计比较长时间的窗口，例如1h，这时候窗口中的数据会比较多，全部存储在缓存中，如何处理？</p> 
+<ul><li>方案1<br> 使用processFunction，在processFunction中，使用<code>context.getWindowState</code>创建一个状态存储，存储当前计算结果，然后使用PurgingTrigger在每次触发后清空windows</li><li>方案2<br> 使用增量aggregate方法计算结果，配合puretrigger+状态存储。其实方案1每个window的数据只会被计算一次，所以该方案对比方案1没有什么区别。</li><li>方案3<br> 方案1和2，如果在sink处加了缓存，没有新数据时，就不会触发sink，可以在window之前，<strong>把数据的非必要属性都删掉</strong>，大窗口的数据大小也就不会太大，然后使用aggregate方法增量计算加快每次触发计算时间，<strong>不pure窗口数据</strong>。</li></ul> 
+<p>方案1参考上文Trigger的示例代码。</p> 
+<p>方案2参考上文aggregate的示例代码。</p> 
+<h4 id="Timer">Timer</h4> 
+<p>The onTimer(…) callback is called at different points in time depending on whether processing or event time is used to register the Timers in the first place. In particular:</p> 
+<p>When using processing time to register Timers in your Flink application, the onTimer(…) method is called when the clock time of the machine <u><strong>reaches the timestamp of the timer.</strong></u></p> 
+<p>When using event time to register Timers in your Flink application, the onTimer(…) method is called when the operator’s <u><strong>watermark reaches or exceeds the timestamp of the timer</strong></u>.</p> 
+<p>Similar to the processElement(…)method, state access within the onTimer(…)callback is also scoped to the current key (i.e., the key for which the timer was registered for).</p> 
+<p>It is worth noting here that <u><strong>both the onTimer(…) and processElement(…)calls are synchronized</strong></u>, and thus it is safe to access state and modify it in both the onTimer(…)and processElement(…) methods.</p> 
+<p>4 characteristics of Timers to keep in mind</p> 
+<p>In this paragraph, we discuss the 4 basic characteristics of Timers in Apache Flink that you should keep in mind before using them. These are the following:</p> 
+<p><strong>1. Timers are registered on a KeyedStream.</strong></p> 
+<p>Since timers are registered and fired per key, a KeyedStream is a prerequisite for any kind of operation and function using Timers in Apache Flink.</p> 
+<p>每个窗口包含的内容也是keydStream，所以在Trigger中可以为窗口注册Timer</p> 
+<p><strong>2. Timers are automatically deduplicated.</strong></p> 
+<p>The TimerService deduplicates timers per key and timestamp, i.e., <u><strong>there is at most one timer per key and timestamp</strong></u>. If multiple timers are registered for the same timestamp, the onTimer() method will be called just once.（针对一个key，注册多次同一个时间的Timer，只会触发一次）</p> 
+<p><strong>3. Timers are checkpointed.</strong></p> 
+<p>Timers are checkpointed by Flink, just like any other managed state. When restoring a job from a Flink checkpoint or savepoint, each registered Timer in the restored state that was supposed to be fired before restoration will be fired immediately.</p> 
+<p><strong>4. Timers can be deleted.</strong></p> 
+<p>As of Flink 1.6, Timers can be <a href="https://ci.apache.org/projects/flink/flink-docs-stable/dev/stream/operators/process_function.html#timer-coalescing" rel="nofollow">paused and deleted</a>. If you are using a version of Apache Flink older than Flink 1.5 you might be experiencing a bad checkpointing performance due to having many Timers that cannot be deleted or stopped.</p> 
+<p>对应源码</p> 
+<p>InternalTimerService.class</p> 
+<pre><code class="language-java">//触发event timer检测
+public void advanceWatermark(long time) throws Exception {
+    currentWatermark = time;
+
+    InternalTimer&lt;K, N&gt; timer;
+
+    while ((timer = eventTimeTimersQueue.peek()) != null &amp;&amp; timer.getTimestamp() &lt;= time) {
+        //所有的小于当前watermark时间的Timer全部触发
+        eventTimeTimersQueue.poll();
+        keyContext.setCurrentKey(timer.getKey());
+        triggerTarget.onEventTime(timer);
+    }
+}</code></pre> 
+<pre><code class="language-java">@Override
+//触发proces timer
+public void onProcessingTime(long time) throws Exception {
+    // null out the timer in case the Triggerable calls registerProcessingTimeTimer()
+    // inside the callback.
+    nextTimer = null;
+
+    InternalTimer&lt;K, N&gt; timer;
+
+    while ((timer = processingTimeTimersQueue.peek()) != null &amp;&amp; timer.getTimestamp() &lt;= time) {
+        //队列中小于等于当前时间的Timer全部触发
+        processingTimeTimersQueue.poll();
+        keyContext.setCurrentKey(timer.getKey());
+        triggerTarget.onProcessingTime(timer);
+    }
+
+    if (timer != null &amp;&amp; nextTimer == null) {
+        //如果队列还有Timer不为空，则向系统定时器注册下一个
+        //下面会看到，每一次注册Timer只是加入queue，只有最近要触发的才会注册到系统的定时器
+        nextTimer = processingTimeService.registerTimer(timer.getTimestamp(), this);
+    }
+}</code></pre> 
+<p>源码注册event timer是直接加入到queue中，注册process会稍微复杂。</p> 
+<pre><code class="language-java">@Override
+public void registerProcessingTimeTimer(N namespace, long time) {
+    InternalTimer&lt;K, N&gt; oldHead = processingTimeTimersQueue.peek();
+    if (processingTimeTimersQueue.add(new TimerHeapInternalTimer&lt;&gt;(time, (K) keyContext.getCurrentKey(), namespace))) {
+        //队列中有注册过timer，则下一次得到下一次触发时间，否则返回long最大值
+        long nextTriggerTime = oldHead != null ? oldHead.getTimestamp() : Long.MAX_VALUE;
+        // check if we need to re-schedule our timer to earlier
+        if (time &lt; nextTriggerTime) {
+            //当前注册的time小于之前注册过的time,或者之前没有注册过           
+            if (nextTimer != null) {
+                //之前注册过，但是这次注册时间更早，要先触发这个
+                //取消之前注册的，使用新时间注册，将时间提前
+                nextTimer.cancel(false);
+            }
+            //注册这个time
+            nextTimer = processingTimeService.registerTimer(time, this);
+        }
+        //time &gt;= nextTriggerTime的，只是加到队列了，但是没有注册。也就不会触发
+        //加到队列中的时间，会在上一次触发后，从队列中取出下一次要触发的注册，不会一次注册所有队列中的时间，应该是为了防止一个时间注册多次吧。
+    }
+}
+</code></pre> 
+<p>每个window都有自己的TriggerContext实例，也就有自己独立的Timer队列，这个具体的window实例是<code>WindowOperator&lt;K, IN, ACC, OUT, W extends Window&gt;</code>类。</p> 
+<p>process time的实现机制</p> 
+<p>在源码<code>SystemProcessingTimeService</code>中，可以看到，注册的processTimer是通过<code>scheduledThreadPoolExecutor</code>去实现的，通过java jdk自带的线程库在指定的时间执行，但是如果GC等造成调用延迟了，传入OnProcessEventTime的时间还是之前注册的时间。</p> 
+<blockquote> 
+ <p>processingTimeTimer的触发则是在onProcessingTime方法中(<code>SystemProcessingTimeService的TriggerTask及RepeatedTriggerTask的定时任务会回调ProcessingTimeCallback的onProcessingTime方法</code>)，它会移除timestamp小于等于指定time的processingTimeTimer，然后回调triggerTarget.onProcessingTime方法</p> 
+</blockquote> 
+<p>event time的实现机制</p> 
+<p>eventTimerTimer的触发主要是在advanceWatermark方法中(<code>AbstractStreamOperator的processWatermark方法会调用InternalTimeServiceManager的advanceWatermark方法，而该方法调用的是InternalTimerServiceImpl的advanceWatermark方法</code>)，它会移除timestamp小于等于指定time的eventTimerTimer，然后回调triggerTarget.onEventTime方法；</p> 
+<h4 id="参考">参考</h4> 
+<ol><li><a href="https://www.ververica.com/blog/4-characteristics-of-timers-in-apache-flink" rel="nofollow">4 characteristics of Timers in Apache Flink to keep in mind</a></li><li><a href="https://ci.apache.org/projects/flink/flink-docs-stable/dev/stream/operators/process_function.html" rel="nofollow">Flink官方文档对Timer的解释</a></li><li><a href="https://blog.jrwang.me/2019/flink-source-code-time-and-window/" rel="nofollow">Flink 源码阅读笔记（12）- 时间、定时器和窗口</a></li><li><a href="https://juejin.im/post/5bf95810e51d452d705fef33" rel="nofollow">Flink Window分析及Watermark解决乱序数据机制深入剖析-Flink牛刀小试</a></li><li><a href="https://my.oschina.net/u/992559/blog/1836471" rel="nofollow">Flink 实战 ： 统计网站PV，UV</a></li></ol>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/213c96b746d16176086aef3bc2dfdc5d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">mysql的innodb死锁问题_InnoDB数据库死锁问题处理_MySQL</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c6174be8224e28d7584f84671221ebd9/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">mysql索引超出了数组接线_索引超出数组范围是什么意思</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

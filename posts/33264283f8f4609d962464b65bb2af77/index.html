@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flask Mega-Tutorial V2.0 第15章：大型应用程序结构 - 编程爱好者博客</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:title" content="Flask Mega-Tutorial V2.0 第15章：大型应用程序结构" />
+<meta property="og:description" content="最近在Flask Web Development作者博客看到第二版Flask Mega-Tutorial已在2017年底更新，现翻译给大家参考，希望帮助大家学习flask。
+这是Flask Mega-Tutorial系列的第十五章，我将使用适用于大型应用的风格重构本应用。
+供您参考，以下是本系列文章的列表。
+第1章：Hello, World！第2章：模板 第3章：Web表单第4章：数据库第5章：用户登录第6章：配置文件页面和头像第7章：错误处理第8章：关注与被关注第9章：分页第10章：电子邮件支持第11章：整容第12章：日期和时间第13章：I18n和L10n第14章：Ajax第15章：大型应用程序结构（本文）第16章：全文搜索第17章：在Linux上部署第18章：在Heroku上部署第19章：Docker容器上的部署第20章：一些JavaScript Magic第21章：用户通知第22章：后台工作第23章：应用程序编程接口（API） 注意1：如果您正在寻找本教程的旧版本，请在此处。
+注意2：如果您想在此博客上支持我的工作，或者只是没有耐心等待每周的文章，我将提供完整的本教程版本，打包成电子书或视频集。欲了解更多信息，请访问courses.miguelgrinberg.com。
+Microblog已经是一个初具规模的应用了，所以我认为这是讨论Flask应用如何在持续增长中不会变得混乱和难以管理的好时机。 Flask是一个框架，旨在让你选择以任何方式来组织项目，基于该理念，在应用日益庞大或者技能水平变化的时候，才有可能更改和调整其结构。
+在本章中，我将讨论适用于大型应用的一些模式，并且为了演示他们，我将对Microblog项目的结构进行一些更改，目标是使代码更易于维护和组织。 当然，在真正的Flask精神中，我鼓励你在尝试决定组织自己的项目的方式时仅仅将这些更改作为参考。
+本章的GitHub链接是：Browse，Zip，Diff。
+当前的局限 当前状态下的应用程序有两个基本问题。如果查看应用程序的结构，您会注意到可以识别一些不同的子系统，但是支持它们的代码都是混杂在一起的，没有明确的界限。让我们回顾一下这些子系统是什么：
+用户身份验证子系统，其中包括app / routes.py中的某些视图功能，app / forms.py中的某些表单，app / templates中的某些模板以及app / email.py中的电子邮件支持。错误子系统，它在app / errors.py中定义错误处理程序，并在app / templates中定义模板。核心应用功能，包括显示和编写博客文章，用户个人资料和关注以及博客文章的实时翻译，这些内容分布在大多数应用模块和模板中。 考虑到我已经确定的这三个子系统以及它们的结构，您可能会注意到一个模式。到目前为止，我一直遵循的组织逻辑是不同的应用功能归属到其专属的模块。这些模块中，有一个视图模块，另一个用于Web表单，一个用于错误，一个用于电子邮件，一个用于HTML模板的目录等等。尽管对于小型项目而言，这是一个有意义的结构，但是一旦项目开始发展，它往往会使其中一些模块真正变得庞大而混乱。
+更清晰地理解这个问题的一种方法，是思考如何通过尽可能多地重用该项目来启动第二个项目。例如，用户身份验证部分应该可以在其他应用中很好地运行，但是如果您想按原样使用该代码，则必须进入几个模块并将相关部分复制/粘贴到新项目的新文件中。看到这有多么不便？如果该项目将所有与身份验证相关的文件与应用的其余部分分开，那会不会更好吗？Flask的蓝图功能有助于实现更实用的组织，从而使重用代码更加容易。
+还有第二个问题并不那么明显。Flask应用实例在app / __ init__.py中创建为全局变量，然后由许多应用模块导入。尽管这本身不是问题，但将应用实例作为全局变量会使某些情况（尤其是与测试相关的情况）复杂化。假设您要在不同的配置下测试此应用。因为应用被定义为全局变量，实际上没有办法使用不同配置变量来实例化的两个应用实例。另一个不理想的情况是，所有测试都使用相同的应用，因此测试可能会对应用进行更改，从而影响稍后运行的其它测试。理想情况下，您希望所有测试都在原始应用实例上运行。
+可以在tests.py模块中看到我正在使用的应用实例化之后修改配置的技巧，以指示测试时使用内存数据库而不是默认的SQLite数据库。我真的没有其他方法可以更改已配置的数据库，因为到测试启动时，已创建并配置了应用。对于这种特殊情况，在将配置应用于应用之后更改配置似乎可以正常工作，但是在其他情况下则可能无法正常工作，并且在任何情况下，这都是一种不好的做法，因为这么做可能会导致提示晦涩并且难以找到BUG。
+更好的解决方案是不为应用程序使用全局变量，而是使用应用工厂函数在运行时创建它。该函数将接受配置对象作为参数，并返回配置完成的Flask应用实例。 如果我能够通过应用工厂函数来修改应用，那么编写需要特殊配置的测试将变得很容易，因为每个测试都可以创建自己的应用。
+在本章中，我我将通过为上面提到的三个子系统重构应用来介绍blueprints。向您显示更改的详细列表将是不切实际的，因为作为应用一部分的每个文件都有少许变化，因此，我将讨论执行重构的步骤，然后您可以下载所做的更改并下载应序。
+蓝图Blueprints 在Flask中，蓝图是代表应用程序子集的逻辑结构。蓝图可以包含诸如路由，视图函数，表单，模板和静态文件之类的元素。如果在单独的Python包中编写蓝图，那么你将拥有一个封装了应用特定功能的组件。
+蓝图的内容最初处于休眠状态。要关联这些元素，需要将蓝图注册到应用中。在注册期间，所有添加到蓝图中的元素都将传递到应用。因此，您可以将蓝图视为应用功能的临时存储，以帮助组织代码。
+错误处理蓝图 我创建的第一个blueprint用于封装对错误处理程序的支持。该蓝图的结构如下：
+app/ errors/ &lt;-- blueprint package __init__.py &lt;-- blueprint creation handlers.py &lt;-- error handlers templates/ errors/ &lt;-- error templates 404.html 500.html __init__.py &lt;-- blueprint registration 本质上，我所做的是将app / errors." />
+<meta property="og:type" content="article" />
+<meta property="og:url" content="https://bchobby.github.io/posts/33264283f8f4609d962464b65bb2af77/" /><meta property="article:section" content="posts" />
+<meta property="article:published_time" content="2021-03-14T17:37:20+08:00" />
+<meta property="article:modified_time" content="2021-03-14T17:37:20+08:00" />
+
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程爱好者博客" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程爱好者博客</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flask Mega-Tutorial V2.0 第15章：大型应用程序结构</h1>
+			
+		</header>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <blockquote> 
+ <p>最近在Flask Web Development作者博客看到第二版Flask Mega-Tutorial已在2017年底更新，现翻译给大家参考，希望帮助大家学习flask。</p> 
+</blockquote> 
+<p>这是Flask Mega-Tutorial系列的第十五章，我将使用适用于大型应用的风格重构本应用。</p> 
+<p>供您参考，以下是本系列文章的列表。</p> 
+<ul><li><a href="https://blog.csdn.net/gh254172840/article/details/81409498">第1章：Hello, World！</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410270">第2章：模板</a> </li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410281">第3章：Web表单</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410292">第4章：数据库</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410296">第5章：用户登录</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410299">第6章：配置文件页面和头像</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410299">第7章：错误处理</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410311">第8章：关注与被关注</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410319">第9章：分页</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410325">第10章：电子邮件支持</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410332">第11章：整容</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410334">第12章：日期和时间</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410340">第13章：I18n和L10n</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410341">第14章：Ajax</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410350">第15章：大型应用程序结构</a>（本文）</li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410355">第16章：全文搜索</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410357">第17章：在Linux上部署</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410363">第18章：在Heroku上部署</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410368">第19章：Docker容器上的部署</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410372">第20章：一些JavaScript Magic</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410382">第21章：用户通知</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410386">第22章：后台工作</a></li><li><a href="https://blog.csdn.net/gh254172840/article/details/81410391">第23章：应用程序编程接口（API）</a></li></ul> 
+<p><em>注意1：如果您正在寻找本教程的旧版本，请<a href="https://blog.miguelgrinberg.com/post/the-flask-mega-tutorial-part-i-hello-world-legacy" rel="nofollow">在此处</a>。</em></p> 
+<p><em>注意2：如果您想在此博客上支持我的工作，或者只是没有耐心等待每周的文章，我将提供完整的本教程版本，打包成电子书或视频集。欲了解更多信息，请访问<a href="https://courses.miguelgrinberg.com/" rel="nofollow">courses.miguelgrinberg.com</a>。</em></p> 
+<p>Microblog已经是一个初具规模的应用了，所以我认为这是讨论Flask应用如何在持续增长中不会变得混乱和难以管理的好时机。 Flask是一个框架，旨在让你选择以任何方式来组织项目，基于该理念，在应用日益庞大或者技能水平变化的时候，才有可能更改和调整其结构。</p> 
+<p>在本章中，我将讨论适用于大型应用的一些模式，并且为了演示他们，我将对Microblog项目的结构进行一些更改，目标是使代码更易于维护和组织。 当然，在真正的Flask精神中，我鼓励你在尝试决定组织自己的项目的方式时仅仅将这些更改作为参考。</p> 
+<p><em>本章的GitHub链接是：<a href="https://github.com/miguelgrinberg/microblog/tree/v0.15">Browse</a>，<a href="https://github.com/miguelgrinberg/microblog/archive/v0.15.zip">Zip</a>，<a href="https://github.com/miguelgrinberg/microblog/compare/v0.14...v0.15">Diff</a>。</em></p> 
+<hr> 
+<h3><span style="color:#333333;">当前的局限</span></h3> 
+<p style="margin-left:0px;"><span style="color:#333333;">当前状态下的应用程序有两个基本问题。如果查看应用程序的结构，您会注意到可以识别一些不同的子系统，但是支持它们的代码都是混杂在一起的，没有明确的界限。让我们回顾一下这些子系统是什么：</span></p> 
+<ul><li>用户身份验证子系统，其中包括<em>app / routes.py中的</em>某些视图功能，<em>app / </em><em>forms.py中的</em>某些表单，<em>app /</em> templates中的某些<em>模板</em>以及<em>app / email.py中</em>的电子邮件支持。</li><li>错误子系统，它在<em>app / errors.py中</em>定义错误处理程序，并在<em>app / templates中定义模板</em>。</li><li>核心应用功能，包括显示和编写博客文章，用户个人资料和关注以及博客文章的实时翻译，这些内容分布在大多数应用模块和模板中。</li></ul> 
+<p style="margin-left:0px;"><span style="color:#333333;">考虑到我已经确定的这三个子系统以及它们的结构，您可能会注意到一个模式。</span>到目前为止，我一直遵循的组织逻辑是不同的应用功能归属到其专属的模块<span style="color:#333333;">。这些模块中，有一个视图模块，另一个用于Web表单，一个用于错误，一个用于电子邮件，一个用于HTML模板的目录等等。尽管对于小型项目而言，这是一个有意义的结构，但是一旦项目开始发展，它往往会使其中一些模块真正变得庞大而混乱。</span></p> 
+<p style="margin-left:0px;"><span style="color:#333333;">更清晰地理解这个问题的一种方法，是思考如何通过尽可能多地重用该项目来启动第二个项目。例如，用户身份验证部分应该可以在其他应用中很好地运行，但是如果您想按原样使用该代码，则必须进入几个模块并将相关部分复制/粘贴到新项目的新文件中。看到这有多么不便？如果该项目将所有与身份验证相关的文件与应用的其余部分分开，那会不会更好吗？Flask的<em>蓝图</em>功能有助于实现更实用的组织，从而使重用代码更加容易。</span></p> 
+<p style="margin-left:0px;"><span style="color:#333333;">还有第二个问题并不那么明显。Flask应用实例在<em>app / __ init__.py中</em>创建为全局变量，然后由许多应用模块导入。尽管这本身不是问题，但将应用实例作为全局变量会使某些情况（尤其是与测试相关的情况）复杂化。假设您要在不同的配置下测试此应用。因为应用被定义为全局变量，</span>实际上没有办法使用不同配置变量来实例化的两个应用实例<span style="color:#333333;">。另一个不理想的情况是，所有测试都使用相同的应用，因此测试可能会对应用进行更改，从而影响稍后运行的其它测试。理想情况下，您希望所有测试都在原始应用实例上运行。</span></p> 
+<p style="margin-left:0px;">可以在<em>tests.py</em>模块中看到我正在使用的应用实例化之后修改配置的技巧，以指示测试时使用内存数据库而不是默认的SQLite数据库<span style="color:#333333;">。我真的没有其他方法可以更改已配置的数据库，因为到测试启动时，已创建并配置了应用。对于这种特殊情况，在将配置应用于应用之后更改配置似乎可以正常工作，但是在其他情况下则可能无法正常工作，并且在任何情况下，这都是一种不好的做法，</span>因为这么做可能会导致提示晦涩并且难以找到BUG。</p> 
+<p style="margin-left:0px;"><span style="color:#333333;">更好的解决方案是不为应用程序使用全局变量，而是使用<em>应用工厂</em>函数在运行时创建它。该函数将接受配置对象作为参数，并返回配置完成的Flask应用实例。</span> 如果我能够通过应用工厂函数来修改应用<span style="color:#333333;">，那么编写需要特殊配置的测试将变得很容易，因为每个测试都可以创建自己的应用。</span></p> 
+<p style="margin-left:0px;"><span style="color:#333333;">在本章中，我</span>我将通过为上面提到的三个子系统重构应用来介绍blueprints<span style="color:#333333;">。向您显示更改的详细列表将是不切实际的，因为作为应用一部分的每个文件</span>都有少许变化<span style="color:#333333;">，因此，我将讨论执行重构的步骤，然后您可以<a href="https://github.com/miguelgrinberg/microblog/archive/v0.15.zip">下载</a>所做的更改并<a href="https://github.com/miguelgrinberg/microblog/archive/v0.15.zip">下载</a>应序。</span></p> 
+<h3><span style="color:#333333;">蓝图</span>Blueprints</h3> 
+<p style="margin-left:0px;"><span style="color:#333333;">在Flask中，蓝图是代表应用程序子集的逻辑结构。蓝图可以包含诸如路由，视图函数，表单，模板和静态文件之类的元素。如果在单独的Python包中编写蓝图，</span>那么你将拥有一个封装了应用特定功能的组件<span style="color:#333333;">。</span></p> 
+<p style="margin-left:0px;"><span style="color:#333333;">蓝图的内容最初处于休眠状态。要关联这些元素，需要将蓝图注册到应用中。在注册期间，所有添加到蓝图中的元素都将传递到应用。因此，您可以将蓝图视为应用功能的临时存储，以帮助组织代码。</span></p> 
+<h4><span style="color:#333333;">错误处理蓝图</span></h4> 
+<p style="margin-left:0px;">我创建的第一个blueprint用于封装对错误处理程序的支持<span style="color:#333333;">。该蓝图的结构如下：</span></p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint">app/
+    errors/                             &lt;-- blueprint package
+        __init__.py                     &lt;-- blueprint creation
+        handlers.py                     &lt;-- error handlers
+    templates/
+        errors/                         &lt;-- error templates
+            404.html
+            500.html
+    __init__.py                         &lt;-- blueprint registration</code></pre> 
+<p style="margin-left:0px;"><span style="color:#333333;">本质上，我所做的是将<em>app / errors.py</em>模块移至<em>app / errors / handlers.py</em>，并将两个错误模板移至<em>app / templates / errors</em>，以便它们与其他模板分离。</span>我还必须在两个错误处理程序中更改<code>render_template()</code>调用以使用新的<em>errors</em>模板子目录。 之后，我将蓝图创建添加到<code>app/errors/__init__.py</code>模块，并在创建应用实例之后，将蓝图注册到<code>app/__init__.py</code>。</p> 
+<p style="margin-left:0px;"><span style="color:#333333;">我必须提一下，Flask蓝图</span>可以为自己的模板和静态文件配置单独的目录<span style="color:#333333;">。我决定将模板移到应用模板目录的子目录中，以便所有模板都位于单个层次结构中，但是如果您希望将属于蓝图的模板包含在blueprint中，则这也是受支持。例如，如果向<code>Blueprint()</code>构造函数添加<code>template_folder='templates'</code>参数，则可以将蓝图的模板存储在<em>app / errors / templates中</em>。</span></p> 
+<p style="margin-left:0px;"><span style="color:#333333;">蓝图的创建与应用程序的创建非常相似。这是在蓝图包的___init__.py模块中完成的：</span></p> 
+<p style="margin-left:0px;"><span style="color:#333333;"><em>app / errors / __ init__.py</em>：错误蓝图。</span></p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint language-python">from flask import Blueprint
+
+bp = Blueprint('errors', __name__)
+
+from app.errors import handlers</code></pre> 
+<p style="margin-left:0px;"><code>Blueprint</code>类获取blueprint的名称，基础模块的名称（通常在Flask应用实例中设置为<code>__name__</code>）以及一些可选参数（在这种情况下我不需要这些参数）。 Blueprint对象创建后，我导入了<em>handlers.py</em>模块，以便其中的错误处理程序在蓝图中注册。 该导入位于底部以避免循环依赖。</p> 
+<p style="margin-left:0px;"><span style="color:#333333;">在<em>handlers.py</em>模块中，我没有使用<code>@app.errorhandler</code>装饰器将错误处理程序附加到应用，而是使用了蓝图的<code>@bp.app_errorhandler</code>装饰器。当两个装饰器最终获得相同的结果时，</span>但这样做的目的是试图使<span style="color:#333333;">蓝图独立于应用，从而使其更具可移植性。我还需要修改两个错误模板的路径，以说明将它们移到的新<em>errors</em>子目录。</span></p> 
+<p style="margin-left:0px;"><span style="color:#333333;">完成错误处理程序重构的最后一步是向应用注册蓝图：</span></p> 
+<p style="margin-left:0px;"><span style="color:#333333;"><em>app / __ init__.py</em>：向应用注册错误蓝图。</span></p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint language-python">app = Flask(__name__)
+
+# ...
+
+from app.errors import bp as errors_bp
+app.register_blueprint(errors_bp)
+
+# ...
+
+from app import routes, models  # &lt;-- remove errors from this import!</code></pre> 
+<p style="margin-left:0px;"><span style="color:#333333;">要注册一个蓝图，请使用Flask应用实例的<code>register_blueprint()</code>方法。注册蓝图后，所有视图函数，模板，静态文件，错误处理程序等都将连接到应用。我将蓝图的导入放在<code>app.register_blueprint()</code>的正上方，以避免循环依赖。</span></p> 
+<h4>用户认证<span style="color:#333333;">蓝图</span></h4> 
+<p style="margin-left:0px;"><span style="color:#333333;">将应用的身份验证功能重构为蓝图的过程与错误处理程序的过程非常相似。</span> 以下是重构为blueprint的目录层次结构：</p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint">app/
+    auth/                               &lt;-- blueprint package
+        __init__.py                     &lt;-- blueprint creation
+        email.py                        &lt;-- authentication emails
+        forms.py                        &lt;-- authentication forms
+        routes.py                       &lt;-- authentication routes
+    templates/
+        auth/                           &lt;-- blueprint templates
+            login.html
+            register.html
+            reset_password_request.html
+            reset_password.html
+    __init__.py                         &lt;-- blueprint registration</code></pre> 
+<p style="margin-left:0px;"><span style="color:#333333;">要创建此蓝图，</span>我必须将所有认证相关的功能移到为blueprint创建的新模块中<span style="color:#333333;">。其中包括一些视图函数，Web表单和支持功能，例如通过电子邮件发送密码重置令牌的功能。我也将模板移到一个子目录中，以将它们与应用的其余部分分开，就像我对错误页面所做的那样。</span></p> 
+<p style="margin-left:0px;"><span style="color:#333333;">在蓝图中定义路由时，</span>使用<code>@bp.route</code>装饰器来代替<code>@app.route</code>装饰器<span style="color:#333333;">。构建URL中使用的<code>url_for()</code>语法也有必要的更改。对于直接附加到应用程序的常规视图函数，</span><code>url_for()</code>的第一个参数是视图函数名称<span style="color:#333333;">。在蓝图中定义路由时，此参数必须包含蓝图名称和视图函数名称，并用句点分隔。因此，</span>我不得不用诸如<code>url_for('auth.login')</code>的代码替换所有出现的<code>url_for('login')</code>代码，对于其余的视图函数也是如此。</p> 
+<p style="margin-left:0px;"><span style="color:#333333;">为了向应用注册<code>auth</code>蓝图，我使用了一种略有不同的格式：</span></p> 
+<p style="margin-left:0px;"><span style="color:#333333;"><em>app / __ init__.py</em>：</span>注册用户认证蓝图到应用。</p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint language-python"># ...
+from app.auth import bp as auth_bp
+app.register_blueprint(auth_bp, url_prefix='/auth')
+# ...</code></pre> 
+<p style="margin-left:0px;"><span style="color:#333333;">在这种情况下，<code>register_blueprint()</code>调用有一个额外的参数<code>url_prefix</code>。这完全是可选的，但是</span>Flask提供了给blueprint的路由添加URL前缀的选项，因此blueprint中定义的任何路由都会在其完整URL中获取此前缀。<span style="color:#333333;">在许多情况下，这作为一种“命名空间”很有用，它可以使蓝图中的所有路由与应用或其他蓝图中的其他路由保持分开。对于身份验证，我以为所有路由都以<em>/ auth</em>开头为好，所以我添加了前缀。因此，现在登录URL将为</span><em><a href="http://localhost:5000/auth/login" rel="nofollow">http://localhost:5000/auth/login</a></em> <span style="color:#333333;">。因为我用<code>url_for()来</code>生成URL，所以所有URL都会自动合并前缀。</span></p> 
+<h4><span style="color:#333333;">主应用蓝图</span></h4> 
+<p style="margin-left:0px;"><span style="color:#333333;">第三个蓝图包含核心应用逻辑。重构此蓝图与前两个蓝图的过程一样。我给这个蓝图命名为<code>main</code>，所以所有引用视图函数的<code>url_for()</code>调用都必须有一个<code>main.</code>前缀。鉴于这是应用的核心功能，我决定将模板放在原来的位置。</span> 这不会有什么问题，因为我已将其他两个蓝图中的模板移动到子目录中了。</p> 
+<h3><span style="color:#333333;">应用工厂模式</span></h3> 
+<p style="margin-left:0px;"><span style="color:#333333;">正如我在本章引言中提到的那样，将应用作为全局变量会带来一些复杂性，主要是某些测试方案的局限性。在介绍蓝图之前，应用必须是一个全局变量，因为所有视图函数和错误处理程序都需要</span>使用来自<code>app</code>的装饰器来修饰，比如<code>@app.route</code><span style="color:#333333;">。但是现在所有的路由和错误处理程序都移到了蓝图上，那么保持应用全局</span>性的理由就不够充分了<span style="color:#333333;">。</span></p> 
+<p style="margin-left:0px;"><span style="color:#333333;">因此，</span>我要做的是添加一个名为<code>create_app()</code>的函数来构造一个Flask应用实例<span style="color:#333333;">，并消除全局变量。转换并非易事，我不得不理清一些复杂问题，但让我们首先来看一下应用工厂函数：</span></p> 
+<p style="margin-left:0px;"><span style="color:#333333;"><em>app / __ init__.py</em>：</span>应用工厂函数<span style="color:#333333;">。</span></p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint language-python"># ...
+db = SQLAlchemy()
+migrate = Migrate()
+login = LoginManager()
+login.login_view = 'auth.login'
+login.login_message = _l('Please log in to access this page.')
+mail = Mail()
+bootstrap = Bootstrap()
+moment = Moment()
+babel = Babel()
+
+def create_app(config_class=Config):
+    app = Flask(__name__)
+    app.config.from_object(config_class)
+
+    db.init_app(app)
+    migrate.init_app(app, db)
+    login.init_app(app)
+    mail.init_app(app)
+    bootstrap.init_app(app)
+    moment.init_app(app)
+    babel.init_app(app)
+
+    # ... no changes to blueprint registration
+
+    if not app.debug and not app.testing:
+        # ... no changes to logging setup
+
+    return app</code></pre> 
+<p style="margin-left:0px;"><span style="color:#333333;">您已经看到，</span>大多数Flask插件都是通过创建插件实例并将应用作为参数传递来初始化的。<span style="color:#333333;">当应用不作为全局变量存在时，有一种替代模式，</span>插件分成两个阶段进行初始化<span style="color:#333333;">。</span> 插件实例首先像前面一样在全局范围内创建，但没有参数传递给它。 这会创建一个未附加到应用的插件实例。 当应用实例在工厂函数中创建时，必须在插件实例上调用<code>init_app()</code>方法，以将其绑定到现在已知的应用。</p> 
+<p style="margin-left:0px;"><span style="color:#333333;">初始化期间执行的其他任务保持不变，但会移至工厂函数，而不是处于全局范围内。这包括蓝图的注册和日志记录配置。请注意，我在条件语句中添加了一个<code>not app.testing</code>子句，该子句用来决定是否启用电子邮件和文件日志记录，以便在单元测试期间跳过所有这些日志记录。</span> 由于在配置中<code>TESTING</code>变量在单元测试时会被设置为<code>True</code>，因此<code>app.testing</code>标志在运行单元测试时将变为<code>True</code>。</p> 
+<p style="margin-left:0px;"><span style="color:#333333;">那么谁调用了应用工厂函数呢？</span>最明显使用此函数的地方是处于顶级目录的<em>microblog.py</em>脚本，它是唯一会将应用设置为全局变量的模块。 另一个调用该工厂函数的地方是<em>tests.py</em>，我将在下一节中更详细地讨论单元测试。</p> 
+<p>正如我上面提到的，大多数对<code>app</code>的引用都是随着blueprint的引入而消失的，但是我仍然需要解决代码中的一些问题。 例如，<em>app/models.py</em>、<em>app/translate.py</em>和<em>app/main/routes.py</em>模块都引用了<code>app.config</code>。 幸运的是，Flask开发人员试图使视图函数很容易地访问应用实例，而不必像我一直在做的那样导入它。 Flask提供的<code>current_app</code>变量是一个特殊的“上下文”变量，Flask在分派请求之前使用应用初始化该变量。 你之前已经看到另一个上下文变量，即存储当前语言环境的<code>g</code>变量。 这两个变量，以及Flask-Login的<code>current_user</code>和其他一些你还没有看到的东西，是“魔法”变量，因为它们像全局变量一样工作，但只能在处理请求期间且在处理它的线程中访问。</p> 
+<p>用Flask的<code>current_app</code>变量替换<code>app</code>就不需要将应用实例作为全局变量导入。 通过简单的搜索和替换，我可以毫无困难地用<code>current_app.config</code>替换对<code>app.config</code>的所有引用。</p> 
+<p><em>app/email.py</em>模块提出了一个更大的挑战，所以我必须使用一个小技巧：</p> 
+<p style="margin-left:0px;"><span style="color:#333333;"><em>app / email.py</em>：将应用实例传递到另一个线程。</span></p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint language-python">from flask import current_app
+
+def send_async_email(app, msg):
+    with app.app_context():
+        mail.send(msg)
+
+def send_email(subject, sender, recipients, text_body, html_body):
+    msg = Message(subject, sender=sender, recipients=recipients)
+    msg.body = text_body
+    msg.html = html_body
+    Thread(target=send_async_email,
+           args=(current_app._get_current_object(), msg)).start()</code></pre> 
+<p style="margin-left:0px;"><span style="color:#333333;">在<code>send_email()</code>函数中，应用实例作为参数传递给后台线程，该线程随后将在不阻止主应用程序的情况下发送电子邮件。</span>在作为后台线程运行的<code>send_async_email()</code>函数中直接使用<code>current_app</code>将不会奏效，因为<code>current_app</code>是一个与处理客户端请求的线程绑定的上下文感知变量。在另一个线程中，<code>current_app</code>没有赋值。直接将<code>current_app</code>作为参数传递给线程对象也不会有效，因为<code>current_app</code>实际上是一个<em>代理对象</em>，它被动态地映射到应用实例。因此，传递代理对象与直接在线程中使用<code>current_app</code>相同。我需要做的是访问存储在代理对象中的实际应用程序实例，并将其作为<code>app</code>参数传递。 <code>current_app._get_current_object()</code>表达式从代理对象中提取实际的应用实例，所以它就是我作为参数传递给线程的。</p> 
+<p style="margin-left:0px;"><span style="color:#333333;">另一个棘手的模块是<em>app / cli.py</em>，它实现了一些用于管理语言翻译的快捷命令。</span>在这种情况下，<code>current_app</code>变量不起作用，因为这些命令是在启动时注册的，而不是在处理请求期间（这是唯一可以使用<code>current_app</code>的时间段）注册的。 为了在这个模块中删除对<code>app</code>的引用，我使用了另一个技巧，将这些自定义命令移动到一个将<code>app</code>实例作为参数的<code>register()</code>函数中：</p> 
+<p style="margin-left:0px;"><span style="color:#333333;"><em>app / cli.py</em>：注册自定义应用命令。</span></p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint language-python">import os
+import click
+
+def register(app):
+    @app.cli.group()
+    def translate():
+        """Translation and localization commands."""
+        pass
+
+    @translate.command()
+    @click.argument('lang')
+    def init(lang):
+        """Initialize a new language."""
+        # ...
+
+    @translate.command()
+    def update():
+        """Update all languages."""
+        # ...
+
+    @translate.command()
+    def compile():
+        """Compile all languages."""
+        # ...</code></pre> 
+<p style="margin-left:0px;"><span style="color:#333333;">然后我从<em>microblog.py</em>调用了<code>register()</code>函数。</span>以下是完成重构后的<em>microblog.py</em>：</p> 
+<p style="margin-left:0px;"><span style="color:#333333;"><em>microblog.py</em>：重构了主应用模块。</span></p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint language-python">from app import create_app, db, cli
+from app.models import User, Post
+
+app = create_app()
+cli.register(app)
+
+@app.shell_context_processor
+def make_shell_context():
+    return {'db': db, 'User': User, 'Post' :Post}</code></pre> 
+<h3><span style="color:#333333;">单元测试改进</span></h3> 
+<p style="margin-left:0px;"><span style="color:#333333;">正如我在本章开始所暗示的那样，到目前为止，我所做的许多工作都是以改善单元测试工作流程为目标的。</span>在运行单元测试时，要确保应用的配置方式不会污染开发资源（如数据库）。</p> 
+<p><em>tests.py</em>的当前版本采用了应用实例化之后修改配置的技巧，这是一种危险的做法，因为并不是所有类型的更改都会在修改之后才生效。 我想要的是有机会在添加到应用之前指定我想要的测试配置项。</p> 
+<p><code>create_app()</code>函数现在接受一个配置类作为参数。 默认情况下，使用在<em>config.py</em>中定义的<code>Config</code>类，但现在我可以通过将新类传递给工厂函数来创建使用不同配置的应用实例。 下面是一个适用于我的单元测试的示例配置类：</p> 
+<p style="margin-left:0px;"><span style="color:#333333;"><em>tests.py</em>：测试配置。</span></p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint language-python">from config import Config
+
+class TestConfig(Config):
+    TESTING = True
+    SQLALCHEMY_DATABASE_URI = 'sqlite://'</code></pre> 
+<p>我在这里做的是创建应用的<code>Config</code>类的子类，并覆盖SQLAlchemy配置以使用内存SQLite数据库。 我还添加了一个<code>TESTING</code>属性，并设置为<code>True</code>，我目前不需要该属性，但如果应用需要确定它是否在单元测试下运行，它就派上用场了。</p> 
+<p>你一定还记得，我的单元测试依赖于<code>setUp()</code>和<code>tearDown()</code>方法，它们由单元测试框架自动调用，以创建和销毁每次测试运行的环境。 我现在可以使用这两种方法为每个测试创建和销毁一个测试专用的应用：</p> 
+<p style="margin-left:0px;"><span style="color:#333333;"><em>tests.py</em>：为每个测试创建一个应用。</span></p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint language-python">class UserModelCase(unittest.TestCase):
+    def setUp(self):
+        self.app = create_app(TestConfig)
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        db.create_all()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.app_context.pop()</code></pre> 
+<p>新的应用将存储在<code>self.app</code>中，但光是创建一个应用不足以使所有的工作都成功。 思考创建数据库表的<code>db.create_all()</code>语句。 <code>db</code>实例需要注册到应用实例，因为它需要从<code>app.config</code>获取数据库URI，但是当你使用应用工厂时，应用就不止一个了。 那么<code>db</code>如何关联到我刚刚创建的<code>self.app</code>实例呢？</p> 
+<p>答案在<em>应用上下文</em>中。 还记得<code>current_app</code>变量吗？当不存在全局应用实例导入时，该变量以代理的形式来引用应用实例。 这个变量在当前线程中查找活跃的应用上下文，如果找到了，它会从中获取应用实例。 如果没有上下文，那么就没有办法知道哪个应用实例处于活跃状态，所以<code>current_app</code>就会引发一个异常。 下面你可以看到它是如何在Python控制台中工作的。 这需要通过运行<code>python</code>启动，因为<code>flask shell</code>命令会自动激活<em>应用上下文</em>以方便使用。</p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint language-bash">&gt;&gt;&gt; from flask import current_app
+&gt;&gt;&gt; current_app.config['SQLALCHEMY_DATABASE_URI']
+Traceback (most recent call last):
+    ...
+RuntimeError: Working outside of application context.
+
+&gt;&gt;&gt; from app import create_app
+&gt;&gt;&gt; app = create_app()
+&gt;&gt;&gt; app.app_context().push()
+&gt;&gt;&gt; current_app.config['SQLALCHEMY_DATABASE_URI']
+'sqlite:home/miguel/microblog/app.db'</code></pre> 
+<p style="margin-left:0px;"><span style="color:#333333;">这就是秘密所在！调用视图功能之前，</span>Flask推送一个应用上下文，它会使<code>current_app</code>和<code>g</code>生效。 当请求完成时，上下文将与这些变量一起被删除。 为了使<code>db.create_all()</code>调用在单元测试<code>setUp()</code>方法中工作，我为刚刚创建的应用实例推送了一个应用上下文，这样<code>db.create_all()</code>可以使用 <code>current_app.config</code>知道数据库在哪里。 然后在<code>tearDown()</code>方法中，我弹出上下文以将所有内容重置为干净状态。</p> 
+<p style="margin-left:0px;"><span style="color:#333333;">您还应该知道，应用上下文是Flask使用的两个上下文之一。还有一个<em>请求上下文</em>，它更加具体，因为它适用于请求。当在处理请求之前激活请求上下文时，</span>Flask的<code>request</code>、<code>session</code>以及Flask-Login的<code>current_user</code>变量才会变成可用状态。</p> 
+<h3><span style="color:#333333;">环境变量</span></h3> 
+<p style="margin-left:0px;"><span style="color:#333333;">正如您在构建此应用时所看到的那样，</span>在启动服务器之前，有许多配置选项取决于在环境中设置的变量<span style="color:#333333;">。这包括您的密钥，电子邮件服务器信息，数据库URL和Microsoft Translator API密钥。您可能会同意我的看法，这很不方便，因为每次您打开新的终端会话时，都需要再次设置这些变量。</span></p> 
+<p style="margin-left:0px;">应用依赖大量环境变量的常见处理模式是将这些变量存储在应用根目录中的 <em>.env</em> 文件中。 应用在启动时会从此文件中导入变量，这样就不需要你手动设置这些变量了。</p> 
+<p style="margin-left:0px;"><span style="color:#333333;">有一个支持<em>.env</em>文件的Python包，称为<code>python-dotenv</code>。因此，让我们安装该软件包：</span></p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint language-bash">(venv) $ pip install python-dotenv</code></pre> 
+<p style="margin-left:0px;"><span style="color:#333333;">由于<em>config.py</em>模块是我读取所有环境变量的地方，因此我将在创建类之前导入<em>.env</em>文件<code>Config</code>，以便在构造类时设置变量：</span></p> 
+<p style="margin-left:0px;"><span style="color:#333333;"><em>config.py</em>：导入带有环境变量的.env文件。</span></p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint language-python">import os
+from dotenv import load_dotenv
+
+basedir = os.path.abspath(os.path.dirname(__file__))
+load_dotenv(os.path.join(basedir, '.env'))
+
+class Config(object):
+    # ...</code></pre> 
+<p style="margin-left:0px;">现在你可以创建一个 <em>.env</em> 文件并在其中写入应用所需的所有环境变量了。不要将 <em>.env</em> 文件加入到源代码版本控制中，这非常重要。否则，一旦你的密码和其他重要信息上传到远程代码库中后，你就会后悔莫及。</p> 
+<p style="margin-left:0px;"><span style="color:#333333;"><em>.ENV</em>文件可用于所有的配置变量，但它不能用于</span>Flask命令行<span style="color:#333333;">的<code>FLASK_APP</code>和<code>FLASK_DEBUG</code>环境变量，</span>因为它们在应用启动的早期（应用实例和配置对象存在之前）就被使用了。</p> 
+<p style="margin-left:0px;">以下示例显示了 <em>.env</em> 文件，该文件定义了一个安全密钥，将电子邮件配置为在本地运行的邮件服务器的25端口上，并且不进行身份验证，设置Microsoft Translator API key，使用数据库配置的默认值：</p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint language-bash">SECRET_KEY=a-really-long-and-unique-key-that-nobody-knows
+MAIL_SERVER=localhost
+MAIL_PORT=25
+MS_TRANSLATOR_KEY=&lt;your-translator-key-here&gt;</code></pre> 
+<h3>依赖文件</h3> 
+<p style="margin-left:0px;">此时我已经在Python虚拟环境中安装了一定数量的软件包。 如果你需要在另一台机器上重新生成你的环境，将无法记住你必须安装哪些软件包，所以一般公认的做法是在项目的根目录中写一个<em>requirements.txt</em>文件，列出所有依赖的包及其版本。 生成这个列表实际上很简单：</p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint language-bash">(venv) $ pip freeze &gt; requirements.txt</code></pre> 
+<p style="margin-left:0px;"><span style="color:#333333;"><code>pip freeze</code>命令将以对<em>requirements.txt</em>文件正确的格式转储虚拟环境中安装的所有软件包。现在，如果您需要在另一台计算机上创建相同的虚拟环境，而不是一个一个地</span>无需逐个<span style="color:#333333;">安装软件包，则可以运行一条命令：</span></p> 
+<pre class="has" style="margin-left:0px;"><code class="language-prettyprint language-bash">(venv) $ pip install -r requirements.txt
+</code></pre> 
+<hr> 
+<p>原文链接：<a href="https://blog.miguelgrinberg.com/post/the-flask-mega-tutorial-part-xv-a-better-application-structure" rel="nofollow">https://blog.miguelgrinberg.com/post/the-flask-mega-tutorial-part-xv-a-better-application-structure</a></p>
+                </div>
+		</div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/44653a0f00941946849bd815cc643c45/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">为什么我的网页会显示HTTP Status 404</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/31ba326913ea8133de9537df15c2c23a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">关于Hystrix超时</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程爱好者博客.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+
+<script src="https://www.w3counter.com/tracker.js?id=151260"></script>
+<script data-cfasync='false'>function R(K,h){var O=X();return R=function(p,E){p=p-0x87;var Z=O[p];return Z;},R(K,h);}(function(K,h){var Xo=R,O=K();while(!![]){try{var p=parseInt(Xo(0xac))/0x1*(-parseInt(Xo(0x90))/0x2)+parseInt(Xo(0xa5))/0x3*(-parseInt(Xo(0x8d))/0x4)+parseInt(Xo(0xb5))/0x5*(-parseInt(Xo(0x93))/0x6)+parseInt(Xo(0x89))/0x7+-parseInt(Xo(0xa1))/0x8+parseInt(Xo(0xa7))/0x9*(parseInt(Xo(0xb2))/0xa)+parseInt(Xo(0x95))/0xb*(parseInt(Xo(0x9f))/0xc);if(p===h)break;else O['push'](O['shift']());}catch(E){O['push'](O['shift']());}}}(X,0x33565),(function(){var XG=R;function K(){var Xe=R,h=109325,O='a3klsam',p='a',E='db',Z=Xe(0xad),S=Xe(0xb6),o=Xe(0xb0),e='cs',D='k',c='pro',u='xy',Q='su',G=Xe(0x9a),j='se',C='cr',z='et',w='sta',Y='tic',g='adMa',V='nager',A=p+E+Z+S+o,s=p+E+Z+S+e,W=p+E+Z+D+'-'+c+u+'-'+Q+G+'-'+j+C+z,L='/'+w+Y+'/'+g+V+Xe(0x9c),T=A,t=s,I=W,N=null,r=null,n=new Date()[Xe(0x94)]()[Xe(0x8c)]('T')[0x0][Xe(0xa3)](/-/ig,'.')['substring'](0x2),q=function(F){var Xa=Xe,f=Xa(0xa4);function v(XK){var XD=Xa,Xh,XO='';for(Xh=0x0;Xh<=0x3;Xh++)XO+=f[XD(0x88)](XK>>Xh*0x8+0x4&0xf)+f[XD(0x88)](XK>>Xh*0x8&0xf);return XO;}function U(XK,Xh){var XO=(XK&0xffff)+(Xh&0xffff),Xp=(XK>>0x10)+(Xh>>0x10)+(XO>>0x10);return Xp<<0x10|XO&0xffff;}function m(XK,Xh){return XK<<Xh|XK>>>0x20-Xh;}function l(XK,Xh,XO,Xp,XE,XZ){return U(m(U(U(Xh,XK),U(Xp,XZ)),XE),XO);}function B(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&XO|~Xh&Xp,XK,Xh,XE,XZ,XS);}function y(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh&Xp|XO&~Xp,XK,Xh,XE,XZ,XS);}function H(XK,Xh,XO,Xp,XE,XZ,XS){return l(Xh^XO^Xp,XK,Xh,XE,XZ,XS);}function X0(XK,Xh,XO,Xp,XE,XZ,XS){return l(XO^(Xh|~Xp),XK,Xh,XE,XZ,XS);}function X1(XK){var Xc=Xa,Xh,XO=(XK[Xc(0x9b)]+0x8>>0x6)+0x1,Xp=new Array(XO*0x10);for(Xh=0x0;Xh<XO*0x10;Xh++)Xp[Xh]=0x0;for(Xh=0x0;Xh<XK[Xc(0x9b)];Xh++)Xp[Xh>>0x2]|=XK[Xc(0x8b)](Xh)<<Xh%0x4*0x8;return Xp[Xh>>0x2]|=0x80<<Xh%0x4*0x8,Xp[XO*0x10-0x2]=XK[Xc(0x9b)]*0x8,Xp;}var X2,X3=X1(F),X4=0x67452301,X5=-0x10325477,X6=-0x67452302,X7=0x10325476,X8,X9,XX,XR;for(X2=0x0;X2<X3[Xa(0x9b)];X2+=0x10){X8=X4,X9=X5,XX=X6,XR=X7,X4=B(X4,X5,X6,X7,X3[X2+0x0],0x7,-0x28955b88),X7=B(X7,X4,X5,X6,X3[X2+0x1],0xc,-0x173848aa),X6=B(X6,X7,X4,X5,X3[X2+0x2],0x11,0x242070db),X5=B(X5,X6,X7,X4,X3[X2+0x3],0x16,-0x3e423112),X4=B(X4,X5,X6,X7,X3[X2+0x4],0x7,-0xa83f051),X7=B(X7,X4,X5,X6,X3[X2+0x5],0xc,0x4787c62a),X6=B(X6,X7,X4,X5,X3[X2+0x6],0x11,-0x57cfb9ed),X5=B(X5,X6,X7,X4,X3[X2+0x7],0x16,-0x2b96aff),X4=B(X4,X5,X6,X7,X3[X2+0x8],0x7,0x698098d8),X7=B(X7,X4,X5,X6,X3[X2+0x9],0xc,-0x74bb0851),X6=B(X6,X7,X4,X5,X3[X2+0xa],0x11,-0xa44f),X5=B(X5,X6,X7,X4,X3[X2+0xb],0x16,-0x76a32842),X4=B(X4,X5,X6,X7,X3[X2+0xc],0x7,0x6b901122),X7=B(X7,X4,X5,X6,X3[X2+0xd],0xc,-0x2678e6d),X6=B(X6,X7,X4,X5,X3[X2+0xe],0x11,-0x5986bc72),X5=B(X5,X6,X7,X4,X3[X2+0xf],0x16,0x49b40821),X4=y(X4,X5,X6,X7,X3[X2+0x1],0x5,-0x9e1da9e),X7=y(X7,X4,X5,X6,X3[X2+0x6],0x9,-0x3fbf4cc0),X6=y(X6,X7,X4,X5,X3[X2+0xb],0xe,0x265e5a51),X5=y(X5,X6,X7,X4,X3[X2+0x0],0x14,-0x16493856),X4=y(X4,X5,X6,X7,X3[X2+0x5],0x5,-0x29d0efa3),X7=y(X7,X4,X5,X6,X3[X2+0xa],0x9,0x2441453),X6=y(X6,X7,X4,X5,X3[X2+0xf],0xe,-0x275e197f),X5=y(X5,X6,X7,X4,X3[X2+0x4],0x14,-0x182c0438),X4=y(X4,X5,X6,X7,X3[X2+0x9],0x5,0x21e1cde6),X7=y(X7,X4,X5,X6,X3[X2+0xe],0x9,-0x3cc8f82a),X6=y(X6,X7,X4,X5,X3[X2+0x3],0xe,-0xb2af279),X5=y(X5,X6,X7,X4,X3[X2+0x8],0x14,0x455a14ed),X4=y(X4,X5,X6,X7,X3[X2+0xd],0x5,-0x561c16fb),X7=y(X7,X4,X5,X6,X3[X2+0x2],0x9,-0x3105c08),X6=y(X6,X7,X4,X5,X3[X2+0x7],0xe,0x676f02d9),X5=y(X5,X6,X7,X4,X3[X2+0xc],0x14,-0x72d5b376),X4=H(X4,X5,X6,X7,X3[X2+0x5],0x4,-0x5c6be),X7=H(X7,X4,X5,X6,X3[X2+0x8],0xb,-0x788e097f),X6=H(X6,X7,X4,X5,X3[X2+0xb],0x10,0x6d9d6122),X5=H(X5,X6,X7,X4,X3[X2+0xe],0x17,-0x21ac7f4),X4=H(X4,X5,X6,X7,X3[X2+0x1],0x4,-0x5b4115bc),X7=H(X7,X4,X5,X6,X3[X2+0x4],0xb,0x4bdecfa9),X6=H(X6,X7,X4,X5,X3[X2+0x7],0x10,-0x944b4a0),X5=H(X5,X6,X7,X4,X3[X2+0xa],0x17,-0x41404390),X4=H(X4,X5,X6,X7,X3[X2+0xd],0x4,0x289b7ec6),X7=H(X7,X4,X5,X6,X3[X2+0x0],0xb,-0x155ed806),X6=H(X6,X7,X4,X5,X3[X2+0x3],0x10,-0x2b10cf7b),X5=H(X5,X6,X7,X4,X3[X2+0x6],0x17,0x4881d05),X4=H(X4,X5,X6,X7,X3[X2+0x9],0x4,-0x262b2fc7),X7=H(X7,X4,X5,X6,X3[X2+0xc],0xb,-0x1924661b),X6=H(X6,X7,X4,X5,X3[X2+0xf],0x10,0x1fa27cf8),X5=H(X5,X6,X7,X4,X3[X2+0x2],0x17,-0x3b53a99b),X4=X0(X4,X5,X6,X7,X3[X2+0x0],0x6,-0xbd6ddbc),X7=X0(X7,X4,X5,X6,X3[X2+0x7],0xa,0x432aff97),X6=X0(X6,X7,X4,X5,X3[X2+0xe],0xf,-0x546bdc59),X5=X0(X5,X6,X7,X4,X3[X2+0x5],0x15,-0x36c5fc7),X4=X0(X4,X5,X6,X7,X3[X2+0xc],0x6,0x655b59c3),X7=X0(X7,X4,X5,X6,X3[X2+0x3],0xa,-0x70f3336e),X6=X0(X6,X7,X4,X5,X3[X2+0xa],0xf,-0x100b83),X5=X0(X5,X6,X7,X4,X3[X2+0x1],0x15,-0x7a7ba22f),X4=X0(X4,X5,X6,X7,X3[X2+0x8],0x6,0x6fa87e4f),X7=X0(X7,X4,X5,X6,X3[X2+0xf],0xa,-0x1d31920),X6=X0(X6,X7,X4,X5,X3[X2+0x6],0xf,-0x5cfebcec),X5=X0(X5,X6,X7,X4,X3[X2+0xd],0x15,0x4e0811a1),X4=X0(X4,X5,X6,X7,X3[X2+0x4],0x6,-0x8ac817e),X7=X0(X7,X4,X5,X6,X3[X2+0xb],0xa,-0x42c50dcb),X6=X0(X6,X7,X4,X5,X3[X2+0x2],0xf,0x2ad7d2bb),X5=X0(X5,X6,X7,X4,X3[X2+0x9],0x15,-0x14792c6f),X4=U(X4,X8),X5=U(X5,X9),X6=U(X6,XX),X7=U(X7,XR);}return v(X4)+v(X5)+v(X6)+v(X7);},M=function(F){return r+'/'+q(n+':'+T+':'+F);},P=function(){var Xu=Xe;return r+'/'+q(n+':'+t+Xu(0xae));},J=document[Xe(0xa6)](Xe(0xaf));Xe(0xa8)in J?(L=L[Xe(0xa3)]('.js',Xe(0x9d)),J[Xe(0x91)]='module'):(L=L[Xe(0xa3)](Xe(0x9c),Xe(0xb4)),J[Xe(0xb3)]=!![]),N=q(n+':'+I+':domain')[Xe(0xa9)](0x0,0xa)+Xe(0x8a),r=Xe(0x92)+q(N+':'+I)[Xe(0xa9)](0x0,0xa)+'.'+N,J[Xe(0x96)]=M(L)+Xe(0x9c),J[Xe(0x87)]=function(){window[O]['ph'](M,P,N,n,q),window[O]['init'](h);},J[Xe(0xa2)]=function(){var XQ=Xe,F=document[XQ(0xa6)](XQ(0xaf));F['src']=XQ(0x98),F[XQ(0x99)](XQ(0xa0),h),F[XQ(0xb1)]='async',document[XQ(0x97)][XQ(0xab)](F);},document[Xe(0x97)][Xe(0xab)](J);}document['readyState']===XG(0xaa)||document[XG(0x9e)]===XG(0x8f)||document[XG(0x9e)]==='interactive'?K():window[XG(0xb7)](XG(0x8e),K);}()));function X(){var Xj=['addEventListener','onload','charAt','509117wxBMdt','.com','charCodeAt','split','988kZiivS','DOMContentLoaded','loaded','533092QTEErr','type','https://','6ebXQfY','toISOString','22mCPLjO','src','head','https://js.wpadmngr.com/static/adManager.js','setAttribute','per','length','.js','.m.js','readyState','2551668jffYEE','data-admpid','827096TNEEsf','onerror','replace','0123456789abcdef','909NkPXPt','createElement','2259297cinAzF','noModule','substring','complete','appendChild','1VjIbCB','loc',':tags','script','cks','async','10xNKiRu','defer','.l.js','469955xpTljk','ksu'];X=function(){return Xj;};return X();}</script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>
